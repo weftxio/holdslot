@@ -140,6 +140,291 @@
   }
 }
 
+/* ============================================================
+   BUSINESS BRIEF · 7-section intake form
+   ============================================================ */
+.brief-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.brief-legend {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+.brief-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+.brief-req,
+.brief-opt {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 4px;
+}
+.brief-req {
+  background: var(--danger-wash);
+  color: var(--danger);
+}
+.brief-opt {
+  background: var(--line-soft);
+  color: var(--ink-faint);
+}
+/* badge sits at the end of a field label */
+.field label .brief-req,
+.field label .brief-opt {
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+.brief-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.bp-bar {
+  width: 140px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.bp-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--cerulean), var(--cerulean-deep));
+  transition: width 0.4s ease;
+}
+.bp-label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.brief-sec {
+  margin-bottom: 20px;
+}
+.brief-sec .panel-head {
+  justify-content: flex-start;
+}
+.brief-num {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: var(--ink);
+  color: var(--cerulean);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--display);
+  font-weight: 600;
+  font-size: 17px;
+}
+.brief-help {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  line-height: 1.45;
+}
+.brief-subdiv {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--cerulean-deep);
+  margin: 24px 0 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.brief-hint {
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
+.brief-callout {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  background: var(--danger-wash);
+  border: 1px solid rgba(194, 91, 83, 0.25);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 20px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+.brief-callout .ci {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--danger);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+/* tag-chip input */
+.tag-input {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-height: 44px;
+  padding: 7px 9px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: text;
+  transition: 0.15s ease;
+}
+.tag-input:focus-within {
+  border-color: var(--cerulean);
+  box-shadow: 0 0 0 3px rgba(155, 183, 214, 0.22);
+}
+.tag-input.err {
+  border-color: var(--danger);
+  background: #fff5f4;
+}
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--cerulean-wash);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 6px 4px 11px;
+  border-radius: 7px;
+}
+.tag-chip .tx {
+  appearance: none;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-faint);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  transition: 0.12s ease;
+}
+.tag-chip .tx:hover {
+  color: var(--danger);
+}
+.tag-entry {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--ink);
+  padding: 4px 2px;
+}
+.tag-entry::placeholder {
+  color: var(--ink-faint);
+}
+
+/* fixed-option multi-select pills */
+.brief-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.brief-pills.err .brief-pill {
+  border-color: var(--danger);
+}
+.brief-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-size: 13px;
+  color: var(--ink-soft);
+  cursor: pointer;
+  user-select: none;
+  transition: 0.12s ease;
+}
+.brief-pill:hover {
+  border-color: var(--cerulean);
+}
+.brief-pill input {
+  display: none;
+}
+.brief-pill .bx {
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1.5px solid var(--line);
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: 0.12s ease;
+}
+.brief-pill.on {
+  background: var(--cerulean-wash);
+  border-color: var(--cerulean);
+  color: var(--ink);
+  font-weight: 600;
+}
+.brief-pill.on .bx {
+  background: var(--cerulean-deep);
+  border-color: var(--cerulean-deep);
+}
+.brief-pill.on .bx::after {
+  content: "✓";
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+/* error states for non-input controls */
+.textarea.err,
+.select.err {
+  border-color: var(--danger);
+  background: #fff5f4;
+}
+
+.brief-submit {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 24px;
+  margin-top: 4px;
+}
+.brief-submit .bs-note {
+  font-size: 13px;
+  color: var(--ink-soft);
+  max-width: 560px;
+  line-height: 1.5;
+}
+
 /* segmented send controls */
 .seg {
   display: inline-flex;

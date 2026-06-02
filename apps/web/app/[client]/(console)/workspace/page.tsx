@@ -7,21 +7,51 @@ import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import "./workspace.css";
 
+// ICP (section 2) + Personas (section 3), held per profile
 type IcpFields = {
-  industry: string;
+  industries: string[];
   companySize: string;
-  revenue: string;
-  regions: string;
-  titles: string;
-  seniority: string;
-  departments: string;
-  triggers: string;
-  tech: string;
-  geoAvoid: string;
-  exclusions: string;
-  disqualifiers: string;
+  maturity: string;
+  geographies: string[];
+  technologies: string[];
+  jobTitles: string[];
+  seniority: string[];
+  departments: string[];
+  buyerVsChampion: string;
+  avoidTitles: string[];
 };
 type Icp = { short: string; tag: string; persona: string; fields: IcpFields };
+// Global brief sections (1, 4, 5, 6, 7) — filled once
+type Brief = {
+  companyName: string;
+  website: string;
+  sell: string;
+  problem: string;
+  dealSize: string;
+  salesCycle: string;
+  valueProps: string[];
+  proofPoints: string;
+  signals: string;
+  objections: string;
+  competitors: string;
+  tone: string;
+  languages: string[];
+  languageOther: string;
+  excludeCustomers: string;
+  excludeDeals: string;
+  excludeCompetitors: string;
+  doNotContact: string;
+  compliance: string;
+  meetingsLand: string;
+  attendees: string;
+  availability: string;
+  channel: string;
+  contact: string;
+  approver: string;
+  meetingsPerMonth: string;
+  qualifiedDef: string;
+  first90: string;
+};
 type Batch = {
   name: string;
   count: number;
@@ -139,50 +169,161 @@ const INITIAL_REPLIES: Reply[] = [
   },
 ].map((r) => ({ ...r, text: r.draft }));
 
-const ICP_FIELD_DEFS: [keyof IcpFields, string][] = [
-  ["industry", "Industry / segment"],
-  ["companySize", "Company size"],
-  ["revenue", "Revenue band"],
-  ["regions", "Regions / markets"],
-  ["titles", "Target titles"],
-  ["seniority", "Seniority"],
-  ["departments", "Departments"],
-  ["triggers", "Buying triggers"],
-  ["tech", "Tech / stack signals"],
-  ["geoAvoid", "Geographies to avoid"],
-  ["exclusions", "Exclusions"],
-  ["disqualifiers", "Disqualifiers"],
-];
+const SENIORITY_OPTS = ["C-level", "VP", "Director", "Manager", "Individual contributor"];
+const LANGUAGE_OPTS = ["English", "Mandarin", "Spanish", "French", "German", "Other"];
+const CYCLE_OPTS = ["Less than 1 month", "1–3 months", "3–6 months", "6+ months"];
+const MATURITY_OPTS = ["Startup", "Growth", "SME", "Enterprise", "Any"];
+const TONE_OPTS = ["Formal", "Professional & friendly", "Casual", "Let us recommend"];
+const CHANNEL_OPTS = ["Slack", "WhatsApp", "Email", "Other"];
 
 const blankFields = (): IcpFields => ({
-  industry: "",
+  industries: [],
   companySize: "",
-  revenue: "",
-  regions: "",
-  titles: "",
-  seniority: "",
-  departments: "",
-  triggers: "",
-  tech: "",
-  geoAvoid: "",
-  exclusions: "",
-  disqualifiers: "",
+  maturity: "",
+  geographies: [],
+  technologies: [],
+  jobTitles: [],
+  seniority: [],
+  departments: [],
+  buyerVsChampion: "",
+  avoidTitles: [],
 });
 
 const sampleFields = (): IcpFields => ({
-  industry: "SaaS, Fintech",
+  industries: ["SaaS", "Fintech"],
   companySize: "50–500 employees",
-  revenue: "$10M–$100M ARR",
-  regions: "North America, UK",
-  titles: "Head of Sales, VP Revenue",
-  seniority: "Director and above",
-  departments: "Sales, RevOps",
-  triggers: "Hiring SDRs, recent funding",
-  tech: "Salesforce, Outreach",
-  geoAvoid: "Sanctioned regions",
-  exclusions: "Competitors, existing customers",
-  disqualifiers: "Pre-revenue, <10 staff",
+  maturity: "Growth",
+  geographies: ["North America", "UK"],
+  technologies: ["Salesforce", "Outreach"],
+  jobTitles: ["Head of Sales", "VP Revenue"],
+  seniority: ["VP", "Director"],
+  departments: ["Sales", "RevOps"],
+  buyerVsChampion: "CRO signs off, Head of Sales champions",
+  avoidTitles: ["Procurement", "Junior analysts"],
 });
+
+const sampleBrief = (): Brief => ({
+  companyName: "Northwind",
+  website: "https://northwind.example",
+  sell: "A workforce analytics platform that helps enterprises reduce attrition",
+  problem:
+    "Companies lose their best people without warning. We surface the early signals so leaders can act before resignations happen.",
+  dealSize: "$25,000 / year",
+  salesCycle: "1–3 months",
+  valueProps: ["Predict attrition 90 days out", "Cut onboarding time 40%", "One view for every team lead"],
+  proofPoints:
+    "Work with 3 of the top 10 logistics firms in the region · Cut onboarding time by 40% for a Fortune 500 client · Backed by a tier-1 investor.",
+  signals:
+    "Just hired a VP Sales · Recently expanded to a new market · Just raised funding · Posting about scaling the team.",
+  objections: "We already have a tool · No budget this quarter",
+  competitors: "Competitor A, Competitor B",
+  tone: "Professional & friendly",
+  languages: ["English"],
+  languageOther: "",
+  excludeCustomers: "",
+  excludeDeals: "",
+  excludeCompetitors: "",
+  doNotContact: "",
+  compliance: "",
+  meetingsLand: "Round-robin across 3 AEs",
+  attendees: "Jane Doe (AE), John Smith (Sales Lead)",
+  availability: "Tue–Thu, 10am–4pm GMT",
+  channel: "Slack",
+  contact: "Sample Contact, Ops · contact@northwind.example",
+  approver: "Sample Approver, COO",
+  meetingsPerMonth: "15",
+  qualifiedDef:
+    "A decision-maker at a company in our ICP who shows up to a 20-minute call and has genuine interest in solving the problem we address.",
+  first90:
+    "A predictable flow of 12–15 qualified meetings a month and at least 2 deals in late-stage pipeline.",
+});
+
+// type-and-enter chips for multi-value fields
+function TagInput({
+  value,
+  onChange,
+  placeholder,
+  invalid,
+}: {
+  value: string[];
+  onChange: (v: string[]) => void;
+  placeholder?: string;
+  invalid?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const add = () => {
+    const t = draft.trim();
+    if (t && !value.includes(t)) onChange([...value, t]);
+    setDraft("");
+  };
+  return (
+    <div className={clsx("tag-input", invalid && "err")}>
+      {value.map((t) => (
+        <span className="tag-chip" key={t}>
+          {t}
+          <button type="button" className="tx" aria-label={"Remove " + t} onClick={() => onChange(value.filter((x) => x !== t))}>
+            ×
+          </button>
+        </span>
+      ))}
+      <input
+        className="tag-entry"
+        value={draft}
+        placeholder={value.length ? "" : placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            e.preventDefault();
+            add();
+          } else if (e.key === "Backspace" && !draft && value.length) {
+            onChange(value.slice(0, -1));
+          }
+        }}
+        onBlur={add}
+      />
+    </div>
+  );
+}
+
+// fixed-option multi-select pills
+function PillGroup({
+  options,
+  value,
+  onChange,
+  invalid,
+}: {
+  options: string[];
+  value: string[];
+  onChange: (v: string[]) => void;
+  invalid?: boolean;
+}) {
+  const toggle = (o: string) =>
+    onChange(value.includes(o) ? value.filter((x) => x !== o) : [...value, o]);
+  return (
+    <div className={clsx("brief-pills", invalid && "err")}>
+      {options.map((o) => (
+        <label key={o} className={clsx("brief-pill", value.includes(o) && "on")}>
+          <input type="checkbox" checked={value.includes(o)} onChange={() => toggle(o)} />
+          <span className="bx" />
+          {o}
+        </label>
+      ))}
+    </div>
+  );
+}
+
+// label + required/optional badge + helper line
+function Lbl({ children, req, help }: { children: React.ReactNode; req?: boolean; help?: string }) {
+  return (
+    <>
+      <label>
+        {children}
+        <span className={req ? "brief-req" : "brief-opt"}>{req ? "Required" : "Optional"}</span>
+      </label>
+      {help && <div className="brief-help">{help}</div>}
+    </>
+  );
+}
 
 function Variants() {
   const v = (tag: string, body: React.ReactNode, win?: boolean) => (
@@ -330,9 +471,42 @@ export default function Workspace() {
   }
   const updateIcp = (patch: Partial<Icp>) =>
     setIcps((s) => s.map((x, i) => (i === icpSel ? { ...x, ...patch } : x)));
-  const updateIcpField = (key: keyof IcpFields, val: string) =>
+  const setIcpField = <K extends keyof IcpFields>(key: K, val: IcpFields[K]) =>
     setIcps((s) => s.map((x, i) => (i === icpSel ? { ...x, fields: { ...x.fields, [key]: val } } : x)));
   const saveIcp = () => toast(icps[icpSel].short + " saved");
+
+  // Business brief (global sections)
+  const [brief, setBrief] = useState<Brief>(sampleBrief);
+  const [submitted, setSubmitted] = useState(false);
+  const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
+    setBrief((s) => ({ ...s, [key]: val }));
+  const f = icps[icpSel].fields;
+
+  const filled = (v: string | string[]) => (Array.isArray(v) ? v.length > 0 : v.trim() !== "");
+  const REQUIRED_BRIEF: (keyof Brief)[] = [
+    "companyName", "website", "sell", "problem", "dealSize", "salesCycle",
+    "valueProps", "proofPoints", "signals", "tone", "languages",
+    "excludeCustomers", "excludeDeals",
+    "meetingsLand", "attendees", "availability", "channel", "contact", "approver",
+    "meetingsPerMonth", "qualifiedDef",
+  ];
+  const icpReady = icps.every(
+    (p) =>
+      p.fields.industries.length &&
+      p.fields.companySize.trim() &&
+      p.fields.geographies.length &&
+      p.fields.jobTitles.length &&
+      p.fields.seniority.length &&
+      p.fields.departments.length
+  );
+  const checks = [...REQUIRED_BRIEF.map((k) => filled(brief[k])), icpReady];
+  const completePct = Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  const errCls = (ok: boolean, base = "input") => clsx(base, submitted && !ok && "err");
+  function submitBrief() {
+    setSubmitted(true);
+    if (completePct < 100) return toast("Some required fields still need answers", "warn");
+    toast("Brief submitted");
+  }
 
   // Batches / campaigns
   const [batches, setBatches] = useState<Batch[]>([
@@ -463,107 +637,127 @@ export default function Workspace() {
 
       {/* BUSINESS BRIEF */}
       <section className={clsx("tabpane", tab === "brief" && "active")}>
-        <div className="two-col">
-          <div className="panel">
-            <div className="panel-head">
-              <div>
-                <h3>Business brief</h3>
-                <div className="ph-sub">What you sell and how we should position it</div>
-              </div>
-              <span className="badge badge-warn">
-                <span className="bdot" />1 field to finish
-              </span>
+        <div className="brief-top">
+          <div className="brief-legend">
+            <span>
+              <span className="brief-req">Required</span> Needed before we start
+            </span>
+            <span>
+              <span className="brief-opt">Optional</span> Helpful, not essential
+            </span>
+          </div>
+          <div className="brief-progress">
+            <div className="bp-bar">
+              <div className="bp-fill" style={{ width: completePct + "%" }} />
             </div>
-            <div className="panel-pad">
-              <div className="grid2">
-                <div className="field">
-                  <label>Company</label>
-                  <input className="input" value="Northwind (sample)" readOnly />
-                </div>
-                <div className="field">
-                  <label>Website</label>
-                  <input className="input" value="northwind.example (placeholder)" readOnly />
-                </div>
-              </div>
+            <span className="bp-label">{completePct}% complete</span>
+            <button className="btn btn-ghost btn-sm" onClick={() => toast("Draft saved")}>
+              Save draft
+            </button>
+            <button className="btn btn-accent btn-sm" onClick={submitBrief}>
+              Submit brief <span className="arrow">→</span>
+            </button>
+          </div>
+        </div>
+
+        {/* 1 · Company & Product Basics */}
+        <div className="panel brief-sec">
+          <div className="panel-head">
+            <div className="brief-num">1</div>
+            <div>
+              <h3>Company &amp; Product Basics</h3>
+              <div className="ph-sub">Who you are and what you sell</div>
+            </div>
+          </div>
+          <div className="panel-pad">
+            <div className="grid2">
               <div className="field">
-                <label>
-                  What you sell <span className="opt">· one line</span>
-                </label>
-                <input className="input" value="Placeholder: one-line value proposition" readOnly />
-              </div>
-              <div className="field">
-                <label>Primary problem you solve</label>
+                <Lbl req help="The brand name as it should appear in email signatures.">
+                  Company name
+                </Lbl>
                 <input
-                  className="input"
-                  value="Placeholder: the pain you remove for buyers"
-                  readOnly
+                  className={errCls(filled(brief.companyName))}
+                  value={brief.companyName}
+                  placeholder="e.g. Acme Analytics"
+                  onChange={(e) => setB("companyName", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <Lbl req help="Used for enrichment context and to verify what you sell.">Website</Lbl>
+                <input
+                  type="url"
+                  className={errCls(filled(brief.website))}
+                  value={brief.website}
+                  placeholder="https://"
+                  onChange={(e) => setB("website", e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <Lbl req help="If you can't say it cleanly in one line, the campaign suffers. Keep it simple.">
+                What do you sell, in one sentence?
+              </Lbl>
+              <input
+                className={errCls(filled(brief.sell))}
+                value={brief.sell}
+                placeholder="e.g. A workforce analytics platform that reduces attrition"
+                onChange={(e) => setB("sell", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="Not the features, the underlying problem. This becomes the spine of every message.">
+                What problem do you solve for your customers?
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.problem), "textarea")}
+                value={brief.problem}
+                onChange={(e) => setB("problem", e.target.value)}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field" style={{ marginBottom: 0 }}>
+                <Lbl req help="Annual contract value. Determines whether the unit economics work.">
+                  Average deal size (annual)
+                </Lbl>
+                <input
+                  className={errCls(filled(brief.dealSize))}
+                  value={brief.dealSize}
+                  placeholder="e.g. $25,000 / year"
+                  onChange={(e) => setB("dealSize", e.target.value)}
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <label>
-                  Proof &amp; positioning <span className="opt">· optional, not yet provided</span>
-                </label>
-                <textarea
-                  className="textarea"
-                  placeholder="Case studies, metrics, and differentiators the client wants us to lead with."
-                />
+                <Lbl req help="Shapes follow-up cadence and time-to-revenue.">
+                  Typical sales cycle length
+                </Lbl>
+                <select
+                  className={errCls(filled(brief.salesCycle), "select")}
+                  value={brief.salesCycle}
+                  onChange={(e) => setB("salesCycle", e.target.value)}
+                >
+                  <option value="">Select…</option>
+                  {CYCLE_OPTS.map((o) => (
+                    <option key={o}>{o}</option>
+                  ))}
+                </select>
               </div>
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-head">
-              <h3>Completeness</h3>
-            </div>
-            <div className="panel-pad">
-              <div className="meter">
-                <div className="ring" style={{ "--p": 88 } as React.CSSProperties}>
-                  <span className="v">
-                    88<small>%</small>
-                  </span>
-                </div>
-                <div className="ml">
-                  <b>Nearly ready.</b> One optional field is left before this brief is complete.
-                </div>
-              </div>
-              <ul className="checklist">
-                <li>
-                  <span className="ck done">✓</span>
-                  <span>Company &amp; offer</span>
-                </li>
-                <li>
-                  <span className="ck done">✓</span>
-                  <span>Ideal customer profiles</span>
-                </li>
-                <li>
-                  <span className="ck done">✓</span>
-                  <span>Titles &amp; geographies</span>
-                </li>
-                <li>
-                  <span className="ck done">✓</span>
-                  <span>Exclusion rules</span>
-                </li>
-                <li>
-                  <span className="ck todo">○</span>
-                  <span className="todo-t">
-                    Proof &amp; positioning <Sample>optional</Sample>
-                  </span>
-                </li>
-              </ul>
-              <div className="comp-foot">Updates live as the client completes the intake.</div>
             </div>
           </div>
         </div>
 
-        <div className="panel" style={{ marginTop: 22 }}>
+        {/* 2 · Ideal Customer Profiles (ICP + Personas, per profile) */}
+        <div className="panel brief-sec">
           <div className="panel-head">
+            <div className="brief-num">2</div>
             <div>
               <h3>Ideal Customer Profiles</h3>
-              <div className="ph-sub">
-                Create and review the targeting profiles that drive sourcing
-              </div>
+              <div className="ph-sub">The companies and people to reach · one block per profile</div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={newIcp}>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ marginLeft: "auto" }}
+              onClick={newIcp}
+            >
               ＋ New ICP
             </button>
           </div>
@@ -580,76 +774,478 @@ export default function Workspace() {
                 </button>
               ))}
             </div>
-            <div>
-              <div className="icp-persona">
-                <div className="ip-ico">◑</div>
-                <div style={{ flex: 1 }}>
-                  <div className="ip-t">Profile</div>
-                  <div className="grid2">
-                    <div className="field" style={{ marginBottom: 12 }}>
-                      <label>ICP name</label>
-                      <input
-                        className="input"
-                        value={icps[icpSel].short}
-                        placeholder="e.g. ICP A"
-                        onChange={(e) => updateIcp({ short: e.target.value })}
-                      />
-                    </div>
-                    <div className="field" style={{ marginBottom: 12 }}>
-                      <label>Segment label</label>
-                      <input
-                        className="input"
-                        value={icps[icpSel].tag}
-                        placeholder="e.g. Primary persona"
-                        onChange={(e) => updateIcp({ tag: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                  <div className="field" style={{ marginBottom: 0 }}>
-                    <label>Persona</label>
-                    <textarea
-                      className="textarea"
-                      value={icps[icpSel].persona}
-                      placeholder="Describe this buyer profile, their role, and why they buy."
-                      onChange={(e) => updateIcp({ persona: e.target.value })}
-                    />
-                  </div>
-                </div>
-              </div>
 
-              <div className="icp-grid">
-                {ICP_FIELD_DEFS.map(([key, label]) => (
-                  <div className="icp-cell" key={key}>
-                    <div className="k">{label}</div>
-                    <input
-                      className="input"
-                      style={{ padding: "8px 10px", fontSize: 13.5 }}
-                      value={icps[icpSel].fields[key]}
-                      placeholder={label}
-                      onChange={(e) => updateIcpField(key, e.target.value)}
-                    />
-                  </div>
-                ))}
+            <div className="grid2">
+              <div className="field">
+                <label>ICP name</label>
+                <input
+                  className="input"
+                  value={icps[icpSel].short}
+                  placeholder="e.g. ICP A"
+                  onChange={(e) => updateIcp({ short: e.target.value })}
+                />
               </div>
+              <div className="field">
+                <label>Segment label</label>
+                <input
+                  className="input"
+                  value={icps[icpSel].tag}
+                  placeholder="e.g. Primary persona"
+                  onChange={(e) => updateIcp({ tag: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <label>
+                Persona <span className="opt">· optional</span>
+              </label>
+              <textarea
+                className="textarea"
+                value={icps[icpSel].persona}
+                placeholder="Describe this buyer profile, their role, and why they buy."
+                onChange={(e) => updateIcp({ persona: e.target.value })}
+              />
+            </div>
 
-              <div className="icp-foot">
-                <div className="est">
-                  <b>
-                    <Sample>n</Sample>
-                  </b>
-                  estimated matching accounts <Sample>sample</Sample> · refreshed placeholder date
-                </div>
-                <div className="row">
-                  <button className="btn btn-danger btn-sm" onClick={delIcp}>
-                    Delete
-                  </button>
-                  <button className="btn btn-accent btn-sm" onClick={saveIcp}>
-                    Save changes <span className="arrow">→</span>
-                  </button>
-                </div>
+            <div className="brief-subdiv">Ideal Customer Profile</div>
+            <div className="field">
+              <Lbl req help={'List the specific sectors. "Everyone" usually means the targeting needs sharpening.'}>
+                Target industries / verticals
+              </Lbl>
+              <TagInput
+                value={f.industries}
+                onChange={(v) => setIcpField("industries", v)}
+                placeholder="Type a sector, press Enter"
+                invalid={submitted && !f.industries.length}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <Lbl req help="By employee count and/or revenue.">Target company size</Lbl>
+                <input
+                  className={errCls(filled(f.companySize))}
+                  value={f.companySize}
+                  placeholder="e.g. 50–500 employees"
+                  onChange={(e) => setIcpField("companySize", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <Lbl help="Helps refine list and tone.">Company maturity / stage</Lbl>
+                <select
+                  className="select"
+                  value={f.maturity}
+                  onChange={(e) => setIcpField("maturity", e.target.value)}
+                >
+                  <option value="">Select…</option>
+                  {MATURITY_OPTS.map((o) => (
+                    <option key={o}>{o}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="field">
+              <Lbl req help="Countries, regions, or cities to focus on.">Target geographies</Lbl>
+              <TagInput
+                value={f.geographies}
+                onChange={(v) => setIcpField("geographies", v)}
+                placeholder="e.g. United States, UK, Singapore"
+                invalid={submitted && !f.geographies.length}
+              />
+            </div>
+            <div className="field">
+              <Lbl help="If you can answer this, it unlocks tech-stack-based targeting.">
+                Technologies your ideal customer uses
+              </Lbl>
+              <TagInput
+                value={f.technologies}
+                onChange={(v) => setIcpField("technologies", v)}
+                placeholder="e.g. Salesforce, Shopify, Workday"
+              />
+            </div>
+
+            <div className="brief-subdiv">Target personas</div>
+            <div className="field">
+              <Lbl req help={'The exact titles, not "decision makers". Be specific.'}>
+                Primary job titles to target
+              </Lbl>
+              <TagInput
+                value={f.jobTitles}
+                onChange={(v) => setIcpField("jobTitles", v)}
+                placeholder="e.g. Head of Sales, VP Sales, CRO"
+                invalid={submitted && !f.jobTitles.length}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="Select all that apply.">Seniority level</Lbl>
+              <PillGroup
+                options={SENIORITY_OPTS}
+                value={f.seniority}
+                onChange={(v) => setIcpField("seniority", v)}
+                invalid={submitted && !f.seniority.length}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <Lbl req help="Which teams these people sit in.">Departments / functions</Lbl>
+                <TagInput
+                  value={f.departments}
+                  onChange={(v) => setIcpField("departments", v)}
+                  placeholder="e.g. Sales, Marketing, Finance"
+                  invalid={submitted && !f.departments.length}
+                />
+              </div>
+              <div className="field">
+                <Lbl help="Often different people. Shapes who we target first.">
+                  Economic buyer vs. champion
+                </Lbl>
+                <input
+                  className="input"
+                  value={f.buyerVsChampion}
+                  placeholder="e.g. CFO signs off, Head of Ops champions"
+                  onChange={(e) => setIcpField("buyerVsChampion", e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <Lbl help="Personas that look right but never convert.">Titles to explicitly avoid</Lbl>
+              <TagInput
+                value={f.avoidTitles}
+                onChange={(v) => setIcpField("avoidTitles", v)}
+                placeholder="e.g. Procurement, junior analysts"
+              />
+            </div>
+
+            <div className="icp-foot">
+              <div className="est">
+                <b>
+                  <Sample>n</Sample>
+                </b>{" "}
+                estimated matching accounts <Sample>sample</Sample> · refreshed placeholder date
+              </div>
+              <div className="row">
+                <button className="btn btn-danger btn-sm" onClick={delIcp}>
+                  Delete
+                </button>
+                <button className="btn btn-accent btn-sm" onClick={saveIcp}>
+                  Save changes <span className="arrow">→</span>
+                </button>
               </div>
             </div>
           </div>
+        </div>
+
+        {/* 3 · Message Inputs */}
+        <div className="panel brief-sec">
+          <div className="panel-head">
+            <div className="brief-num">3</div>
+            <div>
+              <h3>Message Inputs</h3>
+              <div className="ph-sub">The raw material for your email copy</div>
+            </div>
+          </div>
+          <div className="panel-pad">
+            <div className="field">
+              <Lbl req help="Specific, concrete benefits. Push yourself to name distinct ones.">
+                Top value propositions
+              </Lbl>
+              <TagInput
+                value={brief.valueProps}
+                onChange={(v) => setB("valueProps", v)}
+                placeholder="Add a value prop, press Enter"
+                invalid={submitted && !brief.valueProps.length}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="Notable clients, metrics, awards, funding. This is what makes cold email believable.">
+                Proof points / credibility markers
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.proofPoints), "textarea")}
+                value={brief.proofPoints}
+                onChange={(e) => setB("proofPoints", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="Trigger events that suggest someone is in-market. Drives targeting and hooks.">
+                What signals a prospect is ready?
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.signals), "textarea")}
+                value={brief.signals}
+                onChange={(e) => setB("signals", e.target.value)}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <Lbl help="Pre-arms our reply handling.">Common objections you hear</Lbl>
+                <textarea
+                  className="textarea"
+                  value={brief.objections}
+                  onChange={(e) => setB("objections", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <Lbl help="Helps with positioning.">Competitors you&apos;re compared to</Lbl>
+                <textarea
+                  className="textarea"
+                  value={brief.competitors}
+                  onChange={(e) => setB("competitors", e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="grid2">
+              <div className="field" style={{ marginBottom: 0 }}>
+                <Lbl req help="How the emails should feel.">Tone preference</Lbl>
+                <select
+                  className={errCls(filled(brief.tone), "select")}
+                  value={brief.tone}
+                  onChange={(e) => setB("tone", e.target.value)}
+                >
+                  <option value="">Select…</option>
+                  {TONE_OPTS.map((o) => (
+                    <option key={o}>{o}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <Lbl req help="Select all that apply.">Language(s) for outreach</Lbl>
+                <PillGroup
+                  options={LANGUAGE_OPTS}
+                  value={brief.languages}
+                  onChange={(v) => setB("languages", v)}
+                  invalid={submitted && !brief.languages.length}
+                />
+                {brief.languages.includes("Other") && (
+                  <input
+                    className="input"
+                    style={{ marginTop: 10 }}
+                    value={brief.languageOther}
+                    placeholder="If other, please specify"
+                    onChange={(e) => setB("languageOther", e.target.value)}
+                  />
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 4 · Exclusions & Guardrails */}
+        <div className="panel brief-sec">
+          <div className="panel-head">
+            <div className="brief-num">4</div>
+            <div>
+              <h3>Exclusions &amp; Guardrails</h3>
+              <div className="ph-sub">Who we must never contact</div>
+            </div>
+          </div>
+          <div className="panel-pad">
+            <div className="brief-callout">
+              <span className="ci">!</span>
+              <div>
+                <b>Please don&apos;t rush this section.</b> Exclusions are the single most important
+                safeguard. Contacting your existing customers or active deals is the fastest way to
+                cause a problem, so the more complete this is, the safer your campaign.
+              </div>
+            </div>
+            <div className="field">
+              <Lbl req help="We will never contact these. A list of company domains is ideal.">
+                Existing customers to exclude
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.excludeCustomers), "textarea")}
+                value={brief.excludeCustomers}
+                placeholder="Paste company names or domains, one per line"
+                onChange={(e) => setB("excludeCustomers", e.target.value)}
+              />
+              <div className="brief-hint">
+                You can also send us a CSV of customer domains separately.
+              </div>
+            </div>
+            <div className="field">
+              <Lbl req help="Prospects already in your sales process. Double-touching these creates friction.">
+                Active deals / pipeline to exclude
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.excludeDeals), "textarea")}
+                value={brief.excludeDeals}
+                placeholder="Paste company names or domains, one per line"
+                onChange={(e) => setB("excludeDeals", e.target.value)}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <Lbl help="Competitors to keep off the list.">Competitors to exclude</Lbl>
+                <textarea
+                  className="textarea"
+                  value={brief.excludeCompetitors}
+                  placeholder="One per line"
+                  onChange={(e) => setB("excludeCompetitors", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <Lbl help="Partners, investors, sensitive relationships.">
+                  Do-not-contact (any reason)
+                </Lbl>
+                <textarea
+                  className="textarea"
+                  value={brief.doNotContact}
+                  placeholder="One per line"
+                  onChange={(e) => setB("doNotContact", e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <Lbl help="Any rules specific to your industry we should know about.">
+                Compliance or legal constraints
+              </Lbl>
+              <input
+                className="input"
+                value={brief.compliance}
+                placeholder="e.g. Cannot contact public sector entities"
+                onChange={(e) => setB("compliance", e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* 5 · Logistics & Handoff */}
+        <div className="panel brief-sec">
+          <div className="panel-head">
+            <div className="brief-num">5</div>
+            <div>
+              <h3>Logistics &amp; Handoff</h3>
+              <div className="ph-sub">How meetings and updates flow to you</div>
+            </div>
+          </div>
+          <div className="panel-pad">
+            <div className="field">
+              <Lbl req help="A calendar link, a specific rep's calendar, or round-robin across a team.">
+                Where should booked meetings land?
+              </Lbl>
+              <input
+                className={errCls(filled(brief.meetingsLand))}
+                value={brief.meetingsLand}
+                placeholder="e.g. Calendly link, or round-robin across 3 AEs"
+                onChange={(e) => setB("meetingsLand", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="Names and titles of the people whose calendars we're booking into.">
+                Who attends the meetings?
+              </Lbl>
+              <input
+                className={errCls(filled(brief.attendees))}
+                value={brief.attendees}
+                placeholder="e.g. Jane Doe (AE), John Smith (Sales Lead)"
+                onChange={(e) => setB("attendees", e.target.value)}
+              />
+            </div>
+            <div className="grid2">
+              <div className="field">
+                <Lbl req help="Days, times, time zone.">Availability constraints</Lbl>
+                <input
+                  className={errCls(filled(brief.availability))}
+                  value={brief.availability}
+                  placeholder="e.g. Tue–Thu, 10am–4pm GMT"
+                  onChange={(e) => setB("availability", e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <Lbl req help="How we'll send updates and reply alerts.">
+                  Preferred channel with us
+                </Lbl>
+                <select
+                  className={errCls(filled(brief.channel), "select")}
+                  value={brief.channel}
+                  onChange={(e) => setB("channel", e.target.value)}
+                >
+                  <option value="">Select…</option>
+                  {CHANNEL_OPTS.map((o) => (
+                    <option key={o}>{o}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            <div className="grid2">
+              <div className="field" style={{ marginBottom: 0 }}>
+                <Lbl req help="The person we coordinate with day to day.">Main point of contact</Lbl>
+                <input
+                  className={errCls(filled(brief.contact))}
+                  value={brief.contact}
+                  placeholder="Name, role, email"
+                  onChange={(e) => setB("contact", e.target.value)}
+                />
+              </div>
+              <div className="field" style={{ marginBottom: 0 }}>
+                <Lbl req help="Sometimes different from the point of contact. Clarifying now avoids delays.">
+                  Who has approval authority?
+                </Lbl>
+                <input
+                  className={errCls(filled(brief.approver))}
+                  value={brief.approver}
+                  placeholder="Name, role"
+                  onChange={(e) => setB("approver", e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 6 · Targets & Definitions */}
+        <div className="panel brief-sec">
+          <div className="panel-head">
+            <div className="brief-num">6</div>
+            <div>
+              <h3>Targets &amp; Definitions</h3>
+              <div className="ph-sub">What success looks like, and how we measure it</div>
+            </div>
+          </div>
+          <div className="panel-pad">
+            <div className="field">
+              <Lbl req help="Sets expectations against your plan. Surfaces any mismatch early.">
+                Qualified meetings expected per month
+              </Lbl>
+              <input
+                type="number"
+                min={0}
+                className={errCls(filled(brief.meetingsPerMonth))}
+                value={brief.meetingsPerMonth}
+                placeholder="e.g. 15"
+                onChange={(e) => setB("meetingsPerMonth", e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <Lbl req help="The most important definition in this form. We reconcile it with our standard before launch so billing is never ambiguous.">
+                What counts as a &quot;qualified meeting&quot; for you?
+              </Lbl>
+              <textarea
+                className={errCls(filled(brief.qualifiedDef), "textarea")}
+                value={brief.qualifiedDef}
+                onChange={(e) => setB("qualifiedDef", e.target.value)}
+              />
+            </div>
+            <div className="field" style={{ marginBottom: 0 }}>
+              <Lbl help="Aligns expectations and frames our first review together.">
+                What does a successful first 90 days look like?
+              </Lbl>
+              <textarea
+                className="textarea"
+                value={brief.first90}
+                onChange={(e) => setB("first90", e.target.value)}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="brief-submit">
+          <div className="bs-note">
+            Once submitted, we&apos;ll review your brief, confirm the qualified-meeting definition,
+            and begin building your targeting. You&apos;ll see a sample prospect list to approve
+            before any emails go out.
+          </div>
+          <button className="btn btn-primary" onClick={submitBrief}>
+            Submit brief <span className="arrow">→</span>
+          </button>
         </div>
       </section>
 
