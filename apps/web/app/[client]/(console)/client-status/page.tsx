@@ -195,11 +195,11 @@ export default function ClientStatus() {
               <div className="panel-head">
                 <div><h3>Status log</h3><div className="ph-sub">Every approval request and how the client responded</div></div>
                 <div className="row" style={{ gap: 8 }}>
-                  <select className="select" style={{ width: "auto", minWidth: 140, padding: "8px 11px", fontSize: 13 }} value={approvalBatch} onChange={(e) => setApprovalBatch(e.target.value)}>
+                  <select className="log-filter" value={approvalBatch} onChange={(e) => setApprovalBatch(e.target.value)}>
                     <option value="">All batches</option>
                     {A_LOG.map((r) => <option key={r[0]}>{r[0]}</option>)}
                   </select>
-                  <Link href={approveHref} target="_blank" className="btn btn-ghost btn-sm">Open client page ↗</Link>
+                  <Link href={approveHref} target="_blank" className="btn btn-ghost btn-sm" style={{ height: 36 }}>Open client page ↗</Link>
                 </div>
               </div>
               <div style={{ overflowX: "auto" }}>

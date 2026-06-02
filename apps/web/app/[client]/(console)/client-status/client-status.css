@@ -3,7 +3,7 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
-  margin-bottom: 18px;
+  margin-bottom: 8px;
   flex-wrap: wrap;
 }
 .page-head h1 {
@@ -40,6 +40,36 @@
 
 .tabs {
   margin-bottom: 22px;
+}
+
+/* polished batch filter in the Status log panel head */
+.log-filter {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 36px;
+  min-width: 150px;
+  padding: 0 34px 0 14px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-soft);
+  background-color: var(--cerulean-wash);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: 0.15s ease;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235E7C9E' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+.log-filter:hover {
+  border-color: var(--cerulean);
+  color: var(--ink);
+}
+.log-filter:focus {
+  outline: none;
+  border-color: var(--cerulean);
+  box-shadow: 0 0 0 3px rgba(155, 183, 214, 0.22);
 }
 
 /* the two-part layout: template + log */

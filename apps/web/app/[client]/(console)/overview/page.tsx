@@ -193,7 +193,9 @@ export default function Overview() {
                   {f.label}
                 </span>
                 <div className="fn-track">
-                  <div className="fn-fill" style={{ background: f.color }} />
+                  <div className="fn-fill" style={{ background: f.color }}>
+                    <span className="fn-pct">{f.w}%</span>
+                  </div>
                 </div>
                 <span className="fv">
                   <Sample>n</Sample>

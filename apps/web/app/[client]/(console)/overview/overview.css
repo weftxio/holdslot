@@ -251,7 +251,25 @@
   border-radius: 7px;
   display: flex;
   align-items: center;
+  justify-content: flex-end;
+  padding-right: 8px;
   transition: width 0.9s cubic-bezier(0.2, 0.7, 0.3, 1);
+}
+.fn-pct {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #fff;
+  background: rgba(14, 17, 22, 0.5);
+  border-radius: 999px;
+  padding: 2px 8px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.4s ease 0.5s;
+}
+.fn-fill[style*="width"] .fn-pct {
+  opacity: 1;
 }
 .fn-row .fv {
   font-family: var(--display);
