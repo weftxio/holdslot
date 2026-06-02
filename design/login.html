@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoldSlot · Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .auth{display:grid;grid-template-columns:1.05fr .95fr;min-height:100vh}
+  @media(max-width:860px){.auth{grid-template-columns:1fr}}
+
+  /* left brand panel */
+  .auth-brand{background:var(--ink);color:#fff;padding:40px 46px;display:flex;
+    flex-direction:column;justify-content:space-between;position:relative;overflow:hidden}
+  @media(max-width:860px){.auth-brand{display:none}}
+  .auth-brand .logo{color:#fff;font-size:22px}
+  .auth-brand .logo .dot{background:var(--cerulean)}
+  .auth-lead{max-width:420px}
+  .auth-lead .eyebrow{color:var(--cerulean)}
+  .auth-lead .eyebrow::before{background:var(--cerulean)}
+  .auth-lead h2{font-size:clamp(30px,3.4vw,42px);color:#fff;margin:18px 0 16px;line-height:1.06}
+  .auth-lead h2 em{font-style:italic;color:var(--cerulean)}
+  .auth-lead p{font-size:16px;color:rgba(255,255,255,.72);line-height:1.6}
+  .auth-proof{display:flex;gap:30px;margin-top:4px}
+  .auth-proof .p .n{font-family:var(--display);font-size:30px;font-weight:500;
+    color:var(--cerulean);display:flex;align-items:baseline;gap:3px}
+  .auth-proof .p .n .ph-inline{display:inline-block;width:58px;height:26px;border-radius:4px;
+    position:relative}
+  .auth-proof .p .l{font-size:12.5px;color:rgba(255,255,255,.6);margin-top:6px;max-width:130px}
+
+  /* right form */
+  .auth-form-side{display:flex;align-items:center;justify-content:center;padding:40px 30px}
+  .auth-form{width:100%;max-width:380px}
+  .auth-form .mob-logo{display:none}
+  @media(max-width:860px){.auth-form .mob-logo{display:flex;margin-bottom:30px}}
+  .auth-form h1{font-size:30px;margin-bottom:8px}
+  .auth-form .lead{font-size:14.5px;color:var(--ink-soft);margin-bottom:30px}
+  .auth-form .field-row{display:flex;align-items:center;justify-content:space-between}
+  .auth-form .field-row a{font-size:12.5px;font-weight:600;color:var(--cerulean-deep)}
+  .auth-form .field-row a:hover{text-decoration:underline}
+  .auth-form .btn{width:100%;margin-top:6px}
+  .auth-form .alt{font-size:13.5px;color:var(--ink-faint);text-align:center;margin-top:24px}
+  .auth-form .alt a{color:var(--cerulean-deep);font-weight:600}
+  .pw-wrap{position:relative}
+  .pw-toggle{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;
+    border:none;cursor:pointer;font-size:12px;font-weight:700;letter-spacing:.04em;
+    color:var(--ink-faint);text-transform:uppercase}
+  .pw-toggle:hover{color:var(--ink)}
+  .form-banner{display:none;align-items:center;gap:9px;background:var(--danger-wash);
+    color:var(--danger);font-size:13px;font-weight:500;padding:11px 14px;border-radius:9px;
+    margin-bottom:18px}
+  .form-banner.show{display:flex}
+  .demo-hint{font-size:11.5px;color:var(--ink-faint);text-align:center;margin-top:22px;
+    border-top:1px solid var(--line);padding-top:18px}
+  .demo-hint b{color:var(--ink-soft)}
+  .reset-tick{width:54px;height:54px;border-radius:50%;background:var(--cerulean);color:var(--ink);
+    display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800;margin:0 auto 20px}
+  .auth-foot-links{font-size:12px;color:rgba(255,255,255,.5);display:flex;gap:20px}
+  .auth-foot-links a:hover{color:#fff}
+</style>
+</head>
+<body>
+
+<div class="auth">
+  <!-- BRAND -->
+  <div class="auth-brand">
+    <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+    <div class="auth-lead">
+      <span class="eyebrow">Operator console</span>
+      <h2>Qualified meetings, <em>booked for you.</em></h2>
+      <p>Sign in to run your campaign. Approve lists, review replies, and watch real meetings land on the calendar.</p>
+      <div class="auth-proof" style="margin-top:30px">
+        <div class="p">
+          <div class="n"><span class="ph-inline ph"><span class="ph-tag" style="font-size:8px">stat</span></span></div>
+          <div class="l">Meetings booked this quarter</div>
+        </div>
+        <div class="p">
+          <div class="n"><span class="ph-inline ph"><span class="ph-tag" style="font-size:8px">stat</span></span>%</div>
+          <div class="l">Average show-up rate</div>
+        </div>
+      </div>
+    </div>
+    <div class="auth-foot-links">
+      <a href="#" onclick="return false">Privacy</a>
+      <a href="#" onclick="return false">Terms</a>
+      <a href="#" onclick="return false">Status</a>
+    </div>
+  </div>
+
+  <!-- FORM -->
+  <div class="auth-form-side">
+    <form class="auth-form" id="loginForm" novalidate>
+      <a href="home.html" class="logo mob-logo"><span class="dot"></span>HoldSlot</a>
+
+      <!-- SIGN IN VIEW -->
+      <div id="signinView">
+        <h1>Sign in</h1>
+        <p class="lead">Welcome back. Sign in to open your console.</p>
+
+        <div class="form-banner" id="banner">
+          <span>✕</span><span id="bannerMsg">Those credentials don't match our records.</span>
+        </div>
+
+        <div class="field">
+          <label for="email">Work email</label>
+          <input class="input" type="email" id="email" placeholder="you@company.com" autocomplete="email">
+          <div class="field-err" id="emailErr"></div>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <label for="pw">Password</label>
+            <a href="#" id="forgotLink">Forgot?</a>
+          </div>
+          <div class="pw-wrap">
+            <input class="input" type="password" id="pw" placeholder="••••••••" autocomplete="current-password" style="padding-right:60px">
+            <button type="button" class="pw-toggle" id="pwToggle">Show</button>
+          </div>
+          <div class="field-err" id="pwErr"></div>
+        </div>
+
+        <button type="submit" class="btn btn-primary" id="submitBtn">Sign in <span class="arrow">→</span></button>
+
+        <p class="alt">New to HoldSlot? <a href="home.html#start">Get started →</a></p>
+
+        <p class="demo-hint">Mock: <b>any valid email and a 6+ character password</b> signs you in.</p>
+      </div>
+
+      <!-- FORGOT PASSWORD VIEW -->
+      <div id="forgotView" hidden>
+        <h1>Reset your password</h1>
+        <p class="lead">Enter your work email and we'll send you a link to set a new password.</p>
+
+        <div class="field">
+          <label for="resetEmail">Work email</label>
+          <input class="input" type="email" id="resetEmail" placeholder="you@company.com" autocomplete="email">
+          <div class="field-err" id="resetErr"></div>
+        </div>
+
+        <button type="button" class="btn btn-primary" id="resetBtn" style="width:100%">Send reset link <span class="arrow">→</span></button>
+        <p class="alt"><a href="#" id="backToSignin">← Back to sign in</a></p>
+      </div>
+
+      <!-- RESET SENT VIEW -->
+      <div id="resetSentView" hidden style="text-align:center">
+        <div class="reset-tick">✓</div>
+        <h1>Check your inbox</h1>
+        <p class="lead" id="resetSentCopy" style="margin-bottom:24px">If an account exists for that address, a reset link is on its way. The link stays valid for 30 minutes.</p>
+        <button type="button" class="btn btn-ghost" id="backToSignin2" style="width:100%">← Back to sign in</button>
+        <p class="demo-hint">Didn't get it? Check spam, or <a href="#" id="resendLink" style="color:var(--cerulean-deep);font-weight:600">send again</a>.</p>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  var form=document.getElementById('loginForm'),
+      email=document.getElementById('email'), pw=document.getElementById('pw'),
+      emailErr=document.getElementById('emailErr'), pwErr=document.getElementById('pwErr'),
+      banner=document.getElementById('banner'), bannerMsg=document.getElementById('bannerMsg'),
+      submitBtn=document.getElementById('submitBtn'), pwToggle=document.getElementById('pwToggle');
+
+  function validEmail(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);}
+
+  pwToggle.addEventListener('click',function(){
+    if(pw.type==='password'){pw.type='text';pwToggle.textContent='Hide';}
+    else{pw.type='password';pwToggle.textContent='Show';}
+  });
+
+  [email,pw].forEach(function(el){
+    el.addEventListener('input',function(){
+      el.classList.remove('err');
+      (el===email?emailErr:pwErr).textContent='';
+      banner.classList.remove('show');
+    });
+  });
+
+  form.addEventListener('submit',function(ev){
+    ev.preventDefault();
+    var ok=true;
+    if(!validEmail(email.value.trim())){
+      email.classList.add('err');emailErr.textContent='Enter a valid work email.';ok=false;
+    }
+    if(pw.value.length<6){
+      pw.classList.add('err');pwErr.textContent='Password must be at least 6 characters.';ok=false;
+    }
+    if(!ok){return;}
+    submitBtn.textContent='Signing in…';
+    submitBtn.disabled=true;
+    setTimeout(function(){window.location.href='overview.html';},650);
+  });
+
+  /* ---- forgot password flow ---- */
+  var signinView=document.getElementById('signinView'),
+      forgotView=document.getElementById('forgotView'),
+      resetSentView=document.getElementById('resetSentView'),
+      forgotLink=document.getElementById('forgotLink'),
+      backToSignin=document.getElementById('backToSignin'),
+      backToSignin2=document.getElementById('backToSignin2'),
+      resetEmail=document.getElementById('resetEmail'),
+      resetErr=document.getElementById('resetErr'),
+      resetBtn=document.getElementById('resetBtn'),
+      resetSentCopy=document.getElementById('resetSentCopy'),
+      resendLink=document.getElementById('resendLink');
+
+  function showView(v){
+    [signinView,forgotView,resetSentView].forEach(function(el){el.hidden=(el!==v);});
+  }
+  forgotLink.addEventListener('click',function(e){
+    e.preventDefault();resetErr.textContent='';resetEmail.classList.remove('err');
+    resetEmail.value=email.value;showView(forgotView);resetEmail.focus();
+  });
+  backToSignin.addEventListener('click',function(e){e.preventDefault();showView(signinView);});
+  backToSignin2.addEventListener('click',function(){showView(signinView);});
+  resetEmail.addEventListener('input',function(){resetEmail.classList.remove('err');resetErr.textContent='';});
+
+  function sendReset(){
+    var v=resetEmail.value.trim();
+    if(!validEmail(v)){
+      resetEmail.classList.add('err');resetErr.textContent='Enter a valid work email.';resetEmail.focus();return;
+    }
+    resetBtn.textContent='Sending…';resetBtn.disabled=true;
+    setTimeout(function(){
+      resetSentCopy.textContent='If an account exists for '+v+', a reset link is on its way. The link stays valid for 30 minutes.';
+      resetBtn.textContent='Send reset link';resetBtn.disabled=false;
+      showView(resetSentView);
+    },650);
+  }
+  resetBtn.addEventListener('click',sendReset);
+  resetEmail.addEventListener('keydown',function(e){if(e.key==='Enter'){e.preventDefault();sendReset();}});
+  resendLink.addEventListener('click',function(e){e.preventDefault();showView(forgotView);resetEmail.focus();});
+</script>
+</body>
+</html>

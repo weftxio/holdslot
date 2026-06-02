@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoldSlot · Overview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  /* page title */
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;
+    margin-bottom:24px;flex-wrap:wrap}
+  .page-head h1{font-size:30px}
+  .page-head .sub{font-size:13.5px;color:var(--ink-faint);margin-top:5px}
+  .page-head .sub b{color:var(--ink-soft);font-weight:600}
+
+  /* headline band */
+  .headline{display:grid;grid-template-columns:1.3fr 1fr 1fr;gap:0;border:1px solid var(--line);
+    border-radius:16px;overflow:hidden;margin-bottom:22px}
+  @media(max-width:760px){.headline{grid-template-columns:1fr}}
+  .hl-main{background:var(--ink);color:#fff;padding:28px 30px;position:relative}
+  .hl-main .cap{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--cerulean);margin-bottom:14px}
+  .hl-main .big{font-family:var(--display);font-size:74px;font-weight:500;line-height:.92;
+    letter-spacing:-.03em;display:flex;align-items:baseline;gap:10px}
+  .hl-main .big .ph-inline{display:inline-block;width:120px;height:62px;border-radius:7px;
+    position:relative}
+  .hl-main .delta{font-size:13.5px;color:rgba(255,255,255,.7);margin-top:16px;display:flex;
+    align-items:center;gap:8px}
+  .hl-main .delta .up{color:var(--cerulean);font-weight:700}
+  .hl-cell{padding:24px 26px;border-left:1px solid var(--line);display:flex;flex-direction:column;
+    justify-content:center}
+  @media(max-width:760px){.hl-cell{border-left:none;border-top:1px solid var(--line)}}
+  .hl-cell .n{font-family:var(--display);font-size:38px;font-weight:500;letter-spacing:-.02em;
+    color:var(--cerulean-deep);line-height:1;display:flex;align-items:baseline;gap:3px}
+  .hl-cell .n .ph-inline{display:inline-block;width:54px;height:30px;border-radius:5px;position:relative}
+  .hl-cell .l{font-size:13px;color:var(--ink-soft);margin-top:11px;line-height:1.4}
+
+  /* two-column body */
+  .ov-grid{display:grid;grid-template-columns:1.35fr 1fr;gap:22px;align-items:start}
+  @media(max-width:980px){.ov-grid{grid-template-columns:1fr}}
+  .ov-top{display:grid;grid-template-columns:1.5fr 1fr;gap:22px;align-items:stretch;margin-bottom:22px}
+  @media(max-width:980px){.ov-top{grid-template-columns:1fr}}
+  .ov-top>.panel{display:flex;flex-direction:column}
+  .ov-top>.panel>.panel-pad{flex:1}
+
+  /* needs attention */
+  .na-item{display:flex;align-items:center;gap:15px;padding:16px 24px;
+    border-bottom:1px solid var(--line-soft)}
+  .na-item:last-child{border-bottom:none}
+  .na-ico{width:40px;height:40px;border-radius:10px;flex-shrink:0;display:flex;
+    align-items:center;justify-content:center;font-family:var(--display);font-weight:600;font-size:16px}
+  .na-ico.warn{background:var(--warn-wash);color:var(--warn)}
+  .na-ico.info{background:var(--info-wash);color:var(--info)}
+  .na-ico.ok{background:var(--ok-wash);color:var(--ok)}
+  .na-body{flex:1;min-width:0}
+  .na-body .t{font-size:14.5px;font-weight:600;margin-bottom:3px}
+  .na-body .d{font-size:12.5px;color:var(--ink-faint);line-height:1.4}
+  .na-body .d b{color:var(--ink-soft);font-weight:600}
+  .na-act{flex-shrink:0}
+  .na-head-count{font-size:12px;font-weight:700;color:var(--danger);background:var(--danger-wash);
+    border-radius:999px;padding:3px 10px}
+
+  /* funnel */
+  .funnel{display:flex;flex-direction:column;gap:11px}
+  .fn-row{display:grid;grid-template-columns:138px 1fr 54px;align-items:center;gap:14px}
+  .fn-row .fl{font-size:13px;font-weight:600;color:var(--ink);display:flex;align-items:center;gap:8px}
+  .fn-row .fl .sd{width:8px;height:8px;border-radius:2px;flex-shrink:0}
+  .fn-track{height:30px;background:var(--cerulean-wash);border-radius:7px;overflow:hidden;position:relative}
+  .fn-fill{height:100%;border-radius:7px;display:flex;align-items:center;
+    transition:width .9s cubic-bezier(.2,.7,.3,1)}
+  .fn-row .fv{font-family:var(--display);font-size:18px;font-weight:500;text-align:right;
+    color:var(--ink);font-variant-numeric:tabular-nums}
+  .funnel-note{font-size:12.5px;color:var(--ink-faint);margin-top:16px;line-height:1.5;
+    display:flex;align-items:flex-start;gap:8px;border-top:1px solid var(--line-soft);padding-top:15px}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ SIDEBAR SHELL ============ -->
+  <aside class="side" id="side">
+    <div class="side-top">
+      <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+      <div class="client-switch" id="clientSwitch">
+        <button class="client-btn" id="clientBtn" type="button">
+          <span class="c-av" id="clientAv">N</span>
+          <span class="c-info"><span class="c-name" id="clientName">Northwind</span><span class="c-slug" id="clientSlug">holdslot.com/northwind</span></span>
+          <span class="c-caret">▾</span>
+        </button>
+        <div class="client-menu" id="clientMenu"></div>
+      </div>
+    </div>
+    <nav class="side-nav">
+      <span class="grp">Get Meeting</span>
+      <a href="overview.html" class="active"><span class="ico">◧</span>Overview</a>
+      <a href="workspace.html"><span class="ico">▤</span>Workspace</a>
+      <span class="grp">Client Action Status</span>
+      <a href="external-status.html#approval"><span class="ico">▢</span>List approval</a>
+      <a href="external-status.html#booking"><span class="ico">▢</span>Booking links</a>
+      <a href="external-status.html#feedback"><span class="ico">▢</span>Feedback forms</a>
+    </nav>
+    <div class="side-foot">
+      <div class="av">OP</div>
+      <div class="who">Operator <span>Outbound desk</span></div>
+      <a href="login.html" class="out" title="Sign out">⏻</a>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div class="row">
+        <button class="side-toggle" id="sideToggle" aria-label="Menu">≡</button>
+        <div class="crumb"><b data-client-name>Northwind</b> <span class="sep">/</span> Overview</div>
+      </div>
+      <div class="topbar-right">
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="page-head">
+        <div>
+          <h1>Overview</h1>
+        </div>
+      </div>
+
+      <!-- HEADLINE -->
+      <div class="headline">
+        <div class="hl-main">
+          <div class="cap">Qualified meetings booked</div>
+          <div class="big"><span class="ph-inline ph"><span class="ph-tag">count</span></span></div>
+          <div class="delta"><span class="up">▲ sample</span> vs. prior 30 days · billed on completion only</div>
+        </div>
+        <div class="hl-cell">
+          <div class="n"><span class="ph-inline ph"><span class="ph-tag" style="font-size:8px">n</span></span>%</div>
+          <div class="l">Show-up rate on booked meetings</div>
+        </div>
+        <div class="hl-cell">
+          <div class="n"><span class="ph-inline ph"><span class="ph-tag" style="font-size:8px">n</span></span></div>
+          <div class="l">Awaiting on the calendar this week</div>
+        </div>
+      </div>
+
+      <!-- needs attention + weekly stats (equal height) -->
+      <div class="ov-top">
+        <!-- NEEDS ATTENTION -->
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h3>Needs attention</h3>
+              <div class="ph-sub">Client action status that's waiting on a client or prospect</div>
+            </div>
+            <span class="na-head-count">3 open</span>
+          </div>
+          <div class="na-item">
+            <div class="na-ico warn">①</div>
+            <div class="na-body">
+              <div class="t">Client list approval pending</div>
+              <div class="d"><b>Batch 3 · 48 prospects</b> sent to the client <b>2 days ago</b>, not yet approved. Nothing ships until they sign off.</div>
+            </div>
+            <div class="na-act"><a href="external-status.html#approval" class="btn btn-ghost btn-sm">View status <span class="arrow">→</span></a></div>
+          </div>
+          <div class="na-item">
+            <div class="na-ico info">②</div>
+            <div class="na-body">
+              <div class="t">Outstanding booking links</div>
+              <div class="d"><b>4 interested prospects</b> sent a booking link. <b>1 expired unused</b>, 3 still open. One reminder is scheduled.</div>
+            </div>
+            <div class="na-act"><a href="external-status.html#booking" class="btn btn-ghost btn-sm">View status <span class="arrow">→</span></a></div>
+          </div>
+          <div class="na-item">
+            <div class="na-ico ok">③</div>
+            <div class="na-body">
+              <div class="t">Post-meeting feedback forms</div>
+              <div class="d"><b>2 forms pending</b> from meetings held this week. Feedback gates billing &amp; the qualified-meeting count.</div>
+            </div>
+            <div class="na-act"><a href="external-status.html#feedback" class="btn btn-ghost btn-sm">View status <span class="arrow">→</span></a></div>
+          </div>
+        </div>
+
+        <!-- WEEKLY STATS -->
+        <div class="panel">
+          <div class="panel-head"><h3>Weekly Stats</h3></div>
+          <div class="panel-pad" style="display:flex;flex-direction:column;gap:16px">
+            <div class="between">
+              <span class="muted" style="font-size:13.5px">Meetings held</span>
+              <span class="tnum" style="font-weight:700"><span class="sample">n</span></span>
+            </div>
+            <hr class="hr">
+            <div class="between">
+              <span class="muted" style="font-size:13.5px">New positive replies</span>
+              <span class="tnum" style="font-weight:700"><span class="sample">n</span></span>
+            </div>
+            <hr class="hr">
+            <div class="between">
+              <span class="muted" style="font-size:13.5px">Replies awaiting review</span>
+              <a href="workspace.html#replies" style="color:var(--danger);font-weight:700;font-size:13.5px">3 →</a>
+            </div>
+            <hr class="hr">
+            <div class="between">
+              <span class="muted" style="font-size:13.5px">Billable this cycle</span>
+              <span class="tnum" style="font-weight:700">$<span class="sample">amt</span></span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LEADS BY STAGE (full width) -->
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h3>Leads by stage</h3>
+            <div class="ph-sub">Where every prospect in the campaign sits right now</div>
+          </div>
+        </div>
+        <div class="panel-pad">
+          <div class="funnel" id="funnel">
+            <div class="fn-row" data-w="100"><span class="fl"><span class="sd" style="background:#C9D7E8"></span>Sourced</span><div class="fn-track"><div class="fn-fill" style="background:#C9D7E8"></div></div><span class="fv"><span class="sample">n</span></span></div>
+            <div class="fn-row" data-w="82"><span class="fl"><span class="sd" style="background:#AEC4DD"></span>Approved</span><div class="fn-track"><div class="fn-fill" style="background:#AEC4DD"></div></div><span class="fv"><span class="sample">n</span></span></div>
+            <div class="fn-row" data-w="78"><span class="fl"><span class="sd" style="background:var(--cerulean)"></span>Contacted</span><div class="fn-track"><div class="fn-fill" style="background:var(--cerulean)"></div></div><span class="fv"><span class="sample">n</span></span></div>
+            <div class="fn-row" data-w="44"><span class="fl"><span class="sd" style="background:#7C9CC0"></span>Replied</span><div class="fn-track"><div class="fn-fill" style="background:#7C9CC0"></div></div><span class="fv"><span class="sample">n</span></span></div>
+            <div class="fn-row" data-w="26"><span class="fl"><span class="sd" style="background:var(--cerulean-deep)"></span>Positive</span><div class="fn-track"><div class="fn-fill" style="background:var(--cerulean-deep)"></div></div><span class="fv"><span class="sample">n</span></span></div>
+            <div class="fn-row" data-w="15"><span class="fl"><span class="sd" style="background:var(--ink)"></span>Meeting booked</span><div class="fn-track"><div class="fn-fill" style="background:var(--ink)"></div></div><span class="fv"><span class="sample">n</span></span></div>
+          </div>
+          <div class="funnel-note">
+            <span style="color:var(--cerulean-deep);font-weight:700">↳</span>
+            <span>Counts are <span class="sample">sample</span> placeholders. Bars show the relative shape of a healthy funnel: sourced narrows to booked meetings as quality gates apply.</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // sidebar mobile toggle
+  var side=document.getElementById('side'),scrim=document.getElementById('scrim'),
+      sideToggle=document.getElementById('sideToggle');
+  function closeSide(){side.classList.remove('open');scrim.classList.remove('open');}
+  sideToggle.addEventListener('click',function(){side.classList.toggle('open');scrim.classList.toggle('open');});
+  scrim.addEventListener('click',closeSide);
+
+  // reveal
+  var reveals=document.querySelectorAll('.reveal');
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.08});
+  reveals.forEach(function(el){io.observe(el);});
+  // safety fallback: if the observer hasn't revealed an in-view element, show it anyway
+  setTimeout(function(){reveals.forEach(function(el){if(el.getBoundingClientRect().top<window.innerHeight)el.classList.add('in');});},500);
+
+  // animate funnel bars
+  setTimeout(function(){
+    document.querySelectorAll('#funnel .fn-row').forEach(function(r){
+      r.querySelector('.fn-fill').style.width=r.getAttribute('data-w')+'%';
+    });
+  },200);
+</script>
+  <script src="client-switch.js"></script>
+</body>
+</html>

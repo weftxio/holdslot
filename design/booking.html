@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Book your meeting · HoldSlot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .meeting-meta{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:4px}
+  .meeting-meta .mm{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--ink-soft)}
+  .meeting-meta .mm .mi{width:26px;height:26px;border-radius:7px;background:var(--cerulean-wash);
+    color:var(--cerulean-deep);display:flex;align-items:center;justify-content:center;font-size:13px}
+
+  .day-tabs{display:flex;gap:8px;overflow-x:auto;margin-bottom:20px;scrollbar-width:none;padding-bottom:2px}
+  .day-tabs::-webkit-scrollbar{display:none}
+  .day-tab{flex-shrink:0;appearance:none;background:#fff;border:1px solid var(--line);cursor:pointer;
+    border-radius:11px;padding:11px 16px;text-align:center;font-family:var(--sans);transition:.15s ease;
+    min-width:78px}
+  .day-tab:hover{border-color:var(--cerulean)}
+  .day-tab.on{background:var(--ink);border-color:var(--ink);color:#fff}
+  .day-tab .dow{font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;
+    color:var(--ink-faint)}
+  .day-tab.on .dow{color:rgba(255,255,255,.6)}
+  .day-tab .dnum{font-family:var(--display);font-size:20px;font-weight:500;margin-top:3px}
+
+  .slots{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:22px}
+  @media(max-width:520px){.slots{grid-template-columns:repeat(2,1fr)}}
+  .slot{appearance:none;background:#fff;border:1px solid var(--line);cursor:pointer;border-radius:9px;
+    padding:13px 10px;font-family:var(--sans);font-size:14px;font-weight:600;color:var(--ink);
+    transition:.15s ease;text-align:center;position:relative}
+  .slot:hover{border-color:var(--cerulean);background:var(--cerulean-wash)}
+  .slot.on{background:var(--cerulean-deep);border-color:var(--cerulean-deep);color:#fff}
+  .slot.taken{opacity:.4;cursor:not-allowed;text-decoration:line-through}
+  .slot.taken:hover{border-color:var(--line);background:#fff}
+  .slot .smark{position:absolute;top:6px;right:8px;font-size:10px;opacity:0;transition:.15s ease}
+  .slot.on .smark{opacity:1}
+
+  .tzrow{font-size:12.5px;color:var(--ink-faint);margin-bottom:20px;display:flex;align-items:center;gap:7px}
+
+  .confirm-bar{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    border-top:1px solid var(--line);padding-top:20px;margin-top:4px;flex-wrap:wrap}
+  .confirm-bar .pick{font-size:13.5px;color:var(--ink-soft)}
+  .confirm-bar .pick b{color:var(--ink);font-weight:700}
+
+  .valid-pane.hide{display:none}
+  .success-pane,.expired-pane{display:none}
+  .success-pane.show,.expired-pane.show{display:block}
+  .success-inner{text-align:center;padding:44px 36px}
+  .success-inner .tick{width:62px;height:62px;border-radius:50%;background:var(--cerulean);
+    color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:28px;
+    font-weight:800;margin:0 auto 20px}
+  .success-inner h1{font-size:30px;margin-bottom:12px}
+  .success-inner p{font-size:15px;color:var(--ink-soft);max-width:420px;margin:0 auto 6px;line-height:1.6}
+  .booked-chip{display:inline-flex;align-items:center;gap:9px;background:var(--cerulean-wash);
+    border:1px solid var(--line);border-radius:10px;padding:12px 18px;font-weight:600;font-size:14.5px;
+    margin:18px 0 6px}
+</style>
+</head>
+<body class="ext-body">
+
+<div class="state-toggle" role="group" aria-label="Demo state">
+  <span class="st-label">Link state</span>
+  <button id="btnValid" class="on">Valid</button>
+  <button id="btnExpired">Expired</button>
+</div>
+
+<div class="ext-top">
+  <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+  <span class="secure">🔒 Secure link · expires after use</span>
+</div>
+
+<div class="ext-main">
+  <div class="ext-card" id="card">
+
+    <!-- VALID -->
+    <div class="valid-pane" id="validPane">
+      <div class="ext-head">
+        <span class="eyebrow">You're invited</span>
+        <h1>Book your meeting</h1>
+        <p>Thanks for your interest in <b>Northwind</b> <span class="sample">sample</span>. Pick a time that works and it drops straight onto both calendars with an invite.</p>
+        <div class="meeting-meta" style="margin-top:16px">
+          <span class="mm"><span class="mi">◷</span>30 minutes</span>
+          <span class="mm"><span class="mi">▦</span>Video call</span>
+          <span class="mm"><span class="mi">◑</span>With placeholder host</span>
+        </div>
+      </div>
+      <div class="ext-pad">
+        <div class="section-label">Choose a day</div>
+        <div class="day-tabs" id="dayTabs"></div>
+
+        <div class="section-label">Available times <span class="sample" style="margin-left:6px">sample</span></div>
+        <div class="slots" id="slots"></div>
+        <div class="tzrow">🌐 Times shown in your local timezone · placeholder TZ</div>
+
+        <div class="consent">
+          <span class="ci">●</span>
+          <span><b style="color:var(--ink)">Recording notice.</b> This call may be recorded and transcribed so HoldSlot can prepare a meeting summary for the host. By booking, you consent to recording. You can ask the host to turn it off at any point during the call.</span>
+        </div>
+
+        <div class="confirm-bar">
+          <span class="pick" id="pickTxt">Select a time to continue</span>
+          <button class="btn btn-primary" id="confirmBtn" disabled>Confirm booking <span class="arrow">→</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SUCCESS -->
+    <div class="success-pane" id="successPane">
+      <div class="success-inner">
+        <div class="tick">✓</div>
+        <h1>You're booked.</h1>
+        <div class="booked-chip">📅 <span id="bookedWhen">Placeholder day · time</span></div>
+        <p>A calendar invite with the video link is on its way to your inbox. You'll get a reminder before the call.</p>
+        <p class="muted" style="font-size:13px;margin-top:16px">Need to reschedule? Use the link in your confirmation email.</p>
+      </div>
+    </div>
+
+    <!-- EXPIRED -->
+    <div class="expired-pane" id="expiredPane">
+      <div class="expired-card">
+        <div class="xmark">⏱</div>
+        <h1>This booking link has expired</h1>
+        <p>For security, booking links are valid for a limited time or a single use. This one is no longer active.</p>
+        <p>Reply to the email you received and we'll send a fresh link with new times right away.</p>
+        <div style="margin-top:26px"><a href="home.html" class="btn btn-ghost">Back to HoldSlot</a></div>
+      </div>
+    </div>
+
+    <div class="ext-foot" id="foot">
+      <span class="by"><span style="width:9px;height:9px;border-radius:50%;background:var(--cerulean);display:inline-block"></span>Scheduling by HoldSlot</span>
+      <span class="muted" style="font-size:12px">No account needed.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* days */
+  var days=[['Mon','12'],['Tue','13'],['Wed','14'],['Thu','15'],['Fri','16']];
+  var dayTabs=document.getElementById('dayTabs');
+  days.forEach(function(d,i){
+    var b=document.createElement('button');b.className='day-tab'+(i===1?' on':'');b.setAttribute('data-i',i);
+    b.innerHTML='<div class="dow">'+d[0]+'</div><div class="dnum">'+d[1]+'</div>';
+    dayTabs.appendChild(b);
+  });
+
+  /* slots per day (sample) */
+  var slotSets=[
+    ['9:00','10:30','13:00','14:00','15:30','16:30'],
+    ['9:30','11:00','11:30','13:30','15:00','16:00'],
+    ['10:00','10:30','12:00','14:30','15:30','17:00'],
+    ['9:00','9:30','13:00','14:00','16:00','16:30'],
+    ['10:30','11:00','12:30','13:30','14:30','15:00']
+  ];
+  var takenSets=[[2],[4],[1],[3],[0]]; /* index of a "taken" slot per day */
+  var slotsEl=document.getElementById('slots');
+  var sel={day:1,dn:'Tue 13',time:null};
+
+  function renderSlots(di){
+    slotsEl.innerHTML='';sel.time=null;updatePick();
+    slotSets[di].forEach(function(t,si){
+      var taken=takenSets[di].indexOf(si)>-1;
+      var b=document.createElement('button');
+      b.className='slot'+(taken?' taken':'');b.textContent=t;
+      if(!taken){
+        b.innerHTML=t+'<span class="smark">✓</span>';
+        b.addEventListener('click',function(){
+          slotsEl.querySelectorAll('.slot').forEach(function(s){s.classList.remove('on');});
+          b.classList.add('on');sel.time=t;updatePick();
+        });
+      }
+      slotsEl.appendChild(b);
+    });
+  }
+  function updatePick(){
+    var ok=!!sel.time;
+    document.getElementById('confirmBtn').disabled=!ok;
+    document.getElementById('pickTxt').innerHTML=ok
+      ? 'Selected · <b>'+sel.dn+' at '+sel.time+'</b>'
+      : 'Select a time to continue';
+  }
+  dayTabs.addEventListener('click',function(e){
+    var b=e.target.closest('.day-tab');if(!b)return;
+    dayTabs.querySelectorAll('.day-tab').forEach(function(d){d.classList.remove('on');});
+    b.classList.add('on');
+    var i=+b.getAttribute('data-i');sel.day=i;sel.dn=days[i][0]+' '+days[i][1];renderSlots(i);
+  });
+  renderSlots(1);
+
+  /* confirm */
+  document.getElementById('confirmBtn').addEventListener('click',function(){
+    this.textContent='Booking…';this.disabled=true;
+    document.getElementById('bookedWhen').textContent=sel.dn+' · '+sel.time+' (placeholder)';
+    setTimeout(function(){
+      document.getElementById('validPane').classList.add('hide');
+      document.getElementById('successPane').classList.add('show');
+      document.getElementById('foot').style.display='none';
+    },600);
+  });
+
+  /* state toggle */
+  var bv=document.getElementById('btnValid'),be=document.getElementById('btnExpired'),
+      validPane=document.getElementById('validPane'),expiredPane=document.getElementById('expiredPane'),
+      successPane=document.getElementById('successPane'),foot=document.getElementById('foot');
+  function setState(st){
+    var expired=st==='expired';
+    bv.classList.toggle('on',!expired);be.classList.toggle('on',expired);
+    validPane.classList.toggle('hide',expired);
+    successPane.classList.remove('show');
+    expiredPane.classList.toggle('show',expired);
+    foot.style.display=expired?'none':'';
+  }
+  bv.addEventListener('click',function(){setState('valid');});
+  be.addEventListener('click',function(){setState('expired');});
+  var p=new URLSearchParams(location.search).get('state');if(p==='expired')setState('expired');
+</script>
+</body>
+</html>

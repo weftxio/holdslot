@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Approve your prospect list · HoldSlot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .approve-list{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin-bottom:18px}
+  .approve-row{display:flex;align-items:center;gap:13px;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
+  .approve-row:last-child{border-bottom:none}
+  .approve-row .av-sm{width:34px;height:34px;border-radius:50%;background:var(--cerulean-wash);
+    color:var(--cerulean-deep);font-weight:700;font-size:12px;display:flex;align-items:center;
+    justify-content:center;font-family:var(--display);flex-shrink:0}
+  .approve-row .ai{flex:1;min-width:0}
+  .approve-row .ai .nm{font-weight:600;font-size:14px}
+  .approve-row .ai .rl{font-size:12.5px;color:var(--ink-faint)}
+  .approve-row .ex{appearance:none;background:none;border:none;cursor:pointer;color:var(--ink-faint);
+    font-size:12.5px;font-weight:600;padding:6px 10px;border-radius:7px;transition:.15s ease}
+  .approve-row .ex:hover{background:var(--danger-wash);color:var(--danger)}
+  .approve-row.removed{opacity:.4}
+  .approve-row.removed .nm{text-decoration:line-through}
+  .summary-strip{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    background:var(--cerulean-wash);border:1px solid var(--line);border-radius:11px;
+    padding:13px 17px;margin-bottom:20px;font-size:13.5px}
+  .summary-strip b{font-weight:700}
+  .cta-row{display:flex;gap:11px;flex-wrap:wrap}
+  .cta-row .btn{flex:1;min-width:160px}
+  .success-pane,.expired-pane{display:none}
+  .success-pane.show,.expired-pane.show{display:block}
+  .valid-pane.hide{display:none}
+  .success-inner{text-align:center;padding:46px 36px}
+  .success-inner .tick{width:62px;height:62px;border-radius:50%;background:var(--cerulean);
+    color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:28px;
+    font-weight:800;margin:0 auto 20px}
+  .success-inner h1{font-size:30px;margin-bottom:12px}
+  .success-inner p{font-size:15px;color:var(--ink-soft);max-width:400px;margin:0 auto 6px;line-height:1.6}
+</style>
+</head>
+<body class="ext-body">
+
+<div class="state-toggle" role="group" aria-label="Demo state">
+  <span class="st-label">Link state</span>
+  <button id="btnValid" class="on">Valid</button>
+  <button id="btnExpired">Expired</button>
+</div>
+
+<div class="ext-top">
+  <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+  <span class="secure">🔒 Secure link · for the client</span>
+</div>
+
+<div class="ext-main">
+  <div class="ext-card" id="card">
+
+    <!-- VALID -->
+    <div class="valid-pane" id="validPane">
+      <div class="ext-head">
+        <span class="eyebrow">Your approval needed</span>
+        <h1>Approve your prospect list</h1>
+        <p>HoldSlot prepared this batch for <b>Northwind</b> <span class="sample">sample</span>. Nothing is contacted until you approve. Remove anyone who isn't a fit, then approve in one click.</p>
+      </div>
+      <div class="ext-pad">
+        <div class="summary-strip">
+          <span><b>Batch 3</b> · <span id="countTxt"><span class="sample">n</span></span> prospects · matched to your brief</span>
+          <span class="badge badge-warn"><span class="bdot"></span>Awaiting approval</span>
+        </div>
+
+        <div class="approve-list" id="approveList"></div>
+
+        <div class="consent" style="margin-bottom:20px">
+          <span class="ci">✓</span>
+          <span>Every prospect was verified against your exclusion rules. By approving, you authorise HoldSlot to begin outreach to this list on your behalf. You can pause anytime.</span>
+        </div>
+
+        <div class="cta-row">
+          <button class="btn btn-ghost" onclick="alert('Mock: opens a change-request note')">Request changes</button>
+          <button class="btn btn-primary" id="approveBtn">Approve list &amp; start outreach <span class="arrow">→</span></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- SUCCESS -->
+    <div class="success-pane" id="successPane">
+      <div class="success-inner">
+        <div class="tick">✓</div>
+        <h1>List approved.</h1>
+        <p>Thank you. HoldSlot will begin reaching out to your approved prospects from warmed inboxes. Interested replies will be handled and qualified meetings booked straight onto your calendar.</p>
+        <p class="muted" style="font-size:13px;margin-top:18px">You can close this page. No account needed.</p>
+      </div>
+    </div>
+
+    <!-- EXPIRED -->
+    <div class="expired-pane" id="expiredPane">
+      <div class="expired-card">
+        <div class="xmark">⏱</div>
+        <h1>This link has expired</h1>
+        <p>For security, approval links are valid for a limited time. This one is no longer active.</p>
+        <p>We've let your HoldSlot operator know. A fresh link is on its way to your inbox shortly.</p>
+        <div style="margin-top:26px"><a href="home.html" class="btn btn-ghost">Back to HoldSlot</a></div>
+      </div>
+    </div>
+
+    <div class="ext-foot" id="foot">
+      <span class="by"><span class="dot" style="width:9px;height:9px;border-radius:50%;background:var(--cerulean);display:inline-block"></span>Sent securely by HoldSlot</span>
+      <span class="muted" style="font-size:12px">Questions? Reply to the email this came from.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* sample rows */
+  var roles=['Placeholder title','Placeholder title','Placeholder title','Placeholder title','Placeholder title','Placeholder title'];
+  var list=document.getElementById('approveList');var live=roles.length;
+  roles.forEach(function(r,i){
+    var row=document.createElement('div');row.className='approve-row';row.id='ar-'+i;
+    row.innerHTML='<div class="av-sm">P'+(i+1)+'</div>'+
+      '<div class="ai"><div class="nm">Prospect '+(i+1)+' <span class="sample">sample</span></div>'+
+      '<div class="rl">'+r+' · Sample Co '+(i+1)+'</div></div>'+
+      '<span class="badge badge-info" style="margin-right:4px"><span class="bdot"></span>Good fit</span>'+
+      '<button class="ex" data-i="'+i+'">Remove</button>';
+    list.appendChild(row);
+  });
+  list.addEventListener('click',function(e){
+    var b=e.target.closest('.ex');if(!b)return;
+    var row=document.getElementById('ar-'+b.getAttribute('data-i'));
+    if(row.classList.contains('removed')){row.classList.remove('removed');b.textContent='Remove';live++;}
+    else{row.classList.add('removed');b.textContent='Undo';live--;}
+  });
+
+  /* approve */
+  document.getElementById('approveBtn').addEventListener('click',function(){
+    this.textContent='Approving…';this.disabled=true;
+    setTimeout(function(){
+      document.getElementById('validPane').classList.add('hide');
+      document.getElementById('successPane').classList.add('show');
+      document.getElementById('foot').style.display='none';
+    },600);
+  });
+
+  /* state toggle + url param */
+  var bv=document.getElementById('btnValid'),be=document.getElementById('btnExpired'),
+      validPane=document.getElementById('validPane'),expiredPane=document.getElementById('expiredPane'),
+      successPane=document.getElementById('successPane'),foot=document.getElementById('foot');
+  function setState(st){
+    var expired=st==='expired';
+    bv.classList.toggle('on',!expired);be.classList.toggle('on',expired);
+    validPane.classList.toggle('hide',expired);
+    successPane.classList.remove('show');
+    expiredPane.classList.toggle('show',expired);
+    foot.style.display=expired?'none':'';
+  }
+  bv.addEventListener('click',function(){setState('valid');});
+  be.addEventListener('click',function(){setState('expired');});
+  var p=new URLSearchParams(location.search).get('state');if(p==='expired')setState('expired');
+</script>
+</body>
+</html>

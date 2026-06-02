@@ -1,0 +1,829 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoldSlot · Workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;
+    margin-bottom:20px;flex-wrap:wrap}
+  .page-head h1{font-size:30px}
+  .page-head .sub{font-size:13.5px;color:var(--ink-faint);margin-top:5px}
+  .tabs{margin-bottom:24px}
+
+  .two-col{display:grid;grid-template-columns:1fr 320px;gap:22px;align-items:stretch}
+  .two-col>.panel{display:flex;flex-direction:column}
+  .two-col>.panel>.panel-pad{flex:1;display:flex;flex-direction:column}
+  .two-col .comp-foot{margin-top:auto}
+  @media(max-width:960px){.two-col{grid-template-columns:1fr}}
+
+  /* completeness meter */
+  .meter{display:flex;flex-direction:column;align-items:center;text-align:center;padding:6px 0 4px}
+  .ring{width:128px;height:128px;border-radius:50%;display:grid;place-items:center;
+    background:conic-gradient(var(--cerulean-deep) calc(var(--p)*1%), var(--cerulean-wash) 0);position:relative}
+  .ring::before{content:"";position:absolute;inset:11px;border-radius:50%;background:#fff}
+  .ring .v{position:relative;font-family:var(--display);font-size:34px;font-weight:500;color:var(--ink)}
+  .ring .v small{font-size:16px;color:var(--ink-faint)}
+  .meter .ml{font-size:13px;color:var(--ink-soft);margin-top:14px;line-height:1.45}
+  .checklist{list-style:none;margin-top:18px;display:flex;flex-direction:column;gap:11px;width:100%}
+  .checklist li{display:flex;gap:10px;align-items:flex-start;font-size:13px}
+  .checklist .ck{width:19px;height:19px;border-radius:50%;flex-shrink:0;display:flex;
+    align-items:center;justify-content:center;font-size:11px;font-weight:800;margin-top:1px}
+  .checklist .ck.done{background:var(--ok-wash);color:var(--ok)}
+  .checklist .ck.todo{background:#F1F3F6;color:var(--ink-faint)}
+  .checklist .todo-t{color:var(--ink-faint)}
+
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:0 18px}
+  @media(max-width:560px){.grid2{grid-template-columns:1fr}}
+
+  /* segmented send controls */
+  .seg{display:inline-flex;border:1px solid var(--line);border-radius:9px;overflow:hidden}
+  .seg button{appearance:none;border:none;background:#fff;cursor:pointer;font-family:var(--sans);
+    font-size:13px;font-weight:600;color:var(--ink-soft);padding:9px 15px;transition:.15s ease}
+  .seg button + button{border-left:1px solid var(--line)}
+  .seg button.on{background:var(--ink);color:#fff}
+
+  /* message variant cards */
+  .variant{border:1px solid var(--line);border-radius:13px;overflow:hidden;margin-bottom:16px}
+  .variant.win{border-color:var(--cerulean);box-shadow:0 0 0 3px rgba(155,183,214,.18)}
+  .variant-head{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:14px 18px;background:#FCFDFE;border-bottom:1px solid var(--line)}
+  .variant-head .vt{font-weight:700;font-size:14px;display:flex;align-items:center;gap:9px}
+  .variant-head .vtag{font-family:var(--display);font-size:13px;color:var(--cerulean-deep);
+    border:1.5px solid var(--cerulean);width:30px;height:30px;border-radius:50%;display:flex;
+    align-items:center;justify-content:center;font-weight:600}
+  .variant-stats{display:flex;gap:22px}
+  .variant-stats .vs{font-size:12px;color:var(--ink-faint)}
+  .variant-stats .vs b{display:block;font-family:var(--display);font-size:18px;font-weight:500;
+    color:var(--ink);margin-bottom:1px}
+  .variant-body{padding:16px 18px;font-size:13.5px;line-height:1.6;color:var(--ink-soft)}
+  .variant-body .mph{background:var(--cerulean-wash);border-radius:4px;padding:0 6px;
+    color:var(--cerulean-deep);font-weight:600;font-size:12.5px}
+
+  /* reply queue */
+  .reply{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:18px;
+    transition:.25s ease}
+  .reply.done{opacity:.62}
+  .reply-head{display:flex;align-items:center;gap:13px;padding:15px 18px;border-bottom:1px solid var(--line-soft)}
+  .reply-head .av-sm{width:34px;height:34px;border-radius:50%;background:var(--cerulean-wash);
+    color:var(--cerulean-deep);font-weight:700;font-size:12px;display:flex;align-items:center;
+    justify-content:center;font-family:var(--display);flex-shrink:0}
+  .reply-head .meta{flex:1;min-width:0}
+  .reply-head .meta .nm{font-weight:600;font-size:14px}
+  .reply-head .meta .ro{font-size:12px;color:var(--ink-faint)}
+  .reply-quote{padding:15px 18px;background:#FCFDFE;font-size:13.5px;line-height:1.6;
+    color:var(--ink-soft);border-bottom:1px solid var(--line-soft)}
+  .reply-quote .ql{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:7px;display:block}
+  .reply-draft{padding:16px 18px}
+  .reply-draft .dl{font-size:10.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--cerulean-deep);margin-bottom:9px;display:flex;align-items:center;gap:8px}
+  .reply-draft textarea{font-family:var(--sans);font-size:13.5px;color:var(--ink);line-height:1.55;
+    width:100%;border:1px solid var(--line);border-radius:9px;padding:12px 13px;resize:vertical;
+    min-height:90px;outline:none;transition:.15s ease;background:#fff}
+  .reply-draft textarea:focus{border-color:var(--cerulean);box-shadow:0 0 0 3px rgba(155,183,214,.2)}
+  .reply-draft textarea[readonly]{background:#FBFCFE;color:var(--ink-soft)}
+  .reply-actions{display:flex;align-items:center;gap:9px;margin-top:13px;flex-wrap:wrap}
+  .reply-actions .spacer{flex:1}
+  .reply-sent-banner{display:none;align-items:center;gap:10px;padding:14px 18px;
+    background:var(--ok-wash);color:var(--ok);font-size:13.5px;font-weight:600}
+  .reply.done .reply-draft,.reply.done .reply-actions{display:none}
+  .reply.done .reply-sent-banner{display:flex}
+
+  /* empty queue */
+  .queue-empty{display:none;text-align:center;padding:40px 20px;color:var(--ink-faint)}
+  .queue-empty.show{display:block}
+  .queue-empty .ee{width:52px;height:52px;border-radius:50%;background:var(--ok-wash);color:var(--ok);
+    display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:800;margin:0 auto 16px}
+
+  /* ledger summary */
+  .ledger-sum{display:grid;grid-template-columns:repeat(3,1fr);gap:0;border:1px solid var(--line);
+    border-radius:13px;overflow:hidden;margin-bottom:20px}
+  @media(max-width:640px){.ledger-sum{grid-template-columns:1fr}}
+  .ledger-sum .ls{padding:18px 22px;border-right:1px solid var(--line)}
+  .ledger-sum .ls:last-child{border-right:none}
+  @media(max-width:640px){.ledger-sum .ls{border-right:none;border-bottom:1px solid var(--line)}}
+  .ledger-sum .ls .lcap{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:10px}
+  .ledger-sum .ls .ln{font-family:var(--display);font-size:30px;font-weight:500;color:var(--ink)}
+  .ledger-sum .ls.accent{background:var(--cerulean-wash)}
+  .ledger-sum .ls.accent .ln{color:var(--cerulean-deep)}
+
+  /* summaries */
+  .sum-card{border:1px solid var(--line);border-radius:13px;padding:18px 20px;margin-bottom:16px}
+  .sum-card .sh{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}
+  .sum-card .sh .sm{font-weight:700;font-size:14.5px}
+  .sum-card .sh .smeta{font-size:12px;color:var(--ink-faint);margin-top:2px}
+  .sum-card .srow{display:flex;gap:10px;font-size:13px;line-height:1.55;margin-bottom:8px}
+  .sum-card .srow .sk{font-weight:600;color:var(--ink);min-width:96px;flex-shrink:0}
+  .sum-card .srow .sv{color:var(--ink-soft)}
+  .sum-card .sv .mph{background:var(--cerulean-wash);border-radius:4px;padding:0 6px;
+    color:var(--cerulean-deep);font-weight:600;font-size:12px}
+
+  .info-line{display:flex;gap:9px;align-items:flex-start;background:var(--cerulean-wash);
+    border:1px solid var(--line);border-radius:11px;padding:13px 16px;font-size:13px;
+    color:var(--ink-soft);line-height:1.5;margin-bottom:20px}
+  .info-line b{color:var(--ink);font-weight:600}
+
+  /* ICP section */
+  .icp-persona{display:flex;gap:13px;align-items:flex-start;background:var(--cerulean-wash);
+    border:1px solid var(--line);border-radius:12px;padding:15px 17px;margin-bottom:20px}
+  .icp-persona .ip-ico{width:38px;height:38px;border-radius:10px;background:#fff;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;color:var(--cerulean-deep);flex-shrink:0;
+    font-family:var(--display);font-weight:600}
+  .icp-persona .ip-t{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--cerulean-deep);margin-bottom:5px}
+  .icp-persona .ip-d{font-size:14px;color:var(--ink);line-height:1.5;font-weight:500}
+  .icp-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:1px;background:var(--line);
+    border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  @media(max-width:760px){.icp-grid{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:480px){.icp-grid{grid-template-columns:1fr}}
+  .icp-cell{background:#fff;padding:14px 16px}
+  .icp-cell .k{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:8px}
+  .icp-cell .v{font-size:13.5px;color:var(--ink);font-weight:500;line-height:1.45}
+  .icp-chips{display:flex;flex-wrap:wrap;gap:6px}
+  .icp-chip{font-size:12px;font-weight:600;color:var(--cerulean-deep);background:var(--cerulean-wash);
+    border-radius:6px;padding:3px 9px}
+  .icp-chip.warn{color:var(--danger);background:var(--danger-wash)}
+  .icp-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-top:16px;
+    flex-wrap:wrap}
+  .icp-foot .est{font-size:13px;color:var(--ink-soft)}
+  .icp-foot .est b{font-family:var(--display);font-size:18px;font-weight:500;color:var(--cerulean-deep);
+    margin-right:4px}
+
+  /* prospect list toolbar */
+  .list-toolbar{margin-bottom:18px;overflow:visible}
+  .filter-row{display:flex;align-items:center;gap:10px;padding:15px 18px;flex-wrap:wrap}
+  .filter-row .search{position:relative;flex:1;min-width:180px}
+  .filter-row .search input{width:100%;padding-left:34px}
+  .filter-row .search .si{position:absolute;left:12px;top:50%;transform:translateY(-50%);
+    color:var(--ink-faint);font-size:13px}
+  .filter-row .select{width:auto;min-width:120px;padding:10px 12px;font-size:13.5px}
+  .filter-row .fcount{font-size:13px;color:var(--ink-faint);margin-left:auto;white-space:nowrap}
+  .filter-row .fcount b{color:var(--ink);font-weight:700}
+  .batch-row{display:flex;align-items:center;gap:12px;padding:14px 18px;border-top:1px solid var(--line);
+    background:var(--cerulean-wash);flex-wrap:wrap}
+  .batch-row .br-label{font-size:12.5px;font-weight:700;color:var(--ink);display:flex;align-items:center;gap:8px}
+  .batch-row .br-label .nbi{width:24px;height:24px;border-radius:7px;background:#fff;border:1px solid var(--line);
+    display:flex;align-items:center;justify-content:center;color:var(--cerulean-deep);font-size:14px}
+  .batch-row input[type=text]{flex:1;min-width:160px;background:#fff}
+  .batch-row .sel-pill{font-size:12px;font-weight:700;color:var(--cerulean-deep);background:#fff;
+    border:1px solid var(--line);border-radius:999px;padding:5px 11px;white-space:nowrap}
+  .row-hidden{display:none}
+
+  /* completeness footer (fills equal-height box) */
+  .comp-foot{font-size:12px;color:var(--ink-faint);margin-top:18px;padding-top:14px;
+    border-top:1px solid var(--line-soft)}
+
+  /* ICP profile selector */
+  .icp-tabs{display:flex;gap:9px;flex-wrap:wrap;margin-bottom:20px}
+  .icp-pill{appearance:none;cursor:pointer;background:#fff;border:1px solid var(--line);border-radius:11px;
+    padding:10px 15px;text-align:left;font-family:var(--sans);transition:.15s ease;min-width:128px}
+  .icp-pill:hover{border-color:var(--cerulean)}
+  .icp-pill.on{border-color:var(--cerulean-deep);box-shadow:0 0 0 3px rgba(155,183,214,.18)}
+  .icp-pill .ipn{font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:8px}
+  .icp-pill .ipt{font-size:11.5px;color:var(--ink-faint);margin-top:3px}
+  .icp-pill.add{display:flex;align-items:center;justify-content:center;color:var(--cerulean-deep);
+    font-weight:700;min-width:auto;border-style:dashed;font-size:13px}
+
+  /* campaign cards */
+  .camp{border:1px solid var(--line);border-radius:14px;overflow:hidden;margin-bottom:18px}
+  .camp-head{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:15px 20px;
+    background:#FCFDFE;border-bottom:1px solid var(--line);flex-wrap:wrap}
+  .camp-head .ct{font-family:var(--display);font-size:18px;font-weight:500;display:flex;align-items:center;gap:11px}
+  .camp-head .cmeta{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--ink-soft);flex-wrap:wrap}
+  .camp-body{padding:18px 20px 4px}
+
+  /* sendout batch cards */
+  .sob{display:flex;flex-direction:column;gap:13px}
+  .sob-card{border:1px solid var(--line);border-radius:13px;padding:15px 20px;display:flex;
+    align-items:center;gap:16px;flex-wrap:wrap;transition:.15s ease}
+  .sob-card:hover{border-color:var(--cerulean)}
+  .sob-card .sob-ico{width:42px;height:42px;border-radius:11px;background:var(--cerulean-wash);
+    color:var(--cerulean-deep);display:flex;align-items:center;justify-content:center;font-family:var(--display);
+    font-weight:600;flex-shrink:0}
+  .sob-card .sob-main{flex:1;min-width:170px}
+  .sob-card .sob-name{font-weight:700;font-size:15px;display:flex;align-items:center;gap:9px}
+  .sob-card .sob-meta{font-size:12.5px;color:var(--ink-faint);margin-top:4px}
+
+  /* reply status select + meta line */
+  .reply-head .tagline{font-size:11.5px;color:var(--ink-faint);margin-top:5px;display:flex;
+    align-items:center;gap:6px;flex-wrap:wrap}
+  .reply-head .tagline .ttag{background:var(--cerulean-wash);color:var(--cerulean-deep);border-radius:5px;
+    padding:2px 8px;font-weight:600;white-space:nowrap}
+  .status-select{font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-soft);
+    border:1px solid var(--line);border-radius:8px;padding:8px 11px;background:#fff;cursor:pointer}
+  .status-select:focus{outline:none;border-color:var(--cerulean);box-shadow:0 0 0 3px rgba(155,183,214,.2)}
+
+  /* summary meta tags */
+  .sum-tags{display:flex;gap:7px;flex-wrap:wrap;margin-bottom:12px}
+  .sum-tags .stag{font-size:11.5px;font-weight:600;color:var(--cerulean-deep);background:var(--cerulean-wash);
+    border-radius:6px;padding:3px 10px}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="side" id="side">
+    <div class="side-top">
+      <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+      <div class="client-switch" id="clientSwitch">
+        <button class="client-btn" id="clientBtn" type="button">
+          <span class="c-av" id="clientAv">N</span>
+          <span class="c-info"><span class="c-name" id="clientName">Northwind</span><span class="c-slug" id="clientSlug">holdslot.com/northwind</span></span>
+          <span class="c-caret">▾</span>
+        </button>
+        <div class="client-menu" id="clientMenu"></div>
+      </div>
+    </div>
+    <nav class="side-nav">
+      <span class="grp">Get Meeting</span>
+      <a href="overview.html"><span class="ico">◧</span>Overview</a>
+      <a href="workspace.html" class="active"><span class="ico">▤</span>Workspace</a>
+      <span class="grp">Client Action Status</span>
+      <a href="external-status.html#approval"><span class="ico">▢</span>List approval</a>
+      <a href="external-status.html#booking"><span class="ico">▢</span>Booking links</a>
+      <a href="external-status.html#feedback"><span class="ico">▢</span>Feedback forms</a>
+    </nav>
+    <div class="side-foot">
+      <div class="av">OP</div>
+      <div class="who">Operator <span>Outbound desk</span></div>
+      <a href="login.html" class="out" title="Sign out">⏻</a>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div class="row">
+        <button class="side-toggle" id="sideToggle" aria-label="Menu">≡</button>
+        <div class="crumb"><b data-client-name>Northwind</b> <span class="sep">/</span> Workspace</div>
+      </div>
+      <div class="topbar-right">
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="page-head">
+        <div>
+          <h1>Workspace</h1>
+        </div>
+      </div>
+
+      <!-- TABS -->
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="brief">Business brief</button>
+        <button class="tab" data-tab="list">Prospect list</button>
+        <button class="tab" data-tab="batches">Sendout Batch <span class="cnt" id="batchCnt">0</span></button>
+        <button class="tab" data-tab="campaign">Campaign <span class="cnt" id="campCnt">1</span></button>
+        <button class="tab" data-tab="replies">Reply queue <span class="cnt alert" id="replyCnt">3</span></button>
+        <button class="tab" data-tab="billing">Billing ledger</button>
+        <button class="tab" data-tab="summaries">Meeting summaries</button>
+      </div>
+
+      <!-- ============ BUSINESS BRIEF ============ -->
+      <section class="tabpane active" id="tab-brief">
+        <div class="two-col">
+          <div class="panel">
+            <div class="panel-head">
+              <div><h3>Business brief</h3><div class="ph-sub">What you sell and how we should position it</div></div>
+              <span class="badge badge-warn"><span class="bdot"></span>1 field to finish</span>
+            </div>
+            <div class="panel-pad">
+              <div class="info-line"><span style="color:var(--cerulean-deep);font-weight:700">ℹ</span><span>All values below are <b>sample placeholders</b>. The completeness score updates as the client fills the intake.</span></div>
+              <div class="grid2">
+                <div class="field"><label>Company</label><input class="input" value="Northwind (sample)" readonly></div>
+                <div class="field"><label>Website</label><input class="input" value="northwind.example (placeholder)" readonly></div>
+              </div>
+              <div class="field"><label>What you sell <span class="opt">· one line</span></label><input class="input" value="Placeholder: one-line value proposition" readonly></div>
+              <div class="field"><label>Primary problem you solve</label><input class="input" value="Placeholder: the pain you remove for buyers" readonly></div>
+              <div class="field" style="margin-bottom:0"><label>Proof &amp; positioning <span class="opt">· optional, not yet provided</span></label><textarea class="textarea" placeholder="Case studies, metrics, and differentiators the client wants us to lead with."></textarea></div>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head"><h3>Completeness</h3></div>
+            <div class="panel-pad">
+              <div class="meter">
+                <div class="ring" style="--p:88"><span class="v">88<small>%</small></span></div>
+                <div class="ml"><b>Nearly ready.</b> One optional field is left before this brief is complete.</div>
+              </div>
+              <ul class="checklist">
+                <li><span class="ck done">✓</span><span>Company &amp; offer</span></li>
+                <li><span class="ck done">✓</span><span>Ideal customer profiles</span></li>
+                <li><span class="ck done">✓</span><span>Titles &amp; geographies</span></li>
+                <li><span class="ck done">✓</span><span>Exclusion rules</span></li>
+                <li><span class="ck todo">○</span><span class="todo-t">Proof &amp; positioning <span class="sample">optional</span></span></li>
+              </ul>
+              <div class="comp-foot">Updates live as the client completes the intake.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ICP, multiple profiles -->
+        <div class="panel" style="margin-top:22px">
+          <div class="panel-head">
+            <div><h3>Ideal Customer Profiles</h3><div class="ph-sub">Create and review the targeting profiles that drive sourcing</div></div>
+            <button class="btn btn-ghost btn-sm" id="newIcpBtn">＋ New ICP</button>
+          </div>
+          <div class="panel-pad">
+            <div class="icp-tabs" id="icpTabs"></div>
+            <div id="icpDetail"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ PROSPECT LIST ============ -->
+      <section class="tabpane" id="tab-list">
+        <div class="panel">
+          <div class="panel-head">
+            <div><h3>Prospect list review</h3><div class="ph-sub">Research from an ICP, review the results, then batch the ones worth sending · all rows <span class="sample">sample</span></div></div>
+            <div class="row">
+              <select class="select" id="researchIcp" style="width:auto;min-width:120px;padding:9px 12px;font-size:13.5px"></select>
+              <button class="btn btn-accent btn-sm" id="researchBtn">Research prospects from ICP <span class="arrow">→</span></button>
+            </div>
+          </div>
+          <div class="filter-row" style="border-bottom:1px solid var(--line)">
+            <div class="search"><span class="si">⌕</span><input class="input" type="text" id="listSearch" placeholder="Search name or company"></div>
+            <select class="select" id="filterBatch"><option value="">All batches</option><option value="Unassigned">Unassigned pool</option><option value="Batch 3">Batch 3</option></select>
+            <select class="select" id="filterFit"><option value="">Any fit</option><option value="Strong">Strong fit</option><option value="Good">Good fit</option></select>
+            <select class="select" id="filterStatus"><option value="">Any status</option><option value="Ready">Ready</option><option value="New">New</option><option value="Needs review">Needs review</option></select>
+            <span class="fcount"><b id="shownCount">0</b> shown · <b id="selCount">0</b> selected</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="tbl">
+              <thead><tr>
+                <th style="width:34px"><input type="checkbox" class="tbl-check" id="selectAll" checked></th>
+                <th>Prospect</th><th>Title</th><th>Company</th><th>Source ICP</th><th>Fit</th><th>Batch</th><th>Status</th>
+              </tr></thead>
+              <tbody id="listBody"></tbody>
+            </table>
+          </div>
+          <div class="batch-row">
+            <span class="br-label"><span class="nbi">＋</span>Create sendout batch from selection</span>
+            <input class="input" type="text" id="newBatchName" placeholder="Name this batch (e.g. Batch 4)">
+            <span class="sel-pill"><span id="batchSelN">0</span> selected</span>
+            <button class="btn btn-ghost btn-sm" onclick="toast('Removed from pool','warn')">Remove selected</button>
+            <button class="btn btn-primary btn-sm" id="createBatchBtn">Create batch <span class="arrow">→</span></button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ SENDOUT BATCH ============ -->
+      <section class="tabpane" id="tab-batches">
+        <div class="between" style="margin-bottom:18px;flex-wrap:wrap;gap:12px">
+          <div class="section-label" style="margin-bottom:0">Batches sent for client approval · status updates as the client responds</div>
+          <span class="badge badge-warn" id="batchSummary"><span class="bdot"></span><span id="pendingN">0</span> pending approval</span>
+        </div>
+        <div class="sob" id="sobList"></div>
+        <div class="info-line" style="margin-top:18px"><span style="color:var(--cerulean-deep);font-weight:700">ℹ</span><span>Create new batches from the <b>Prospect list</b> tab. Each batch is sent to the client for one-click approval and lands here as <b>pending</b> until they respond.</span></div>
+      </section>
+
+      <!-- ============ CAMPAIGN ============ -->
+      <section class="tabpane" id="tab-campaign">
+        <div class="between" style="margin-bottom:18px;flex-wrap:wrap;gap:14px">
+          <div>
+            <div class="section-label" style="margin-bottom:6px">Outreach send controls</div>
+            <div class="row" style="gap:16px;flex-wrap:wrap">
+              <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Sending</span>
+                <div class="seg"><button class="on">On</button><button>Pause</button></div></div>
+              <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Daily cap</span>
+                <div class="seg"><button>30</button><button class="on">50</button><button>80</button></div></div>
+              <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Split</span>
+                <div class="seg"><button class="on">Even</button><button>Favor winner</button></div></div>
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="newCampaignBtn">＋ New campaign</button>
+        </div>
+
+        <div id="campaignList"></div>
+      </section>
+
+      <!-- ============ REPLY QUEUE ============ -->
+      <section class="tabpane" id="tab-replies">
+        <div class="between" style="margin-bottom:18px;flex-wrap:wrap;gap:12px">
+          <div class="row" style="gap:10px;flex-wrap:wrap">
+            <div class="section-label" style="margin-bottom:0">Classified replies, newest first</div>
+            <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Campaign</span>
+              <select class="select" id="replyCampFilter" style="width:auto;min-width:140px;padding:9px 12px;font-size:13.5px"></select></div>
+          </div>
+          <span class="badge badge-warn" id="replyBadge"><span class="bdot"></span><span id="replyBadgeN">3</span> awaiting review</span>
+        </div>
+        <div id="replyList"></div>
+        <div class="queue-empty" id="queueEmpty">
+          <div class="ee">✓</div>
+          <h3 style="font-size:20px;color:var(--ink);margin-bottom:6px">Queue clear</h3>
+          <p style="font-size:14px">Every classified reply has been handled. New replies will appear here as they're sorted.</p>
+        </div>
+      </section>
+
+      <!-- ============ BILLING LEDGER ============ -->
+      <section class="tabpane" id="tab-billing">
+        <div class="ledger-sum">
+          <div class="ls"><div class="lcap">Meetings billed</div><div class="ln"><span class="sample">n</span></div></div>
+          <div class="ls"><div class="lcap">Current cycle due</div><div class="ln">$<span class="sample">amt</span></div></div>
+          <div class="ls accent"><div class="lcap">Per qualified meeting</div><div class="ln">$<span class="sample">rate</span></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h3>Billing ledger</h3><div class="ph-sub">Only completed, qualified meetings are billable · all rows <span class="sample">sample</span></div></div>
+            <button class="btn btn-ghost btn-sm" onclick="toast('Statement exported')">Export statement</button>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="tbl">
+              <thead><tr><th>Date</th><th>Meeting with</th><th>Campaign / Batch</th><th>Outcome</th><th>Feedback</th><th>Status</th><th style="text-align:right">Amount</th></tr></thead>
+              <tbody id="ledgerBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ MEETING SUMMARIES ============ -->
+      <section class="tabpane" id="tab-summaries">
+        <div class="between" style="margin-bottom:18px;flex-wrap:wrap;gap:12px">
+          <div class="section-label" style="margin-bottom:0">Meeting summaries, newest first</div>
+          <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Campaign</span>
+            <select class="select" id="sumCampFilter" style="width:auto;min-width:140px;padding:9px 12px;font-size:13.5px"></select></div>
+        </div>
+        <div id="sumList"></div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script>
+
+  /* ---- sidebar ---- */
+  var side=document.getElementById('side'),scrim=document.getElementById('scrim'),sideToggle=document.getElementById('sideToggle');
+  sideToggle.addEventListener('click',function(){side.classList.toggle('open');scrim.classList.toggle('open');});
+  scrim.addEventListener('click',function(){side.classList.remove('open');scrim.classList.remove('open');});
+
+  /* ---- tabs ---- */
+  var tabs=document.querySelectorAll('.tab');
+  function activate(name){
+    tabs.forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===name);});
+    document.querySelectorAll('.tabpane').forEach(function(p){p.classList.toggle('active',p.id==='tab-'+name);});
+    if(history.replaceState)history.replaceState(null,'','#'+name);
+  }
+  tabs.forEach(function(t){t.addEventListener('click',function(){activate(t.getAttribute('data-tab'));});});
+
+  /* ---- toast ---- */
+  var toastWrap=document.getElementById('toastWrap');
+  function toast(msg,kind){
+    var t=document.createElement('div');t.className='toast'+(kind==='warn'?' warn':'');
+    t.innerHTML='<span class="tk">'+(kind==='warn'?'!':'✓')+'</span><span>'+msg+'</span>';
+    toastWrap.appendChild(t);requestAnimationFrame(function(){t.classList.add('show');});
+    setTimeout(function(){t.classList.remove('show');setTimeout(function(){t.remove();},300);},2600);
+  }
+
+  /* ===== shared data ===== */
+  var icps=[
+    {short:'ICP A', tag:'Primary persona', persona:'Placeholder: the primary buyer we target, their role, and why they buy.'},
+    {short:'ICP B', tag:'Expansion segment', persona:'Placeholder: a secondary segment to expand into once the primary lands.'}
+  ];
+  var batches=[
+    {name:'Batch 1', count:40, approved:40, icp:'ICP A', status:'Approved'},
+    {name:'Batch 2', count:52, approved:52, icp:'ICP A', status:'Approved'},
+    {name:'Batch 3', count:48, approved:0, icp:'ICP B', status:'Pending'}
+  ];
+  var campaigns=[{name:'Campaign 1', batch:'Batch 3'}];
+
+  /* ===== ICP profiles ===== */
+  var icpSel=0;
+  var icpTabs=document.getElementById('icpTabs'),icpDetail=document.getElementById('icpDetail'),
+      newIcpBtn=document.getElementById('newIcpBtn');
+  function icpGrid(){
+    return '<div class="icp-grid">'+
+      '<div class="icp-cell"><div class="k">Industry / segment</div><div class="v"><div class="icp-chips"><span class="icp-chip">Placeholder</span><span class="icp-chip">Placeholder</span></div></div></div>'+
+      '<div class="icp-cell"><div class="k">Company size</div><div class="v">Placeholder headcount band</div></div>'+
+      '<div class="icp-cell"><div class="k">Revenue band</div><div class="v">Placeholder ARR range</div></div>'+
+      '<div class="icp-cell"><div class="k">Regions / markets</div><div class="v"><div class="icp-chips"><span class="icp-chip">Placeholder</span><span class="icp-chip">Placeholder</span></div></div></div>'+
+      '<div class="icp-cell"><div class="k">Target titles</div><div class="v">Placeholder buyer titles</div></div>'+
+      '<div class="icp-cell"><div class="k">Seniority</div><div class="v">Placeholder seniority band</div></div>'+
+      '<div class="icp-cell"><div class="k">Departments</div><div class="v">Placeholder functions</div></div>'+
+      '<div class="icp-cell"><div class="k">Buying triggers</div><div class="v">Placeholder signals (hiring, funding, tooling)</div></div>'+
+      '<div class="icp-cell"><div class="k">Tech / stack signals</div><div class="v">Placeholder detected tools</div></div>'+
+      '<div class="icp-cell"><div class="k">Geographies to avoid</div><div class="v">Placeholder regions</div></div>'+
+      '<div class="icp-cell"><div class="k">Exclusions</div><div class="v"><div class="icp-chips"><span class="icp-chip warn">Competitors</span><span class="icp-chip warn">Existing customers</span></div></div></div>'+
+      '<div class="icp-cell"><div class="k">Disqualifiers</div><div class="v">Placeholder no-go criteria</div></div>'+
+    '</div>';
+  }
+  function refreshResearchSelect(){
+    var sel=document.getElementById('researchIcp');if(!sel)return;
+    var cur=sel.value;
+    sel.innerHTML=icps.map(function(p){return '<option>'+p.short+'</option>';}).join('');
+    if(cur&&icps.some(function(p){return p.short===cur;}))sel.value=cur;
+  }
+  function renderIcp(){
+    icpTabs.innerHTML='';
+    icps.forEach(function(p,i){
+      var b=document.createElement('button');b.className='icp-pill'+(i===icpSel?' on':'');b.dataset.i=i;
+      b.innerHTML='<div class="ipn">'+p.short+'</div><div class="ipt">'+p.tag+'</div>';
+      icpTabs.appendChild(b);
+    });
+    var p=icps[icpSel];
+    icpDetail.innerHTML=
+      '<div class="icp-persona"><div class="ip-ico">◑</div><div>'+
+        '<div class="ip-t">'+p.tag+'</div>'+
+        '<div class="ip-d">'+p.persona+' <span class="sample">sample</span></div></div></div>'+
+      icpGrid()+
+      '<div class="icp-foot"><div class="est"><b><span class="sample">n</span></b>estimated matching accounts <span class="sample">sample</span> · refreshed placeholder date</div>'+
+        '<div class="row"><button class="btn btn-danger btn-sm" id="delIcpBtn">Delete</button><button class="btn btn-ghost btn-sm" id="editIcpBtn">Edit '+p.short+'</button></div></div>';
+    document.getElementById('editIcpBtn').onclick=function(){toast(p.short+' editor opened');};
+    document.getElementById('delIcpBtn').onclick=function(){
+      if(icps.length<=1){toast('Keep at least one ICP','warn');return;}
+      var nm=icps[icpSel].short;icps.splice(icpSel,1);if(icpSel>=icps.length)icpSel=icps.length-1;renderIcp();toast(nm+' deleted','warn');
+    };
+    refreshResearchSelect();
+  }
+  icpTabs.addEventListener('click',function(e){var b=e.target.closest('.icp-pill');if(!b)return;icpSel=+b.dataset.i;renderIcp();});
+  newIcpBtn.addEventListener('click',function(){
+    var letter=String.fromCharCode(65+icps.length);
+    icps.push({short:'ICP '+letter, tag:'New profile', persona:'Placeholder: describe this buyer profile, their role, and why they buy.'});
+    icpSel=icps.length-1;renderIcp();toast('ICP '+letter+' created');
+  });
+  renderIcp();
+
+  /* ===== prospect list ===== */
+  var fitCls={Strong:'badge-ok',Good:'badge-info'};
+  var statusCls={'Ready':'badge-neutral','New':'badge-info','Needs review':'badge-warn'};
+  function batchBadge(b){var c=b==='Unassigned'?'badge-neutral':'badge-info';return '<span class="badge '+c+'"><span class="bdot"></span>'+b+'</span>';}
+  var listBody=document.getElementById('listBody'),rows=[],pCount=0;
+  function makeRow(d){
+    pCount++;var i=pCount;
+    var tr=document.createElement('tr');
+    tr.dataset.fit=d.fit;tr.dataset.batch=d.batch;tr.dataset.status=d.status;tr.dataset.icp=d.icp;
+    tr.dataset.text=('prospect '+i+' sample co '+i).toLowerCase();
+    tr.innerHTML='<td><input type="checkbox" class="tbl-check rowCheck" checked></td>'+
+      '<td><div class="who-cell"><div class="av-sm">P'+i+'</div><div><div class="nm">Prospect '+i+' <span class="sample">sample</span></div><div class="sub">placeholder@company.example</div></div></div></td>'+
+      '<td class="muted">Placeholder title</td>'+
+      '<td>Sample Co '+i+'</td>'+
+      '<td class="muted">'+d.icp+'</td>'+
+      '<td><span class="badge '+fitCls[d.fit]+'"><span class="bdot"></span>'+d.fit+'</span></td>'+
+      '<td class="batchCell">'+batchBadge(d.batch)+'</td>'+
+      '<td><span class="badge '+statusCls[d.status]+'"><span class="bdot"></span>'+d.status+'</span></td>';
+    return tr;
+  }
+  var seed=[
+    {fit:'Strong',batch:'Batch 3',status:'Ready',icp:'ICP A'},
+    {fit:'Strong',batch:'Batch 3',status:'Ready',icp:'ICP A'},
+    {fit:'Good',batch:'Batch 3',status:'New',icp:'ICP B'},
+    {fit:'Strong',batch:'Unassigned',status:'New',icp:'ICP A'},
+    {fit:'Good',batch:'Unassigned',status:'Needs review',icp:'ICP B'},
+    {fit:'Good',batch:'Batch 3',status:'Ready',icp:'ICP A'},
+    {fit:'Strong',batch:'Unassigned',status:'Ready',icp:'ICP B'},
+    {fit:'Good',batch:'Unassigned',status:'New',icp:'ICP A'},
+    {fit:'Strong',batch:'Batch 3',status:'Ready',icp:'ICP B'},
+    {fit:'Good',batch:'Unassigned',status:'Needs review',icp:'ICP A'}
+  ];
+  seed.forEach(function(d){var tr=makeRow(d);listBody.appendChild(tr);rows.push(tr);});
+
+  var listSearch=document.getElementById('listSearch'),filterBatch=document.getElementById('filterBatch'),
+      filterFit=document.getElementById('filterFit'),filterStatus=document.getElementById('filterStatus'),
+      shownCount=document.getElementById('shownCount'),selCount=document.getElementById('selCount'),
+      batchSelN=document.getElementById('batchSelN'),selectAll=document.getElementById('selectAll'),
+      newBatchName=document.getElementById('newBatchName'),createBatchBtn=document.getElementById('createBatchBtn'),
+      researchBtn=document.getElementById('researchBtn'),researchIcp=document.getElementById('researchIcp');
+
+  function updateSel(){
+    var sel=0;rows.forEach(function(tr){if(!tr.classList.contains('row-hidden')&&tr.querySelector('.rowCheck').checked)sel++;});
+    selCount.textContent=sel;batchSelN.textContent=sel;
+  }
+  function applyFilters(){
+    var q=listSearch.value.trim().toLowerCase(),fb=filterBatch.value,ff=filterFit.value,fs=filterStatus.value,shown=0;
+    rows.forEach(function(tr){
+      var m=(!q||tr.dataset.text.indexOf(q)>-1)&&(!fb||tr.dataset.batch===fb)&&(!ff||tr.dataset.fit===ff)&&(!fs||tr.dataset.status===fs);
+      tr.classList.toggle('row-hidden',!m);if(m)shown++;
+    });
+    shownCount.textContent=shown;updateSel();
+  }
+  listSearch.addEventListener('input',applyFilters);
+  [filterBatch,filterFit,filterStatus].forEach(function(el){el.addEventListener('change',applyFilters);});
+  listBody.addEventListener('change',function(e){if(e.target.classList.contains('rowCheck'))updateSel();});
+  selectAll.addEventListener('change',function(){
+    rows.forEach(function(tr){if(!tr.classList.contains('row-hidden'))tr.querySelector('.rowCheck').checked=selectAll.checked;});
+    updateSel();
+  });
+  researchBtn.addEventListener('click',function(){
+    var icp=researchIcp.value||icps[0].short;
+    var fits=['Strong','Good','Good','Strong','Good','Strong'];
+    for(var k=0;k<6;k++){var tr=makeRow({fit:fits[k],batch:'Unassigned',status:'New',icp:icp});listBody.insertBefore(tr,listBody.firstChild);rows.unshift(tr);}
+    toast('Researched 6 prospects from '+icp);applyFilters();
+  });
+  function registerBatch(name,count,icp){batches.push({name:name,count:count,approved:0,icp:icp,status:'Pending'});renderBatches();renderCampaigns();}
+  function createBatchFromSelection(name){
+    var picked=rows.filter(function(tr){return !tr.classList.contains('row-hidden')&&tr.querySelector('.rowCheck').checked;});
+    if(!picked.length){toast('Select at least one prospect first','warn');return;}
+    picked.forEach(function(tr){tr.dataset.batch=name;tr.querySelector('.batchCell').innerHTML=batchBadge(name);});
+    if(![].some.call(filterBatch.options,function(o){return o.value===name;})){var o=document.createElement('option');o.value=name;o.textContent=name;filterBatch.appendChild(o);}
+    var iset={};picked.forEach(function(tr){iset[tr.dataset.icp]=1;});var ik=Object.keys(iset);
+    registerBatch(name,picked.length,ik.length===1?ik[0]:'Multiple ICPs');
+    toast(name+' created with '+picked.length+' prospects, pending client approval');
+    newBatchName.value='';applyFilters();
+  }
+  createBatchBtn.addEventListener('click',function(){createBatchFromSelection(newBatchName.value.trim()||('Batch '+(batches.length+1)));});
+
+  /* ===== sendout batch ===== */
+  var sobList=document.getElementById('sobList');
+  function renderBatches(){
+    sobList.innerHTML='';var pending=0;var stc={Approved:'badge-ok',Rejected:'badge-danger',Pending:'badge-warn'};
+    batches.forEach(function(b,i){
+      if(b.status==='Pending')pending++;
+      var el=document.createElement('div');el.className='sob-card';
+      el.innerHTML='<div class="sob-ico">B'+(i+1)+'</div>'+
+        '<div class="sob-main"><div class="sob-name">'+b.name+' <span class="sample">sample</span></div>'+
+        '<div class="sob-meta"><b style="color:var(--ink)">'+b.approved+'</b> approved · <b style="color:var(--ink)">'+b.count+'</b> total prospects · sourced from '+b.icp+'</div></div>'+
+        '<span class="badge '+(stc[b.status]||'badge-neutral')+'"><span class="bdot"></span>'+b.status+'</span>'+
+        '<a href="external-status.html#approval" class="btn btn-ghost btn-xs">Client status ↗</a>';
+      sobList.appendChild(el);
+    });
+    document.getElementById('batchCnt').textContent=batches.length;
+    document.getElementById('pendingN').textContent=pending;
+  }
+  renderBatches();
+
+  /* ===== campaign ===== */
+  var campaignList=document.getElementById('campaignList'),newCampaignBtn=document.getElementById('newCampaignBtn');
+  function variantsHtml(){
+    return '<div class="variant win"><div class="variant-head"><div class="vt"><span class="vtag">A</span>Variant A <span class="badge badge-ok" style="margin-left:4px"><span class="bdot"></span>Leading</span></div>'+
+      '<div class="variant-stats"><div class="vs"><b><span class="sample">n</span>%</b>Open</div><div class="vs"><b><span class="sample">n</span>%</b>Reply</div></div></div>'+
+      '<div class="variant-body">Hi <span class="mph">{{first_name}}</span>, a placeholder opening line about the current context at <span class="mph">{{company}}</span>. Placeholder one-sentence value proposition tied to a likely pain point. Placeholder soft ask for a short call.<br><span class="mph">{{sender}}</span></div></div>'+
+      '<div class="variant"><div class="variant-head"><div class="vt"><span class="vtag">B</span>Variant B</div>'+
+      '<div class="variant-stats"><div class="vs"><b><span class="sample">n</span>%</b>Open</div><div class="vs"><b><span class="sample">n</span>%</b>Reply</div></div></div>'+
+      '<div class="variant-body">Hi <span class="mph">{{first_name}}</span>, a placeholder pattern-interrupt opener. Placeholder proof point with a concrete number. Placeholder direct ask for <span class="mph">{{time_window}}</span>.<br><span class="mph">{{sender}}</span></div></div>'+
+      '<div class="variant"><div class="variant-head"><div class="vt"><span class="vtag">C</span>Variant C</div>'+
+      '<div class="variant-stats"><div class="vs"><b><span class="sample">n</span>%</b>Open</div><div class="vs"><b><span class="sample">n</span>%</b>Reply</div></div></div>'+
+      '<div class="variant-body">Hi <span class="mph">{{first_name}}</span>, a placeholder question-led opener about <span class="mph">{{industry}}</span>. Placeholder mutual-connection or trigger-event line. Placeholder low-friction ask.<br><span class="mph">{{sender}}</span></div></div>';
+  }
+  function renderCampaigns(){
+    campaignList.innerHTML='';
+    campaigns.forEach(function(cp,ci){
+      var opts=batches.map(function(b){return '<option'+(b.name===cp.batch?' selected':'')+'>'+b.name+'</option>';}).join('');
+      var el=document.createElement('div');el.className='camp';
+      el.innerHTML='<div class="camp-head"><div class="ct"><span class="vtag">'+(ci+1)+'</span>'+cp.name+' <span class="sample">sample</span></div>'+
+        '<div class="cmeta"><span class="muted">Sendout batch</span>'+
+        '<select class="select campBatch" data-ci="'+ci+'" style="width:auto;min-width:118px;padding:8px 11px;font-size:13px">'+opts+'</select>'+
+        '<span class="badge badge-info"><span class="bdot"></span>3 variants</span>'+
+        '<button class="btn btn-accent btn-sm campSend" data-ci="'+ci+'">Send campaign <span class="arrow">→</span></button></div></div>'+
+        '<div class="camp-body">'+variantsHtml()+'</div>';
+      campaignList.appendChild(el);
+    });
+    document.getElementById('campCnt').textContent=campaigns.length;
+    campaignList.querySelectorAll('.campBatch').forEach(function(sel){
+      sel.addEventListener('change',function(){campaigns[+sel.dataset.ci].batch=sel.value;toast('Campaign linked to '+sel.value);});
+    });
+    campaignList.querySelectorAll('.campSend').forEach(function(b){
+      b.addEventListener('click',function(){var cp=campaigns[+b.dataset.ci];toast(cp.name+' sent to '+cp.batch);});
+    });
+  }
+  newCampaignBtn.addEventListener('click',function(){
+    campaigns.push({name:'Campaign '+(campaigns.length+1), batch:(batches[0]?batches[0].name:'None')});
+    renderCampaigns();
+    if(typeof populateReplyCampFilter==='function')populateReplyCampFilter();
+    if(typeof populateSumCampFilter==='function')populateSumCampFilter();
+    toast('Campaign '+campaigns.length+' created');
+  });
+  renderCampaigns();
+
+  /* ===== reply queue ===== */
+  var replies=[
+    {n:'Reply 1',role:'Placeholder title · Sample Co',campaign:'Campaign 1',batch:'Batch 3',cls:'Positive, wants a call',badge:'badge-ok',
+     quote:'Placeholder positive reply. The prospect expresses interest and asks about availability next week.',
+     draft:'Hi {{first_name}}, great to hear from you. I have a couple of windows next week. Here is a link to grab whichever suits: {{booking_link}}. Looking forward to it.'},
+    {n:'Reply 2',role:'Placeholder title · Sample Co',campaign:'Campaign 1',batch:'Batch 3',cls:'Objection: timing',badge:'badge-warn',
+     quote:'Placeholder objection reply. The prospect is interested but says the timing is wrong this quarter.',
+     draft:'Hi {{first_name}}, completely understand that timing matters. Would it help if I followed up at the start of next quarter? In the meantime here is a one-pager to keep us on your radar.'},
+    {n:'Reply 3',role:'Placeholder title · Sample Co',campaign:'Campaign 1',batch:'Batch 3',cls:'Referral: wrong person',badge:'badge-info',
+     quote:'Placeholder referral reply. The prospect says they are not the right contact and names a colleague.',
+     draft:'Hi {{first_name}}, thanks for pointing me in the right direction. I will reach out to {{referred_name}} and keep it brief.'}
+  ];
+  var replyList=document.getElementById('replyList');
+  var remaining=replies.length;
+  replies.forEach(function(r,idx){
+    var card=document.createElement('div');card.className='reply';card.id='reply-'+idx;card.dataset.campaign=r.campaign;
+    card.innerHTML=
+      '<div class="reply-head"><div class="av-sm">R'+(idx+1)+'</div>'+
+        '<div class="meta"><div class="nm">'+r.n+' <span class="sample">sample</span></div><div class="ro">'+r.role+'</div>'+
+        '<div class="tagline"><span class="ttag">'+r.campaign+'</span><span class="ttag">'+r.batch+'</span></div></div>'+
+        '<span class="badge '+r.badge+'"><span class="bdot"></span>'+r.cls+'</span></div>'+
+      '<div class="reply-quote"><span class="ql">Prospect replied</span>'+r.quote+'</div>'+
+      '<div class="reply-draft"><div class="dl">Suggested reply <span class="sample">auto-draft</span></div>'+
+        '<textarea readonly id="ta-'+idx+'">'+r.draft+'</textarea>'+
+        '<div class="reply-actions">'+
+          '<button class="btn btn-accent btn-sm" data-act="approve" data-i="'+idx+'">Approve &amp; send <span class="arrow">→</span></button>'+
+          '<button class="btn btn-ghost btn-sm" data-act="edit" data-i="'+idx+'">Edit draft</button>'+
+          '<span class="spacer"></span>'+
+          '<select class="status-select" data-i="'+idx+'"><option value="">Set status…</option><option>Follow-up scheduled</option><option>Waiting on prospect</option><option>Not interested</option><option>No action needed</option></select>'+
+        '</div></div>'+
+      '<div class="reply-sent-banner"><span>✓</span><span id="sent-'+idx+'">Approved and sent</span></div>';
+    replyList.appendChild(card);
+  });
+  function refreshCount(){
+    document.getElementById('replyCnt').textContent=remaining;
+    document.getElementById('replyBadgeN').textContent=remaining;
+    var pip=document.querySelector('.side-nav .pip');if(pip)pip.textContent=remaining;
+    if(remaining===0){
+      document.getElementById('queueEmpty').classList.add('show');
+      document.getElementById('replyBadge').className='badge badge-ok';
+      document.getElementById('replyBadge').innerHTML='<span class="bdot"></span>All handled';
+      document.getElementById('replyCnt').classList.remove('alert');
+      document.getElementById('replyCnt').textContent='0';
+    }
+  }
+  function finishReply(i,label,neutral){
+    var card=document.getElementById('reply-'+i);if(card.classList.contains('done'))return;
+    document.getElementById('sent-'+i).textContent=label;
+    if(neutral){var ban=card.querySelector('.reply-sent-banner');ban.style.background='#F1F3F6';ban.style.color='var(--ink-faint)';ban.querySelector('span').textContent='•';}
+    card.classList.add('done');remaining--;refreshCount();
+  }
+  replyList.addEventListener('click',function(e){
+    var btn=e.target.closest('button[data-act]');if(!btn)return;
+    var i=btn.getAttribute('data-i'),act=btn.getAttribute('data-act'),ta=document.getElementById('ta-'+i);
+    if(act==='edit'){
+      if(ta.hasAttribute('readonly')){ta.removeAttribute('readonly');ta.focus();var len=ta.value.length;ta.setSelectionRange(len,len);btn.textContent='Done editing';}
+      else{ta.setAttribute('readonly','');btn.textContent='Edit draft';toast('Draft updated');}
+      return;
+    }
+    if(act==='approve'){finishReply(i,'Approved, reply sent',false);toast('Reply approved and sent');}
+  });
+  replyList.addEventListener('change',function(e){
+    var sel=e.target.closest('.status-select');if(!sel||!sel.value)return;
+    finishReply(sel.getAttribute('data-i'),'Status set: '+sel.value,true);toast('Marked as: '+sel.value);
+  });
+  var replyCampFilter=document.getElementById('replyCampFilter');
+  function populateReplyCampFilter(){
+    var cur=replyCampFilter.value;
+    replyCampFilter.innerHTML='<option value="">All campaigns</option>'+campaigns.map(function(c){return '<option>'+c.name+'</option>';}).join('');
+    if(cur)replyCampFilter.value=cur;
+  }
+  function filterReplies(){
+    var v=replyCampFilter.value;
+    document.querySelectorAll('#replyList .reply').forEach(function(c){c.style.display=(!v||c.dataset.campaign===v)?'':'none';});
+  }
+  replyCampFilter.addEventListener('change',filterReplies);
+  populateReplyCampFilter();
+
+  /* ===== billing ledger ===== */
+  var ledgerBody=document.getElementById('ledgerBody');
+  var outcomes=[['Qualified','badge-ok','Received','Billed','badge-ok'],
+                ['Qualified','badge-ok','Received','Billed','badge-ok'],
+                ['No-show','badge-neutral','None','Not billable','badge-neutral'],
+                ['Qualified','badge-ok','Pending','Held','badge-warn'],
+                ['Short call','badge-neutral','Received','Not billable','badge-neutral']];
+  outcomes.forEach(function(ou,i){
+    var tr=document.createElement('tr');
+    tr.innerHTML='<td class="muted">Placeholder date</td>'+
+      '<td><div class="nm">Prospect '+(i+1)+' <span class="sample">sample</span></div><div class="sub">Sample Co '+(i+1)+'</div></td>'+
+      '<td><div class="sum-tags" style="margin:0"><span class="stag">Campaign 1</span><span class="stag">Batch 3</span></div></td>'+
+      '<td><span class="badge '+ou[1]+'"><span class="bdot"></span>'+ou[0]+'</span></td>'+
+      '<td class="muted">'+ou[2]+'</td>'+
+      '<td><span class="badge '+ou[4]+'"><span class="bdot"></span>'+ou[3]+'</span></td>'+
+      '<td style="text-align:right" class="tnum">'+(ou[3]==='Billed'?'$<span class="sample">amt</span>':'<span class="muted">·</span>')+'</td>';
+    ledgerBody.appendChild(tr);
+  });
+
+  /* ===== meeting summaries ===== */
+  var sumList=document.getElementById('sumList');
+  for(var sx=0;sx<3;sx++){
+    var cc=document.createElement('div');cc.className='sum-card';cc.dataset.campaign='Campaign 1';
+    cc.innerHTML='<div class="sum-tags"><span class="stag">Campaign 1</span><span class="stag">Batch 3</span></div>'+
+      '<div class="sh"><div><div class="sm">Meeting '+(sx+1)+' · Prospect '+(sx+1)+' <span class="sample">sample</span></div><div class="smeta">Placeholder date · Sample Co '+(sx+1)+' · recording on file</div></div>'+
+      '<span class="badge badge-ok"><span class="bdot"></span>Qualified</span></div>'+
+      '<div class="srow"><span class="sk">Attendees</span><span class="sv">Placeholder names and titles</span></div>'+
+      '<div class="srow"><span class="sk">Discussed</span><span class="sv">Placeholder summary of the conversation, pain points, and current stack.</span></div>'+
+      '<div class="srow"><span class="sk">Next step</span><span class="sv"><span class="mph">Placeholder</span>: follow-up action and owner.</span></div>'+
+      '<div class="srow"><span class="sk">Sentiment</span><span class="sv">Placeholder: qualified, warm, evaluating.</span></div>';
+    sumList.appendChild(cc);
+  }
+
+  var sumCampFilter=document.getElementById('sumCampFilter');
+  function populateSumCampFilter(){
+    var cur=sumCampFilter.value;
+    sumCampFilter.innerHTML='<option value="">All campaigns</option>'+campaigns.map(function(c){return '<option>'+c.name+'</option>';}).join('');
+    if(cur)sumCampFilter.value=cur;
+  }
+  function filterSummaries(){
+    var v=sumCampFilter.value;
+    document.querySelectorAll('#sumList .sum-card').forEach(function(c){c.style.display=(!v||c.dataset.campaign===v)?'':'none';});
+  }
+  sumCampFilter.addEventListener('change',filterSummaries);
+  populateSumCampFilter();
+
+  applyFilters();
+  refreshCount();
+  if(location.hash){var hh=location.hash.slice(1);if(document.getElementById('tab-'+hh))activate(hh);}
+
+  </script>
+  <script src="client-switch.js"></script>
+</body>
+</html>

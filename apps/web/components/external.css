@@ -1,0 +1,41 @@
+/* Shared external-page panes + success block (imported once by ExternalShell).
+   Previously duplicated in approve/book/feedback CSS. */
+.valid-pane.hide {
+  display: none;
+}
+.success-pane,
+.expired-pane {
+  display: none;
+}
+.success-pane.show,
+.expired-pane.show {
+  display: block;
+}
+.success-inner {
+  text-align: center;
+  padding: 46px 36px;
+}
+.success-inner .tick {
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: var(--cerulean);
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  font-weight: 800;
+  margin: 0 auto 20px;
+}
+.success-inner h1 {
+  font-size: 30px;
+  margin-bottom: 12px;
+}
+.success-inner p {
+  font-size: 15px;
+  color: var(--ink-soft);
+  max-width: 420px;
+  margin: 0 auto 6px;
+  line-height: 1.6;
+}

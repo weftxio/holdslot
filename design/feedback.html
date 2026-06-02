@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>How was your meeting? · HoldSlot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .rate-block{text-align:center;padding:8px 0 6px}
+  .rate-q{font-size:16px;font-weight:600;margin-bottom:18px}
+  .stars{display:inline-flex;gap:8px}
+  .star{appearance:none;background:none;border:none;cursor:pointer;font-size:42px;line-height:1;
+    color:var(--line);transition:.12s ease;padding:0}
+  .star:hover{transform:scale(1.12)}
+  .star.on{color:var(--cerulean)}
+  .star.deep{color:var(--cerulean-deep)}
+  .rate-label{font-size:13.5px;color:var(--ink-faint);margin-top:14px;min-height:20px;font-weight:600}
+
+  .qual-chips{display:flex;flex-wrap:wrap;gap:9px;justify-content:center;margin-top:6px}
+  .chip{appearance:none;background:#fff;border:1px solid var(--line);cursor:pointer;border-radius:999px;
+    padding:8px 15px;font-family:var(--sans);font-size:13px;font-weight:600;color:var(--ink-soft);
+    transition:.15s ease}
+  .chip:hover{border-color:var(--cerulean)}
+  .chip.on{background:var(--cerulean-wash);border-color:var(--cerulean);color:var(--cerulean-deep)}
+
+  .divider{display:flex;align-items:center;gap:14px;margin:26px 0 22px;color:var(--ink-faint);
+    font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+  .divider::before,.divider::after{content:"";height:1px;background:var(--line);flex:1}
+
+  .valid-pane.hide{display:none}
+  .success-pane,.expired-pane{display:none}
+  .success-pane.show,.expired-pane.show{display:block}
+  .success-inner{text-align:center;padding:46px 36px}
+  .success-inner .tick{width:62px;height:62px;border-radius:50%;background:var(--cerulean);
+    color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:28px;
+    font-weight:800;margin:0 auto 20px}
+  .success-inner h1{font-size:30px;margin-bottom:12px}
+  .success-inner p{font-size:15px;color:var(--ink-soft);max-width:380px;margin:0 auto;line-height:1.6}
+  .field-err.center{text-align:center}
+</style>
+</head>
+<body class="ext-body">
+
+<div class="state-toggle" role="group" aria-label="Demo state">
+  <span class="st-label">Link state</span>
+  <button id="btnValid" class="on">Valid</button>
+  <button id="btnExpired">Expired</button>
+</div>
+
+<div class="ext-top">
+  <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+  <span class="secure">🔒 Secure link · 30 seconds</span>
+</div>
+
+<div class="ext-main">
+  <div class="ext-card ext-card-narrow" id="card">
+
+    <!-- VALID -->
+    <div class="valid-pane" id="validPane">
+      <div class="ext-head">
+        <span class="eyebrow">Quick feedback</span>
+        <h1>How was your meeting?</h1>
+        <p>Thanks for meeting with <b>Northwind</b> <span class="sample">sample</span>. A few seconds of feedback helps us keep these intros relevant. It goes only to HoldSlot &amp; the host.</p>
+      </div>
+      <div class="ext-pad">
+        <div class="rate-block">
+          <div class="rate-q">Overall, how worthwhile was the meeting?</div>
+          <div class="stars" id="stars">
+            <button class="star" data-v="1" aria-label="1 star">★</button>
+            <button class="star" data-v="2" aria-label="2 stars">★</button>
+            <button class="star" data-v="3" aria-label="3 stars">★</button>
+            <button class="star" data-v="4" aria-label="4 stars">★</button>
+            <button class="star" data-v="5" aria-label="5 stars">★</button>
+          </div>
+          <div class="rate-label" id="rateLabel"></div>
+          <div class="field-err center" id="rateErr"></div>
+        </div>
+
+        <div class="divider">And was it relevant?</div>
+
+        <div class="qual-chips" id="chips">
+          <button class="chip" data-c="Relevant to me">Relevant to me</button>
+          <button class="chip" data-c="Good timing">Good timing</button>
+          <button class="chip" data-c="Well prepared">Well prepared</button>
+          <button class="chip" data-c="Not a fit">Not a fit</button>
+          <button class="chip" data-c="Too early">Too early</button>
+        </div>
+
+        <div class="field" style="margin:24px 0 18px">
+          <label for="comment">Anything to add? <span class="opt">· optional</span></label>
+          <textarea class="textarea" id="comment" placeholder="Placeholder: what was useful, or what would have made it better."></textarea>
+        </div>
+
+        <button class="btn btn-primary" id="submitBtn" style="width:100%">Submit feedback <span class="arrow">→</span></button>
+        <p class="muted" style="font-size:12px;text-align:center;margin-top:14px">Your rating won't be shared with anyone you'd meet again.</p>
+      </div>
+    </div>
+
+    <!-- SUCCESS -->
+    <div class="success-pane" id="successPane">
+      <div class="success-inner">
+        <div class="tick">✓</div>
+        <h1>Thank you.</h1>
+        <p>Your feedback's been recorded. It helps HoldSlot make every introduction more relevant, and it confirms this meeting for the host.</p>
+        <p class="muted" style="font-size:13px;margin-top:16px">You can close this page now.</p>
+      </div>
+    </div>
+
+    <!-- EXPIRED -->
+    <div class="expired-pane" id="expiredPane">
+      <div class="expired-card">
+        <div class="xmark">⏱</div>
+        <h1>This feedback link has expired</h1>
+        <p>Feedback links stay open for a short window after the meeting. This one has closed.</p>
+        <p>That's completely fine. No action needed on your end.</p>
+        <div style="margin-top:26px"><a href="home.html" class="btn btn-ghost">Back to HoldSlot</a></div>
+      </div>
+    </div>
+
+    <div class="ext-foot" id="foot">
+      <span class="by"><span style="width:9px;height:9px;border-radius:50%;background:var(--cerulean);display:inline-block"></span>Feedback by HoldSlot</span>
+      <span class="muted" style="font-size:12px">Anonymous to other prospects.</span>
+    </div>
+  </div>
+</div>
+
+<script>
+  /* stars */
+  var stars=document.querySelectorAll('.star'),rateLabel=document.getElementById('rateLabel'),
+      rateErr=document.getElementById('rateErr'),rating=0;
+  var labels={1:'Not worthwhile',2:'Below expectations',3:'Okay',4:'Worthwhile',5:'Excellent, would meet again'};
+  function paint(n,deep){stars.forEach(function(s){var v=+s.getAttribute('data-v');
+    s.classList.toggle('on',v<=n);s.classList.toggle('deep',deep&&v<=n);});}
+  stars.forEach(function(s){
+    s.addEventListener('mouseenter',function(){paint(+s.getAttribute('data-v'),false);});
+    s.addEventListener('click',function(){rating=+s.getAttribute('data-v');paint(rating,true);
+      rateLabel.textContent=labels[rating];rateErr.textContent='';});
+  });
+  document.getElementById('stars').addEventListener('mouseleave',function(){
+    paint(rating,true);rateLabel.textContent=rating?labels[rating]:'';});
+
+  /* chips */
+  document.getElementById('chips').addEventListener('click',function(e){
+    var c=e.target.closest('.chip');if(!c)return;c.classList.toggle('on');});
+
+  /* submit */
+  document.getElementById('submitBtn').addEventListener('click',function(){
+    if(!rating){rateErr.textContent='Please pick a rating first.';
+      document.getElementById('stars').animate(
+        [{transform:'translateX(-4px)'},{transform:'translateX(4px)'},{transform:'none'}],{duration:220});
+      return;}
+    this.textContent='Submitting…';this.disabled=true;
+    setTimeout(function(){
+      document.getElementById('validPane').classList.add('hide');
+      document.getElementById('successPane').classList.add('show');
+      document.getElementById('foot').style.display='none';
+    },600);
+  });
+
+  /* state toggle */
+  var bv=document.getElementById('btnValid'),be=document.getElementById('btnExpired'),
+      validPane=document.getElementById('validPane'),expiredPane=document.getElementById('expiredPane'),
+      successPane=document.getElementById('successPane'),foot=document.getElementById('foot');
+  function setState(st){
+    var expired=st==='expired';
+    bv.classList.toggle('on',!expired);be.classList.toggle('on',expired);
+    validPane.classList.toggle('hide',expired);
+    successPane.classList.remove('show');
+    expiredPane.classList.toggle('show',expired);
+    foot.style.display=expired?'none':'';
+  }
+  bv.addEventListener('click',function(){setState('valid');});
+  be.addEventListener('click',function(){setState('expired');});
+  var p=new URLSearchParams(location.search).get('state');if(p==='expired')setState('expired');
+</script>
+</body>
+</html>

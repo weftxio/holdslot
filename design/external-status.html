@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoldSlot · Client Action Status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="holdslot.css">
+<style>
+  .page-head{display:flex;align-items:flex-end;justify-content:space-between;gap:18px;
+    margin-bottom:18px;flex-wrap:wrap}
+  .page-head h1{font-size:30px}
+  .page-head .sub{font-size:13.5px;color:var(--ink-faint);margin-top:5px}
+  .back-btn{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;
+    color:var(--ink-soft);border:1px solid var(--line);border-radius:8px;padding:9px 14px;
+    transition:.15s ease;margin-bottom:18px}
+  .back-btn:hover{border-color:var(--ink);color:var(--ink)}
+  .back-btn .bk{transition:transform .15s ease}
+  .back-btn:hover .bk{transform:translateX(-3px)}
+
+  .tabs{margin-bottom:22px}
+
+  /* the two-part layout: template + log */
+  .es-grid{display:grid;grid-template-columns:380px 1fr;gap:22px;align-items:start}
+  @media(max-width:1000px){.es-grid{grid-template-columns:1fr}}
+
+  /* summary chips */
+  .es-summary{display:flex;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden;
+    margin-bottom:20px}
+  .es-summary .esc{padding:14px 20px;border-right:1px solid var(--line);flex:1}
+  .es-summary .esc:last-child{border-right:none}
+  .es-summary .esc .ecap{font-size:11px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--ink-faint);margin-bottom:8px}
+  .es-summary .esc .en{font-family:var(--display);font-size:26px;font-weight:500;color:var(--ink)}
+  .es-summary .esc.accent{background:var(--cerulean-wash)}
+  .es-summary .esc.accent .en{color:var(--cerulean-deep)}
+
+  /* email/sendout template preview */
+  .tmpl{position:sticky;top:84px}
+  .tmpl-mail{border:1px solid var(--line);border-radius:11px;overflow:hidden;background:#fff}
+  .tmpl-mailhead{padding:13px 16px;border-bottom:1px solid var(--line-soft);background:#FCFDFE}
+  .tmpl-mailhead .trow{display:flex;gap:9px;font-size:12.5px;margin-bottom:5px}
+  .tmpl-mailhead .trow:last-child{margin-bottom:0}
+  .tmpl-mailhead .trow .tk{color:var(--ink-faint);min-width:48px;font-weight:600}
+  .tmpl-mailhead .trow .tv{color:var(--ink);font-weight:500}
+  .tmpl-mailhead .trow .tv.subj{font-weight:700}
+  .tmpl-body{padding:18px 18px 20px;font-size:13px;line-height:1.6;color:var(--ink-soft)}
+  .tmpl-body p{margin-bottom:12px}
+  .tmpl-body .mph{background:var(--cerulean-wash);border-radius:4px;padding:0 5px;
+    color:var(--cerulean-deep);font-weight:600;font-size:12px}
+  .tmpl-cta{display:inline-block;background:var(--ink);color:#fff;font-weight:600;font-size:13px;
+    border-radius:8px;padding:10px 18px;margin:4px 0 6px}
+  .tmpl-foot{font-size:11.5px;color:var(--ink-faint);border-top:1px solid var(--line-soft);
+    padding:12px 16px;display:flex;align-items:center;gap:7px}
+  .tmpl-actions{display:flex;gap:9px;margin-top:14px;flex-wrap:wrap}
+  .tmpl-meta{font-size:12px;color:var(--ink-faint);margin-top:12px;line-height:1.5}
+
+  /* feedback stars in log */
+  .stars-sm{color:var(--cerulean);font-size:14px;letter-spacing:1px;white-space:nowrap}
+  .stars-sm .off{color:var(--line)}
+  .log-comment{color:var(--ink-soft);font-size:12.5px;max-width:280px;line-height:1.45}
+
+  .es-section{display:none}
+  .es-section.active{display:block}
+
+  /* booking log cards with embedded invite email */
+  .bk-card{border:1px solid var(--line);border-radius:13px;overflow:hidden;margin-bottom:14px}
+  .bk-top{display:flex;align-items:center;gap:16px;padding:15px 20px;flex-wrap:wrap}
+  .bk-ico{width:40px;height:40px;border-radius:10px;background:var(--cerulean-wash);color:var(--cerulean-deep);
+    display:flex;align-items:center;justify-content:center;font-family:var(--display);font-weight:600;flex-shrink:0}
+  .bk-main{flex:1;min-width:170px}
+  .bk-main .bn{font-weight:700;font-size:14.5px;display:flex;align-items:center;gap:8px}
+  .bk-main .bm{font-size:12.5px;color:var(--ink-faint);margin-top:4px}
+  .bk-invite{border-top:1px solid var(--line-soft);background:#FCFDFE;padding:15px 20px}
+  .bk-invite-label{font-size:10.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;
+    color:var(--cerulean-deep);margin-bottom:9px}
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="side" id="side">
+    <div class="side-top">
+      <a href="home.html" class="logo"><span class="dot"></span>HoldSlot</a>
+      <div class="client-switch" id="clientSwitch">
+        <button class="client-btn" id="clientBtn" type="button">
+          <span class="c-av" id="clientAv">N</span>
+          <span class="c-info"><span class="c-name" id="clientName">Northwind</span><span class="c-slug" id="clientSlug">holdslot.com/northwind</span></span>
+          <span class="c-caret">▾</span>
+        </button>
+        <div class="client-menu" id="clientMenu"></div>
+      </div>
+    </div>
+    <nav class="side-nav">
+      <span class="grp">Get Meeting</span>
+      <a href="overview.html"><span class="ico">◧</span>Overview</a>
+      <a href="workspace.html"><span class="ico">▤</span>Workspace</a>
+      <span class="grp">Client Action Status</span>
+      <a href="external-status.html#approval" data-side="approval"><span class="ico">▢</span>List approval</a>
+      <a href="external-status.html#booking" data-side="booking"><span class="ico">▢</span>Booking links</a>
+      <a href="external-status.html#feedback" data-side="feedback"><span class="ico">▢</span>Feedback forms</a>
+    </nav>
+    <div class="side-foot">
+      <div class="av">OP</div>
+      <div class="who">Operator <span>Outbound desk</span></div>
+      <a href="login.html" class="out" title="Sign out">⏻</a>
+    </div>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div class="row">
+        <button class="side-toggle" id="sideToggle" aria-label="Menu">≡</button>
+        <div class="crumb"><b data-client-name>Northwind</b> <span class="sep">/</span> Client Action Status <span class="sep">/</span> <span id="crumbSub">List approval</span></div>
+      </div>
+      <div class="topbar-right">
+      </div>
+    </div>
+
+    <div class="content">
+      <a href="workspace.html#batches" id="backBtn" class="back-btn"><span class="bk">←</span>Back to Sendout Batch</a>
+
+      <div class="page-head">
+        <div>
+          <h1>Client Action Status</h1>
+          <div class="sub">What gets sent to clients and prospects, and what's come back · all records <span class="sample">sample</span></div>
+        </div>
+      </div>
+
+      <!-- TABS -->
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="approval">List approval</button>
+        <button class="tab" data-tab="booking">Booking links</button>
+        <button class="tab" data-tab="feedback">Feedback forms</button>
+      </div>
+
+      <!-- ============ LIST APPROVAL ============ -->
+      <section class="es-section active" id="es-approval">
+        <div class="es-summary">
+          <div class="esc"><div class="ecap">Total prospects</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc"><div class="ecap">Approved</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc"><div class="ecap">Message sent</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc accent"><div class="ecap">Booked meeting</div><div class="en"><span class="sample">n</span></div></div>
+        </div>
+
+        <div class="between" style="margin-bottom:18px;flex-wrap:wrap;gap:12px">
+          <div class="row" style="gap:8px"><span class="muted" style="font-size:13px">Sendout batch</span>
+            <select class="select" id="approvalBatchSel" style="width:auto;min-width:160px;padding:9px 12px;font-size:13.5px"></select></div>
+        </div>
+
+        <div class="es-grid">
+          <!-- TEMPLATE -->
+          <div class="tmpl">
+            <div class="panel">
+              <div class="panel-head">
+                <div><h3>Sendout template</h3><div class="ph-sub">The approval request the client receives</div></div>
+                <span class="badge badge-ok"><span class="bdot"></span>Active</span>
+              </div>
+              <div class="panel-pad">
+                <div class="tmpl-mail">
+                  <div class="tmpl-mailhead">
+                    <div class="trow"><span class="tk">From</span><span class="tv">HoldSlot on behalf of Northwind</span></div>
+                    <div class="trow"><span class="tk">To</span><span class="tv">Client contact</span></div>
+                    <div class="trow"><span class="tk">Subject</span><span class="tv subj">Northwind: your prospect list is ready to approve</span></div>
+                  </div>
+                  <div class="tmpl-body">
+                    <p>Hi <span class="mph">{{client_name}}</span>, we've prepared a new batch of <span class="mph">{{count}}</span> prospects matched to your brief.</p>
+                    <p>Nothing is contacted until you approve. Review the list, then approve it or flag anyone who isn't a fit.</p>
+                    <a class="tmpl-cta">Review the list</a>
+                  </div>
+                  <div class="tmpl-foot"><span style="width:8px;height:8px;border-radius:50%;background:var(--cerulean);display:inline-block"></span>Secure link, expires after a set window</div>
+                </div>
+                <div class="tmpl-actions">
+                  <button class="btn btn-accent btn-sm" onclick="toast('Approval request sent to client')">Send to client <span class="arrow">→</span></button>
+                  <button class="btn btn-ghost btn-sm" onclick="toast('Template editor opened')">Edit template</button>
+                  <a href="client-approval.html" target="_blank" class="btn btn-ghost btn-sm">Preview live page ↗</a>
+                </div>
+                <div class="tmpl-meta">Last edited placeholder date · sent automatically when a new batch is ready for review.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- LOG -->
+          <div class="panel">
+            <div class="panel-head">
+              <div><h3>Status log</h3><div class="ph-sub">Every approval request and how the client responded</div></div>
+              <a href="client-approval.html" target="_blank" class="btn btn-ghost btn-sm">Open client page ↗</a>
+            </div>
+            <div style="overflow-x:auto">
+              <table class="tbl">
+                <thead><tr><th>Batch</th><th>Sent</th><th>Prospects</th><th>Responded</th><th>Status</th></tr></thead>
+                <tbody id="approvalLog"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ============ BOOKING LINKS ============ -->
+      <section class="es-section" id="es-booking">
+        <div class="es-summary">
+          <div class="esc"><div class="ecap">Links sent</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc accent"><div class="ecap">Meetings accepted</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc"><div class="ecap">Expired unused</div><div class="en">1</div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h3>Status log</h3><div class="ph-sub">Links sent, the meeting each prospect accepted, and the invitation email under each row</div></div>
+          </div>
+          <div class="panel-pad"><div id="bookingLog"></div></div>
+        </div>
+      </section>
+
+      <!-- ============ FEEDBACK FORMS ============ -->
+      <section class="es-section" id="es-feedback">
+        <div class="es-summary">
+          <div class="esc"><div class="ecap">Forms sent</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc accent"><div class="ecap">Responses</div><div class="en"><span class="sample">n</span></div></div>
+          <div class="esc"><div class="ecap">Average rating</div><div class="en"><span class="sample">n</span></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div><h3>Feedback history</h3><div class="ph-sub">Ratings and comments returned by prospects</div></div>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="tbl">
+              <thead><tr><th>Prospect</th><th>Meeting</th><th>Rating</th><th>Comment</th><th>Received</th></tr></thead>
+              <tbody id="feedbackLog"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+    </div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<script>
+  /* ---- sidebar ---- */
+  var side=document.getElementById('side'),scrim=document.getElementById('scrim'),sideToggle=document.getElementById('sideToggle');
+  sideToggle.addEventListener('click',function(){side.classList.toggle('open');scrim.classList.toggle('open');});
+  scrim.addEventListener('click',function(){side.classList.remove('open');scrim.classList.remove('open');});
+
+  /* ---- toast ---- */
+  var toastWrap=document.getElementById('toastWrap');
+  function toast(msg,kind){
+    var t=document.createElement('div');t.className='toast'+(kind==='warn'?' warn':'');
+    t.innerHTML='<span class="tk">'+(kind==='warn'?'!':'✓')+'</span><span>'+msg+'</span>';
+    toastWrap.appendChild(t);requestAnimationFrame(function(){t.classList.add('show');});
+    setTimeout(function(){t.classList.remove('show');setTimeout(function(){t.remove();},300);},2400);
+  }
+
+  /* ---- tabs + sidebar sync ---- */
+  var tabs=document.querySelectorAll('.tab');
+  function activate(name){
+    tabs.forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===name);});
+    document.querySelectorAll('.es-section').forEach(function(s){s.classList.toggle('active',s.id==='es-'+name);});
+    document.querySelectorAll('.side-nav a[data-side]').forEach(function(a){
+      a.classList.toggle('active',a.getAttribute('data-side')===name);});
+    var back=document.getElementById('backBtn');
+    if(back){
+      var map={approval:['workspace.html#batches','Back to Sendout Batch'],booking:['workspace.html#campaign','Back to Campaign'],feedback:['workspace.html#summaries','Back to Meeting summaries']};
+      var m=map[name]||['workspace.html','Back to workspace'];
+      back.href=m[0];back.innerHTML='<span class="bk">←</span>'+m[1];
+    }
+    var crumbSub=document.getElementById('crumbSub');
+    if(crumbSub){var lab={approval:'List approval',booking:'Booking links',feedback:'Feedback forms'};crumbSub.textContent=lab[name]||name;}
+    if(history.replaceState)history.replaceState(null,'','#'+name);
+  }
+  tabs.forEach(function(t){t.addEventListener('click',function(){activate(t.getAttribute('data-tab'));});});
+  var h=(location.hash||'').slice(1);activate(['approval','booking','feedback'].indexOf(h)>-1?h:'approval');
+  window.addEventListener('hashchange',function(){var hh=location.hash.slice(1);if(['approval','booking','feedback'].indexOf(hh)>-1)activate(hh);});
+
+  /* ---- approval log ---- */
+  var aLog=[
+    ['Batch 3','2 days ago','48','Not yet','Pending','badge-warn'],
+    ['Batch 2','placeholder','52','placeholder date','Approved','badge-ok'],
+    ['Batch 1','placeholder','40','placeholder date','Approved','badge-ok'],
+    ['Batch 1 (rev)','placeholder','6','placeholder date','Changes requested','badge-danger']
+  ];
+  var ab=document.getElementById('approvalLog');
+  aLog.forEach(function(r){
+    var tr=document.createElement('tr');tr.dataset.batch=r[0];
+    tr.innerHTML='<td><span class="nm">'+r[0]+'</span> <span class="sample">sample</span></td>'+
+      '<td class="muted">'+r[1]+'</td>'+
+      '<td class="num">'+r[2]+'</td>'+
+      '<td class="muted">'+r[3]+'</td>'+
+      '<td><span class="badge '+r[5]+'"><span class="bdot"></span>'+r[4]+'</span></td>';
+    ab.appendChild(tr);
+  });
+  var approvalBatchSel=document.getElementById('approvalBatchSel');
+  approvalBatchSel.innerHTML='<option value="">All batches</option>'+aLog.map(function(r){return '<option>'+r[0]+'</option>';}).join('');
+  approvalBatchSel.addEventListener('change',function(){
+    var v=approvalBatchSel.value;
+    ab.querySelectorAll('tr').forEach(function(tr){tr.style.display=(!v||tr.dataset.batch===v)?'':'none';});
+  });
+
+  /* ---- booking log ---- */
+  var bLog=[
+    ['Prospect 1','placeholder','Placeholder day, time','Booked','badge-ok'],
+    ['Prospect 2','placeholder','Awaiting choice','Pending','badge-warn'],
+    ['Prospect 3','placeholder','None','Expired','badge-danger'],
+    ['Prospect 4','placeholder','Placeholder day, time','Booked','badge-ok'],
+    ['Prospect 5','placeholder','Placeholder day, time','Booked','badge-ok']
+  ];
+  var bb=document.getElementById('bookingLog');
+  bLog.forEach(function(r,i){
+    var card=document.createElement('div');card.className='bk-card';
+    card.innerHTML='<div class="bk-top">'+
+      '<div class="bk-ico">P'+(i+1)+'</div>'+
+      '<div class="bk-main"><div class="bn">'+r[0]+' <span class="sample">sample</span></div>'+
+       '<div class="bm">Sample Co '+(i+1)+' \u00b7 link sent '+r[1]+' \u00b7 slot: '+r[2]+'</div></div>'+
+      '<span class="badge '+r[4]+'"><span class="bdot"></span>'+r[3]+'</span></div>'+
+      '<div class="bk-invite"><div class="bk-invite-label">Invitation email sent</div>'+
+        '<div class="tmpl-mail"><div class="tmpl-mailhead">'+
+          '<div class="trow"><span class="tk">Subject</span><span class="tv subj">'+r[0]+', grab a time with Northwind</span></div></div>'+
+          '<div class="tmpl-body"><p>Hi '+r[0]+', thanks for your interest. Pick a time that suits you and it lands on both calendars. Calls may be recorded so we can share a short summary with the host.</p><a class="tmpl-cta">Pick a time</a></div>'+
+        '</div></div>';
+    bb.appendChild(card);
+  });
+
+  /* ---- feedback log ---- */
+  function stars(n){var s='';for(var i=1;i<=5;i++){s+=i<=n?'★':'<span class="off">★</span>';}return '<span class="stars-sm">'+s+'</span>';}
+  var fLog=[
+    ['Prospect 1',4,'Placeholder comment about a useful, relevant call.','placeholder date','badge-ok','Received'],
+    ['Prospect 2',5,'Placeholder comment, well prepared and on point.','placeholder date','badge-ok','Received'],
+    ['Prospect 4',3,'Placeholder comment, interested but early.','placeholder date','badge-ok','Received'],
+    ['Prospect 5',0,'No response yet','Not yet','badge-warn','Awaiting']
+  ];
+  var fb=document.getElementById('feedbackLog');
+  fLog.forEach(function(r,i){
+    var tr=document.createElement('tr');
+    tr.innerHTML='<td><div class="who-cell"><div class="av-sm">P'+(i+1)+'</div><div><div class="nm">'+r[0]+' <span class="sample">sample</span></div><div class="sub">Sample Co '+(i+1)+'</div></div></div></td>'+
+      '<td class="muted">Meeting '+(i+1)+'</td>'+
+      '<td>'+(r[1]?stars(r[1]):'<span class="muted">Pending</span>')+'</td>'+
+      '<td><div class="log-comment">'+r[2]+'</div></td>'+
+      '<td><span class="badge '+r[4]+'"><span class="bdot"></span>'+r[5]+'</span></td>';
+    fb.appendChild(tr);
+  });
+</script>
+  <script src="client-switch.js"></script>
+</body>
+</html>

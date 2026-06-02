@@ -1,0 +1,11 @@
+{
+  "name": "holdslot",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "scripts": {
+    "dev": "pnpm --filter @holdslot/web dev",
+    "build": "pnpm --filter @holdslot/web build",
+    "start": "pnpm --filter @holdslot/web start",
+    "lint": "pnpm --filter @holdslot/web lint"
+  }
+}

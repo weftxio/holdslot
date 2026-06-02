@@ -1,0 +1,4 @@
+packages:
+  - apps/web
+# apps/api is Python (managed outside the JS workspace).
+# packages/* (e.g. shared-types) added when promoted from apps/web/lib/types.ts.

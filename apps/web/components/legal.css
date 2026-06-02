@@ -1,0 +1,101 @@
+/* Self-contained legal-page styles. Class-scoped only (no bare element selectors) so
+   nothing leaks across routes. Tokens come from globals.css. */
+.legal {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+}
+.legal-top {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 0 28px;
+  height: 64px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(10px);
+}
+.legal-main {
+  flex: 1;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 48px 28px 64px;
+}
+.legal-main h1 {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: clamp(30px, 4vw, 42px);
+  letter-spacing: -0.025em;
+  line-height: 1.07;
+  margin-bottom: 10px;
+}
+.legal-main .updated {
+  font-size: 13.5px;
+  color: var(--ink-faint);
+  margin-bottom: 36px;
+}
+.legal-main h2 {
+  font-family: var(--display);
+  font-weight: 500;
+  font-size: 21px;
+  letter-spacing: -0.015em;
+  margin: 34px 0 12px;
+}
+.legal-main p {
+  font-size: 15px;
+  color: var(--ink-soft);
+  line-height: 1.65;
+  margin-bottom: 14px;
+}
+.legal-main ul {
+  margin: 0 0 14px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.legal-main li {
+  font-size: 15px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+.legal-main a {
+  color: var(--cerulean-deep);
+  font-weight: 600;
+}
+.legal-main a:hover {
+  text-decoration: underline;
+}
+.legal-note {
+  font-size: 13px;
+  color: var(--ink-faint);
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.legal-foot {
+  border-top: 1px solid var(--line);
+  padding: 24px 28px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  max-width: 760px;
+  margin: 0 auto;
+  width: 100%;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+.legal-links {
+  display: flex;
+  gap: 20px;
+}
+.legal-links a:hover {
+  color: var(--ink);
+}

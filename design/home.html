@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HoldSlot · Qualified meetings, booked for you</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Archivo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --cerulean:#9BB7D6;
+    --cerulean-deep:#5E7C9E;   /* darker tint for text/contrast use */
+    --cerulean-wash:#EEF3F9;   /* very light tint for surfaces */
+    --ink:#0E1116;
+    --ink-soft:#4A4F59;
+    --line:#E4E7EC;
+    --paper:#FFFFFF;
+    --maxw:1080px;
+    --display:"Fraunces", Georgia, serif;
+    --sans:"Archivo", system-ui, sans-serif;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{font-family:var(--sans);color:var(--ink);background:var(--paper);-webkit-font-smoothing:antialiased;line-height:1.5}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 28px}
+
+  /* placeholder marker */
+  .ph{outline:1px dashed #B9C2CF;outline-offset:2px;
+    background:repeating-linear-gradient(45deg,#fafbfd,#fafbfd 6px,#eef2f7 6px,#eef2f7 12px)}
+  .ph-tag{position:absolute;top:8px;left:8px;font-size:9px;letter-spacing:.08em;
+    text-transform:uppercase;color:#9aa3b2;font-weight:700}
+
+  /* buttons */
+  .btn{display:inline-flex;align-items:center;gap:9px;font-family:var(--sans);font-weight:600;
+    font-size:15px;border-radius:9px;padding:14px 22px;transition:.18s ease;cursor:pointer;
+    border:1px solid transparent;white-space:nowrap;background:none}
+  .btn-primary{background:var(--ink);color:#fff}
+  .btn-primary:hover{background:#000;transform:translateY(-1px)}
+  .btn-ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+  .btn-ghost:hover{border-color:var(--ink)}
+  .arrow{font-size:13px;transition:transform .18s ease}
+  .btn:hover .arrow{transform:translateX(3px)}
+
+  /* nav */
+  header{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.88);
+    backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+  nav{display:flex;align-items:center;justify-content:space-between;height:68px}
+  .logo{font-family:var(--display);font-weight:600;font-size:23px;letter-spacing:-.02em;
+    display:flex;align-items:center;gap:9px}
+  .logo .dot{width:11px;height:11px;border-radius:50%;background:var(--cerulean);display:inline-block}
+  .nav-links{display:flex;gap:30px;align-items:center;font-size:14.5px;font-weight:500;color:var(--ink-soft)}
+  .nav-links a:hover{color:var(--ink)}
+  .nav-cta{display:flex;gap:12px;align-items:center}
+  .menu-btn{display:none;background:none;border:none;cursor:pointer;font-size:24px;color:var(--ink);line-height:1}
+  .mobile-menu{display:none;flex-direction:column;gap:4px;padding:12px 28px 22px;border-bottom:1px solid var(--line);background:#fff}
+  .mobile-menu a{padding:12px 0;font-size:16px;font-weight:500;border-bottom:1px solid var(--line)}
+  .mobile-menu .btn{margin-top:14px;justify-content:center}
+  @media(max-width:780px){
+    .nav-links{display:none}
+    .nav-cta .btn-ghost{display:none}
+    .menu-btn{display:block}
+    .mobile-menu.open{display:flex}
+  }
+
+  /* hero */
+  .hero{padding:80px 0 60px}
+  .hero-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:54px;align-items:center}
+  @media(max-width:900px){.hero-grid{grid-template-columns:1fr;gap:38px}}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;font-weight:700;
+    letter-spacing:.12em;text-transform:uppercase;color:var(--cerulean-deep);margin-bottom:20px}
+  .eyebrow::before{content:"";width:22px;height:2px;background:var(--cerulean)}
+  h1{font-family:var(--display);font-weight:500;font-size:clamp(40px,5.4vw,66px);
+    line-height:1.03;letter-spacing:-.025em;margin-bottom:20px}
+  h1 em{font-style:italic;color:var(--cerulean-deep)}
+  .sub{font-size:18.5px;color:var(--ink-soft);max-width:500px;margin-bottom:32px;line-height:1.55}
+  .hero-ctas{display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+  .hero-note{font-size:13.5px;color:#8b93a1;margin-top:18px}
+  .hero-note b{color:var(--ink-soft);font-weight:600}
+  .hero-visual{position:relative;aspect-ratio:5/4.6;border-radius:16px;overflow:hidden}
+
+  /* stat strip (kept, it's the result proof, core to positioning) */
+  .stats{padding:8px 0 64px}
+  .stat-grid{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--line);
+    border-radius:16px;overflow:hidden;background:var(--cerulean-wash)}
+  @media(max-width:680px){.stat-grid{grid-template-columns:1fr}}
+  .stat{padding:38px 32px;border-right:1px solid var(--line);position:relative}
+  .stat:last-child{border-right:none}
+  @media(max-width:680px){.stat{border-right:none;border-bottom:1px solid var(--line)}.stat:last-child{border-bottom:none}}
+  .stat .num{font-family:var(--display);font-size:50px;font-weight:500;letter-spacing:-.03em;
+    line-height:1;color:var(--cerulean-deep);display:flex;align-items:baseline;gap:3px}
+  .stat .num .ph-inline{display:inline-block;min-width:74px;height:42px;border-radius:5px;position:relative}
+  .stat .label{margin-top:13px;font-size:14.5px;color:var(--ink-soft);font-weight:500;line-height:1.45}
+
+  /* section head */
+  .sec-head{text-align:center;max-width:640px;margin:0 auto 52px}
+  .sec-head .eyebrow{justify-content:center}
+  .sec-head .eyebrow::before{display:none}
+  h2{font-family:var(--display);font-weight:500;font-size:clamp(30px,3.8vw,44px);
+    letter-spacing:-.025em;line-height:1.07}
+  .sec-head p{font-size:17px;color:var(--ink-soft);margin-top:16px;line-height:1.55}
+
+  /* trust */
+  .trust{padding:90px 0}
+  .trust-grid{display:grid;grid-template-columns:1fr 1fr;gap:60px;align-items:center}
+  @media(max-width:840px){.trust-grid{grid-template-columns:1fr;gap:38px}}
+  .trust h2{margin-bottom:24px}
+  .trust-list{list-style:none;display:flex;flex-direction:column;gap:20px}
+  .trust-list li{display:flex;gap:15px;align-items:flex-start}
+  .check{flex-shrink:0;width:26px;height:26px;border-radius:50%;background:var(--cerulean-wash);
+    color:var(--cerulean-deep);display:flex;align-items:center;justify-content:center;
+    font-size:13px;font-weight:800;margin-top:2px}
+  .trust-list strong{display:block;font-size:16.5px;margin-bottom:3px;font-weight:700}
+  .trust-list span{font-size:14.5px;color:var(--ink-soft);line-height:1.5}
+  .trust-visual{position:relative;aspect-ratio:1/1;border-radius:16px}
+
+  /* final = combined pricing + lead magnet (single CTA block) */
+  .final{padding:96px 0}
+  .final-card{background:var(--ink);color:#fff;border-radius:24px;padding:66px 52px;text-align:center;position:relative;overflow:hidden}
+  @media(max-width:620px){.final-card{padding:48px 26px}}
+  .final-card .pill{display:inline-block;font-size:12px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--cerulean);border:1px solid var(--cerulean-deep);border-radius:999px;padding:6px 14px;margin-bottom:24px}
+  .final-card h2{color:#fff}
+  .final-card .price-line{font-size:15px;color:rgba(255,255,255,.7);margin-top:14px}
+  .final-card .price-line b{color:#fff;font-weight:600}
+  .final-card p.lead-copy{font-size:17px;color:rgba(255,255,255,.82);max-width:480px;margin:22px auto 0;line-height:1.55}
+  .lead-form{display:flex;gap:10px;max-width:470px;margin:30px auto 0;flex-wrap:wrap;justify-content:center}
+  .lead-form input{flex:1;min-width:220px;border:1px solid transparent;border-radius:10px;
+    padding:15px 18px;font-family:var(--sans);font-size:15px;color:var(--ink);background:#fff;outline:none}
+  .lead-form input:focus{border-color:var(--cerulean)}
+  .lead-form input.err{border-color:#E2675F;background:#fff5f4}
+  .lead-form .btn{background:var(--cerulean);color:var(--ink);border:none}
+  .lead-form .btn:hover{background:#88a8cb}
+  .form-msg{font-size:13.5px;margin-top:14px;min-height:18px}
+  .form-msg.error{color:#ffb0aa}
+  .final-sub{font-size:13px;color:rgba(255,255,255,.65);margin-top:16px}
+  .final-sub a{color:#fff;text-decoration:underline}
+  .success-state{display:none}
+  .success-state.show{display:block;animation:fade .4s ease}
+  .form-state.hide{display:none}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+  .success-state .tick{width:54px;height:54px;border-radius:50%;background:var(--cerulean);
+    color:var(--ink);display:flex;align-items:center;justify-content:center;font-size:26px;
+    font-weight:800;margin:0 auto 18px}
+
+  /* footer */
+  footer{padding:46px 0 38px;border-top:1px solid var(--line)}
+  .foot-row{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap}
+  .foot-row .logo{font-size:20px}
+  .foot-links{display:flex;gap:24px;font-size:14px;color:var(--ink-soft);flex-wrap:wrap}
+  .foot-links a:hover{color:var(--ink)}
+  .foot-copy{font-size:13px;color:#9aa3b2;margin-top:24px}
+
+  /* reveal */
+  .reveal{opacity:0;transform:translateY(16px);transition:.55s cubic-bezier(.2,.7,.3,1)}
+  .reveal.in{opacity:1;transform:none}
+
+  /* ============ scroll animations (3 sections) ============ */
+  @media (prefers-reduced-motion: no-preference){
+    .anim{opacity:0;transform:translateY(30px);
+      transition:opacity .7s cubic-bezier(.2,.7,.3,1),transform .7s cubic-bezier(.2,.7,.3,1)}
+    .anim.in{opacity:1;transform:none}
+    .formula>.anim:nth-child(2){transition-delay:.07s}
+    .formula>.anim:nth-child(3){transition-delay:.14s}
+    .formula>.anim:nth-child(4){transition-delay:.21s}
+    .formula>.anim:nth-child(5){transition-delay:.28s}
+    .trust-list li.anim:nth-child(2){transition-delay:.1s}
+    .trust-list li.anim:nth-child(3){transition-delay:.2s}
+  }
+
+  /* (1) How it works · pinned scroll flow */
+  .how-flow{background:var(--cerulean-wash);position:relative;height:300vh}
+  .how-sticky{position:sticky;top:0;min-height:100vh;display:flex;flex-direction:column;
+    justify-content:center;padding:60px 0}
+  .flow-head{text-align:center;max-width:640px;margin:0 auto 48px}
+  .flow-head .eyebrow{justify-content:center}
+  .flow-head .eyebrow::before{display:none}
+  .flow-head p{font-size:17px;color:var(--ink-soft);margin-top:16px;line-height:1.55}
+  .flow-track{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:22px}
+  .flow-line{position:absolute;top:39px;left:8%;right:8%;height:2px;background:#D4DEEA;border-radius:2px}
+  .flow-line .fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:var(--cerulean-deep);
+    border-radius:2px;transition:width .12s linear}
+  .flow-step{position:relative;background:#fff;border:1px solid var(--line);border-radius:14px;
+    padding:26px 22px;transition:opacity .45s ease,transform .45s ease,box-shadow .45s ease,border-color .45s ease}
+  .flow-step .n{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;
+    justify-content:center;font-family:var(--display);font-weight:600;font-size:16px;
+    border:1.5px solid var(--cerulean);color:var(--cerulean-deep);background:#fff;margin-bottom:20px;
+    transition:.45s ease;position:relative;z-index:1}
+  .flow-step h3{font-size:17.5px;font-weight:700;letter-spacing:-.01em;margin-bottom:9px}
+  .flow-step p{font-size:14.5px;color:var(--ink-soft);line-height:1.5}
+  .flow-step.dim{opacity:.4;transform:scale(.97)}
+  .flow-step.active{border-color:var(--cerulean);box-shadow:0 20px 44px -24px rgba(94,124,158,.55)}
+  .flow-step.active .n{background:var(--cerulean-deep);color:#fff;border-color:var(--cerulean-deep);transform:scale(1.08)}
+  @media(max-width:880px){
+    .how-flow{height:auto}
+    .how-sticky{position:static;min-height:0;padding:84px 0}
+    .flow-track{grid-template-columns:1fr 1fr;gap:18px}
+    .flow-line{display:none}
+    .flow-step.dim{opacity:1;transform:none}
+  }
+  @media(max-width:520px){.flow-track{grid-template-columns:1fr}}
+
+  /* (2) trust parallax */
+  .trust-visual{will-change:transform}
+
+  /* (3) Pricing */
+  .pricing{padding:104px 0;position:relative}
+  .pricing .sec-head{margin-bottom:48px}
+  .formula{display:flex;align-items:stretch;justify-content:center;gap:16px;flex-wrap:wrap;
+    max-width:880px;margin:0 auto 56px}
+  .fterm{background:#fff;border:1px solid var(--line);border-radius:16px;padding:26px 28px;
+    text-align:center;min-width:190px;flex:1;display:flex;flex-direction:column;justify-content:center}
+  .fterm.base{background:var(--ink);color:#fff;border-color:var(--ink)}
+  .fterm .ft-cap{font-size:11px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--cerulean-deep);margin-bottom:13px}
+  .fterm.base .ft-cap{color:var(--cerulean)}
+  .fterm .ft-amt{font-family:var(--display);font-size:clamp(28px,3.6vw,38px);font-weight:500;
+    letter-spacing:-.02em;line-height:1.02}
+  .fterm .ft-amt small{font-size:15px;color:var(--ink-soft);font-weight:400}
+  .fterm.base .ft-amt small{color:rgba(255,255,255,.6)}
+  .fterm .ft-sub{font-size:12.5px;color:var(--ink-soft);margin-top:11px;line-height:1.45}
+  .fterm.base .ft-sub{color:rgba(255,255,255,.65)}
+  .fop{display:flex;align-items:center;justify-content:center;font-family:var(--display);
+    font-size:32px;color:var(--cerulean-deep);font-weight:500;flex:0 0 auto}
+  @media(max-width:720px){.fop{transform:rotate(90deg);height:24px}.formula{gap:8px}}
+
+  .calc{max-width:680px;margin:0 auto;background:var(--cerulean-wash);border:1px solid var(--line);
+    border-radius:22px;padding:42px 42px 38px;text-align:center}
+  @media(max-width:560px){.calc{padding:32px 24px}}
+  .calc-q{font-size:15.5px;color:var(--ink-soft);font-weight:500}
+  .calc-q .calc-meetings{font-family:var(--display);font-size:20px;font-weight:600;color:var(--cerulean-deep)}
+  .calc-slider{-webkit-appearance:none;appearance:none;width:100%;max-width:440px;height:6px;
+    border-radius:6px;background:#D4DEEA;outline:none;margin:24px auto 9px;display:block}
+  .calc-slider::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;
+    background:var(--cerulean-deep);cursor:pointer;border:3px solid #fff;box-shadow:0 5px 14px -3px rgba(94,124,158,.7)}
+  .calc-slider::-moz-range-thumb{width:26px;height:26px;border-radius:50%;background:var(--cerulean-deep);
+    cursor:pointer;border:3px solid #fff}
+  .calc-scale{display:flex;justify-content:space-between;max-width:440px;margin:0 auto 30px;
+    font-size:11.5px;color:var(--ink-faint);font-weight:600}
+  .calc-total .ct-cap{font-size:11.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--cerulean-deep);margin-bottom:11px}
+  .calc-total .ct-amt{font-family:var(--display);font-size:clamp(44px,7.5vw,66px);font-weight:500;
+    letter-spacing:-.03em;line-height:1;color:var(--ink)}
+  .calc-break{font-size:13.5px;color:var(--ink-soft);margin-top:15px}
+  .calc-break b{color:var(--ink);font-weight:600}
+  .calc-note{font-size:13px;color:var(--ink-faint);margin-top:24px;padding-top:20px;
+    border-top:1px solid var(--line);line-height:1.55}
+  .calc-note b{color:var(--ink-soft);font-weight:600}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <nav>
+      <a href="#top" class="logo"><span class="dot"></span>HoldSlot</a>
+      <div class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#trust">Why HoldSlot</a>
+        <a href="#pricing">Pricing</a>
+      </div>
+      <div class="nav-cta">
+        <a href="login.html" class="btn btn-ghost" style="padding:11px 18px">Log in</a>
+        <a href="#start" class="btn btn-primary" style="padding:11px 18px">Get started</a>
+        <button class="menu-btn" id="menuBtn" aria-label="Open menu">≡</button>
+      </div>
+    </nav>
+  </div>
+  <div class="mobile-menu" id="mobileMenu">
+    <a href="#how">How it works</a>
+    <a href="#trust">Why HoldSlot</a>
+    <a href="#pricing">Pricing</a>
+    <a href="login.html" class="btn btn-ghost">Log in</a>
+    <a href="#start" class="btn btn-primary">Get started</a>
+  </div>
+</header>
+
+<span id="top"></span>
+
+<!-- HERO -->
+<section class="hero">
+  <div class="wrap hero-grid">
+    <div class="reveal">
+      <span class="eyebrow">Outbound, done for you</span>
+      <h1>Qualified sales meetings, <em>booked for you.</em></h1>
+      <p class="sub">We find your buyers, start the conversations, and put real meetings on your calendar, without the cost of building an in-house sales team.</p>
+      <div class="hero-ctas">
+        <a href="#start" class="btn btn-primary">Get started <span class="arrow">→</span></a>
+        <a href="#how" class="btn btn-ghost">See how it works</a>
+      </div>
+      <p class="hero-note">You approve every prospect before we reach out. <b>You only pay for meetings that actually happen.</b></p>
+    </div>
+    <div class="hero-visual ph reveal">
+      <span class="ph-tag">Placeholder · product shot · "meetings booked" dashboard / calendar</span>
+    </div>
+  </div>
+</section>
+
+<!-- STAT STRIP -->
+<section class="stats">
+  <div class="wrap">
+    <div class="stat-grid reveal">
+      <div class="stat">
+        <div class="num"><span class="ph-inline ph"><span class="ph-tag">stat</span></span></div>
+        <div class="label">Qualified meetings booked for clients</div>
+      </div>
+      <div class="stat">
+        <div class="num"><span class="ph-inline ph"><span class="ph-tag">stat</span></span>%</div>
+        <div class="label">Average meeting show-up rate</div>
+      </div>
+      <div class="stat">
+        <div class="num"><span class="ph-inline ph"><span class="ph-tag">stat</span></span></div>
+        <div class="label">Cost vs. one in-house SDR hire</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- HOW IT WORKS (pinned scroll flow) -->
+<section class="how-flow" id="how">
+  <div class="how-sticky">
+    <div class="wrap">
+      <div class="flow-head">
+        <span class="eyebrow">How it works</span>
+        <h2>From brief to booked meeting.</h2>
+        <p>You stay in control at every gate. We handle the rest. Scroll to follow a campaign from start to booked.</p>
+      </div>
+      <div class="flow-track">
+        <div class="flow-line"><div class="fill" id="flowFill"></div></div>
+        <div class="flow-step active" data-step="0"><div class="n">01</div><h3>Share your brief</h3><p>Tell us who your ideal customer is, what you sell, and who to avoid. We turn it into a structured campaign in minutes.</p></div>
+        <div class="flow-step dim" data-step="1"><div class="n">02</div><h3>Approve your list</h3><p>We build and verify a prospect list against your rules. Nothing gets contacted until you approve it in one click.</p></div>
+        <div class="flow-step dim" data-step="2"><div class="n">03</div><h3>We run the outreach</h3><p>Messages go out from warmed inboxes. Replies are read, sorted, and answered. Positive ones surface to you instantly.</p></div>
+        <div class="flow-step dim" data-step="3"><div class="n">04</div><h3>You take the meeting</h3><p>Interested buyers land on your calendar. You only get billed when a real, qualified meeting takes place.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- TRUST -->
+<section class="trust" id="trust">
+  <div class="wrap trust-grid">
+    <div class="reveal">
+      <span class="eyebrow">Why HoldSlot</span>
+      <h2>Built for teams who can't afford a miss.</h2>
+      <ul class="trust-list">
+        <li class="anim"><span class="check">✓</span><div><strong>You approve every prospect.</strong><span>Your brand never touches a list you haven't signed off on. Full transparency, full control.</span></div></li>
+        <li class="anim"><span class="check">✓</span><div><strong>You only pay for meetings that happen.</strong><span>No-shows and short calls aren't billable. One number matters: qualified meetings booked.</span></div></li>
+        <li class="anim"><span class="check">✓</span><div><strong>Replaces a whole SDR function.</strong><span>Sourcing, writing, sending, follow-up, and scheduling, without hiring, training, or managing a team.</span></div></li>
+      </ul>
+    </div>
+    <div class="trust-visual ph reveal"><span class="ph-tag">Placeholder · secondary product shot · list / approval view</span></div>
+  </div>
+</section>
+
+<!-- PRICING (animated explainer + calculator) -->
+<section class="pricing" id="pricing">
+  <div class="wrap">
+    <div class="sec-head anim">
+      <span class="eyebrow">Pricing</span>
+      <p>A small base keeps the engine running. The rest you only pay when a real meeting lands on your calendar. We win when you win.</p>
+    </div>
+    <div class="formula">
+      <div class="fterm base anim">
+        <div class="ft-cap">Base</div>
+        <div class="ft-amt">HKD 6,000<small> /mo</small></div>
+        <div class="ft-sub">Sourcing, copywriting, sending &amp; inbox management, always on.</div>
+      </div>
+      <div class="fop anim">+</div>
+      <div class="fterm anim">
+        <div class="ft-cap">Per meeting</div>
+        <div class="ft-amt">HKD 4,000</div>
+        <div class="ft-sub">Charged only when a qualified meeting actually takes place.</div>
+      </div>
+      <div class="fop anim">×</div>
+      <div class="fterm anim">
+        <div class="ft-cap">Meetings booked</div>
+        <div class="ft-amt">you decide</div>
+        <div class="ft-sub">No-shows and short calls are never billed. You stay in control.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FINAL: combined pricing + lead magnet -->
+<section class="final" id="start">
+  <div class="wrap">
+    <div class="final-card reveal">
+      <div class="form-state" id="formState">
+        <span class="pill">Pay per qualified meeting</span>
+        <h2>See 25 of your buyers, free.</h2>
+        <p class="lead-copy">Drop your work email and we'll send a sample list of 25 qualified prospects matched to your ideal customer. No call required, no commitment.</p>
+        <div class="lead-form">
+          <input type="email" id="emailInput" placeholder="you@company.com" aria-label="Work email" autocomplete="email">
+          <button class="btn" id="submitBtn">Get my free list <span class="arrow">→</span></button>
+        </div>
+        <div class="form-msg" id="formMsg"></div>
+        <p class="price-line">Then: <b>pay only per qualified meeting</b>. No setup fee, no retainer, cancel anytime.</p>
+      </div>
+      <div class="success-state" id="successState">
+        <div class="tick">✓</div>
+        <h2>Your list is on the way.</h2>
+        <p class="lead-copy" id="successCopy">We'll send 25 matched prospects to your inbox shortly. Keep an eye out.</p>
+        <p class="final-sub" style="margin-top:24px">Want to move faster? <a href="#" onclick="return false">Book a 15-min walkthrough →</a></p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- FOOTER -->
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <a href="#top" class="logo"><span class="dot"></span>HoldSlot</a>
+      <div class="foot-links">
+        <a href="#how">How it works</a>
+        <a href="#trust">Why HoldSlot</a>
+        <a href="#pricing">Pricing</a>
+        <a href="#" onclick="return false">Privacy</a>
+        <a href="#" onclick="return false">Terms</a>
+      </div>
+    </div>
+    <p class="foot-copy">© 2026 HoldSlot. Qualified sales meetings, booked for you.</p>
+  </div>
+</footer>
+
+<script>
+  // mobile menu
+  var menuBtn=document.getElementById('menuBtn'),mobileMenu=document.getElementById('mobileMenu');
+  menuBtn.addEventListener('click',function(){mobileMenu.classList.toggle('open');menuBtn.textContent=mobileMenu.classList.contains('open')?'✕':'≡';});
+  mobileMenu.querySelectorAll('a').forEach(function(a){a.addEventListener('click',function(){mobileMenu.classList.remove('open');menuBtn.textContent='≡';});});
+
+  // lead form
+  var emailInput=document.getElementById('emailInput'),submitBtn=document.getElementById('submitBtn'),
+      formMsg=document.getElementById('formMsg'),formState=document.getElementById('formState'),
+      successState=document.getElementById('successState'),successCopy=document.getElementById('successCopy');
+  function valid(e){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);}
+  function submit(){
+    var v=emailInput.value.trim();
+    if(!valid(v)){
+      emailInput.classList.add('err');
+      formMsg.textContent='Please enter a valid work email.';
+      formMsg.className='form-msg error';
+      emailInput.focus();
+      return;
+    }
+    emailInput.classList.remove('err');
+    formMsg.textContent='';
+    submitBtn.textContent='Sending…';
+    setTimeout(function(){
+      successCopy.textContent='We\u2019ll send 25 matched prospects to '+v+' shortly. Keep an eye out.';
+      formState.classList.add('hide');
+      successState.classList.add('show');
+    },650);
+  }
+  submitBtn.addEventListener('click',submit);
+  emailInput.addEventListener('keydown',function(e){if(e.key==='Enter')submit();});
+  emailInput.addEventListener('input',function(){if(emailInput.classList.contains('err')){emailInput.classList.remove('err');formMsg.textContent='';}});
+
+  // reveal + anim on scroll
+  var io=new IntersectionObserver(function(es){es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('in');io.unobserve(e.target);}});},{threshold:.12});
+  document.querySelectorAll('.reveal,.anim').forEach(function(el){io.observe(el);});
+
+  // ===== scroll-driven animations (3 sections) =====
+  function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+  var howFlow=document.getElementById('how'),
+      flowFill=document.getElementById('flowFill'),
+      flowSteps=howFlow?howFlow.querySelectorAll('.flow-step'):[],
+      trustVisual=document.querySelector('.trust-visual');
+
+  function updateScroll(){
+    var vh=window.innerHeight;
+    // robust reveal: show any anim/reveal element once it scrolls into view (fallback for observer)
+    document.querySelectorAll('.reveal:not(.in),.anim:not(.in)').forEach(function(el){
+      if(el.getBoundingClientRect().top<vh*0.92)el.classList.add('in');
+    });
+    if(howFlow&&flowSteps.length){
+      if(window.innerWidth<=880){
+        flowSteps.forEach(function(s){s.classList.remove('dim','active');});
+        if(flowFill)flowFill.style.width='100%';
+      }else{
+        var rect=howFlow.getBoundingClientRect();
+        var total=howFlow.offsetHeight-vh;
+        var p=total>0?clamp(-rect.top/total,0,1):0;
+        if(flowFill)flowFill.style.width=(p*100)+'%';
+        var active=Math.min(flowSteps.length-1,Math.floor(p*flowSteps.length+0.0001));
+        flowSteps.forEach(function(s,i){
+          s.classList.toggle('active',i===active);
+          s.classList.toggle('dim',i>active);
+        });
+      }
+    }
+    if(trustVisual){
+      var r=trustVisual.getBoundingClientRect();
+      var center=r.top+r.height/2-vh/2;
+      trustVisual.style.transform='translateY('+clamp(-center*0.05,-26,26)+'px)';
+    }
+  }
+  var ticking=false;
+  function onScroll(){if(!ticking){requestAnimationFrame(function(){updateScroll();ticking=false;});ticking=true;}}
+  window.addEventListener('scroll',onScroll,{passive:true});
+  window.addEventListener('resize',updateScroll);
+  updateScroll();
+</script>
+</body>
+</html>

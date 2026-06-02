@@ -1,0 +1,170 @@
+.meeting-meta {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+.meeting-meta .mm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+.meeting-meta .mm .mi {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: var(--cerulean-wash);
+  color: var(--cerulean-deep);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+}
+
+.day-tabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  margin-bottom: 20px;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.day-tabs::-webkit-scrollbar {
+  display: none;
+}
+.day-tab {
+  flex-shrink: 0;
+  appearance: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  border-radius: 11px;
+  padding: 11px 16px;
+  text-align: center;
+  font-family: var(--sans);
+  transition: 0.15s ease;
+  min-width: 78px;
+}
+.day-tab:hover {
+  border-color: var(--cerulean);
+}
+.day-tab.on {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
+}
+.day-tab .dow {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+.day-tab.on .dow {
+  color: rgba(255, 255, 255, 0.6);
+}
+.day-tab .dnum {
+  font-family: var(--display);
+  font-size: 20px;
+  font-weight: 500;
+  margin-top: 3px;
+}
+
+.slots {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin-bottom: 22px;
+}
+@media (max-width: 520px) {
+  .slots {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+.slot {
+  appearance: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  border-radius: 9px;
+  padding: 13px 10px;
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  transition: 0.15s ease;
+  text-align: center;
+  position: relative;
+}
+.slot:hover {
+  border-color: var(--cerulean);
+  background: var(--cerulean-wash);
+}
+.slot.on {
+  background: var(--cerulean-deep);
+  border-color: var(--cerulean-deep);
+  color: #fff;
+}
+.slot.taken {
+  opacity: 0.4;
+  cursor: not-allowed;
+  text-decoration: line-through;
+}
+.slot.taken:hover {
+  border-color: var(--line);
+  background: #fff;
+}
+.slot .smark {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  font-size: 10px;
+  opacity: 0;
+  transition: 0.15s ease;
+}
+.slot.on .smark {
+  opacity: 1;
+}
+
+.tzrow {
+  font-size: 12.5px;
+  color: var(--ink-faint);
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+.confirm-bar .pick {
+  font-size: 13.5px;
+  color: var(--ink-soft);
+}
+.confirm-bar .pick b {
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.booked-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--cerulean-wash);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 18px;
+  font-weight: 600;
+  font-size: 14.5px;
+  margin: 18px 0 6px;
+}
