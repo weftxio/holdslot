@@ -140,7 +140,7 @@ export default function Book() {
             )}
           </span>
           <button className="btn btn-primary" disabled={!time} onClick={() => setDone(true)}>
-            Confirm booking <span className="arrow">→</span>
+            Confirm booking
           </button>
         </div>
       </div>

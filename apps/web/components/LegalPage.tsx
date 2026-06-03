@@ -18,7 +18,7 @@ export function LegalPage({
           HoldSlot
         </Link>
         <Link href="/" className="btn btn-ghost btn-sm">
-          ← Back to home
+          Back to home
         </Link>
       </header>
 

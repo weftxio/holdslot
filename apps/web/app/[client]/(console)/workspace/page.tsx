@@ -59,7 +59,7 @@ type Batch = {
   icp: string;
   status: "Approved" | "Pending" | "Rejected";
 };
-type Campaign = { name: string; batch: string };
+type Campaign = { name: string; batch: string; status: "Live" | "Pending"; variants: string[] };
 type Row = {
   id: number;
   fit: "Strong" | "Good";
@@ -73,6 +73,7 @@ type Reply = {
   role: string;
   campaign: string;
   batch: string;
+  repliedAt: string;
   cls: string;
   badge: string;
   quote: string;
@@ -80,17 +81,18 @@ type Reply = {
   done?: string;
   neutral?: boolean;
   editing?: boolean;
+  status?: string;
   text: string;
 };
 
 const TABS = [
-  ["brief", "Business brief"],
-  ["list", "Prospect list"],
-  ["batches", "Sendout Batch"],
-  ["campaign", "Campaign"],
-  ["replies", "Reply queue"],
-  ["billing", "Billing ledger"],
-  ["summaries", "Meeting summaries"],
+  ["brief", "Client Brief"],
+  ["list", "Prospect List"],
+  ["batches", "Approval Batches"],
+  ["campaign", "Outreach Campaigns"],
+  ["replies", "Reply Queue"],
+  ["billing", "Billing Ledger"],
+  ["summaries", "Meeting Recaps"],
 ] as const;
 
 const FIT_CLS: Record<string, string> = { Strong: "badge-ok", Good: "badge-info" };
@@ -133,6 +135,7 @@ const INITIAL_REPLIES: Reply[] = [
     role: "Placeholder title · Sample Co",
     campaign: "Campaign 1",
     batch: "Batch 3",
+    repliedAt: "2026-06-02",
     cls: "Positive, wants a call",
     badge: "badge-ok",
     quote:
@@ -146,6 +149,7 @@ const INITIAL_REPLIES: Reply[] = [
     role: "Placeholder title · Sample Co",
     campaign: "Campaign 1",
     batch: "Batch 3",
+    repliedAt: "2026-05-30",
     cls: "Objection: timing",
     badge: "badge-warn",
     quote:
@@ -159,6 +163,7 @@ const INITIAL_REPLIES: Reply[] = [
     role: "Placeholder title · Sample Co",
     campaign: "Campaign 1",
     batch: "Batch 3",
+    repliedAt: "2026-05-28",
     cls: "Referral: wrong person",
     badge: "badge-info",
     quote:
@@ -168,6 +173,20 @@ const INITIAL_REPLIES: Reply[] = [
     text: "",
   },
 ].map((r) => ({ ...r, text: r.draft }));
+
+// reply dates relative to the app's current date (fixed for the mock)
+const REPLY_TODAY = new Date("2026-06-03T00:00:00Z");
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function fmtShortDate(iso: string) {
+  const [, m, d] = iso.split("-").map(Number);
+  return MONTHS[m - 1] + " " + d;
+}
+function daysAgoLabel(iso: string) {
+  const diff = Math.round(
+    (REPLY_TODAY.getTime() - new Date(iso + "T00:00:00Z").getTime()) / 86400000
+  );
+  return diff <= 0 ? "today" : diff === 1 ? "1 day ago" : diff + " days ago";
+}
 
 const SENIORITY_OPTS = ["C-level", "VP", "Director", "Manager", "Individual contributor"];
 const LANGUAGE_OPTS = ["English", "Mandarin", "Spanish", "French", "German", "Other"];
@@ -210,7 +229,11 @@ const sampleBrief = (): Brief => ({
     "Companies lose their best people without warning. We surface the early signals so leaders can act before resignations happen.",
   dealSize: "$25,000 / year",
   salesCycle: "1–3 months",
-  valueProps: ["Predict attrition 90 days out", "Cut onboarding time 40%", "One view for every team lead"],
+  valueProps: [
+    "Predict attrition 90 days out",
+    "Cut onboarding time 40%",
+    "One view for every team lead",
+  ],
   proofPoints:
     "Work with 3 of the top 10 logistics firms in the region · Cut onboarding time by 40% for a Fortune 500 client · Backed by a tier-1 investor.",
   signals:
@@ -261,7 +284,12 @@ function TagInput({
       {value.map((t) => (
         <span className="tag-chip" key={t}>
           {t}
-          <button type="button" className="tx" aria-label={"Remove " + t} onClick={() => onChange(value.filter((x) => x !== t))}>
+          <button
+            type="button"
+            className="tx"
+            aria-label={"Remove " + t}
+            onClick={() => onChange(value.filter((x) => x !== t))}
+          >
             ×
           </button>
         </span>
@@ -325,101 +353,169 @@ function Lbl({ children, req, help }: { children: React.ReactNode; req?: boolean
   );
 }
 
-function Variants() {
-  const v = (tag: string, body: React.ReactNode, win?: boolean) => (
-    <div className={clsx("variant", win && "win")}>
-      <div className="variant-head">
-        <div className="vt">
-          <span className="vtag">{tag}</span>Variant {tag}
-          {win && (
-            <span className="badge badge-ok" style={{ marginLeft: 4 }}>
-              <span className="bdot" />
-              Leading
-            </span>
-          )}
-        </div>
-        <div className="variant-stats">
-          <div className="vs">
-            <b>
-              <Sample>n</Sample>%
-            </b>
-            Open
-          </div>
-          <div className="vs">
-            <b>
-              <Sample>n</Sample>%
-            </b>
-            Reply
-          </div>
-        </div>
-      </div>
-      <div className="variant-body">{body}</div>
-    </div>
-  );
+// collapsible brief section with a Complete / Pending status label
+function Section({
+  num,
+  title,
+  sub,
+  complete,
+  open,
+  onToggle,
+  onContinue,
+  last,
+  hideFoot,
+  extra,
+  children,
+}: {
+  num: number;
+  title: string;
+  sub: string;
+  complete: boolean;
+  open: boolean;
+  onToggle: () => void;
+  onContinue: () => void;
+  last?: boolean;
+  hideFoot?: boolean;
+  extra?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <>
-      {v(
-        "A",
-        <>
-          Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder opening line about the
-          current context at <span className="mph">{"{{company}}"}</span>. Placeholder one-sentence
-          value proposition tied to a likely pain point. Placeholder soft ask for a short call.
-          <br />
-          <span className="mph">{"{{sender}}"}</span>
-        </>,
-        true
+    <div className={clsx("panel brief-sec", open && "open")} id={"brief-sec-" + num}>
+      <div
+        className="brief-head"
+        role="button"
+        tabIndex={0}
+        aria-expanded={open}
+        onClick={onToggle}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+      >
+        <div className="brief-num">{num}</div>
+        <div className="brief-htext">
+          <h3>{title}</h3>
+          <div className="ph-sub">{sub}</div>
+        </div>
+        <span className={clsx("badge", complete ? "badge-ok" : "badge-warn")}>
+          <span className="bdot" />
+          {complete ? "Complete" : "Pending"}
+        </span>
+        {extra}
+        <span className="brief-chev" aria-hidden>
+          ⌄
+        </span>
+      </div>
+      {open && children}
+      {open && !hideFoot && (
+        <div className="brief-secfoot">
+          <button className="btn btn-accent btn-sm" onClick={onContinue}>
+            {last ? "Save draft" : "Save & continue"}
+          </button>
+        </div>
       )}
-      {v(
-        "B",
-        <>
-          Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder pattern-interrupt
-          opener. Placeholder proof point with a concrete number. Placeholder direct ask for{" "}
-          <span className="mph">{"{{time_window}}"}</span>.<br />
-          <span className="mph">{"{{sender}}"}</span>
-        </>
-      )}
-      {v(
-        "C",
-        <>
-          Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder question-led opener
-          about <span className="mph">{"{{industry}}"}</span>. Placeholder mutual-connection or
-          trigger-event line. Placeholder low-friction ask.
-          <br />
-          <span className="mph">{"{{sender}}"}</span>
-        </>
-      )}
-    </>
+    </div>
   );
 }
 
-function Seg({
-  value,
-  options,
-  onChange,
+const VARIANT_BODIES: Record<string, React.ReactNode> = {
+  A: (
+    <>
+      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder opening line about the
+      current context at <span className="mph">{"{{company}}"}</span>. Placeholder one-sentence
+      value proposition tied to a likely pain point. Placeholder soft ask for a short call.
+      <br />
+      <span className="mph">{"{{sender}}"}</span>
+    </>
+  ),
+  B: (
+    <>
+      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder pattern-interrupt opener.
+      Placeholder proof point with a concrete number. Placeholder direct ask for{" "}
+      <span className="mph">{"{{time_window}}"}</span>.<br />
+      <span className="mph">{"{{sender}}"}</span>
+    </>
+  ),
+  C: (
+    <>
+      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder question-led opener about{" "}
+      <span className="mph">{"{{industry}}"}</span>. Placeholder mutual-connection or trigger-event
+      line. Placeholder low-friction ask.
+      <br />
+      <span className="mph">{"{{sender}}"}</span>
+    </>
+  ),
+};
+
+function Variants({
+  tags,
+  editable,
+  onRemove,
+  onAdd,
 }: {
-  value: string;
-  options: string[];
-  onChange: (v: string) => void;
+  tags: string[];
+  editable: boolean;
+  onRemove: (tag: string) => void;
+  onAdd: () => void;
 }) {
   return (
-    <div className="seg">
-      {options.map((o) => (
-        <button key={o} className={clsx(value === o && "on")} onClick={() => onChange(o)}>
-          {o}
-        </button>
+    <>
+      {tags.map((tag, i) => (
+        <div className={clsx("variant", i === 0 && "win")} key={tag}>
+          <div className="variant-head">
+            <div className="vt">
+              <span className="vtag">{tag}</span>Variant {tag}
+              {i === 0 && (
+                <span className="badge badge-ok" style={{ marginLeft: 4 }}>
+                  <span className="bdot" />
+                  Leading
+                </span>
+              )}
+            </div>
+            <div className="variant-stats">
+              <div className="vs">
+                <b>
+                  <Sample>n</Sample>%
+                </b>
+                Open
+              </div>
+              <div className="vs">
+                <b>
+                  <Sample>n</Sample>%
+                </b>
+                Reply
+              </div>
+              {editable && (
+                <button
+                  type="button"
+                  className="variant-rm"
+                  aria-label={"Remove variant " + tag}
+                  onClick={() => onRemove(tag)}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="variant-body">
+            {VARIANT_BODIES[tag] ?? <>Placeholder message body for variant {tag}.</>}
+          </div>
+        </div>
       ))}
-    </div>
+      {editable && (
+        <button type="button" className="variant-add" onClick={onAdd}>
+          ＋ Add variant
+        </button>
+      )}
+    </>
   );
 }
 
 export default function Workspace() {
   const { client } = useParams<{ client: string }>();
   const toast = useToast();
-
-  // campaign send controls
-  const [sending, setSending] = useState("On");
-  const [dailyCap, setDailyCap] = useState("50");
-  const [split, setSplit] = useState("Even");
 
   const [tab, setTab] = useState<string>("brief");
   useEffect(() => {
@@ -472,24 +568,56 @@ export default function Workspace() {
   const updateIcp = (patch: Partial<Icp>) =>
     setIcps((s) => s.map((x, i) => (i === icpSel ? { ...x, ...patch } : x)));
   const setIcpField = <K extends keyof IcpFields>(key: K, val: IcpFields[K]) =>
-    setIcps((s) => s.map((x, i) => (i === icpSel ? { ...x, fields: { ...x.fields, [key]: val } } : x)));
-  const saveIcp = () => toast(icps[icpSel].short + " saved");
+    setIcps((s) =>
+      s.map((x, i) => (i === icpSel ? { ...x, fields: { ...x.fields, [key]: val } } : x))
+    );
 
   // Business brief (global sections)
   const [brief, setBrief] = useState<Brief>(sampleBrief);
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted] = useState(false);
+  const [csvName, setCsvName] = useState("");
+  function onCsv(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvName(file.name);
+    toast(file.name + " attached");
+    e.target.value = "";
+  }
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
+  const setValueProp = (i: number, val: string) =>
+    setBrief((s) => {
+      const next = [...s.valueProps];
+      next[i] = val;
+      return { ...s, valueProps: next };
+    });
   const f = icps[icpSel].fields;
 
+  // accordion: one section open at a time (0 = all collapsed)
+  const [openSec, setOpenSec] = useState(1);
+  // after a section opens, bring its title bar to the top (below the sticky bars)
+  const scrollToSec = (n: number) =>
+    setTimeout(
+      () =>
+        document
+          .getElementById("brief-sec-" + n)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      60
+    );
+  const toggle = (n: number) => {
+    const next = openSec === n ? 0 : n;
+    setOpenSec(next);
+    if (next) scrollToSec(next);
+  };
+  function saveAndContinue(cur: number) {
+    toast("Draft saved");
+    const order = [1, 2, 3, 4, 5, 6];
+    const next = order.find((n) => n > cur && !secComplete[n]) ?? (cur < 6 ? cur + 1 : cur);
+    setOpenSec(next);
+    if (next !== cur) scrollToSec(next);
+  }
+
   const filled = (v: string | string[]) => (Array.isArray(v) ? v.length > 0 : v.trim() !== "");
-  const REQUIRED_BRIEF: (keyof Brief)[] = [
-    "companyName", "website", "sell", "problem", "dealSize", "salesCycle",
-    "valueProps", "proofPoints", "signals", "tone", "languages",
-    "excludeCustomers", "excludeDeals",
-    "meetingsLand", "attendees", "availability", "channel", "contact", "approver",
-    "meetingsPerMonth", "qualifiedDef",
-  ];
   const icpReady = icps.every(
     (p) =>
       p.fields.industries.length &&
@@ -499,14 +627,34 @@ export default function Workspace() {
       p.fields.seniority.length &&
       p.fields.departments.length
   );
-  const checks = [...REQUIRED_BRIEF.map((k) => filled(brief[k])), icpReady];
-  const completePct = Math.round((checks.filter(Boolean).length / checks.length) * 100);
+  // per-section completeness (drives the status label + the top bar)
+  const secComplete: Record<number, boolean> = {
+    1:
+      filled(brief.companyName) &&
+      filled(brief.website) &&
+      filled(brief.sell) &&
+      filled(brief.problem) &&
+      filled(brief.dealSize) &&
+      filled(brief.salesCycle),
+    2: icpReady,
+    3:
+      brief.valueProps.some((v) => v.trim()) &&
+      filled(brief.proofPoints) &&
+      filled(brief.signals) &&
+      filled(brief.tone) &&
+      brief.languages.length > 0,
+    4: filled(brief.excludeCustomers) && filled(brief.excludeDeals),
+    5:
+      filled(brief.meetingsLand) &&
+      filled(brief.attendees) &&
+      filled(brief.availability) &&
+      filled(brief.channel) &&
+      filled(brief.contact) &&
+      filled(brief.approver),
+    6: filled(brief.meetingsPerMonth) && filled(brief.qualifiedDef),
+  };
+  const completePct = Math.round((Object.values(secComplete).filter(Boolean).length / 6) * 100);
   const errCls = (ok: boolean, base = "input") => clsx(base, submitted && !ok && "err");
-  function submitBrief() {
-    setSubmitted(true);
-    if (completePct < 100) return toast("Some required fields still need answers", "warn");
-    toast("Brief submitted");
-  }
 
   // Batches / campaigns
   const [batches, setBatches] = useState<Batch[]>([
@@ -515,7 +663,8 @@ export default function Workspace() {
     { name: "Batch 3", count: 48, approved: 0, icp: "ICP B", status: "Pending" },
   ]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([
-    { name: "Campaign 1", batch: "Batch 3" },
+    { name: "Campaign 1", batch: "Batch 1", status: "Live", variants: ["A", "B", "C"] },
+    { name: "Campaign 2", batch: "Batch 3", status: "Pending", variants: ["A", "B", "C"] },
   ]);
 
   // Prospect list
@@ -598,17 +747,128 @@ export default function Workspace() {
     );
   }
   function toggleEdit(i: number) {
-    setReplies((s) =>
-      s.map((r, idx) => {
-        if (idx !== i) return r;
-        if (r.editing) toast("Draft updated");
-        return { ...r, editing: !r.editing };
-      })
-    );
+    const wasEditing = replies[i]?.editing;
+    setReplies((s) => s.map((r, idx) => (idx === i ? { ...r, editing: !r.editing } : r)));
+    if (wasEditing) toast("Draft updated");
   }
 
   const [sumCamp, setSumCamp] = useState("");
   const pendingBatches = batches.filter((b) => b.status === "Pending").length;
+
+  function exportLedgerCsv() {
+    const headers = [
+      "Date",
+      "Meeting with",
+      "Company",
+      "Campaign",
+      "Batch",
+      "Outcome",
+      "Feedback",
+      "Status",
+      "Amount (HKD)",
+    ];
+    const rows = LEDGER.map((ou, i) => [
+      "Placeholder date",
+      "Prospect " + (i + 1),
+      "Sample Co " + (i + 1),
+      "Campaign 1",
+      "Batch 3",
+      ou[0],
+      ou[2],
+      ou[3],
+      ou[3] === "Billed" ? "4000" : "",
+    ]);
+    const csv = [headers, ...rows]
+      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "billing-ledger.csv";
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("CSV exported");
+  }
+
+  // expandable batch detail (sample prospect rows)
+  const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const toggleBatch = (name: string, id: string, open: boolean) => {
+    setOpenBatch(open ? null : name);
+    if (!open) {
+      setTimeout(
+        () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        60
+      );
+    }
+  };
+
+  // deep-link: ?batch=<name> opens the Approval Batches tab with that batch expanded
+  useEffect(() => {
+    const b = new URLSearchParams(location.search).get("batch");
+    if (!b) return;
+    setTab("batches");
+    setOpenBatch(b);
+    const idx = batches.findIndex((x) => x.name === b);
+    if (idx >= 0) {
+      setTimeout(
+        () =>
+          document
+            .getElementById("sob-item-" + idx)
+            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        160
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // expandable campaigns (all collapsed by default)
+  const [openCamp, setOpenCamp] = useState<number | null>(null);
+  const removeVariant = (ci: number, tag: string) => {
+    const c = campaigns[ci];
+    if (!c) return;
+    if (c.variants.length <= 1) return toast("Keep at least one variant", "warn");
+    setCampaigns((s) =>
+      s.map((x, i) => (i === ci ? { ...x, variants: x.variants.filter((t) => t !== tag) } : x))
+    );
+    toast("Variant " + tag + " removed", "warn");
+  };
+  const addVariant = (ci: number) => {
+    const c = campaigns[ci];
+    if (!c) return;
+    let code = 65; // 'A'
+    while (c.variants.includes(String.fromCharCode(code))) code++;
+    const next = String.fromCharCode(code);
+    setCampaigns((s) =>
+      s.map((x, i) => (i === ci ? { ...x, variants: [...x.variants, next] } : x))
+    );
+    toast("Variant " + next + " added");
+  };
+  const toggleCamp = (ci: number, open: boolean) => {
+    setOpenCamp(open ? null : ci);
+    if (!open) {
+      setTimeout(
+        () =>
+          document
+            .getElementById("camp-" + ci)
+            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        60
+      );
+    }
+  };
+  const deleteCampaign = (ci: number) => {
+    const c = campaigns[ci];
+    if (!c || c.status === "Live") return;
+    setCampaigns((s) => s.filter((_, i) => i !== ci));
+    setOpenCamp(null);
+    toast(c.name + " deleted", "warn");
+  };
+  const batchProspects = (b: Batch) =>
+    Array.from({ length: b.count }, (_, i) => ({
+      name: "Prospect " + (i + 1),
+      company: "Sample Co " + (i + 1),
+      status: i < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
+    }));
 
   return (
     <>
@@ -651,24 +911,19 @@ export default function Workspace() {
               <div className="bp-fill" style={{ width: completePct + "%" }} />
             </div>
             <span className="bp-label">{completePct}% complete</span>
-            <button className="btn btn-ghost btn-sm" onClick={() => toast("Draft saved")}>
-              Save draft
-            </button>
-            <button className="btn btn-accent btn-sm" onClick={submitBrief}>
-              Submit brief <span className="arrow">→</span>
-            </button>
           </div>
         </div>
 
         {/* 1 · Company & Product Basics */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">1</div>
-            <div>
-              <h3>Company &amp; Product Basics</h3>
-              <div className="ph-sub">Who you are and what you sell</div>
-            </div>
-          </div>
+        <Section
+          num={1}
+          title="Company & Product Basics"
+          sub="Who you are and what you sell"
+          complete={secComplete[1]}
+          open={openSec === 1}
+          onToggle={() => toggle(1)}
+          onContinue={() => saveAndContinue(1)}
+        >
           <div className="panel-pad">
             <div className="grid2">
               <div className="field">
@@ -683,7 +938,9 @@ export default function Workspace() {
                 />
               </div>
               <div className="field">
-                <Lbl req help="Used for enrichment context and to verify what you sell.">Website</Lbl>
+                <Lbl req help="Used for enrichment context and to verify what you sell.">
+                  Website
+                </Lbl>
                 <input
                   type="url"
                   className={errCls(filled(brief.website))}
@@ -694,7 +951,10 @@ export default function Workspace() {
               </div>
             </div>
             <div className="field">
-              <Lbl req help="If you can't say it cleanly in one line, the campaign suffers. Keep it simple.">
+              <Lbl
+                req
+                help="If you can't say it cleanly in one line, the campaign suffers. Keep it simple."
+              >
                 What do you sell, in one sentence?
               </Lbl>
               <input
@@ -705,7 +965,10 @@ export default function Workspace() {
               />
             </div>
             <div className="field">
-              <Lbl req help="Not the features, the underlying problem. This becomes the spine of every message.">
+              <Lbl
+                req
+                help="Not the features, the underlying problem. This becomes the spine of every message."
+              >
                 What problem do you solve for your customers?
               </Lbl>
               <textarea
@@ -743,25 +1006,21 @@ export default function Workspace() {
               </div>
             </div>
           </div>
-        </div>
+        </Section>
 
         {/* 2 · Ideal Customer Profiles (ICP + Personas, per profile) */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">2</div>
-            <div>
-              <h3>Ideal Customer Profiles</h3>
-              <div className="ph-sub">The companies and people to reach · one block per profile</div>
-            </div>
-            <button
-              className="btn btn-ghost btn-sm"
-              style={{ marginLeft: "auto" }}
-              onClick={newIcp}
-            >
-              ＋ New ICP
-            </button>
-          </div>
+        <Section
+          num={2}
+          title="Ideal Customer Profiles"
+          sub="The companies and people to reach · one block per profile"
+          complete={secComplete[2]}
+          open={openSec === 2}
+          onToggle={() => toggle(2)}
+          onContinue={() => saveAndContinue(2)}
+          hideFoot
+        >
           <div className="panel-pad">
+            <div className="brief-subdiv first">ICP List</div>
             <div className="icp-tabs">
               {icps.map((p, i) => (
                 <button
@@ -773,6 +1032,9 @@ export default function Workspace() {
                   <div className="ipt">{p.tag}</div>
                 </button>
               ))}
+              <button className="icp-pill add" onClick={newIcp}>
+                ＋ New ICP
+              </button>
             </div>
 
             <div className="grid2">
@@ -809,7 +1071,12 @@ export default function Workspace() {
 
             <div className="brief-subdiv">Ideal Customer Profile</div>
             <div className="field">
-              <Lbl req help={'List the specific sectors. "Everyone" usually means the targeting needs sharpening.'}>
+              <Lbl
+                req
+                help={
+                  'List the specific sectors. "Everyone" usually means the targeting needs sharpening.'
+                }
+              >
                 Target industries / verticals
               </Lbl>
               <TagInput
@@ -821,7 +1088,9 @@ export default function Workspace() {
             </div>
             <div className="grid2">
               <div className="field">
-                <Lbl req help="By employee count and/or revenue.">Target company size</Lbl>
+                <Lbl req help="By employee count and/or revenue.">
+                  Target company size
+                </Lbl>
                 <input
                   className={errCls(filled(f.companySize))}
                   value={f.companySize}
@@ -844,7 +1113,9 @@ export default function Workspace() {
               </div>
             </div>
             <div className="field">
-              <Lbl req help="Countries, regions, or cities to focus on.">Target geographies</Lbl>
+              <Lbl req help="Countries, regions, or cities to focus on.">
+                Target geographies
+              </Lbl>
               <TagInput
                 value={f.geographies}
                 onChange={(v) => setIcpField("geographies", v)}
@@ -876,7 +1147,9 @@ export default function Workspace() {
               />
             </div>
             <div className="field">
-              <Lbl req help="Select all that apply.">Seniority level</Lbl>
+              <Lbl req help="Select all that apply.">
+                Seniority level
+              </Lbl>
               <PillGroup
                 options={SENIORITY_OPTS}
                 value={f.seniority}
@@ -886,7 +1159,9 @@ export default function Workspace() {
             </div>
             <div className="grid2">
               <div className="field">
-                <Lbl req help="Which teams these people sit in.">Departments / functions</Lbl>
+                <Lbl req help="Which teams these people sit in.">
+                  Departments / functions
+                </Lbl>
                 <TagInput
                   value={f.departments}
                   onChange={(v) => setIcpField("departments", v)}
@@ -907,7 +1182,9 @@ export default function Workspace() {
               </div>
             </div>
             <div className="field">
-              <Lbl help="Personas that look right but never convert.">Titles to explicitly avoid</Lbl>
+              <Lbl help="Personas that look right but never convert.">
+                Titles to explicitly avoid
+              </Lbl>
               <TagInput
                 value={f.avoidTitles}
                 onChange={(v) => setIcpField("avoidTitles", v)}
@@ -926,37 +1203,51 @@ export default function Workspace() {
                 <button className="btn btn-danger btn-sm" onClick={delIcp}>
                   Delete
                 </button>
-                <button className="btn btn-accent btn-sm" onClick={saveIcp}>
-                  Save changes <span className="arrow">→</span>
+                <button className="btn btn-accent btn-sm" onClick={() => saveAndContinue(2)}>
+                  Save &amp; continue
                 </button>
               </div>
             </div>
           </div>
-        </div>
+        </Section>
 
         {/* 3 · Message Inputs */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">3</div>
-            <div>
-              <h3>Message Inputs</h3>
-              <div className="ph-sub">The raw material for your email copy</div>
-            </div>
-          </div>
+        <Section
+          num={3}
+          title="Message Inputs"
+          sub="The raw material for your email copy"
+          complete={secComplete[3]}
+          open={openSec === 3}
+          onToggle={() => toggle(3)}
+          onContinue={() => saveAndContinue(3)}
+        >
           <div className="panel-pad">
             <div className="field">
-              <Lbl req help="Specific, concrete benefits. Push yourself to name distinct ones.">
-                Top value propositions
+              <Lbl
+                req
+                help="Specific, concrete benefits. Push yourself to name three distinct ones."
+              >
+                Top 3 value propositions
               </Lbl>
-              <TagInput
-                value={brief.valueProps}
-                onChange={(v) => setB("valueProps", v)}
-                placeholder="Add a value prop, press Enter"
-                invalid={submitted && !brief.valueProps.length}
-              />
+              {[0, 1, 2].map((i) => (
+                <input
+                  key={i}
+                  className={clsx(
+                    "input",
+                    submitted && i === 0 && !brief.valueProps.some((v) => v.trim()) && "err"
+                  )}
+                  style={{ marginBottom: i < 2 ? 10 : 0 }}
+                  value={brief.valueProps[i] ?? ""}
+                  placeholder={"Value prop " + (i + 1)}
+                  onChange={(e) => setValueProp(i, e.target.value)}
+                />
+              ))}
             </div>
             <div className="field">
-              <Lbl req help="Notable clients, metrics, awards, funding. This is what makes cold email believable.">
+              <Lbl
+                req
+                help="Notable clients, metrics, awards, funding. This is what makes cold email believable."
+              >
                 Proof points / credibility markers
               </Lbl>
               <textarea
@@ -966,7 +1257,10 @@ export default function Workspace() {
               />
             </div>
             <div className="field">
-              <Lbl req help="Trigger events that suggest someone is in-market. Drives targeting and hooks.">
+              <Lbl
+                req
+                help="Trigger events that suggest someone is in-market. Drives targeting and hooks."
+              >
                 What signals a prospect is ready?
               </Lbl>
               <textarea
@@ -995,7 +1289,9 @@ export default function Workspace() {
             </div>
             <div className="grid2">
               <div className="field" style={{ marginBottom: 0 }}>
-                <Lbl req help="How the emails should feel.">Tone preference</Lbl>
+                <Lbl req help="How the emails should feel.">
+                  Tone preference
+                </Lbl>
                 <select
                   className={errCls(filled(brief.tone), "select")}
                   value={brief.tone}
@@ -1008,7 +1304,9 @@ export default function Workspace() {
                 </select>
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <Lbl req help="Select all that apply.">Language(s) for outreach</Lbl>
+                <Lbl req help="Select all that apply.">
+                  Language(s) for outreach
+                </Lbl>
                 <PillGroup
                   options={LANGUAGE_OPTS}
                   value={brief.languages}
@@ -1027,17 +1325,18 @@ export default function Workspace() {
               </div>
             </div>
           </div>
-        </div>
+        </Section>
 
         {/* 4 · Exclusions & Guardrails */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">4</div>
-            <div>
-              <h3>Exclusions &amp; Guardrails</h3>
-              <div className="ph-sub">Who we must never contact</div>
-            </div>
-          </div>
+        <Section
+          num={4}
+          title="Exclusions & Guardrails"
+          sub="Who we must never contact"
+          complete={secComplete[4]}
+          open={openSec === 4}
+          onToggle={() => toggle(4)}
+          onContinue={() => saveAndContinue(4)}
+        >
           <div className="panel-pad">
             <div className="brief-callout">
               <span className="ci">!</span>
@@ -1057,12 +1356,21 @@ export default function Workspace() {
                 placeholder="Paste company names or domains, one per line"
                 onChange={(e) => setB("excludeCustomers", e.target.value)}
               />
-              <div className="brief-hint">
-                You can also send us a CSV of customer domains separately.
+              <div className="brief-upload">
+                <label className="btn btn-ghost btn-sm">
+                  <span className="up-ico">↥</span> Upload CSV
+                  <input type="file" accept=".csv,text/csv" hidden onChange={onCsv} />
+                </label>
+                <span className="brief-hint">
+                  {csvName ? "Attached: " + csvName : "Or upload a CSV of customer domains."}
+                </span>
               </div>
             </div>
             <div className="field">
-              <Lbl req help="Prospects already in your sales process. Double-touching these creates friction.">
+              <Lbl
+                req
+                help="Prospects already in your sales process. Double-touching these creates friction."
+              >
                 Active deals / pipeline to exclude
               </Lbl>
               <textarea
@@ -1106,20 +1414,24 @@ export default function Workspace() {
               />
             </div>
           </div>
-        </div>
+        </Section>
 
         {/* 5 · Logistics & Handoff */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">5</div>
-            <div>
-              <h3>Logistics &amp; Handoff</h3>
-              <div className="ph-sub">How meetings and updates flow to you</div>
-            </div>
-          </div>
+        <Section
+          num={5}
+          title="Logistics & Handoff"
+          sub="How meetings and updates flow to you"
+          complete={secComplete[5]}
+          open={openSec === 5}
+          onToggle={() => toggle(5)}
+          onContinue={() => saveAndContinue(5)}
+        >
           <div className="panel-pad">
             <div className="field">
-              <Lbl req help="A calendar link, a specific rep's calendar, or round-robin across a team.">
+              <Lbl
+                req
+                help="A calendar link, a specific rep's calendar, or round-robin across a team."
+              >
                 Where should booked meetings land?
               </Lbl>
               <input
@@ -1142,7 +1454,9 @@ export default function Workspace() {
             </div>
             <div className="grid2">
               <div className="field">
-                <Lbl req help="Days, times, time zone.">Availability constraints</Lbl>
+                <Lbl req help="Days, times, time zone.">
+                  Availability constraints
+                </Lbl>
                 <input
                   className={errCls(filled(brief.availability))}
                   value={brief.availability}
@@ -1168,7 +1482,9 @@ export default function Workspace() {
             </div>
             <div className="grid2">
               <div className="field" style={{ marginBottom: 0 }}>
-                <Lbl req help="The person we coordinate with day to day.">Main point of contact</Lbl>
+                <Lbl req help="The person we coordinate with day to day.">
+                  Main point of contact
+                </Lbl>
                 <input
                   className={errCls(filled(brief.contact))}
                   value={brief.contact}
@@ -1177,7 +1493,10 @@ export default function Workspace() {
                 />
               </div>
               <div className="field" style={{ marginBottom: 0 }}>
-                <Lbl req help="Sometimes different from the point of contact. Clarifying now avoids delays.">
+                <Lbl
+                  req
+                  help="Sometimes different from the point of contact. Clarifying now avoids delays."
+                >
                   Who has approval authority?
                 </Lbl>
                 <input
@@ -1189,17 +1508,19 @@ export default function Workspace() {
               </div>
             </div>
           </div>
-        </div>
+        </Section>
 
         {/* 6 · Targets & Definitions */}
-        <div className="panel brief-sec">
-          <div className="panel-head">
-            <div className="brief-num">6</div>
-            <div>
-              <h3>Targets &amp; Definitions</h3>
-              <div className="ph-sub">What success looks like, and how we measure it</div>
-            </div>
-          </div>
+        <Section
+          num={6}
+          title="Targets & Definitions"
+          sub="What success looks like, and how we measure it"
+          complete={secComplete[6]}
+          open={openSec === 6}
+          onToggle={() => toggle(6)}
+          onContinue={() => saveAndContinue(6)}
+          last
+        >
           <div className="panel-pad">
             <div className="field">
               <Lbl req help="Sets expectations against your plan. Surfaces any mismatch early.">
@@ -1215,7 +1536,10 @@ export default function Workspace() {
               />
             </div>
             <div className="field">
-              <Lbl req help="The most important definition in this form. We reconcile it with our standard before launch so billing is never ambiguous.">
+              <Lbl
+                req
+                help="The most important definition in this form. We reconcile it with our standard before launch so billing is never ambiguous."
+              >
                 What counts as a &quot;qualified meeting&quot; for you?
               </Lbl>
               <textarea
@@ -1235,18 +1559,7 @@ export default function Workspace() {
               />
             </div>
           </div>
-        </div>
-
-        <div className="brief-submit">
-          <div className="bs-note">
-            Once submitted, we&apos;ll review your brief, confirm the qualified-meeting definition,
-            and begin building your targeting. You&apos;ll see a sample prospect list to approve
-            before any emails go out.
-          </div>
-          <button className="btn btn-primary" onClick={submitBrief}>
-            Submit brief <span className="arrow">→</span>
-          </button>
-        </div>
+        </Section>
       </section>
 
       {/* PROSPECT LIST */}
@@ -1263,7 +1576,12 @@ export default function Workspace() {
             <div className="row">
               <select
                 className="select"
-                style={{ width: "auto", minWidth: 120, padding: "9px 12px", fontSize: 13.5 }}
+                style={{
+                  width: "auto",
+                  minWidth: 120,
+                  padding: "9px 34px 9px 12px",
+                  fontSize: 13.5,
+                }}
                 value={researchIcp}
                 onChange={(e) => setResearchIcp(e.target.value)}
               >
@@ -1272,9 +1590,25 @@ export default function Workspace() {
                 ))}
               </select>
               <button className="btn btn-accent btn-sm" onClick={research}>
-                Research prospects from ICP <span className="arrow">→</span>
+                Research prospects from ICP
               </button>
             </div>
+          </div>
+          <div className="batch-row">
+            <span className="br-label">
+              <span className="nbi">＋</span>Create sendout batch from selection
+            </span>
+            <input
+              className="input"
+              type="text"
+              placeholder="Name this batch (e.g. Batch 4)"
+              value={newBatchName}
+              onChange={(e) => setNewBatchName(e.target.value)}
+            />
+            <span className="sel-pill">{selCount} selected</span>
+            <button className="btn btn-primary btn-sm" onClick={createBatch}>
+              Create batch
+            </button>
           </div>
           <div className="filter-row" style={{ borderBottom: "1px solid var(--line)" }}>
             <div className="search">
@@ -1378,28 +1712,6 @@ export default function Workspace() {
               </tbody>
             </table>
           </div>
-          <div className="batch-row">
-            <span className="br-label">
-              <span className="nbi">＋</span>Create sendout batch from selection
-            </span>
-            <input
-              className="input"
-              type="text"
-              placeholder="Name this batch (e.g. Batch 4)"
-              value={newBatchName}
-              onChange={(e) => setNewBatchName(e.target.value)}
-            />
-            <span className="sel-pill">{selCount} selected</span>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => toast("Removed from pool", "warn")}
-            >
-              Remove selected
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={createBatch}>
-              Create batch <span className="arrow">→</span>
-            </button>
-          </div>
         </div>
       </section>
 
@@ -1409,92 +1721,119 @@ export default function Workspace() {
           <div className="section-label" style={{ marginBottom: 0 }}>
             Batches sent for client approval · status updates as the client responds
           </div>
-          <span className="badge badge-warn">
-            <span className="bdot" />
-            {pendingBatches} pending approval
-          </span>
+          <div className="row" style={{ gap: 10, alignItems: "center" }}>
+            <Link
+              href={`/${client}/client-status#approval`}
+              className="btn btn-ghost btn-xs"
+              style={{ padding: "4px 10px", fontSize: 12 }}
+            >
+              Edit approval email
+            </Link>
+            <span className="badge badge-warn">
+              <span className="bdot" />
+              {pendingBatches} pending approval
+            </span>
+          </div>
         </div>
         <div className="sob">
-          {batches.map((b, i) => (
-            <div className="sob-card" key={b.name}>
-              <div className="sob-ico">B{i + 1}</div>
-              <div className="sob-main">
-                <div className="sob-name">
-                  {b.name} <Sample>sample</Sample>
+          {batches.map((b, i) => {
+            const open = openBatch === b.name;
+            return (
+              <div className={clsx("sob-item", open && "open")} key={b.name} id={"sob-item-" + i}>
+                <div
+                  className="sob-card"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={open}
+                  onClick={() => toggleBatch(b.name, "sob-item-" + i, open)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleBatch(b.name, "sob-item-" + i, open);
+                    }
+                  }}
+                >
+                  <div className="sob-ico">B{i + 1}</div>
+                  <div className="sob-main">
+                    <div className="sob-name">
+                      {b.name} <Sample>sample</Sample>
+                    </div>
+                    <div className="sob-meta">
+                      <b style={{ color: "var(--ink)" }}>{b.approved}</b> approved ·{" "}
+                      <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced
+                      from {b.icp}
+                    </div>
+                  </div>
+                  <span className={clsx("badge", BATCH_STATUS_CLS[b.status] || "badge-neutral")}>
+                    <span className="bdot" />
+                    {b.status}
+                  </span>
+                  <span className="sob-chev" aria-hidden>
+                    ⌄
+                  </span>
                 </div>
-                <div className="sob-meta">
-                  <b style={{ color: "var(--ink)" }}>{b.approved}</b> approved ·{" "}
-                  <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced from{" "}
-                  {b.icp}
-                </div>
+                {open && (
+                  <div className="sob-detail">
+                    <div className="sob-scroll">
+                      <table className="tbl">
+                        <thead>
+                          <tr>
+                            <th>Prospect</th>
+                            <th>Company</th>
+                            <th>Approval</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {batchProspects(b).map((p, j) => (
+                            <tr key={j}>
+                              <td>
+                                <span className="nm">{p.name}</span> <Sample>sample</Sample>
+                              </td>
+                              <td className="muted">{p.company}</td>
+                              <td>
+                                <span
+                                  className={clsx(
+                                    "badge",
+                                    BATCH_STATUS_CLS[p.status] || "badge-neutral"
+                                  )}
+                                >
+                                  <span className="bdot" />
+                                  {p.status}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div className="sob-more">
+                      {b.count} prospects · {b.approved} approved · {b.count - b.approved} pending
+                    </div>
+                  </div>
+                )}
               </div>
-              <span className={clsx("badge", BATCH_STATUS_CLS[b.status] || "badge-neutral")}>
-                <span className="bdot" />
-                {b.status}
-              </span>
-              <Link href={`/${client}/client-status#approval`} className="btn btn-ghost btn-xs">
-                Client status ↗
-              </Link>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
       {/* CAMPAIGN */}
       <section className={clsx("tabpane", tab === "campaign" && "active")}>
         <div className="between" style={{ marginBottom: 18, flexWrap: "wrap", gap: 14 }}>
-          <div>
-            <div className="section-label" style={{ marginBottom: 6 }}>
-              Outreach send controls
-            </div>
-            <div className="row" style={{ gap: 16, flexWrap: "wrap" }}>
-              <div className="row" style={{ gap: 8 }}>
-                <span className="muted" style={{ fontSize: 13 }}>
-                  Sending
-                </span>
-                <Seg
-                  value={sending}
-                  options={["On", "Pause"]}
-                  onChange={(v) => {
-                    setSending(v);
-                    toast("Sending " + (v === "On" ? "resumed" : "paused"));
-                  }}
-                />
-              </div>
-              <div className="row" style={{ gap: 8 }}>
-                <span className="muted" style={{ fontSize: 13 }}>
-                  Daily cap
-                </span>
-                <Seg
-                  value={dailyCap}
-                  options={["30", "50", "80"]}
-                  onChange={(v) => {
-                    setDailyCap(v);
-                    toast("Daily cap set to " + v);
-                  }}
-                />
-              </div>
-              <div className="row" style={{ gap: 8 }}>
-                <span className="muted" style={{ fontSize: 13 }}>
-                  Split
-                </span>
-                <Seg
-                  value={split}
-                  options={["Even", "Favor winner"]}
-                  onChange={(v) => {
-                    setSplit(v);
-                    toast("Split: " + v);
-                  }}
-                />
-              </div>
-            </div>
+          <div className="section-label" style={{ marginBottom: 0 }}>
+            Campaigns · variants and send status per sendout batch
           </div>
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => {
               setCampaigns((s) => [
                 ...s,
-                { name: "Campaign " + (s.length + 1), batch: batches[0]?.name || "None" },
+                {
+                  name: "Campaign " + (s.length + 1),
+                  batch: batches[0]?.name || "None",
+                  status: "Pending" as const,
+                  variants: ["A", "B", "C"],
+                },
               ]);
               toast("Campaign " + (campaigns.length + 1) + " created");
             }}
@@ -1503,69 +1842,144 @@ export default function Workspace() {
           </button>
         </div>
         <div>
-          {campaigns.map((cp, ci) => (
-            <div className="camp" key={ci}>
-              <div className="camp-head">
-                <div className="ct">
-                  <span className="vtag">{ci + 1}</span>
-                  {cp.name} <Sample>sample</Sample>
+          {campaigns.map((cp, ci) => {
+            const open = openCamp === ci;
+            const live = cp.status === "Live";
+            const cb = batches.find((x) => x.name === cp.batch);
+            const size = cb?.count ?? 0;
+            const sendN = live ? size : 0;
+            const openN = live ? Math.round(size * 0.42) : 0;
+            const replyN = live ? Math.round(size * 0.13) : 0;
+            const bookedN = live ? Math.round(size * 0.05) : 0;
+            return (
+              <div className={clsx("camp", open && "open")} key={ci} id={"camp-" + ci}>
+                <div
+                  className="camp-head"
+                  role="button"
+                  tabIndex={0}
+                  aria-expanded={open}
+                  onClick={() => toggleCamp(ci, open)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      toggleCamp(ci, open);
+                    }
+                  }}
+                >
+                  <div className="ct">
+                    <span className="vtag">{ci + 1}</span>
+                    {cp.name} <Sample>sample</Sample>
+                  </div>
+                  <div className="cmeta">
+                    <span className="muted">Sendout batch</span>
+                    <select
+                      className="select"
+                      style={{
+                        width: "auto",
+                        minWidth: 118,
+                        padding: "8px 32px 8px 11px",
+                        fontSize: 13,
+                      }}
+                      value={cp.batch}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setCampaigns((s) => s.map((c, i) => (i === ci ? { ...c, batch: v } : c)));
+                        toast("Campaign linked to " + v);
+                      }}
+                    >
+                      {batches.map((b) => (
+                        <option key={b.name}>{b.name}</option>
+                      ))}
+                    </select>
+                    <span className="badge badge-info">
+                      <span className="bdot" />
+                      {cp.variants.length} variants
+                    </span>
+                    {!live && (
+                      <button
+                        className="btn btn-accent btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setCampaigns((s) =>
+                            s.map((c, i) => (i === ci ? { ...c, status: "Live" } : c))
+                          );
+                          toast(cp.name + " launched · sending to " + cp.batch);
+                        }}
+                      >
+                        Send campaign
+                      </button>
+                    )}
+                    {!live && (
+                      <button
+                        className="btn btn-ghost btn-sm camp-del"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteCampaign(ci);
+                        }}
+                        aria-label={"Delete " + cp.name}
+                      >
+                        Delete
+                      </button>
+                    )}
+                    <span className="camp-chev" aria-hidden>
+                      ⌄
+                    </span>
+                  </div>
                 </div>
-                <div className="cmeta">
-                  <span className="muted">Sendout batch</span>
-                  <select
-                    className="select"
-                    style={{ width: "auto", minWidth: 118, padding: "8px 11px", fontSize: 13 }}
-                    value={cp.batch}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      setCampaigns((s) => s.map((c, i) => (i === ci ? { ...c, batch: v } : c)));
-                      toast("Campaign linked to " + v);
-                    }}
-                  >
-                    {batches.map((b) => (
-                      <option key={b.name}>{b.name}</option>
-                    ))}
-                  </select>
-                  <span className="badge badge-info">
-                    <span className="bdot" />3 variants
-                  </span>
-                  <button
-                    className="btn btn-accent btn-sm"
-                    onClick={() => toast(cp.name + " sent to " + cp.batch)}
-                  >
-                    Send campaign <span className="arrow">→</span>
-                  </button>
+                <div className="camp-body">
+                  <div className="camp-stats">
+                    <div className="cstat">
+                      <div className="cl">Deploy status</div>
+                      <div className="cv">
+                        <span className={clsx("badge", live ? "badge-ok" : "badge-warn")}>
+                          <span className="bdot" />
+                          {live ? "Live" : "Pending launch"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="cstat">
+                      <div className="cl">Total batch size</div>
+                      <div className="cv">{size}</div>
+                    </div>
+                    <div className="cstat">
+                      <div className="cl">Sending count</div>
+                      <div className="cv">{sendN}</div>
+                    </div>
+                    <div className="cstat">
+                      <div className="cl">Open count</div>
+                      <div className="cv">{openN}</div>
+                    </div>
+                    <div className="cstat">
+                      <div className="cl">Reply count</div>
+                      <div className="cv">{replyN}</div>
+                    </div>
+                    <div className="cstat">
+                      <div className="cl">Booked meeting</div>
+                      <div className="cv">{bookedN}</div>
+                    </div>
+                  </div>
+                  {open && (
+                    <Variants
+                      tags={cp.variants}
+                      editable={!live}
+                      onRemove={(tag) => removeVariant(ci, tag)}
+                      onAdd={() => addVariant(ci)}
+                    />
+                  )}
                 </div>
               </div>
-              <div className="camp-body">
-                <Variants />
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
       {/* REPLY QUEUE */}
       <section className={clsx("tabpane", tab === "replies" && "active")}>
-        <div className="between" style={{ marginBottom: 18, flexWrap: "wrap", gap: 12 }}>
-          <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
-            <div className="row" style={{ gap: 8 }}>
-              <span className="muted" style={{ fontSize: 13 }}>
-                Campaign
-              </span>
-              <select
-                className="select"
-                style={{ width: "auto", minWidth: 140, padding: "9px 12px", fontSize: 13.5 }}
-                value={replyCamp}
-                onChange={(e) => setReplyCamp(e.target.value)}
-              >
-                <option value="">All campaigns</option>
-                {campaigns.map((c) => (
-                  <option key={c.name}>{c.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
+        <div
+          className="row"
+          style={{ marginBottom: 18, justifyContent: "flex-end", flexWrap: "wrap", gap: 12 }}
+        >
           {remaining > 0 ? (
             <span className="badge badge-warn">
               <span className="bdot" />
@@ -1577,6 +1991,17 @@ export default function Workspace() {
               All handled
             </span>
           )}
+          <select
+            className="select"
+            style={{ width: "auto", minWidth: 160, padding: "9px 34px 9px 12px", fontSize: 13.5 }}
+            value={replyCamp}
+            onChange={(e) => setReplyCamp(e.target.value)}
+          >
+            <option value="">All campaigns</option>
+            {campaigns.map((c) => (
+              <option key={c.name}>{c.name}</option>
+            ))}
+          </select>
         </div>
         <div>
           {replies.map((r, i) => (
@@ -1603,7 +2028,12 @@ export default function Workspace() {
                 </span>
               </div>
               <div className="reply-quote">
-                <span className="ql">Prospect replied</span>
+                <div className="reply-qhead">
+                  <span className="ql">Prospect replied</span>
+                  <span className="reply-date">
+                    {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt)}
+                  </span>
+                </div>
                 {r.quote}
               </div>
               <div className="reply-draft">
@@ -1619,6 +2049,29 @@ export default function Workspace() {
                   }}
                 />
                 <div className="reply-actions">
+                  {r.status ? (
+                    <span className="status-set">✓ {r.status}</span>
+                  ) : (
+                    <select
+                      className="status-select"
+                      value=""
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        if (!v) return;
+                        setReplies((s) => s.map((x, idx) => (idx === i ? { ...x, status: v } : x)));
+                        toast("Marked as: " + v);
+                      }}
+                    >
+                      <option value="">Set status…</option>
+                      <option>Follow-up scheduled</option>
+                      <option>Waiting on prospect</option>
+                      <option>Not interested</option>
+                      <option>No action needed</option>
+                    </select>
+                  )}
+                  <button className="btn btn-ghost btn-sm" onClick={() => toggleEdit(i)}>
+                    {r.editing ? "Done editing" : "Edit draft"}
+                  </button>
                   <button
                     className="btn btn-accent btn-sm"
                     onClick={() => {
@@ -1626,27 +2079,8 @@ export default function Workspace() {
                       toast("Reply approved and sent");
                     }}
                   >
-                    Approve &amp; send <span className="arrow">→</span>
+                    Approve &amp; send
                   </button>
-                  <button className="btn btn-ghost btn-sm" onClick={() => toggleEdit(i)}>
-                    {r.editing ? "Done editing" : "Edit draft"}
-                  </button>
-                  <span className="spacer" />
-                  <select
-                    className="status-select"
-                    value=""
-                    onChange={(e) => {
-                      if (!e.target.value) return;
-                      finishReply(i, "Status set: " + e.target.value, true);
-                      toast("Marked as: " + e.target.value);
-                    }}
-                  >
-                    <option value="">Set status…</option>
-                    <option>Follow-up scheduled</option>
-                    <option>Waiting on prospect</option>
-                    <option>Not interested</option>
-                    <option>No action needed</option>
-                  </select>
                 </div>
               </div>
               <div
@@ -1694,13 +2128,13 @@ export default function Workspace() {
         <div className="panel">
           <div className="panel-head">
             <div>
-              <h3>Billing ledger</h3>
+              <h3>Billing Ledger</h3>
               <div className="ph-sub">
                 Only completed, qualified meetings are billable · all rows <Sample>sample</Sample>
               </div>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => toast("Statement exported")}>
-              Export statement
+            <button className="btn btn-ghost btn-sm" onClick={exportLedgerCsv}>
+              Export CSV
             </button>
           </div>
           <div style={{ overflowX: "auto" }}>
@@ -1768,70 +2202,87 @@ export default function Workspace() {
           <div className="section-label" style={{ marginBottom: 0 }}>
             Meeting summaries, newest first
           </div>
-          <div className="row" style={{ gap: 8 }}>
-            <span className="muted" style={{ fontSize: 13 }}>
-              Campaign
-            </span>
-            <select
-              className="select"
-              style={{ width: "auto", minWidth: 140, padding: "9px 12px", fontSize: 13.5 }}
-              value={sumCamp}
-              onChange={(e) => setSumCamp(e.target.value)}
-            >
-              <option value="">All campaigns</option>
-              {campaigns.map((c) => (
-                <option key={c.name}>{c.name}</option>
-              ))}
-            </select>
-          </div>
+          <select
+            className="select"
+            style={{ width: "auto", minWidth: 160, padding: "9px 34px 9px 12px", fontSize: 13.5 }}
+            value={sumCamp}
+            onChange={(e) => setSumCamp(e.target.value)}
+          >
+            <option value="">All campaigns</option>
+            {campaigns.map((c) => (
+              <option key={c.name}>{c.name}</option>
+            ))}
+          </select>
         </div>
         <div>
-          {[0, 1, 2].map((sx) => (
-            <div
-              className="sum-card"
-              key={sx}
-              style={{ display: !sumCamp || sumCamp === "Campaign 1" ? undefined : "none" }}
-            >
-              <div className="sum-tags">
-                <span className="stag">Campaign 1</span>
-                <span className="stag">Batch 3</span>
-              </div>
-              <div className="sh">
-                <div>
-                  <div className="sm">
-                    Meeting {sx + 1} · Prospect {sx + 1} <Sample>sample</Sample>
-                  </div>
-                  <div className="smeta">
-                    Placeholder date · Sample Co {sx + 1} · recording on file
-                  </div>
+          {[0, 1, 2].map((sx) => {
+            const won = sx !== 1;
+            const recId = ["kfx-9d2a-bv1", "qmt-7r4c-zp8", "hla-2w6e-nk3"][sx];
+            const recUrl = `https://meet.google.com/rec/${recId}`;
+            return (
+              <div
+                className="sum-card"
+                key={sx}
+                style={{ display: !sumCamp || sumCamp === "Campaign 1" ? undefined : "none" }}
+              >
+                <div className="sum-tags">
+                  <span className="stag">Campaign 1</span>
+                  <span className="stag">Batch 3</span>
                 </div>
-                <span className="badge badge-ok">
-                  <span className="bdot" />
-                  Qualified
-                </span>
+                <div className="sh">
+                  <div>
+                    <div className="sm">
+                      Meeting {sx + 1} · Prospect {sx + 1} <Sample>sample</Sample>
+                    </div>
+                    <div className="smeta">
+                      Placeholder date · Sample Co {sx + 1} · recording on file
+                    </div>
+                  </div>
+                  <span className="badge badge-ok">
+                    <span className="bdot" />
+                    Qualified
+                  </span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Recording</span>
+                  <span className="sv">
+                    <a className="rec-link" href={recUrl} target="_blank" rel="noopener noreferrer">
+                      {recUrl}
+                    </a>
+                  </span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Attendees</span>
+                  <span className="sv">Placeholder names and titles</span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Discussed</span>
+                  <span className="sv">
+                    Placeholder summary of the conversation, pain points, and current stack.
+                  </span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Next step</span>
+                  <span className="sv">
+                    <span className="mph">Placeholder</span>: follow-up action and owner.
+                  </span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Sentiment</span>
+                  <span className="sv">Placeholder: qualified, warm, evaluating.</span>
+                </div>
+                <div className="srow">
+                  <span className="sk">Final conversion</span>
+                  <span className="sv">
+                    <span className={clsx("badge", won ? "badge-ok" : "badge-neutral")}>
+                      <span className="bdot" />
+                      {won ? "Deal won" : "No deal"}
+                    </span>
+                  </span>
+                </div>
               </div>
-              <div className="srow">
-                <span className="sk">Attendees</span>
-                <span className="sv">Placeholder names and titles</span>
-              </div>
-              <div className="srow">
-                <span className="sk">Discussed</span>
-                <span className="sv">
-                  Placeholder summary of the conversation, pain points, and current stack.
-                </span>
-              </div>
-              <div className="srow">
-                <span className="sk">Next step</span>
-                <span className="sv">
-                  <span className="mph">Placeholder</span>: follow-up action and owner.
-                </span>
-              </div>
-              <div className="srow">
-                <span className="sk">Sentiment</span>
-                <span className="sv">Placeholder: qualified, warm, evaluating.</span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
     </>

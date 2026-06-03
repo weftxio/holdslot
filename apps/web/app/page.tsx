@@ -155,7 +155,7 @@ export default function Home() {
             </p>
             <div className="hero-ctas">
               <a href="#start" className="btn btn-primary">
-                Get started <span className="arrow">→</span>
+                Get started
               </a>
               <a href="#how" className="btn btn-ghost">
                 See how it works
@@ -371,7 +371,7 @@ export default function Home() {
                   onKeyDown={(e) => e.key === "Enter" && submit()}
                 />
                 <button className="btn" onClick={submit}>
-                  {sending ? "Sending…" : "Get my free list"} <span className="arrow">→</span>
+                  {sending ? "Sending…" : "Get my free list"}
                 </button>
               </div>
               <div className={"form-msg" + (msg ? " error" : "")}>{msg}</div>
@@ -390,7 +390,7 @@ export default function Home() {
               <p className="final-sub" style={{ marginTop: 24 }}>
                 Want to move faster?{" "}
                 <a href="#" onClick={(e) => e.preventDefault()}>
-                  Book a 15-min walkthrough →
+                  Book a 15-min walkthrough
                 </a>
               </p>
             </div>

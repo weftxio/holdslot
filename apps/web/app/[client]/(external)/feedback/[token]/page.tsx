@@ -124,7 +124,7 @@ export default function Feedback() {
         </div>
 
         <button className="btn btn-primary" style={{ width: "100%" }} onClick={submit}>
-          Submit feedback <span className="arrow">→</span>
+          Submit feedback
         </button>
         <p className="muted" style={{ fontSize: 12, textAlign: "center", marginTop: 14 }}>
           Your rating won&apos;t be shared with anyone you&apos;d meet again.

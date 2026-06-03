@@ -57,7 +57,12 @@ export default function Login() {
   return (
     <div className="auth">
       <div className="auth-brand">
-        <Link href="/" className="logo">
+        <Link
+          href="/"
+          className="logo"
+          title="Back to homepage"
+          aria-label="HoldSlot · back to homepage"
+        >
           <span className="dot" />
           HoldSlot
         </Link>
@@ -102,7 +107,12 @@ export default function Login() {
 
       <div className="auth-form-side">
         <form className="auth-form" onSubmit={signin} noValidate>
-          <Link href="/" className="logo mob-logo">
+          <Link
+            href="/"
+            className="logo mob-logo"
+            title="Back to homepage"
+            aria-label="HoldSlot · back to homepage"
+          >
             <span className="dot" />
             HoldSlot
           </Link>
@@ -173,11 +183,11 @@ export default function Login() {
               </div>
 
               <button type="submit" className="btn btn-primary" disabled={signing}>
-                {signing ? "Signing in…" : "Sign in"} <span className="arrow">→</span>
+                {signing ? "Signing in…" : "Sign in"}
               </button>
 
               <p className="alt">
-                New to HoldSlot? <Link href="/#start">Get started →</Link>
+                New to HoldSlot? <Link href="/#start">Get started</Link>
               </p>
               <p className="demo-hint">
                 Mock: <b>any valid email and a 6+ character password</b> signs you in.
@@ -214,11 +224,11 @@ export default function Login() {
                 style={{ width: "100%" }}
                 onClick={sendReset}
               >
-                Send reset link <span className="arrow">→</span>
+                Send reset link
               </button>
               <p className="alt">
                 <a href="#" onClick={(e) => (e.preventDefault(), setView("signin"))}>
-                  ← Back to sign in
+                  Back to sign in
                 </a>
               </p>
             </div>
@@ -237,7 +247,7 @@ export default function Login() {
                 style={{ width: "100%" }}
                 onClick={() => setView("signin")}
               >
-                ← Back to sign in
+                Back to sign in
               </button>
               <p className="demo-hint">
                 Didn&apos;t get it? Check spam, or{" "}

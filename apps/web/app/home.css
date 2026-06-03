@@ -67,13 +67,6 @@
 .btn-ghost:hover {
   border-color: var(--ink);
 }
-.arrow {
-  font-size: 13px;
-  transition: transform 0.18s ease;
-}
-.btn:hover .arrow {
-  transform: translateX(3px);
-}
 
 /* nav */
 .home header {

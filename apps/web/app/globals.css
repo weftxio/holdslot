@@ -148,13 +148,6 @@ a {
 .btn-danger:hover {
   background: #f6e0de;
 }
-.arrow {
-  font-size: 13px;
-  transition: transform 0.18s ease;
-}
-.btn:hover .arrow {
-  transform: translateX(3px);
-}
 
 /* ---- logo (verbatim) ---- */
 .logo {
@@ -866,6 +859,15 @@ h3 {
   outline: none;
   transition: 0.15s ease;
   width: 100%;
+}
+/* dropdown-only: custom chevron + room on the right (kept separate from inputs) */
+.select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 40px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238A8D9A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
 }
 .input:focus,
 .textarea:focus,

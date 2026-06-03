@@ -105,7 +105,7 @@ export default function Approve() {
             Request changes
           </button>
           <button className="btn btn-primary" onClick={() => setDone(true)}>
-            Approve list &amp; start outreach <span className="arrow">→</span>
+            Approve list &amp; start outreach
           </button>
         </div>
       </div>

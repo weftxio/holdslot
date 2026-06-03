@@ -28,9 +28,21 @@
 .auth-brand .logo {
   color: #fff;
   font-size: 22px;
+  align-self: flex-start;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
 }
 .auth-brand .logo .dot {
   background: var(--cerulean);
+}
+.auth-brand .logo:hover,
+.mob-logo:hover {
+  opacity: 0.78;
+}
+.mob-logo {
+  align-self: flex-start;
+  cursor: pointer;
+  transition: opacity 0.15s ease;
 }
 .auth-lead {
   max-width: 420px;
