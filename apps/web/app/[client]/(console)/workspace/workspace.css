@@ -570,6 +570,15 @@
   font-weight: 600;
   font-size: 12.5px;
 }
+.variant-edit {
+  margin: 0 18px 16px;
+  width: calc(100% - 36px);
+  min-height: 110px;
+  /* match .variant-body typography (not the larger .textarea default) so the
+     edit view doesn't jump in size */
+  font-size: 13.5px;
+  line-height: 1.6;
+}
 
 /* reply queue */
 .reply {
@@ -1297,8 +1306,30 @@
   color: var(--ink-faint);
   margin-top: 4px;
 }
+.sob-card .sob-dates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.sob-card .sob-date {
+  font-size: 11px;
+  color: var(--ink-faint);
+  background: var(--cerulean-wash);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.sob-card .sob-date b {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+.sob-card .sob-date.warn {
+  background: var(--warn-wash);
+  color: var(--warn);
+}
 
-/* reply status select + meta line */
+/* reply meta line */
 .reply-head .tagline {
   font-size: 11.5px;
   color: var(--ink-faint);
@@ -1316,33 +1347,18 @@
   font-weight: 600;
   white-space: nowrap;
 }
-.status-select {
-  font-family: var(--sans);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink-soft);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 11px;
-  background: #fff;
-  cursor: pointer;
+.reply-head .tagline .ttag.nudge {
+  background: var(--info-wash);
+  color: var(--info);
 }
-.status-select:focus {
-  outline: none;
-  border-color: var(--cerulean);
-  box-shadow: 0 0 0 3px rgba(155, 183, 214, 0.2);
-}
-.status-set {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--ink-soft);
-  background: var(--line-soft);
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 12px;
+/* empty state for a filter that matches no recaps / replies */
+.sum-empty {
+  padding: 28px 18px;
+  text-align: center;
+  font-size: 13.5px;
+  color: var(--ink-faint);
+  border: 1px dashed var(--line);
+  border-radius: 12px;
 }
 
 /* summary meta tags */

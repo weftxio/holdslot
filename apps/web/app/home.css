@@ -202,6 +202,9 @@
   font-style: italic;
   color: var(--cerulean-deep);
 }
+.nowrap {
+  white-space: nowrap;
+}
 .sub {
   font-size: 18.5px;
   color: var(--ink-soft);
@@ -422,9 +425,10 @@
 .final-card p.lead-copy {
   font-size: 17px;
   color: rgba(255, 255, 255, 0.82);
-  max-width: 480px;
+  max-width: 640px;
   margin: 22px auto 0;
   line-height: 1.55;
+  text-wrap: balance;
 }
 .lead-form {
   display: flex;

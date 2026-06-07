@@ -1,71 +1,32 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import Link from "next/link";
+import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
-import { Calendar, dateFnsLocalizer } from "react-big-calendar";
-import { format, parse, startOfWeek, getDay } from "date-fns";
-import { enUS } from "date-fns/locale";
 import { Sample } from "@/components/Sample";
-import "react-big-calendar/lib/css/react-big-calendar.css";
 import "./overview.css";
 
-const localizer = dateFnsLocalizer({
-  format,
-  parse,
-  startOfWeek,
-  getDay,
-  locales: { "en-US": enUS },
+// Lazy-load the calendar (react-big-calendar ~70kB) so it streams in after the
+// dashboard is interactive instead of blocking /overview hydration.
+const MeetingCalendar = dynamic(() => import("./MeetingCalendar"), {
+  ssr: false,
+  loading: () => <div className="cal-wrap" style={{ height: 580 }} />,
 });
 
-// Fixed reference month for the mock (deterministic — avoids SSR hydration drift)
-const CAL_NOW = new Date(2026, 5, 3);
-const CAL_MONTH = new Date(2026, 5, 1);
-
-const MEETINGS = [
-  {
-    title: "Acme Robotics · Qualified",
-    start: new Date(2026, 5, 4, 10, 0),
-    end: new Date(2026, 5, 4, 10, 45),
-  },
-  {
-    title: "Globex · Intro call",
-    start: new Date(2026, 5, 9, 14, 30),
-    end: new Date(2026, 5, 9, 15, 0),
-  },
-  {
-    title: "Northwind · Demo",
-    start: new Date(2026, 5, 12, 11, 0),
-    end: new Date(2026, 5, 12, 11, 45),
-  },
-  {
-    title: "Initech · Discovery",
-    start: new Date(2026, 5, 17, 9, 30),
-    end: new Date(2026, 5, 17, 10, 15),
-  },
-  {
-    title: "Soylent · Follow-up",
-    start: new Date(2026, 5, 23, 16, 0),
-    end: new Date(2026, 5, 23, 16, 30),
-  },
-  {
-    title: "Umbrella · Qualified",
-    start: new Date(2026, 5, 26, 13, 0),
-    end: new Date(2026, 5, 26, 13, 45),
-  },
+// Bar width is derived from n (count ÷ top-of-funnel count), so the chart can't
+// drift out of sync the way storing both a width and a count would.
+const FUNNEL: { label: string; color: string; n: number }[] = [
+  { label: "Sourced", color: "#C9D7E8", n: 1000 },
+  { label: "Approved", color: "#AEC4DD", n: 820 },
+  { label: "Contacted", color: "var(--cerulean)", n: 780 },
+  { label: "Replied", color: "#7C9CC0", n: 440 },
+  { label: "Positive", color: "var(--cerulean-deep)", n: 260 },
+  { label: "Meeting booked", color: "var(--ink)", n: 150 },
 ];
-
-const FUNNEL: { label: string; color: string; w: number; n: number }[] = [
-  { label: "Sourced", color: "#C9D7E8", w: 100, n: 1000 },
-  { label: "Approved", color: "#AEC4DD", w: 82, n: 820 },
-  { label: "Contacted", color: "var(--cerulean)", w: 78, n: 780 },
-  { label: "Replied", color: "#7C9CC0", w: 44, n: 440 },
-  { label: "Positive", color: "var(--cerulean-deep)", w: 26, n: 260 },
-  { label: "Meeting booked", color: "var(--ink)", w: 15, n: 150 },
-];
+const FUNNEL_TOP = FUNNEL[0].n;
 
 export default function Overview() {
   const { client } = useParams<{ client: string }>();
-  const [calDate, setCalDate] = useState<Date>(CAL_MONTH);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -237,6 +198,7 @@ export default function Overview() {
           <div className="panel-pad">
             <div className="funnel2" id="funnel">
               {FUNNEL.map((f, i) => {
+                const w = Math.round((f.n / FUNNEL_TOP) * 100);
                 const prev = i === 0 ? f.n : FUNNEL[i - 1].n;
                 const conv = Math.round((f.n / prev) * 100);
                 return (
@@ -254,8 +216,8 @@ export default function Overview() {
                       </span>
                     </div>
                     <div className="fn2-track">
-                      <div className="fn2-bar" data-w={f.w} style={{ background: f.color }}>
-                        <span className="fn2-pct">{f.w}%</span>
+                      <div className="fn2-bar" data-w={w} style={{ background: f.color }}>
+                        <span className="fn2-pct">{w}%</span>
                       </div>
                     </div>
                   </div>
@@ -275,19 +237,7 @@ export default function Overview() {
             </div>
           </div>
           <div className="panel-pad">
-            <div className="cal-wrap">
-              <Calendar
-                localizer={localizer}
-                events={MEETINGS}
-                date={calDate}
-                onNavigate={(d) => setCalDate(d)}
-                getNow={() => CAL_NOW}
-                defaultView="month"
-                views={["month"]}
-                popup
-                style={{ height: 580 }}
-              />
-            </div>
+            <MeetingCalendar />
           </div>
         </div>
       </div>

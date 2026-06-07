@@ -306,3 +306,8 @@
   color: var(--cerulean-deep);
   margin-bottom: 9px;
 }
+.bk-propose {
+  border-top: 1px solid var(--line-soft);
+  background: var(--cerulean-wash);
+  padding: 15px 20px;
+}

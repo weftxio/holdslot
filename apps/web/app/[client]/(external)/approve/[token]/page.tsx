@@ -13,6 +13,16 @@ const ROLES = [
   "Placeholder title",
 ];
 
+// One-line "why a fit" summary shown under each prospect (placeholder copy for the mock).
+const SUMMARIES = [
+  "Placeholder: matches your ICP, recently showed a buying signal.",
+  "Placeholder: right seniority and team size, active in your category.",
+  "Placeholder: fits your target industry and deal-size profile.",
+  "Placeholder: decision-maker at a company in your sweet spot.",
+  "Placeholder: strong fit on role, region, and tech stack.",
+  "Placeholder: matches your ICP, growing team with a relevant need.",
+];
+
 export default function Approve() {
   const [removed, setRemoved] = useState<Record<number, boolean>>({});
   const [done, setDone] = useState(false);
@@ -50,9 +60,10 @@ export default function Approve() {
         <span className="eyebrow">Your approval needed</span>
         <h1>Approve your prospect list</h1>
         <p>
-          HoldSlot prepared this batch for <b>Northwind</b> <Sample>sample</Sample>. Nothing is
-          contacted until you approve. Remove anyone who isn&apos;t a fit, then approve in one
-          click.
+          HoldSlot has prepared this list of prospects for <b>Northwind</b> <Sample>sample</Sample>{" "}
+          for your review · please approve within 5 days so we can keep your campaign on schedule.
+          Nothing is contacted until you approve. Remove anyone who isn&apos;t a fit, then approve
+          in one click.
         </p>
       </div>
       <div className="ext-pad">
@@ -77,11 +88,8 @@ export default function Approve() {
                 <div className="rl">
                   {r} · Sample Co {i + 1}
                 </div>
+                <div className="why">{SUMMARIES[i]}</div>
               </div>
-              <span className="badge badge-info" style={{ marginRight: 4 }}>
-                <span className="bdot" />
-                Good fit
-              </span>
               <button className="ex" onClick={() => setRemoved((s) => ({ ...s, [i]: !s[i] }))}>
                 {removed[i] ? "Undo" : "Remove"}
               </button>
@@ -104,8 +112,8 @@ export default function Approve() {
           >
             Request changes
           </button>
-          <button className="btn btn-primary" onClick={() => setDone(true)}>
-            Approve list &amp; start outreach
+          <button className="btn btn-primary" onClick={() => setDone(true)} disabled={live === 0}>
+            Approve {live} prospect{live === 1 ? "" : "s"} &amp; start outreach
           </button>
         </div>
       </div>

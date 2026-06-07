@@ -135,6 +135,12 @@ a {
   border-radius: 7px;
   gap: 5px;
 }
+.btn-2xs {
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 7px;
+  gap: 4px;
+}
 .btn[disabled] {
   opacity: 0.45;
   cursor: not-allowed;
@@ -868,6 +874,15 @@ h3 {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238A8D9A' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 14px center;
+}
+/* compact dropdown: smaller type + tighter vertical padding, but inherits the
+   .select chevron and 40px right gap so spacing can't diverge per call site */
+.select-sm {
+  width: auto;
+  padding-top: 9px;
+  padding-bottom: 9px;
+  padding-left: 12px;
+  font-size: 13.5px;
 }
 .input:focus,
 .textarea:focus,

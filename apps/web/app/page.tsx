@@ -151,7 +151,7 @@ export default function Home() {
             </h1>
             <p className="sub">
               We find your buyers, start the conversations, and put real meetings on your calendar,
-              without the cost of building an in-house sales team.
+              without the cost of building an <span className="nowrap">in-house</span> sales team.
             </p>
             <div className="hero-ctas">
               <a href="#start" className="btn btn-primary">
@@ -262,7 +262,7 @@ export default function Home() {
         <div className="wrap trust-grid">
           <div className="reveal">
             <span className="eyebrow">Why HoldSlot</span>
-            <h2>Built for teams who can&apos;t afford a miss.</h2>
+            <h2>Scale your business with no wasted spend.</h2>
             <ul className="trust-list">
               <li className="anim">
                 <span className="check">✓</span>
@@ -376,8 +376,7 @@ export default function Home() {
               </div>
               <div className={"form-msg" + (msg ? " error" : "")}>{msg}</div>
               <p className="price-line">
-                Then: <b>pay only per qualified meeting</b>. No setup fee, no retainer, cancel
-                anytime.
+                <b>Pay only per qualified meeting</b>, cancel anytime.
               </p>
             </div>
             <div className={"success-state" + (sent ? " show" : "")}>

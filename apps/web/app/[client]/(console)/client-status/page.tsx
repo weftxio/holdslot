@@ -6,6 +6,7 @@ import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { STATUS_TABS, useStatusTab, type StatusTabKey } from "@/components/console/StatusTab";
+import { highlightTokens } from "@/lib/tmpl";
 import "./client-status.css";
 
 const BACK: Record<StatusTabKey, [string, string]> = {
@@ -14,49 +15,130 @@ const BACK: Record<StatusTabKey, [string, string]> = {
   feedback: ["workspace#summaries", "Back to Meeting Recaps"],
 };
 
-const A_LOG: [string, string, string, string, string, string][] = [
-  ["Batch 3", "2 days ago", "48", "Not yet", "Pending", "badge-warn"],
-  ["Batch 2", "placeholder", "52", "placeholder date", "Approved", "badge-ok"],
-  ["Batch 1", "placeholder", "40", "placeholder date", "Approved", "badge-ok"],
+type ApprovalRow = {
+  name: string;
+  sent: string;
+  prospects: string;
+  responded: string;
+  status: string;
+  badge: string;
+};
+const A_LOG: ApprovalRow[] = [
+  {
+    name: "Batch 3",
+    sent: "2 days ago",
+    prospects: "48",
+    responded: "Not yet",
+    status: "Pending",
+    badge: "badge-warn",
+  },
+  {
+    name: "Batch 2",
+    sent: "placeholder",
+    prospects: "52",
+    responded: "placeholder date",
+    status: "Approved",
+    badge: "badge-ok",
+  },
+  {
+    name: "Batch 1",
+    sent: "placeholder",
+    prospects: "40",
+    responded: "placeholder date",
+    status: "Approved",
+    badge: "badge-ok",
+  },
 ];
-// [name, sent, meeting date (suggested time), status, badge]
-const B_LOG: [string, string, string, string, string][] = [
-  ["Prospect 1", "Jun 2", "Tue, Jun 10 · 2:30 PM", "Confirmed", "badge-ok"],
-  ["Prospect 2", "Jun 3", "Wed, Jun 11 · 10:00 AM", "Awaiting confirm", "badge-warn"],
-  ["Prospect 3", "May 28", "Mon, Jun 9 · 3:00 PM", "Expired", "badge-danger"],
-  ["Prospect 4", "Jun 1", "Thu, Jun 12 · 11:00 AM", "Confirmed", "badge-ok"],
-  ["Prospect 5", "May 30", "Wed, Jun 4 · 1:00 PM", "Confirmed", "badge-ok"],
+
+type BookingRow = { name: string; sent: string; meeting: string; status: string; badge: string };
+const B_LOG: BookingRow[] = [
+  {
+    name: "Prospect 1",
+    sent: "Jun 2",
+    meeting: "Tue, Jun 10 · 2:30 PM",
+    status: "Confirmed",
+    badge: "badge-ok",
+  },
+  {
+    name: "Prospect 2",
+    sent: "Jun 3",
+    meeting: "Wed, Jun 11 · 10:00 AM",
+    status: "Awaiting confirm",
+    badge: "badge-warn",
+  },
+  {
+    name: "Prospect 3",
+    sent: "May 28",
+    meeting: "Mon, Jun 9 · 3:00 PM",
+    status: "Expired",
+    badge: "badge-danger",
+  },
+  {
+    name: "Prospect 4",
+    sent: "Jun 1",
+    meeting: "Thu, Jun 12 · 11:00 AM",
+    status: "Confirmed",
+    badge: "badge-ok",
+  },
+  {
+    name: "Prospect 5",
+    sent: "May 30",
+    meeting: "Wed, Jun 4 · 1:00 PM",
+    status: "Confirmed",
+    badge: "badge-ok",
+  },
 ];
-// [name, rating, comment, meeting date, feedback date, badge, status]
-const F_LOG: [string, number, string, string, string, string, string][] = [
-  [
-    "Prospect 1",
-    4,
-    "Placeholder comment about a useful, relevant call.",
-    "Jun 4",
-    "Jun 5",
-    "badge-ok",
-    "Received",
-  ],
-  [
-    "Prospect 2",
-    5,
-    "Placeholder comment, well prepared and on point.",
-    "Jun 2",
-    "Jun 3",
-    "badge-ok",
-    "Received",
-  ],
-  [
-    "Prospect 4",
-    3,
-    "Placeholder comment, interested but early.",
-    "May 28",
-    "May 29",
-    "badge-ok",
-    "Received",
-  ],
-  ["Prospect 5", 0, "No response yet", "Jun 6", "—", "badge-warn", "Awaiting"],
+
+type FeedbackRow = {
+  name: string;
+  rating: number;
+  comment: string;
+  meeting: string;
+  feedback: string;
+  badge: string;
+  status: string;
+  // true when feedback has been pending >5 days (real impl computes from dates);
+  // gates the "Send follow-up nudge" action.
+  overdue?: boolean;
+};
+const F_LOG: FeedbackRow[] = [
+  {
+    name: "Prospect 1",
+    rating: 4,
+    comment: "Placeholder comment about a useful, relevant call.",
+    meeting: "Jun 4",
+    feedback: "Jun 5",
+    badge: "badge-ok",
+    status: "Received",
+  },
+  {
+    name: "Prospect 2",
+    rating: 5,
+    comment: "Placeholder comment, well prepared and on point.",
+    meeting: "Jun 2",
+    feedback: "Jun 3",
+    badge: "badge-ok",
+    status: "Received",
+  },
+  {
+    name: "Prospect 4",
+    rating: 3,
+    comment: "Placeholder comment, interested but early.",
+    meeting: "May 28",
+    feedback: "May 29",
+    badge: "badge-ok",
+    status: "Received",
+  },
+  {
+    name: "Prospect 5",
+    rating: 0,
+    comment: "No response yet",
+    meeting: "May 30",
+    feedback: "—",
+    badge: "badge-warn",
+    status: "Awaiting",
+    overdue: true,
+  },
 ];
 
 function Stars({ n }: { n: number }) {
@@ -80,6 +162,17 @@ export default function ClientStatus() {
   const toast = useToast();
   const { tab, setTab } = useStatusTab();
   const [approvalBatch, setApprovalBatch] = useState("");
+
+  // "Propose new time" inline editor for expired bookings (one open at a time)
+  const [propose, setPropose] = useState<{ name: string; time: string; msg: string } | null>(null);
+  const openPropose = (r: BookingRow) =>
+    setPropose({
+      name: r.name,
+      time: "",
+      msg:
+        `Hi ${r.name}, your earlier booking link expired before we could lock a time. ` +
+        `Here's a fresh suggested slot for your call with Northwind — confirm and it lands on both calendars.`,
+    });
 
   // deep-link support: pick up the #hash on first load
   useEffect(() => {
@@ -112,16 +205,6 @@ export default function ClientStatus() {
     setEditingTmpl(false);
     toast("Template saved");
   }
-  const renderTmplText = (text: string) =>
-    text.split(/(\{\{[^}]+\}\})/g).map((p, i) =>
-      /^\{\{.*\}\}$/.test(p) ? (
-        <span key={i} className="mph">
-          {p}
-        </span>
-      ) : (
-        p
-      )
-    );
 
   const approveHref = `/${client}/approve/sample-link`;
 
@@ -246,7 +329,7 @@ export default function ClientStatus() {
                     ) : (
                       <>
                         {tmpl.body.split("\n\n").map((para, i) => (
-                          <p key={i}>{renderTmplText(para)}</p>
+                          <p key={i}>{highlightTokens(para)}</p>
                         ))}
                         <a className="tmpl-cta">{tmpl.cta}</a>
                       </>
@@ -331,7 +414,7 @@ export default function ClientStatus() {
                   >
                     <option value="">All batches</option>
                     {A_LOG.map((r) => (
-                      <option key={r[0]}>{r[0]}</option>
+                      <option key={r.name}>{r.name}</option>
                     ))}
                   </select>
                 </div>
@@ -349,25 +432,24 @@ export default function ClientStatus() {
                     </tr>
                   </thead>
                   <tbody>
-                    {A_LOG.filter((r) => !approvalBatch || r[0] === approvalBatch).map((r) => (
-                      <tr key={r[0]}>
+                    {A_LOG.filter((r) => !approvalBatch || r.name === approvalBatch).map((r) => (
+                      <tr key={r.name}>
                         <td>
-                          <span className="nm">{r[0]}</span> <Sample>sample</Sample>
+                          <span className="nm">{r.name}</span> <Sample>sample</Sample>
                         </td>
-                        <td className="muted">{r[1]}</td>
-                        <td className="num">{r[2]}</td>
-                        <td className="muted">{r[3]}</td>
+                        <td className="muted">{r.sent}</td>
+                        <td className="num">{r.prospects}</td>
+                        <td className="muted">{r.responded}</td>
                         <td>
-                          <span className={clsx("badge", r[5])}>
+                          <span className={clsx("badge", r.badge)}>
                             <span className="bdot" />
-                            {r[4]}
+                            {r.status}
                           </span>
                         </td>
                         <td style={{ textAlign: "right" }}>
                           <Link
-                            href={`/${client}/workspace?batch=${encodeURIComponent(r[0])}#batches`}
-                            className="btn btn-ghost btn-xs"
-                            style={{ padding: "4px 10px", fontSize: 12 }}
+                            href={`/${client}/workspace?batch=${encodeURIComponent(r.name)}#batches`}
+                            className="btn btn-ghost btn-2xs"
                           >
                             View batch
                           </Link>
@@ -415,41 +497,79 @@ export default function ClientStatus() {
           <div className="panel-pad">
             <div>
               {B_LOG.map((r, i) => (
-                <div className="bk-card" key={i}>
+                <div className="bk-card" key={r.name}>
                   <div className="bk-top">
                     <div className="bk-ico">P{i + 1}</div>
                     <div className="bk-main">
                       <div className="bn">
-                        {r[0]} <Sample>sample</Sample>
+                        {r.name} <Sample>sample</Sample>
                       </div>
                       <div className="bm">
-                        Sample Co {i + 1} · invite sent {r[1]}
+                        Sample Co {i + 1} · invite sent {r.sent}
                       </div>
                     </div>
                     <div className="bk-date">
                       <span className="bk-date-k">Meeting date</span>
-                      <span className="bk-date-v">{r[2]}</span>
+                      <span className="bk-date-v">{r.meeting}</span>
                     </div>
-                    <span className={clsx("badge", r[4])}>
+                    <span className={clsx("badge", r.badge)}>
                       <span className="bdot" />
-                      {r[3]}
+                      {r.status}
                     </span>
+                    {r.status === "Expired" && propose?.name !== r.name && (
+                      <button className="btn btn-accent btn-sm" onClick={() => openPropose(r)}>
+                        Propose new time
+                      </button>
+                    )}
                   </div>
+                  {r.status === "Expired" && propose?.name === r.name && (
+                    <div className="bk-propose">
+                      <div className="bk-invite-label">Propose a new time</div>
+                      <input
+                        className="input"
+                        placeholder="New suggested time (e.g. Tue, Jun 17 · 2:30 PM)"
+                        value={propose.time}
+                        onChange={(e) => setPropose({ ...propose, time: e.target.value })}
+                      />
+                      <textarea
+                        className="textarea"
+                        style={{ marginTop: 10 }}
+                        value={propose.msg}
+                        onChange={(e) => setPropose({ ...propose, msg: e.target.value })}
+                      />
+                      <div className="row" style={{ marginTop: 10, justifyContent: "flex-end" }}>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setPropose(null)}>
+                          Cancel
+                        </button>
+                        <button
+                          className="btn btn-accent btn-sm"
+                          onClick={() => {
+                            setPropose(null);
+                            toast("New invite sent to " + r.name);
+                          }}
+                        >
+                          Send new invite
+                        </button>
+                      </div>
+                    </div>
+                  )}
                   <div className="bk-invite">
                     <div className="bk-invite-label">Invitation email sent</div>
                     <div className="tmpl-mail">
                       <div className="tmpl-mailhead">
                         <div className="trow">
                           <span className="tk">Subject</span>
-                          <span className="tv subj">{r[0]}, your meeting time with Northwind</span>
+                          <span className="tv subj">
+                            {r.name}, your meeting time with Northwind
+                          </span>
                         </div>
                       </div>
                       <div className="tmpl-body">
                         <p>
-                          Hi {r[0]}, thanks for your interest. We&apos;ve set aside a suggested time
-                          for your call with Northwind: <strong>{r[2]}</strong>. It lands on both
-                          calendars once you confirm. Calls may be recorded so we can share a short
-                          summary with the host.
+                          Hi {r.name}, thanks for your interest. We&apos;ve set aside a suggested
+                          time for your call with Northwind: <strong>{r.meeting}</strong>. It lands
+                          on both calendars once you confirm. Calls may be recorded so we can share
+                          a short summary with the host.
                         </p>
                         <a className="tmpl-cta">Confirm this time</a>
                       </div>
@@ -501,33 +621,54 @@ export default function ClientStatus() {
                   <th>Comment</th>
                   <th>Feedback date</th>
                   <th>Status</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {F_LOG.map((r, i) => (
-                  <tr key={i}>
+                  <tr key={r.name}>
                     <td>
                       <div className="who-cell">
                         <div className="av-sm">P{i + 1}</div>
                         <div>
                           <div className="nm">
-                            {r[0]} <Sample>sample</Sample>
+                            {r.name} <Sample>sample</Sample>
                           </div>
                           <div className="sub">Sample Co {i + 1}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="muted tnum">{r[3]}</td>
-                    <td>{r[1] ? <Stars n={r[1]} /> : <span className="muted">Pending</span>}</td>
+                    <td className="muted tnum">{r.meeting}</td>
                     <td>
-                      <div className="log-comment">{r[2]}</div>
+                      {r.rating ? <Stars n={r.rating} /> : <span className="muted">Pending</span>}
                     </td>
-                    <td className="muted tnum">{r[4]}</td>
                     <td>
-                      <span className={clsx("badge", r[5])}>
+                      <div className="log-comment">{r.comment}</div>
+                    </td>
+                    <td className="muted tnum">{r.feedback}</td>
+                    <td>
+                      <span className={clsx("badge", r.badge)}>
                         <span className="bdot" />
-                        {r[6]}
+                        {r.status}
                       </span>
+                    </td>
+                    <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                      {r.status === "Awaiting" && r.overdue && (
+                        <button
+                          className="btn btn-ghost btn-2xs"
+                          onClick={() => toast("Follow-up nudge sent to " + r.name)}
+                        >
+                          Send Follow-Up
+                        </button>
+                      )}
+                      {r.rating > 0 && r.rating <= 3 && (
+                        <button
+                          className="btn btn-ghost btn-2xs"
+                          onClick={() => toast("Flagged low rating to client for " + r.name)}
+                        >
+                          Inform client
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}

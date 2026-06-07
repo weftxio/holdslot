@@ -1,8 +1,10 @@
 import type { Metadata } from "next";
-import { Fraunces, Archivo } from "next/font/google";
+import { Source_Serif_4, Archivo } from "next/font/google";
 import "./globals.css";
 
-const fraunces = Fraunces({
+// Display serif. Source Serif 4 reads cleaner than Fraunces (notably the "f");
+// keep the --font-fraunces variable name so existing CSS consumers are unchanged.
+const fraunces = Source_Serif_4({
   subsets: ["latin"],
   weight: ["400", "500", "600"],
   style: ["normal", "italic"],

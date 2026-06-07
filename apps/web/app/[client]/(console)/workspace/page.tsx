@@ -5,6 +5,7 @@ import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
+import { highlightBody } from "@/lib/tmpl";
 import "./workspace.css";
 
 // ICP (section 2) + Personas (section 3), held per profile
@@ -39,7 +40,6 @@ type Brief = {
   languageOther: string;
   excludeCustomers: string;
   excludeDeals: string;
-  excludeCompetitors: string;
   doNotContact: string;
   compliance: string;
   meetingsLand: string;
@@ -58,6 +58,9 @@ type Batch = {
   approved: number;
   icp: string;
   status: "Approved" | "Pending" | "Rejected";
+  createdAt: string;
+  sentAt?: string;
+  approvedAt?: string;
 };
 type Campaign = { name: string; batch: string; status: "Live" | "Pending"; variants: string[] };
 type Row = {
@@ -79,9 +82,8 @@ type Reply = {
   quote: string;
   draft: string;
   done?: string;
-  neutral?: boolean;
   editing?: boolean;
-  status?: string;
+  nudge?: boolean;
   text: string;
 };
 
@@ -121,13 +123,75 @@ const SEED: Omit<Row, "id" | "checked">[] = [
   { fit: "Good", batch: "Unassigned", status: "Needs review", icp: "ICP A" },
 ];
 
-const LEDGER: [string, string, string, string, string][] = [
-  ["Qualified", "badge-ok", "Received", "Billed", "badge-ok"],
-  ["Qualified", "badge-ok", "Received", "Billed", "badge-ok"],
-  ["No-show", "badge-neutral", "None", "Not billable", "badge-neutral"],
-  ["Qualified", "badge-ok", "Pending", "Held", "badge-warn"],
-  ["Short call", "badge-neutral", "Received", "Not billable", "badge-neutral"],
+type LedgerRow = {
+  outcome: string;
+  outcomeBadge: string;
+  feedback: string;
+  billing: string;
+  billingBadge: string;
+};
+const LEDGER: LedgerRow[] = [
+  {
+    outcome: "Qualified",
+    outcomeBadge: "badge-ok",
+    feedback: "Received",
+    billing: "Billed",
+    billingBadge: "badge-ok",
+  },
+  {
+    outcome: "Qualified",
+    outcomeBadge: "badge-ok",
+    feedback: "Received",
+    billing: "Billed",
+    billingBadge: "badge-ok",
+  },
+  {
+    outcome: "No-show",
+    outcomeBadge: "badge-neutral",
+    feedback: "None",
+    billing: "Not billable",
+    billingBadge: "badge-neutral",
+  },
+  {
+    outcome: "Qualified",
+    outcomeBadge: "badge-ok",
+    feedback: "Pending",
+    billing: "Held",
+    billingBadge: "badge-warn",
+  },
+  {
+    outcome: "Short call",
+    outcomeBadge: "badge-neutral",
+    feedback: "Received",
+    billing: "Not billable",
+    billingBadge: "badge-neutral",
+  },
 ];
+
+type Recap = { campaign: string; batch: string; recId: string; won: boolean };
+const RECAPS: Recap[] = [
+  { campaign: "Campaign 1", batch: "Batch 3", recId: "kfx-9d2a-bv1", won: true },
+  { campaign: "Campaign 1", batch: "Batch 3", recId: "qmt-7r4c-zp8", won: false },
+  { campaign: "Campaign 1", batch: "Batch 3", recId: "hla-2w6e-nk3", won: true },
+];
+
+// Per-mode copy for the reply card (inbound reply vs outbound follow-up nudge).
+const NUDGE_COPY = {
+  qhead: "No reply yet",
+  datePrefix: "last outreach ",
+  body: "Prospect hasn't responded yet — a follow-up nudge is drafted and ready to send.",
+  draftLabel: "Suggested follow-up",
+  cta: "Send Follow-Up",
+  done: "Follow-up nudge sent",
+};
+const REPLY_COPY = {
+  qhead: "Prospect replied",
+  datePrefix: "",
+  body: "",
+  draftLabel: "Suggested reply",
+  cta: "Send Reply",
+  done: "Reply approved and sent",
+};
 
 const INITIAL_REPLIES: Reply[] = [
   {
@@ -172,10 +236,43 @@ const INITIAL_REPLIES: Reply[] = [
       "Hi {{first_name}}, thanks for pointing me in the right direction. I will reach out to {{referred_name}} and keep it brief.",
     text: "",
   },
-].map((r) => ({ ...r, text: r.draft }));
+  // Follow-up nudges — prospects who haven't replied yet; a drafted nudge is ready to send.
+  {
+    n: "Reply 4",
+    role: "Placeholder title · Sample Co",
+    campaign: "Campaign 1",
+    batch: "Batch 3",
+    repliedAt: "2026-05-26",
+    cls: "Follow-up nudge",
+    badge: "badge-info",
+    quote: "",
+    draft:
+      "Hi {{first_name}}, floating this back to the top of your inbox. {{value_prop_one_liner}} — worth a quick 15 minutes next week? Here is a link if it is easier: {{booking_link}}.",
+    nudge: true,
+    text: "",
+  },
+  {
+    n: "Reply 5",
+    role: "Placeholder title · Sample Co",
+    campaign: "Campaign 1",
+    batch: "Batch 3",
+    repliedAt: "2026-05-24",
+    cls: "Follow-up nudge",
+    badge: "badge-info",
+    quote: "",
+    draft:
+      "Hi {{first_name}}, last note from me on this — happy to share a short summary of how we have helped similar {{industry}} teams. Want me to send it over?",
+    nudge: true,
+    text: "",
+  },
+]
+  .map((r) => ({ ...r, text: r.draft }))
+  // Most-aged first: oldest outreach/reply date on top (ISO strings sort lexically).
+  .sort((a, b) => a.repliedAt.localeCompare(b.repliedAt));
 
 // reply dates relative to the app's current date (fixed for the mock)
-const REPLY_TODAY = new Date("2026-06-03T00:00:00Z");
+const TODAY_ISO = "2026-06-03";
+const REPLY_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 function fmtShortDate(iso: string) {
   const [, m, d] = iso.split("-").map(Number);
@@ -245,7 +342,6 @@ const sampleBrief = (): Brief => ({
   languageOther: "",
   excludeCustomers: "",
   excludeDeals: "",
-  excludeCompetitors: "",
   doNotContact: "",
   compliance: "",
   meetingsLand: "Round-robin across 3 AEs",
@@ -420,90 +516,102 @@ function Section({
   );
 }
 
-const VARIANT_BODIES: Record<string, React.ReactNode> = {
-  A: (
-    <>
-      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder opening line about the
-      current context at <span className="mph">{"{{company}}"}</span>. Placeholder one-sentence
-      value proposition tied to a likely pain point. Placeholder soft ask for a short call.
-      <br />
-      <span className="mph">{"{{sender}}"}</span>
-    </>
-  ),
-  B: (
-    <>
-      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder pattern-interrupt opener.
-      Placeholder proof point with a concrete number. Placeholder direct ask for{" "}
-      <span className="mph">{"{{time_window}}"}</span>.<br />
-      <span className="mph">{"{{sender}}"}</span>
-    </>
-  ),
-  C: (
-    <>
-      Hi <span className="mph">{"{{first_name}}"}</span>, a placeholder question-led opener about{" "}
-      <span className="mph">{"{{industry}}"}</span>. Placeholder mutual-connection or trigger-event
-      line. Placeholder low-friction ask.
-      <br />
-      <span className="mph">{"{{sender}}"}</span>
-    </>
-  ),
+const DEFAULT_VARIANT_BODIES: Record<string, string> = {
+  A: "Hi {{first_name}}, a placeholder opening line about the current context at {{company}}. Placeholder one-sentence value proposition tied to a likely pain point. Placeholder soft ask for a short call.\n{{sender}}",
+  B: "Hi {{first_name}}, a placeholder pattern-interrupt opener. Placeholder proof point with a concrete number. Placeholder direct ask for {{time_window}}.\n{{sender}}",
+  C: "Hi {{first_name}}, a placeholder question-led opener about {{industry}}. Placeholder mutual-connection or trigger-event line. Placeholder low-friction ask.\n{{sender}}",
 };
+const defaultBody = (tag: string) =>
+  DEFAULT_VARIANT_BODIES[tag] ?? "Placeholder message body for variant " + tag + ".";
+// Variant bodies are stored per campaign so editing one campaign's copy never
+// changes another's. Key = "<campaignName>:<tag>" (name is stable across reorder/delete).
+const bodyKey = (campName: string, tag: string) => campName + ":" + tag;
 
 function Variants({
   tags,
   editable,
+  campName,
+  bodies,
+  editKey,
   onRemove,
   onAdd,
+  onEdit,
+  onBody,
 }: {
   tags: string[];
   editable: boolean;
+  campName: string;
+  bodies: Record<string, string>;
+  editKey: string | null;
   onRemove: (tag: string) => void;
   onAdd: () => void;
+  onEdit: (tag: string) => void;
+  onBody: (tag: string, val: string) => void;
 }) {
   return (
     <>
-      {tags.map((tag, i) => (
-        <div className={clsx("variant", i === 0 && "win")} key={tag}>
-          <div className="variant-head">
-            <div className="vt">
-              <span className="vtag">{tag}</span>Variant {tag}
-              {i === 0 && (
-                <span className="badge badge-ok" style={{ marginLeft: 4 }}>
-                  <span className="bdot" />
-                  Leading
-                </span>
-              )}
-            </div>
-            <div className="variant-stats">
-              <div className="vs">
-                <b>
-                  <Sample>n</Sample>%
-                </b>
-                Open
+      {tags.map((tag, i) => {
+        const key = bodyKey(campName, tag);
+        const body = bodies[key] ?? defaultBody(tag);
+        const editing = editKey === key;
+        return (
+          <div className={clsx("variant", i === 0 && "win")} key={tag}>
+            <div className="variant-head">
+              <div className="vt">
+                <span className="vtag">{tag}</span>Variant {tag}
+                {i === 0 && (
+                  <span className="badge badge-ok" style={{ marginLeft: 4 }}>
+                    <span className="bdot" />
+                    Leading
+                  </span>
+                )}
               </div>
-              <div className="vs">
-                <b>
-                  <Sample>n</Sample>%
-                </b>
-                Reply
+              <div className="variant-stats">
+                <div className="vs">
+                  <b>
+                    <Sample>n</Sample>%
+                  </b>
+                  Open
+                </div>
+                <div className="vs">
+                  <b>
+                    <Sample>n</Sample>%
+                  </b>
+                  Reply
+                </div>
+                {editable && (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    onClick={() => onEdit(tag)}
+                  >
+                    {editing ? "Done" : "Edit"}
+                  </button>
+                )}
+                {editable && (
+                  <button
+                    type="button"
+                    className="variant-rm"
+                    aria-label={"Remove variant " + tag}
+                    onClick={() => onRemove(tag)}
+                  >
+                    ×
+                  </button>
+                )}
               </div>
-              {editable && (
-                <button
-                  type="button"
-                  className="variant-rm"
-                  aria-label={"Remove variant " + tag}
-                  onClick={() => onRemove(tag)}
-                >
-                  ×
-                </button>
-              )}
             </div>
+            {editing ? (
+              <textarea
+                className="textarea variant-edit"
+                value={body}
+                onChange={(e) => onBody(tag, e.target.value)}
+              />
+            ) : (
+              <div className="variant-body">{highlightBody(body)}</div>
+            )}
           </div>
-          <div className="variant-body">
-            {VARIANT_BODIES[tag] ?? <>Placeholder message body for variant {tag}.</>}
-          </div>
-        </div>
-      ))}
+        );
+      })}
       {editable && (
         <button type="button" className="variant-add" onClick={onAdd}>
           ＋ Add variant
@@ -574,15 +682,16 @@ export default function Workspace() {
 
   // Business brief (global sections)
   const [brief, setBrief] = useState<Brief>(sampleBrief);
-  const [submitted] = useState(false);
-  const [csvName, setCsvName] = useState("");
-  function onCsv(e: React.ChangeEvent<HTMLInputElement>) {
+  const [submitted, setSubmitted] = useState(false);
+  // CSV attachment name per exclusion field (keyed: "customers", "deals")
+  const [csvNames, setCsvNames] = useState<Record<string, string>>({});
+  const onCsv = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setCsvName(file.name);
+    setCsvNames((s) => ({ ...s, [key]: file.name }));
     toast(file.name + " attached");
     e.target.value = "";
-  }
+  };
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
   const setValueProp = (i: number, val: string) =>
@@ -610,6 +719,8 @@ export default function Workspace() {
     if (next) scrollToSec(next);
   };
   function saveAndContinue(cur: number) {
+    // Surface missing required fields once the operator tries to save.
+    setSubmitted(true);
     toast("Draft saved");
     const order = [1, 2, 3, 4, 5, 6];
     const next = order.find((n) => n > cur && !secComplete[n]) ?? (cur < 6 ? cur + 1 : cur);
@@ -658,9 +769,35 @@ export default function Workspace() {
 
   // Batches / campaigns
   const [batches, setBatches] = useState<Batch[]>([
-    { name: "Batch 1", count: 40, approved: 40, icp: "ICP A", status: "Approved" },
-    { name: "Batch 2", count: 52, approved: 52, icp: "ICP A", status: "Approved" },
-    { name: "Batch 3", count: 48, approved: 0, icp: "ICP B", status: "Pending" },
+    {
+      name: "Batch 1",
+      count: 40,
+      approved: 40,
+      icp: "ICP A",
+      status: "Approved",
+      createdAt: "2026-05-20",
+      sentAt: "2026-05-21",
+      approvedAt: "2026-05-23",
+    },
+    {
+      name: "Batch 2",
+      count: 52,
+      approved: 52,
+      icp: "ICP A",
+      status: "Approved",
+      createdAt: "2026-05-26",
+      sentAt: "2026-05-27",
+      approvedAt: "2026-05-29",
+    },
+    {
+      name: "Batch 3",
+      count: 48,
+      approved: 0,
+      icp: "ICP B",
+      status: "Pending",
+      createdAt: "2026-06-01",
+      sentAt: "2026-06-01",
+    },
   ]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([
     { name: "Campaign 1", batch: "Batch 1", status: "Live", variants: ["A", "B", "C"] },
@@ -676,7 +813,7 @@ export default function Workspace() {
   const [fBatch, setFBatch] = useState("");
   const [fFit, setFFit] = useState("");
   const [fStatus, setFStatus] = useState("");
-  const [researchIcp, setResearchIcp] = useState("ICP A");
+  const [fIcp, setFIcp] = useState("");
   const [newBatchName, setNewBatchName] = useState("");
 
   const visible = useMemo(
@@ -685,12 +822,13 @@ export default function Workspace() {
         const text = `prospect ${r.id} sample co ${r.id}`;
         return (
           (!search || text.includes(search.toLowerCase())) &&
+          (!fIcp || r.icp === fIcp) &&
           (!fBatch || r.batch === fBatch) &&
           (!fFit || r.fit === fFit) &&
           (!fStatus || r.status === fStatus)
         );
       }),
-    [rows, search, fBatch, fFit, fStatus]
+    [rows, search, fIcp, fBatch, fFit, fStatus]
   );
   const selCount = visible.filter((r) => r.checked).length;
   const allChecked = visible.length > 0 && selCount === visible.length;
@@ -703,18 +841,19 @@ export default function Workspace() {
     setRows((s) => s.map((r) => (ids.has(r.id) ? { ...r, checked: on } : r)));
   }
   function research() {
+    const targetIcp = fIcp || icps[0]?.short || "ICP A";
     const fits: Row["fit"][] = ["Strong", "Good", "Good", "Strong", "Good", "Strong"];
     const added: Row[] = fits.map((fit, k) => ({
       id: nextId + k,
       fit,
       batch: "Unassigned",
       status: "New",
-      icp: researchIcp,
+      icp: targetIcp,
       checked: false,
     }));
     setRows((s) => [...added, ...s]);
     setNextId((n) => n + 6);
-    toast("Researched 6 prospects from " + researchIcp);
+    toast("Researched 6 prospects from " + targetIcp);
   }
   function createBatch() {
     const name = newBatchName.trim() || "Batch " + (batches.length + 1);
@@ -731,6 +870,7 @@ export default function Workspace() {
         approved: 0,
         icp: icpSet.size === 1 ? [...icpSet][0] : "Multiple ICPs",
         status: "Pending",
+        createdAt: TODAY_ISO,
       },
     ]);
     setNewBatchName("");
@@ -740,11 +880,11 @@ export default function Workspace() {
   // Replies
   const [replies, setReplies] = useState<Reply[]>(INITIAL_REPLIES);
   const [replyCamp, setReplyCamp] = useState("");
-  const remaining = replies.filter((r) => !r.done).length;
-  function finishReply(i: number, label: string, neutral: boolean) {
-    setReplies((s) =>
-      s.map((r, idx) => (idx === i && !r.done ? { ...r, done: label, neutral } : r))
-    );
+  const remaining = replies.filter((r) => !r.done).length; // global total, for the tab pip
+  const inViewReplies = replies.filter((r) => !replyCamp || r.campaign === replyCamp);
+  const remainingInView = inViewReplies.filter((r) => !r.done).length;
+  function finishReply(i: number, label: string) {
+    setReplies((s) => s.map((r, idx) => (idx === i && !r.done ? { ...r, done: label } : r)));
   }
   function toggleEdit(i: number) {
     const wasEditing = replies[i]?.editing;
@@ -753,6 +893,7 @@ export default function Workspace() {
   }
 
   const [sumCamp, setSumCamp] = useState("");
+  const recapsInView = RECAPS.filter((rc) => !sumCamp || rc.campaign === sumCamp);
   const pendingBatches = batches.filter((b) => b.status === "Pending").length;
 
   function exportLedgerCsv() {
@@ -773,10 +914,10 @@ export default function Workspace() {
       "Sample Co " + (i + 1),
       "Campaign 1",
       "Batch 3",
-      ou[0],
-      ou[2],
-      ou[3],
-      ou[3] === "Billed" ? "4000" : "",
+      ou.outcome,
+      ou.feedback,
+      ou.billing,
+      ou.billing === "Billed" ? "4000" : "",
     ]);
     const csv = [headers, ...rows]
       .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -808,19 +949,45 @@ export default function Workspace() {
     const b = new URLSearchParams(location.search).get("batch");
     if (!b) return;
     setTab("batches");
-    setOpenBatch(b);
+    // Only expand/scroll when the requested batch actually exists — a stale or
+    // unknown ?batch= value just lands on the tab instead of expanding nothing.
     const idx = batches.findIndex((x) => x.name === b);
-    if (idx >= 0) {
-      setTimeout(
-        () =>
-          document
-            .getElementById("sob-item-" + idx)
-            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-        160
-      );
-    }
+    if (idx < 0) return;
+    setOpenBatch(b);
+    setTimeout(
+      () =>
+        document
+          .getElementById("sob-item-" + idx)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      160
+    );
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // editable variant bodies, keyed per campaign ("<campName>:<tag>"); defaults come
+  // from defaultBody() at render, so we only store edits here.
+  const [variantBodies, setVariantBodies] = useState<Record<string, string>>({});
+  const [editVar, setEditVar] = useState<string | null>(null);
+  const editVariant = (campName: string, tag: string) => {
+    const key = bodyKey(campName, tag);
+    if (editVar === key) {
+      setEditVar(null);
+      toast("Variant " + tag + " saved");
+    } else {
+      setEditVar(key);
+    }
+  };
+  const setVariantBody = (campName: string, tag: string, val: string) =>
+    setVariantBodies((s) => ({ ...s, [bodyKey(campName, tag)]: val }));
+
+  // batch approval action: send the approval email, or nudge if it was already sent
+  const sendApproval = (name: string) => {
+    const alreadySent = !!batches.find((x) => x.name === name)?.sentAt;
+    setBatches((s) =>
+      s.map((b) => (b.name === name ? { ...b, sentAt: b.sentAt || TODAY_ISO } : b))
+    );
+    toast(alreadySent ? "Follow-up nudge sent to client" : "Approval email sent to client");
+  };
 
   // expandable campaigns (all collapsed by default)
   const [openCamp, setOpenCamp] = useState<number | null>(null);
@@ -1359,10 +1526,12 @@ export default function Workspace() {
               <div className="brief-upload">
                 <label className="btn btn-ghost btn-sm">
                   <span className="up-ico">↥</span> Upload CSV
-                  <input type="file" accept=".csv,text/csv" hidden onChange={onCsv} />
+                  <input type="file" accept=".csv,text/csv" hidden onChange={onCsv("customers")} />
                 </label>
                 <span className="brief-hint">
-                  {csvName ? "Attached: " + csvName : "Or upload a CSV of customer domains."}
+                  {csvNames.customers
+                    ? "Attached: " + csvNames.customers
+                    : "Or upload a CSV of customer domains."}
                 </span>
               </div>
             </div>
@@ -1379,28 +1548,28 @@ export default function Workspace() {
                 placeholder="Paste company names or domains, one per line"
                 onChange={(e) => setB("excludeDeals", e.target.value)}
               />
+              <div className="brief-upload">
+                <label className="btn btn-ghost btn-sm">
+                  <span className="up-ico">↥</span> Upload CSV
+                  <input type="file" accept=".csv,text/csv" hidden onChange={onCsv("deals")} />
+                </label>
+                <span className="brief-hint">
+                  {csvNames.deals
+                    ? "Attached: " + csvNames.deals
+                    : "Or upload a CSV of pipeline domains."}
+                </span>
+              </div>
             </div>
-            <div className="grid2">
-              <div className="field">
-                <Lbl help="Competitors to keep off the list.">Competitors to exclude</Lbl>
-                <textarea
-                  className="textarea"
-                  value={brief.excludeCompetitors}
-                  placeholder="One per line"
-                  onChange={(e) => setB("excludeCompetitors", e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <Lbl help="Partners, investors, sensitive relationships.">
-                  Do-not-contact (any reason)
-                </Lbl>
-                <textarea
-                  className="textarea"
-                  value={brief.doNotContact}
-                  placeholder="One per line"
-                  onChange={(e) => setB("doNotContact", e.target.value)}
-                />
-              </div>
+            <div className="field">
+              <Lbl help="Competitors, partners, investors, or any sensitive relationships to keep off the list.">
+                Competitors & do-not-contact (any reason)
+              </Lbl>
+              <textarea
+                className="textarea"
+                value={brief.doNotContact}
+                placeholder="Competitors, partners, investors, sensitive relationships — one per line"
+                onChange={(e) => setB("doNotContact", e.target.value)}
+              />
             </div>
             <div className="field" style={{ marginBottom: 0 }}>
               <Lbl help="Any rules specific to your industry we should know about.">
@@ -1574,21 +1743,6 @@ export default function Workspace() {
               </div>
             </div>
             <div className="row">
-              <select
-                className="select"
-                style={{
-                  width: "auto",
-                  minWidth: 120,
-                  padding: "9px 34px 9px 12px",
-                  fontSize: 13.5,
-                }}
-                value={researchIcp}
-                onChange={(e) => setResearchIcp(e.target.value)}
-              >
-                {icps.map((p) => (
-                  <option key={p.short}>{p.short}</option>
-                ))}
-              </select>
               <button className="btn btn-accent btn-sm" onClick={research}>
                 Research prospects from ICP
               </button>
@@ -1621,6 +1775,12 @@ export default function Workspace() {
                 onChange={(e) => setSearch(e.target.value)}
               />
             </div>
+            <select className="select" value={fIcp} onChange={(e) => setFIcp(e.target.value)}>
+              <option value="">All ICPs</option>
+              {icps.map((p) => (
+                <option key={p.short}>{p.short}</option>
+              ))}
+            </select>
             <select className="select" value={fBatch} onChange={(e) => setFBatch(e.target.value)}>
               <option value="">All batches</option>
               <option value="Unassigned">Unassigned pool</option>
@@ -1722,11 +1882,7 @@ export default function Workspace() {
             Batches sent for client approval · status updates as the client responds
           </div>
           <div className="row" style={{ gap: 10, alignItems: "center" }}>
-            <Link
-              href={`/${client}/client-status#approval`}
-              className="btn btn-ghost btn-xs"
-              style={{ padding: "4px 10px", fontSize: 12 }}
-            >
+            <Link href={`/${client}/client-status#approval`} className="btn btn-ghost btn-2xs">
               Edit approval email
             </Link>
             <span className="badge badge-warn">
@@ -1763,7 +1919,34 @@ export default function Workspace() {
                       <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced
                       from {b.icp}
                     </div>
+                    <div className="sob-dates">
+                      {(
+                        [
+                          ["Created", b.createdAt],
+                          ["Approved", b.approvedAt],
+                          ["Sent", b.sentAt],
+                        ] as [string, string | undefined][]
+                      )
+                        .filter((e): e is [string, string] => Boolean(e[1]))
+                        .map(([label, d]) => (
+                          <span className="sob-date" key={label}>
+                            {label} {fmtShortDate(d)} · <b>{daysAgoLabel(d)}</b>
+                          </span>
+                        ))}
+                      {!b.approvedAt && <span className="sob-date warn">Not yet approved</span>}
+                    </div>
                   </div>
+                  {b.status === "Pending" && (
+                    <button
+                      className="btn btn-accent btn-sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        sendApproval(b.name);
+                      }}
+                    >
+                      {b.sentAt ? "Follow-Up Approval" : "Send approval email"}
+                    </button>
+                  )}
                   <span className={clsx("badge", BATCH_STATUS_CLS[b.status] || "badge-neutral")}>
                     <span className="bdot" />
                     {b.status}
@@ -1846,6 +2029,14 @@ export default function Workspace() {
             const open = openCamp === ci;
             const live = cp.status === "Live";
             const cb = batches.find((x) => x.name === cp.batch);
+            // A campaign can only send once its batch is client-approved.
+            const batchNotApproved = cb?.status !== "Approved";
+            const blockReason =
+              cb?.status === "Rejected"
+                ? "Batch was rejected"
+                : !cb
+                  ? "No batch linked"
+                  : "Batch pending approval";
             const size = cb?.count ?? 0;
             const sendN = live ? size : 0;
             const openN = live ? Math.round(size * 0.42) : 0;
@@ -1873,13 +2064,8 @@ export default function Workspace() {
                   <div className="cmeta">
                     <span className="muted">Sendout batch</span>
                     <select
-                      className="select"
-                      style={{
-                        width: "auto",
-                        minWidth: 118,
-                        padding: "8px 32px 8px 11px",
-                        fontSize: 13,
-                      }}
+                      className="select select-sm"
+                      style={{ minWidth: 118 }}
                       value={cp.batch}
                       onClick={(e) => e.stopPropagation()}
                       onChange={(e) => {
@@ -1899,8 +2085,11 @@ export default function Workspace() {
                     {!live && (
                       <button
                         className="btn btn-accent btn-sm"
+                        disabled={batchNotApproved}
+                        title={batchNotApproved ? blockReason + " — can't send yet" : undefined}
                         onClick={(e) => {
                           e.stopPropagation();
+                          if (batchNotApproved) return;
                           setCampaigns((s) =>
                             s.map((c, i) => (i === ci ? { ...c, status: "Live" } : c))
                           );
@@ -1909,6 +2098,11 @@ export default function Workspace() {
                       >
                         Send campaign
                       </button>
+                    )}
+                    {!live && batchNotApproved && (
+                      <span className="muted" style={{ fontSize: 12 }}>
+                        {blockReason}
+                      </span>
                     )}
                     {!live && (
                       <button
@@ -1963,8 +2157,13 @@ export default function Workspace() {
                     <Variants
                       tags={cp.variants}
                       editable={!live}
+                      campName={cp.name}
+                      bodies={variantBodies}
+                      editKey={editVar}
                       onRemove={(tag) => removeVariant(ci, tag)}
                       onAdd={() => addVariant(ci)}
+                      onEdit={(tag) => editVariant(cp.name, tag)}
+                      onBody={(tag, val) => setVariantBody(cp.name, tag, val)}
                     />
                   )}
                 </div>
@@ -1992,8 +2191,8 @@ export default function Workspace() {
             </span>
           )}
           <select
-            className="select"
-            style={{ width: "auto", minWidth: 160, padding: "9px 34px 9px 12px", fontSize: 13.5 }}
+            className="select select-sm"
+            style={{ minWidth: 160 }}
             value={replyCamp}
             onChange={(e) => setReplyCamp(e.target.value)}
           >
@@ -2004,96 +2203,87 @@ export default function Workspace() {
           </select>
         </div>
         <div>
-          {replies.map((r, i) => (
-            <div
-              key={i}
-              className={clsx("reply", r.done && "done")}
-              style={{ display: !replyCamp || r.campaign === replyCamp ? undefined : "none" }}
-            >
-              <div className="reply-head">
-                <div className="av-sm">R{i + 1}</div>
-                <div className="meta">
-                  <div className="nm">
-                    {r.n} <Sample>sample</Sample>
+          {replies.map((r, i) => {
+            // One source of truth for the two reply modes (inbound reply vs follow-up nudge).
+            const c = r.nudge ? NUDGE_COPY : { ...REPLY_COPY, body: r.quote };
+            return (
+              <div
+                key={i}
+                className={clsx("reply", r.done && "done")}
+                style={{ display: !replyCamp || r.campaign === replyCamp ? undefined : "none" }}
+              >
+                <div className="reply-head">
+                  <div className="av-sm">R{i + 1}</div>
+                  <div className="meta">
+                    <div className="nm">
+                      {r.n} <Sample>sample</Sample>
+                    </div>
+                    <div className="ro">{r.role}</div>
+                    <div className="tagline">
+                      <span className="ttag">{r.campaign}</span>
+                      <span className="ttag">{r.batch}</span>
+                      {r.nudge && <span className="ttag nudge">Follow-up nudge</span>}
+                    </div>
                   </div>
-                  <div className="ro">{r.role}</div>
-                  <div className="tagline">
-                    <span className="ttag">{r.campaign}</span>
-                    <span className="ttag">{r.batch}</span>
-                  </div>
-                </div>
-                <span className={clsx("badge", r.badge)}>
-                  <span className="bdot" />
-                  {r.cls}
-                </span>
-              </div>
-              <div className="reply-quote">
-                <div className="reply-qhead">
-                  <span className="ql">Prospect replied</span>
-                  <span className="reply-date">
-                    {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt)}
+                  <span className={clsx("badge", r.badge)}>
+                    <span className="bdot" />
+                    {r.cls}
                   </span>
                 </div>
-                {r.quote}
-              </div>
-              <div className="reply-draft">
-                <div className="dl">
-                  Suggested reply <Sample>auto-draft</Sample>
+                <div className="reply-quote">
+                  <div className="reply-qhead">
+                    <span className="ql">{c.qhead}</span>
+                    <span className="reply-date">
+                      {c.datePrefix}
+                      {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt)}
+                    </span>
+                  </div>
+                  {c.body}
                 </div>
-                <textarea
-                  readOnly={!r.editing}
-                  value={r.text}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setReplies((s) => s.map((x, idx) => (idx === i ? { ...x, text: v } : x)));
-                  }}
-                />
-                <div className="reply-actions">
-                  {r.status ? (
-                    <span className="status-set">✓ {r.status}</span>
-                  ) : (
-                    <select
-                      className="status-select"
-                      value=""
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        if (!v) return;
-                        setReplies((s) => s.map((x, idx) => (idx === i ? { ...x, status: v } : x)));
-                        toast("Marked as: " + v);
+                <div className="reply-draft">
+                  <div className="dl">
+                    {c.draftLabel} <Sample>auto-draft</Sample>
+                  </div>
+                  <textarea
+                    readOnly={!r.editing}
+                    value={r.text}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setReplies((s) => s.map((x, idx) => (idx === i ? { ...x, text: v } : x)));
+                    }}
+                  />
+                  <div className="reply-actions">
+                    <button className="btn btn-ghost btn-sm" onClick={() => toggleEdit(i)}>
+                      {r.editing ? "Done editing" : "Edit draft"}
+                    </button>
+                    <button
+                      className="btn btn-accent btn-sm"
+                      onClick={() => {
+                        finishReply(i, c.done);
+                        toast(c.done);
                       }}
                     >
-                      <option value="">Set status…</option>
-                      <option>Follow-up scheduled</option>
-                      <option>Waiting on prospect</option>
-                      <option>Not interested</option>
-                      <option>No action needed</option>
-                    </select>
-                  )}
-                  <button className="btn btn-ghost btn-sm" onClick={() => toggleEdit(i)}>
-                    {r.editing ? "Done editing" : "Edit draft"}
-                  </button>
-                  <button
-                    className="btn btn-accent btn-sm"
-                    onClick={() => {
-                      finishReply(i, "Approved, reply sent", false);
-                      toast("Reply approved and sent");
-                    }}
-                  >
-                    Approve &amp; send
-                  </button>
+                      {c.cta}
+                    </button>
+                  </div>
+                </div>
+                <div className="reply-sent-banner">
+                  <span>✓</span>
+                  <span>{r.done}</span>
                 </div>
               </div>
-              <div
-                className="reply-sent-banner"
-                style={r.neutral ? { background: "#F1F3F6", color: "var(--ink-faint)" } : undefined}
-              >
-                <span>{r.neutral ? "•" : "✓"}</span>
-                <span>{r.done}</span>
-              </div>
-            </div>
-          ))}
+            );
+          })}
+          {replyCamp && inViewReplies.length === 0 && (
+            <div className="sum-empty">No replies for {replyCamp} yet.</div>
+          )}
         </div>
-        <div className={clsx("queue-empty", remaining === 0 && "show")}>
+        <div
+          className={clsx(
+            "queue-empty",
+            inViewReplies.length > 0 && remainingInView === 0 && "show"
+          )}
+        >
           <div className="ee">✓</div>
           <h3 style={{ fontSize: 20, color: "var(--ink)", marginBottom: 6 }}>Queue clear</h3>
           <p style={{ fontSize: 14 }}>
@@ -2167,20 +2357,20 @@ export default function Workspace() {
                       </div>
                     </td>
                     <td>
-                      <span className={clsx("badge", ou[1])}>
+                      <span className={clsx("badge", ou.outcomeBadge)}>
                         <span className="bdot" />
-                        {ou[0]}
+                        {ou.outcome}
                       </span>
                     </td>
-                    <td className="muted">{ou[2]}</td>
+                    <td className="muted">{ou.feedback}</td>
                     <td>
-                      <span className={clsx("badge", ou[4])}>
+                      <span className={clsx("badge", ou.billingBadge)}>
                         <span className="bdot" />
-                        {ou[3]}
+                        {ou.billing}
                       </span>
                     </td>
                     <td style={{ textAlign: "right" }} className="tnum">
-                      {ou[3] === "Billed" ? (
+                      {ou.billing === "Billed" ? (
                         <>
                           $<Sample>amt</Sample>
                         </>
@@ -2203,8 +2393,8 @@ export default function Workspace() {
             Meeting summaries, newest first
           </div>
           <select
-            className="select"
-            style={{ width: "auto", minWidth: 160, padding: "9px 34px 9px 12px", fontSize: 13.5 }}
+            className="select select-sm"
+            style={{ minWidth: 160 }}
             value={sumCamp}
             onChange={(e) => setSumCamp(e.target.value)}
           >
@@ -2215,19 +2405,13 @@ export default function Workspace() {
           </select>
         </div>
         <div>
-          {[0, 1, 2].map((sx) => {
-            const won = sx !== 1;
-            const recId = ["kfx-9d2a-bv1", "qmt-7r4c-zp8", "hla-2w6e-nk3"][sx];
-            const recUrl = `https://meet.google.com/rec/${recId}`;
+          {recapsInView.map((rc, sx) => {
+            const recUrl = `https://meet.google.com/rec/${rc.recId}`;
             return (
-              <div
-                className="sum-card"
-                key={sx}
-                style={{ display: !sumCamp || sumCamp === "Campaign 1" ? undefined : "none" }}
-              >
+              <div className="sum-card" key={rc.recId}>
                 <div className="sum-tags">
-                  <span className="stag">Campaign 1</span>
-                  <span className="stag">Batch 3</span>
+                  <span className="stag">{rc.campaign}</span>
+                  <span className="stag">{rc.batch}</span>
                 </div>
                 <div className="sh">
                   <div>
@@ -2274,15 +2458,18 @@ export default function Workspace() {
                 <div className="srow">
                   <span className="sk">Final conversion</span>
                   <span className="sv">
-                    <span className={clsx("badge", won ? "badge-ok" : "badge-neutral")}>
+                    <span className={clsx("badge", rc.won ? "badge-ok" : "badge-neutral")}>
                       <span className="bdot" />
-                      {won ? "Deal won" : "No deal"}
+                      {rc.won ? "Deal won" : "No deal"}
                     </span>
                   </span>
                 </div>
               </div>
             );
           })}
+          {recapsInView.length === 0 && (
+            <div className="sum-empty">No meeting recaps for {sumCamp} yet.</div>
+          )}
         </div>
       </section>
     </>
