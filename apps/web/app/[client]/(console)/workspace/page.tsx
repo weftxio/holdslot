@@ -621,6 +621,31 @@ function Variants({
   );
 }
 
+// Do-not-contact list — the three exclusion sources from the Brief. Everyone here is
+// suppressed from every batch and campaign; it is pinned to the top of Approval Batches
+// for review and never overlaps a sendout batch.
+const EXCLUSIONS: { label: string; tag: string; cls: string; entries: string[] }[] = [
+  {
+    label: "Existing customers to exclude",
+    tag: "Customer",
+    cls: "badge-info",
+    entries: ["Acme Corp", "Globex Inc", "Initech"],
+  },
+  {
+    label: "Active deals / pipeline to exclude",
+    tag: "Active deal",
+    cls: "badge-warn",
+    entries: ["Umbrella Co", "Soylent Ltd"],
+  },
+  {
+    label: "Competitors & do-not-contact (any reason)",
+    tag: "Competitor / DNC",
+    cls: "badge-danger",
+    entries: ["Competitor A", "Competitor B", "Hooli"],
+  },
+];
+const EXCLUSION_COUNT = EXCLUSIONS.reduce((n, g) => n + g.entries.length, 0);
+
 export default function Workspace() {
   const { client } = useParams<{ client: string }>();
   const toast = useToast();
@@ -801,8 +826,11 @@ export default function Workspace() {
   ]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([
     { name: "Campaign 1", batch: "Batch 1", status: "Live", variants: ["A", "B", "C"] },
-    { name: "Campaign 2", batch: "Batch 3", status: "Pending", variants: ["A", "B", "C"] },
+    { name: "Campaign 2", batch: "Batch 2", status: "Pending", variants: ["A", "B", "C"] },
   ]);
+  // Campaigns can only be linked to client-approved batches — pending/rejected
+  // batches are never selectable, so a linked campaign is always safe to send.
+  const approvedBatches = batches.filter((b) => b.status === "Approved");
 
   // Prospect list
   const [rows, setRows] = useState<Row[]>(() =>
@@ -934,6 +962,7 @@ export default function Workspace() {
 
   // expandable batch detail (sample prospect rows)
   const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const [exclOpen, setExclOpen] = useState(false);
   const toggleBatch = (name: string, id: string, open: boolean) => {
     setOpenBatch(open ? null : name);
     if (!open) {
@@ -1039,12 +1068,6 @@ export default function Workspace() {
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1>Workspace</h1>
-        </div>
-      </div>
-
       <div className="tabs ws-tabs" role="tablist">
         {TABS.map(([k, label]) => (
           <button
@@ -1892,6 +1915,75 @@ export default function Workspace() {
           </div>
         </div>
         <div className="sob">
+          {/* Pinned do-not-contact batch — always on top, never contacted, excluded everywhere */}
+          <div className={clsx("sob-item sob-exclude", exclOpen && "open")}>
+            <div
+              className="sob-card"
+              role="button"
+              tabIndex={0}
+              aria-expanded={exclOpen}
+              onClick={() => setExclOpen((o) => !o)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setExclOpen((o) => !o);
+                }
+              }}
+            >
+              <div className="sob-ico">⊘</div>
+              <div className="sob-main">
+                <div className="sob-name">Do-not-contact list</div>
+                <div className="sob-meta">
+                  <b style={{ color: "var(--danger)" }}>{EXCLUSION_COUNT}</b> suppressed contacts ·
+                  never contacted · excluded from every batch &amp; campaign
+                </div>
+              </div>
+              <span className="badge badge-danger">
+                <span className="bdot" />
+                Excluded
+              </span>
+              <span className="sob-chev" aria-hidden>
+                ⌄
+              </span>
+            </div>
+            {exclOpen && (
+              <div className="sob-detail">
+                <div className="sob-scroll">
+                  <table className="tbl">
+                    <thead>
+                      <tr>
+                        <th>Excluded</th>
+                        <th>Type</th>
+                        <th>Reason</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {EXCLUSIONS.flatMap((g) =>
+                        g.entries.map((name) => (
+                          <tr key={g.label + name}>
+                            <td>
+                              <span className="nm">{name}</span> <Sample>sample</Sample>
+                            </td>
+                            <td>
+                              <span className={clsx("badge", g.cls)}>
+                                <span className="bdot" />
+                                {g.tag}
+                              </span>
+                            </td>
+                            <td className="muted">{g.label}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="sob-more">
+                  Sourced from your Brief exclusions · no prospect in any sendout batch overlaps
+                  this list.
+                </div>
+              </div>
+            )}
+          </div>
           {batches.map((b, i) => {
             const open = openBatch === b.name;
             return (
@@ -2008,12 +2100,16 @@ export default function Workspace() {
           </div>
           <button
             className="btn btn-ghost btn-sm"
+            disabled={approvedBatches.length === 0}
+            title={approvedBatches.length === 0 ? "Approve a sendout batch first" : undefined}
             onClick={() => {
+              const batch = approvedBatches[0]?.name;
+              if (!batch) return;
               setCampaigns((s) => [
                 ...s,
                 {
                   name: "Campaign " + (s.length + 1),
-                  batch: batches[0]?.name || "None",
+                  batch,
                   status: "Pending" as const,
                   variants: ["A", "B", "C"],
                 },
@@ -2029,14 +2125,6 @@ export default function Workspace() {
             const open = openCamp === ci;
             const live = cp.status === "Live";
             const cb = batches.find((x) => x.name === cp.batch);
-            // A campaign can only send once its batch is client-approved.
-            const batchNotApproved = cb?.status !== "Approved";
-            const blockReason =
-              cb?.status === "Rejected"
-                ? "Batch was rejected"
-                : !cb
-                  ? "No batch linked"
-                  : "Batch pending approval";
             const size = cb?.count ?? 0;
             const sendN = live ? size : 0;
             const openN = live ? Math.round(size * 0.42) : 0;
@@ -2074,7 +2162,7 @@ export default function Workspace() {
                         toast("Campaign linked to " + v);
                       }}
                     >
-                      {batches.map((b) => (
+                      {approvedBatches.map((b) => (
                         <option key={b.name}>{b.name}</option>
                       ))}
                     </select>
@@ -2085,11 +2173,8 @@ export default function Workspace() {
                     {!live && (
                       <button
                         className="btn btn-accent btn-sm"
-                        disabled={batchNotApproved}
-                        title={batchNotApproved ? blockReason + " — can't send yet" : undefined}
                         onClick={(e) => {
                           e.stopPropagation();
-                          if (batchNotApproved) return;
                           setCampaigns((s) =>
                             s.map((c, i) => (i === ci ? { ...c, status: "Live" } : c))
                           );
@@ -2098,11 +2183,6 @@ export default function Workspace() {
                       >
                         Send campaign
                       </button>
-                    )}
-                    {!live && batchNotApproved && (
-                      <span className="muted" style={{ fontSize: 12 }}>
-                        {blockReason}
-                      </span>
                     )}
                     {!live && (
                       <button

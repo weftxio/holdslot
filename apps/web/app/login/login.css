@@ -70,30 +70,25 @@
 }
 .auth-proof {
   display: flex;
-  gap: 30px;
+  flex-wrap: wrap;
+  gap: 18px 30px;
   margin-top: 4px;
 }
 .auth-proof .p .n {
   font-family: var(--display);
   font-size: 30px;
   font-weight: 500;
+  min-height: 30px;
   color: var(--cerulean);
   display: flex;
   align-items: baseline;
   gap: 3px;
 }
-.auth-proof .p .n .ph-inline {
-  display: inline-block;
-  width: 58px;
-  height: 26px;
-  border-radius: 4px;
-  position: relative;
-}
 .auth-proof .p .l {
   font-size: 12.5px;
   color: rgba(255, 255, 255, 0.6);
   margin-top: 6px;
-  max-width: 130px;
+  white-space: nowrap;
 }
 
 /* right form */

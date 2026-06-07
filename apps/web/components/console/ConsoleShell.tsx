@@ -1,10 +1,11 @@
 "use client";
 import { useState } from "react";
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { Sidebar } from "./Sidebar";
 import { ToastProvider } from "../Toast";
 import { slugToTitle } from "@/lib/client";
-import { StatusTabCtx, STATUS_LABEL, type StatusTabKey } from "./StatusTab";
+import { StatusTabCtx, STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
 
 const LABELS: Record<string, string> = {
   overview: "Overview",
@@ -29,7 +30,11 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
           <div className="main">
             <div className="topbar">
               <div className="row">
-                <button className="side-toggle" aria-label="Menu" onClick={() => setOpen((o) => !o)}>
+                <button
+                  className="side-toggle"
+                  aria-label="Menu"
+                  onClick={() => setOpen((o) => !o)}
+                >
                   ≡
                 </button>
                 <div className="crumb">
@@ -42,7 +47,13 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
                   )}
                 </div>
               </div>
-              <div className="topbar-right" />
+              <div className="topbar-right">
+                {onStatus && (
+                  <Link href={`/${slug}/${STATUS_BACK[statusTab][0]}`} className="back-btn">
+                    {STATUS_BACK[statusTab][1]}
+                  </Link>
+                )}
+              </div>
             </div>
             <div className="content">{children}</div>
           </div>

@@ -41,12 +41,6 @@ export default function Overview() {
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1>Overview</h1>
-        </div>
-      </div>
-
       <div className="headline">
         <div className="hl-main">
           <div className="big">

@@ -1,10 +1,24 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import { useCountUp } from "@/lib/useCountUp";
 import "./home.css";
 
 const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(b, v));
 const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+
+// Result-proof strip — mock figures that count up each time the strip scrolls
+// into view (the "refresh" animation). `from`→`to` is the animated range.
+const STATS: { from: number; to: number; fmt: (v: number) => string; label: string }[] = [
+  {
+    from: 0,
+    to: 2480,
+    fmt: (v) => v.toLocaleString("en-US") + "+",
+    label: "Qualified meetings booked for clients",
+  },
+  { from: 0, to: 92, fmt: (v) => v + "%", label: "Average meeting show-up rate" },
+  { from: 1, to: 3, fmt: (v) => "1/" + v, label: "Cost vs. one in-house SDR hire" },
+];
 
 export default function Home() {
   const [menuOpen, setMenuOpen] = useState(false);
@@ -13,6 +27,9 @@ export default function Home() {
   const [msg, setMsg] = useState("");
   const [sent, setSent] = useState(false);
   const [sending, setSending] = useState(false);
+  // Count the result-proof strip up each time it scrolls into view.
+  const statsRef = useRef<HTMLDivElement>(null);
+  const counts = useCountUp(STATS, statsRef);
 
   // reveal + scroll-driven flow + parallax (ported from home.html)
   useEffect(() => {
@@ -162,7 +179,8 @@ export default function Home() {
               </a>
             </div>
             <p className="hero-note">
-              You approve every prospect before we reach out.{" "}
+              You approve every prospect before we reach out.
+              <br />
               <b>You only pay for meetings that actually happen.</b>
             </p>
           </div>
@@ -176,32 +194,13 @@ export default function Home() {
 
       <section className="stats">
         <div className="wrap">
-          <div className="stat-grid reveal">
-            <div className="stat">
-              <div className="num">
-                <span className="ph-inline ph">
-                  <span className="ph-tag">stat</span>
-                </span>
+          <div className="stat-grid reveal" ref={statsRef}>
+            {STATS.map((s, i) => (
+              <div className="stat" key={s.label}>
+                <div className="num">{s.fmt(counts[i])}</div>
+                <div className="label">{s.label}</div>
               </div>
-              <div className="label">Qualified meetings booked for clients</div>
-            </div>
-            <div className="stat">
-              <div className="num">
-                <span className="ph-inline ph">
-                  <span className="ph-tag">stat</span>
-                </span>
-                %
-              </div>
-              <div className="label">Average meeting show-up rate</div>
-            </div>
-            <div className="stat">
-              <div className="num">
-                <span className="ph-inline ph">
-                  <span className="ph-tag">stat</span>
-                </span>
-              </div>
-              <div className="label">Cost vs. one in-house SDR hire</div>
-            </div>
+            ))}
           </div>
         </div>
       </section>
@@ -213,8 +212,9 @@ export default function Home() {
               <span className="eyebrow">How it works</span>
               <h2>From brief to booked meeting.</h2>
               <p>
-                You stay in control at every gate. We handle the rest. Scroll to follow a campaign
-                from start to booked.
+                You stay in control at every gate. We handle the rest.
+                <br />
+                Scroll to follow a campaign from start to booked.
               </p>
             </div>
             <div className="flow-track">
@@ -231,7 +231,7 @@ export default function Home() {
               </div>
               <div className="flow-step dim" data-step="1">
                 <div className="n">02</div>
-                <h3>Approve your list</h3>
+                <h3>Approve your target</h3>
                 <p>
                   We build and verify a prospect list against your rules. Nothing gets contacted
                   until you approve it in one click.
@@ -269,8 +269,9 @@ export default function Home() {
                 <div>
                   <strong>You approve every prospect.</strong>
                   <span>
-                    Your brand never touches a list you haven&apos;t signed off on. Full
-                    transparency, full control.
+                    Your brand never touches a list you haven&apos;t signed off on.
+                    <br />
+                    Full transparency, full control.
                   </span>
                 </div>
               </li>
@@ -279,15 +280,16 @@ export default function Home() {
                 <div>
                   <strong>You only pay for meetings that happen.</strong>
                   <span>
-                    No-shows and short calls aren&apos;t billable. One number matters: qualified
-                    meetings booked.
+                    No-shows and short calls aren&apos;t billable.
+                    <br />
+                    One number matters: qualified meetings booked.
                   </span>
                 </div>
               </li>
               <li className="anim">
                 <span className="check">✓</span>
                 <div>
-                  <strong>Replaces a whole SDR function.</strong>
+                  <strong>Multiply Sales Pipeline with AI</strong>
                   <span>
                     Sourcing, writing, sending, follow-up, and scheduling, without hiring, training,
                     or managing a team.
@@ -296,10 +298,39 @@ export default function Home() {
               </li>
             </ul>
           </div>
-          <div className="trust-visual ph reveal">
-            <span className="ph-tag">
-              Placeholder · secondary product shot · list / approval view
-            </span>
+          <div className="trust-visual flowchart reveal">
+            <div className="fc-node fc-input">
+              <span className="fc-kicker">01 · Approve</span>
+              <span className="fc-title">Approve the prospect</span>
+              <span className="fc-meta">Review selected list · approve in one click</span>
+            </div>
+
+            <div className="fc-wire" aria-hidden="true">
+              <span className="fc-dot" />
+            </div>
+
+            <div className="fc-node fc-engine">
+              <span className="fc-kicker">02 · Meet</span>
+              <span className="fc-title">Join the confirmed meeting</span>
+              <div className="fc-chips">
+                <span>Buyer intent</span>
+                <span>Warmed relationship</span>
+                <span>Aligned datetime</span>
+              </div>
+            </div>
+
+            <div className="fc-wire" aria-hidden="true">
+              <span className="fc-dot" style={{ animationDelay: "1s" }} />
+            </div>
+
+            <div className="fc-node fc-output">
+              <span className="fc-kicker">03 · Grow</span>
+              <span className="fc-title">
+                Accelerate your sales
+                <br />
+                Amplify your growth
+              </span>
+            </div>
           </div>
         </div>
       </section>
@@ -308,10 +339,8 @@ export default function Home() {
         <div className="wrap">
           <div className="sec-head anim">
             <span className="eyebrow">Pricing</span>
-            <p>
-              A small base keeps the engine running. The rest you only pay when a real meeting lands
-              on your calendar. We win when you win.
-            </p>
+            <h2>Minimal retainer. Pay per meeting.</h2>
+            <p>Full alignment on your growth.</p>
           </div>
           <div className="formula">
             <div className="fterm base anim">
@@ -348,10 +377,10 @@ export default function Home() {
           <div className="final-card reveal">
             <div className={"form-state" + (sent ? " hide" : "")}>
               <span className="pill">Pay per qualified meeting</span>
-              <h2>See 25 of your buyers, free.</h2>
+              <h2>See 10 of your potential buyers.</h2>
               <p className="lead-copy">
-                Drop your work email and we&apos;ll send a sample list of 25 qualified prospects
-                matched to your ideal customer. No call required, no commitment.
+                Verify your market fit. Enter your work email for a complimentary target account
+                brief and 10 high-value prospects. No calls, no financial commitment.
               </p>
               <div className="lead-form">
                 <input
@@ -383,7 +412,7 @@ export default function Home() {
               <div className="tick">✓</div>
               <h2>Your list is on the way.</h2>
               <p className="lead-copy">
-                We&apos;ll send 25 matched prospects to {email.trim() || "your inbox"} shortly. Keep
+                We&apos;ll send 10 matched prospects to {email.trim() || "your inbox"} shortly. Keep
                 an eye out.
               </p>
               <p className="final-sub" style={{ marginTop: 24 }}>

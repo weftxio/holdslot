@@ -3,14 +3,28 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { DEFAULT_CLIENT_SLUG } from "@/lib/client";
+import { useCountUp } from "@/lib/useCountUp";
 import "./login.css";
 
 const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
 type View = "signin" | "forgot" | "sent";
 
+// Proof stats — mock figures that count up on load (mirrors the homepage strip).
+const PROOF: { from: number; to: number; fmt: (v: number) => string; label: string }[] = [
+  {
+    from: 0,
+    to: 640,
+    fmt: (v) => v.toLocaleString("en-US") + "+",
+    label: "Meetings booked this quarter",
+  },
+  { from: 0, to: 92, fmt: (v) => v + "%", label: "Average show-up rate" },
+];
+
 export default function Login() {
   const router = useRouter();
   const [view, setView] = useState<View>("signin");
+  // Count the proof stats up on mount.
+  const proof = useCountUp(PROOF);
 
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -76,27 +90,12 @@ export default function Login() {
             land on the calendar.
           </p>
           <div className="auth-proof" style={{ marginTop: 30 }}>
-            <div className="p">
-              <div className="n">
-                <span className="ph-inline ph">
-                  <span className="ph-tag" style={{ fontSize: 8 }}>
-                    stat
-                  </span>
-                </span>
+            {PROOF.map((s, i) => (
+              <div className="p" key={s.label}>
+                <div className="n">{s.fmt(proof[i])}</div>
+                <div className="l">{s.label}</div>
               </div>
-              <div className="l">Meetings booked this quarter</div>
-            </div>
-            <div className="p">
-              <div className="n">
-                <span className="ph-inline ph">
-                  <span className="ph-tag" style={{ fontSize: 8 }}>
-                    stat
-                  </span>
-                </span>
-                %
-              </div>
-              <div className="l">Average show-up rate</div>
-            </div>
+            ))}
           </div>
         </div>
         <div className="auth-foot-links">

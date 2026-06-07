@@ -9,12 +9,6 @@ import { STATUS_TABS, useStatusTab, type StatusTabKey } from "@/components/conso
 import { highlightTokens } from "@/lib/tmpl";
 import "./client-status.css";
 
-const BACK: Record<StatusTabKey, [string, string]> = {
-  approval: ["workspace#batches", "Back to Approval Batches"],
-  booking: ["workspace#campaign", "Back to Outreach Campaigns"],
-  feedback: ["workspace#summaries", "Back to Meeting Recaps"],
-};
-
 type ApprovalRow = {
   name: string;
   sent: string;
@@ -210,23 +204,6 @@ export default function ClientStatus() {
 
   return (
     <>
-      <div className="page-head">
-        <div>
-          <h1>Client Action</h1>
-          <div className="sub">
-            What gets sent to clients and prospects, and what&apos;s come back · all records{" "}
-            <Sample>sample</Sample>
-          </div>
-        </div>
-        <Link
-          href={`/${client}/${BACK[tab][0]}`}
-          className="back-btn"
-          style={{ marginBottom: 0, alignSelf: "flex-start", marginLeft: "auto" }}
-        >
-          {BACK[tab][1]}
-        </Link>
-      </div>
-
       <div className="tabs" role="tablist">
         {STATUS_TABS.map(([k, label]) => (
           <button

@@ -1,19 +1,3 @@
-.page-head {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 20px;
-  flex-wrap: wrap;
-}
-.page-head h1 {
-  font-size: 30px;
-}
-.page-head .sub {
-  font-size: 13.5px;
-  color: var(--ink-faint);
-  margin-top: 5px;
-}
 .tabs {
   margin-bottom: 24px;
 }
@@ -1327,6 +1311,29 @@
 .sob-card .sob-date.warn {
   background: var(--warn-wash);
   color: var(--warn);
+}
+
+/* do-not-contact batch — red, pinned to the top of Approval Batches */
+.sob-exclude .sob-card {
+  border-color: var(--danger);
+  background: var(--danger-wash);
+}
+.sob-exclude .sob-card:hover {
+  border-color: var(--danger);
+}
+.sob-exclude.open .sob-card {
+  border-color: var(--danger);
+}
+.sob-exclude .sob-card .sob-ico {
+  background: #fff;
+  color: var(--danger);
+  font-size: 22px;
+}
+.sob-exclude .sob-card .sob-name {
+  color: var(--danger);
+}
+.sob-exclude .sob-detail {
+  border-color: var(--danger);
 }
 
 /* reply meta line */

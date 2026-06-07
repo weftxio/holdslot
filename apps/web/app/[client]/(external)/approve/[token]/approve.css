@@ -1,3 +1,8 @@
+/* confirmation copy: each sentence on one line (wider than the shared 420px cap) */
+.success-inner p.confirm-copy {
+  max-width: 560px;
+}
+
 .approve-list {
   border: 1px solid var(--line);
   border-radius: 12px;

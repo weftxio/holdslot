@@ -35,39 +35,6 @@
   font-weight: 700;
 }
 
-/* buttons */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 9px;
-  font-family: var(--sans);
-  font-weight: 600;
-  font-size: 15px;
-  border-radius: 9px;
-  padding: 14px 22px;
-  transition: 0.18s ease;
-  cursor: pointer;
-  border: 1px solid transparent;
-  white-space: nowrap;
-  background: none;
-}
-.btn-primary {
-  background: var(--ink);
-  color: #fff;
-}
-.btn-primary:hover {
-  background: #000;
-  transform: translateY(-1px);
-}
-.btn-ghost {
-  background: transparent;
-  color: var(--ink);
-  border-color: var(--line);
-}
-.btn-ghost:hover {
-  border-color: var(--ink);
-}
-
 /* nav */
 .home header {
   position: sticky;
@@ -274,17 +241,11 @@
   font-weight: 500;
   letter-spacing: -0.03em;
   line-height: 1;
+  min-height: 50px;
   color: var(--cerulean-deep);
   display: flex;
   align-items: baseline;
   gap: 3px;
-}
-.stat .num .ph-inline {
-  display: inline-block;
-  min-width: 74px;
-  height: 42px;
-  border-radius: 5px;
-  position: relative;
 }
 .stat .label {
   margin-top: 13px;
@@ -379,6 +340,131 @@
   position: relative;
   aspect-ratio: 1/1;
   border-radius: 16px;
+  align-self: start;
+}
+
+/* simple flowchart (replaces the secondary product-shot placeholder) */
+.flowchart {
+  /* hug content (override the .trust-visual square) so the top aligns with the title */
+  aspect-ratio: auto;
+  margin-top: 25px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  padding: clamp(22px, 4%, 36px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: radial-gradient(120% 90% at 50% 0%, var(--cerulean-wash) 0%, #fff 70%), #fff;
+  overflow: hidden;
+}
+.fc-node {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fff;
+  padding: clamp(14px, 3.2%, 22px) clamp(16px, 3.6%, 24px);
+  text-align: center;
+  box-shadow: 0 4px 18px -12px rgba(14, 17, 22, 0.25);
+}
+.fc-kicker {
+  display: block;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cerulean-deep);
+}
+.fc-title {
+  display: block;
+  font-family: var(--display);
+  font-size: clamp(17px, 2.4vw, 21px);
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  margin-top: 5px;
+}
+.fc-meta {
+  display: block;
+  font-size: 13px;
+  color: var(--ink-soft);
+  margin-top: 4px;
+  line-height: 1.45;
+}
+
+/* engine node — emphasized (grey border) */
+.fc-engine {
+  border-color: var(--line);
+  background: linear-gradient(180deg, #fff 0%, var(--cerulean-wash) 100%);
+}
+.fc-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 7px;
+  margin-top: 12px;
+}
+.fc-chips span {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--cerulean-deep);
+  background: #fff;
+  border: 1px solid var(--cerulean);
+  border-radius: 999px;
+  padding: 4px 11px;
+}
+
+/* output node — confirmed meeting, deep-blue tone */
+.fc-output {
+  border-color: #32506e;
+  background: linear-gradient(135deg, #5e7c9e 0%, #324f6c 100%);
+}
+.fc-output .fc-kicker {
+  color: #bdd0e6;
+}
+.fc-output .fc-title {
+  color: #fff;
+}
+
+/* connectors with a dot that travels input → engine → output */
+.fc-wire {
+  position: relative;
+  align-self: center;
+  width: 2px;
+  height: clamp(28px, 6vh, 52px);
+  background: linear-gradient(var(--cerulean), var(--cerulean-wash));
+}
+.fc-dot {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: var(--cerulean-deep);
+  box-shadow: 0 0 0 4px rgba(155, 183, 214, 0.3);
+  animation: fc-travel 2s ease-in-out infinite;
+}
+@keyframes fc-travel {
+  0% {
+    top: -4px;
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fc-dot {
+    animation: none;
+    top: 50%;
+  }
 }
 
 /* final = combined pricing + lead magnet (single CTA block) */
@@ -753,7 +839,17 @@
   position: relative;
 }
 .pricing .sec-head {
+  max-width: none;
   margin-bottom: 48px;
+}
+.pricing .sec-head h2 {
+  white-space: nowrap;
+}
+/* relax nowrap before the heading can overflow narrow viewports */
+@media (max-width: 640px) {
+  .pricing .sec-head h2 {
+    white-space: normal;
+  }
 }
 .formula {
   display: flex;

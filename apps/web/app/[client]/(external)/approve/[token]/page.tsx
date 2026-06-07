@@ -32,10 +32,12 @@ export default function Approve() {
     <div className="success-inner">
       <div className="tick">✓</div>
       <h1>List approved.</h1>
-      <p>
-        Thank you. HoldSlot will begin reaching out to your approved prospects from warmed inboxes.
-        Interested replies will be handled and qualified meetings booked straight onto your
-        calendar.
+      <p className="confirm-copy">
+        Thank you.
+        <br />
+        We&apos;ll reach out to your approved prospects from warmed inboxes.
+        <br />
+        Replies are handled and qualified meetings land on your calendar.
       </p>
       <p className="muted" style={{ fontSize: 13, marginTop: 18 }}>
         You can close this page. No account needed.
