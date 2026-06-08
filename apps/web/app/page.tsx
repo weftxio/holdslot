@@ -48,7 +48,6 @@ export default function Home() {
     const flowSteps = howFlow
       ? Array.from(howFlow.querySelectorAll<HTMLElement>(".flow-step"))
       : [];
-    const trustVisual = document.querySelector<HTMLElement>(".trust-visual");
 
     function update() {
       const vh = window.innerHeight;
@@ -70,11 +69,6 @@ export default function Home() {
             s.classList.toggle("dim", i > active);
           });
         }
-      }
-      if (trustVisual && !reduced) {
-        const r = trustVisual.getBoundingClientRect();
-        const center = r.top + r.height / 2 - vh / 2;
-        trustVisual.style.transform = "translateY(" + clamp(-center * 0.05, -26, 26) + "px)";
       }
     }
     let ticking = false;
@@ -342,31 +336,115 @@ export default function Home() {
             <h2>Minimal retainer. Pay per meeting.</h2>
             <p>Full alignment on your growth.</p>
           </div>
-          <div className="formula">
-            <div className="fterm base anim">
-              <div className="ft-cap">Base</div>
-              <div className="ft-amt">
-                HKD 6,000<small> /mo</small>
+
+          <div className="tier-grid">
+            <div className="tier anim">
+              <div className="tier-head">
+                <div className="tier-name">Free</div>
+                <div className="tier-tag">Test the fit</div>
               </div>
-              <div className="ft-sub">
-                Sourcing, copywriting, sending &amp; inbox management, always on.
+              <div className="tier-price">
+                <span className="tp-amt">$0</span>
+                <span className="tp-sub">no card required</span>
+              </div>
+              <a href="#start" className="btn btn-ghost tier-cta">
+                Get 10 free prospects
+              </a>
+              <ul className="tier-feats">
+                <li>1 brief + 1 ICP draft</li>
+                <li>10 prospects, one-time</li>
+                <li className="no">No outbound sending</li>
+              </ul>
+            </div>
+
+            <div className="tier feat anim">
+              <div className="tier-badge">Most popular</div>
+              <div className="tier-head">
+                <div className="tier-name">Launch</div>
+                <div className="tier-tag">Your first pipeline</div>
+              </div>
+              <div className="tier-price">
+                <div className="tp-row">
+                  <span className="tp-amt">
+                    $800<small> /mo</small>
+                  </span>
+                  <span className="tp-meet">
+                    + $500<small> /meeting</small>
+                  </span>
+                </div>
+                <span className="tp-act">+ $400 one-time activation</span>
+              </div>
+              <a href="#start" className="btn btn-accent tier-cta">
+                Start Launch
+              </a>
+              <ul className="tier-feats">
+                <li>1 ICP</li>
+                <li>Up to 150 prospects / mo</li>
+                <li>Done-for-you outbound</li>
+              </ul>
+            </div>
+
+            <div className="tier anim">
+              <div className="tier-head">
+                <div className="tier-name">Growth</div>
+                <div className="tier-tag">Scale the engine</div>
+              </div>
+              <div className="tier-price">
+                <div className="tp-row">
+                  <span className="tp-amt">
+                    $1,600<small> /mo</small>
+                  </span>
+                  <span className="tp-meet">
+                    + $500<small> /meeting</small>
+                  </span>
+                </div>
+                <span className="tp-act">+ $400 one-time activation</span>
+              </div>
+              <a href="#start" className="btn btn-primary tier-cta">
+                Start Growth
+              </a>
+              <ul className="tier-feats">
+                <li>Up to 3 ICPs</li>
+                <li>Up to 400 prospects / mo</li>
+                <li>Done-for-you outbound</li>
+              </ul>
+            </div>
+          </div>
+
+          <div className="billing-strip anim">
+            <div className="bs-head">What each fee pays for</div>
+            <div className="bs-items">
+              <div className="bs-item">
+                <div className="bs-fee">
+                  Activation <span>$400 &middot; one-time</span>
+                </div>
+                <p>
+                  Your own domains and mailboxes, warmed before sending, so your outreach lands
+                  instead of going to spam.
+                </p>
+              </div>
+              <div className="bs-item">
+                <div className="bs-fee">
+                  Monthly <span>$800 Launch / $1,600 Growth</span>
+                </div>
+                <p>
+                  The engine behind your pipeline: enrichment, sending infrastructure, AI, and
+                  operator-run outreach. Paid whether or not meetings book.
+                </p>
+              </div>
+              <div className="bs-item">
+                <div className="bs-fee">
+                  Per meeting <span>$500 &middot; qualified only</span>
+                </div>
+                <p>
+                  A pre-approved buyer who showed up to a 10-minute-plus meeting and passed the
+                  48-hour dispute window.
+                </p>
               </div>
             </div>
-            <div className="fop anim">+</div>
-            <div className="fterm anim">
-              <div className="ft-cap">Per meeting</div>
-              <div className="ft-amt">HKD 4,000</div>
-              <div className="ft-sub">
-                Charged only when a qualified meeting actually takes place.
-              </div>
-            </div>
-            <div className="fop anim">×</div>
-            <div className="fterm anim">
-              <div className="ft-cap">Meetings booked</div>
-              <div className="ft-amt">you decide</div>
-              <div className="ft-sub">
-                No-shows and short calls are never billed. You stay in control.
-              </div>
+            <div className="bs-note">
+              Overage &middot; $3 per prospect beyond your monthly cap. No-shows and short calls are
+              never billed.
             </div>
           </div>
         </div>

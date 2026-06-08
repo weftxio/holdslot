@@ -1,8 +1,15 @@
 # HoldSlot — agent guide
 
+Stop buying sales tools. Start buying meetings.
+
 Done-for-you B2B service: turns a client brief into qualified, booked sales meetings; bills
 only for meetings that qualify. **Multi-client.** Phase 1 = build the mock UI in `apps/web`,
 ported pixel-faithfully from the Claude Design bundle, backed by mock fixtures (no backend).
+
+By positioning HoldSlot as a done-for-you, pay-per-qualified-meeting engine, 
+you are positioning yourself at the terminal state of this value chain. 
+You aren’t selling the hammer (ZoomInfo), nor the workshop (Clay); 
+you are selling the finished house.
 
 ## Golden rules
 - **The design IS the spec.** `design/` (8 HTML pages + `holdslot.css` + `client-switch.js`) is

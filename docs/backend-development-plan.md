@@ -1,8 +1,11 @@
-# HoldSlot — Backend Development Plan (v2)
+# HoldSlot — Backend Development Plan (v3)
 
 > Planning only. No backend code is written yet. Requirements are derived from the product
 > (done-for-you, billed-per-qualified-meeting) and the eight mock pages in `apps/web`.
-> v2 incorporates confirmed architecture decisions and per-stage direction.
+> v2 incorporated confirmed architecture decisions and per-stage direction.
+> **v3 folds in three founder revenue-protection directives:** anti-burn Clay quota (S1/S2/S7),
+> anti-theft tiered masking on client approval (S3), and client-approved SmartSenders lookalike-domain
+> provisioning (S4) — see locked decisions §6 (7–10).
 
 ---
 
@@ -86,11 +89,15 @@ stores the results.
 
 ## 3. Core domain model
 
-`Client` (slug) · `User` · `Brief` · `ResearchSpec` (LLM-structured) · `ICP` · `Prospect` (+enrichment) ·
+`Client` (slug; **+ `monthly_quota`, `current_month_usage`, `admin_quota_override`** — anti-burn guard,
+§4 S2) · `User` · `Brief` · `ResearchSpec` (LLM-structured) · `ICP` · `Prospect` (+enrichment; stores
+**full clear-text** `email`/`phone`/`linkedin_url`/`personal_icebreaker` — served masked to clients, §4 S3) ·
 `Batch` · `ApprovalLink` · `ProspectApproval` (per-prospect decision — billing precondition) ·
-`Campaign` · `MessageVariant` · `OutreachEvent` · `Reply` (+label, draft) · `BookingLink` ·
-`Meeting` (+Meet metadata: duration, participants, transcript ref, summary) · `FeedbackLink`/`Feedback` ·
-`LedgerEntry`/`Invoice` · `EmailTemplate` · `AuditLog`. Every row scoped by `client_id`.
+`SendingDomain` (lookalike domain: `proposed→approved→purchased→warming→active`) · `Mailbox` (sender
+inbox; 2 per domain) · `Campaign` · `MessageVariant` · `OutreachEvent` · `Reply` (+label, draft) ·
+`BookingLink` · `Meeting` (+Meet metadata: duration, participants, transcript ref, summary) ·
+`FeedbackLink`/`Feedback` · `LedgerEntry`/`Invoice` (incl. add-on credit + domain-passthrough lines) ·
+`EmailTemplate` · `AuditLog`. Every row scoped by `client_id`.
 
 ---
 
@@ -109,6 +116,14 @@ stores the results.
   needs (industries, sizes, geos, titles, triggers, exclusions, signals). This is the bridge into
   Clay. Plus completeness scoring and gap prompts.
 - **Features:** Brief CRUD; Claude → `ResearchSpec`; ICP CRUD (multi-profile create/review/delete).
+- **Anti-burn quota (init here, enforced at S2):** every client is created with a DB-backed
+  `monthly_quota` — **default 6,000 Clay data credits/month (≈ 150 fully-enriched prospects** at
+  ~40 credits each). This is the enrichment allotment the **HKD 6,000 base fee covers**; it keeps
+  worst-case (zero-conversion) Clay COGS at ~16% of base on a volume Clay rate (~$0.016–0.02/credit).
+  The cap is set from HoldSlot's *actual* per-credit rate — on Clay's entry Growth plan ($495 /
+  6,000 credits ≈ $0.083/credit) lower it or move to a volume plan. Legitimate overflow is **not
+  blocked — it's sold as a paid add-on** (S7), never silently absorbed. Enforcement + monthly reset
+  live in S2 (where credits are actually spent); S1 only seeds the parameter.
 - **UI wired:** Workspace → *Business brief* (form + completeness ring), *ICP* profiles.
 - **Tools/access:** **Bedrock (Claude)**.
 
@@ -118,18 +133,42 @@ stores the results.
   HoldSlot callback → store `Prospect` rows with fit score + **enrichment detail rich enough for the
   client to decide in S3**; filter/search/select.
 - **UI wired:** Workspace → *Prospect list* (filters, Source ICP column, select).
+- **Anti-burn enforcement (quota seeded in S1):** the research orchestration wrapper checks
+  `current_month_usage >= monthly_quota` **before dispatching any batch to Clay**; on breach it throws
+  **`403 CreditQuotaExceeded`** and suspends that tenant's research worker. An `admin_quota_override`
+  flag bypasses the cap (overflow billed as add-on credits → S7). An **EventBridge Scheduler** monthly
+  job resets `current_month_usage` (reuses the §4 billing-close cadence). *MVP note:* S2 is operator-run,
+  so hard worker-suspension only bites once Clay is automated (Milestone 2); the quota fields + admin
+  toggle still ship early so usage is tracked from day one.
 - **Tools/access:** **Clay** (webhook-in + HTTP API out), SQS worker (callback ingest), Bedrock
-  (fit scoring/dedupe). *MVP:* operator runs the Clay table; results flow back via webhook.
-- **AWS:** + SQS, worker Lambda, API Gateway callback route, S3 (raw payloads).
+  (fit scoring/dedupe), EventBridge (usage reset). *MVP:* operator runs the Clay table; results flow
+  back via webhook.
+- **AWS:** + SQS, worker Lambda, API Gateway callback route, S3 (raw payloads), EventBridge.
 
 ### S3 — Sendout batch & client approval · **P0 (MVP, revenue precondition)**
 - **Features:** Create `Batch` from selected prospects (pending/approved/rejected + approved/total).
   **Client-facing approval built for a smooth decision:** the approval page shows each prospect with
-  enough context (name, title, company, fit reason, enrichment highlights) to approve/remove
-  one-click. **Persist a per-prospect `ProspectApproval` record** — this is the agreement that S7
-  bills against. Tokenized expiring links; editable sendout template; "Send to client".
-- **UI wired:** Workspace → *Sendout Batch*; external *client-approval* (valid/expired); Client
-  Action Status → *List approval* (batch selector, status log, template, send).
+  enough *fit context* to approve/remove one-click — but identity and contact vectors are masked (see
+  the anti-theft block below for exactly what is shown vs withheld). **Persist a per-prospect
+  `ProspectApproval` record** — this is the agreement that S7 bills against. Tokenized expiring links;
+  editable sendout template; "Send to client".
+- **Anti-theft masking (tiered identity reveal):** the `Prospect` table holds **full clear-text**
+  contact + identity data, but the unauthenticated client-facing `GET /approval/{token}` serializer
+  emits a **masked payload** so a client cannot reach a prospect on their own and bypass the HKD 4,000
+  qualified-meeting fee. Masking is a **field-level transform in the serializer** (not regex over the
+  blob). Identity unlocks in tiers tied to the billing model:
+  - **Approval stage (pre-approval) — fit only, no way to contact or uniquely identify:** show first
+    name + last *initial* ("Sarah K."), a **company descriptor** ("Series-B fintech · 200–500 · SG")
+    *not* the exact company, title/seniority/function, industry/size/region, fit reason, intent signal,
+    and enrichment *highlights*. Withhold raw vectors → email = `verified business email ✓`, phone =
+    `direct dial verified ✓`, LinkedIn → boolean `has_verified_linkedin: true`; personal icebreaker,
+    socials and personal site are not exposed at all.
+  - **After a meeting is booked / qualified:** reveal full name, exact company and LinkedIn to the
+    client (they need to know who they're meeting and the HKD 4,000 is now billable).
+  - **Clear-text contact data never reaches the client at any stage** — once a prospect is `APPROVED`
+    it routes **backend-only** into Smartlead (S4); HoldSlot does the outreach.
+- **UI wired:** Workspace → *Sendout Batch*; external *client-approval* (valid/expired, **masked
+  payload**); Client Action Status → *List approval* (batch selector, status log, template, send).
 - **Tools/access:** SES (approval request), signed-token service, EventBridge (expiry/reminders).
 - **AWS:** + EventBridge Scheduler.
 
@@ -137,8 +176,26 @@ stores the results.
 - **Features (per direction = fast DB↔Smartlead integration):** map approved batch → **Smartlead**
   campaign; push leads + A/B/C sequence variants; send controls (sending/pause, daily cap, split);
   sync send/open status back via webhooks into `OutreachEvent`.
-- **UI wired:** Workspace → *Campaign* (variants, send controls, send button).
-- **Tools/access:** **Smartlead** REST + webhooks; Bedrock (variant copy assist); SQS; EventBridge.
+- **Automated lookalike-domain provisioning (Smartlead SmartSenders) — isolates each client's
+  deliverability so no shared-IP cross-contamination.** The capability lives here but the **trigger
+  runs at onboarding (kicked off in S1, post-Brief), not at campaign-send** — lookalike domains need
+  ~2–3 weeks of inbox warm-up, so provisioning must start early or first campaigns send cold.
+  - **Domain-mutation resolver:** from the client root domain, derive candidates off the **bare SLD
+    label** (`acme`, not `acme.com`): `getacme.com`, `tryacme.com`, `acmehq.com`, `acmesolutions.com`;
+    run availability checks. *(Stripping the TLD first matters — `{label}hq.com` not `acme.comhq.com`.)*
+  - **Client approval gate (confirmed):** the resolver **proposes** the candidate set as
+    `SendingDomain(proposed)`; the **client approves** before any purchase (reuse the tokenized
+    approval pattern / a console screen) → `approved`.
+  - **Provision:** on approval, request isolated infra via the Smartlead **SmartSenders API**
+    (`POST /api/v1/smartsenders/purchase` — *verify path/shape against current Smartlead docs, §6*):
+    **3 lookalike domains × 2 mailboxes = 6 decoupled sending addresses.** Smartlead automates the
+    underlying Namecheap registration and injects SPF/DKIM/DMARC + link-tracking DNS.
+  - **Cost routing:** parse the provisioning cost and register it as a `LedgerEntry` **domain-setup
+    passthrough premium** (amount/currency **TBD — pending founder decision**), collected at S7 close.
+- **UI wired:** Workspace → *Campaign* (variants, send controls, send button); external/console
+  **domain-approval** surface (client approves proposed lookalike domains).
+- **Tools/access:** **Smartlead** REST + webhooks + **SmartSenders API**; Bedrock (variant copy
+  assist); SQS; EventBridge.
 - **AWS:** + API Gateway webhook route, SQS, worker Lambda.
 - *MVP fallback:* operator runs Smartlead UI; backend records campaign/results.
 
@@ -172,6 +229,11 @@ stores the results.
   held with **duration ≥ 10 minutes**. Bill **HKD 6,000 base + HKD 4,000 × qualified meetings**.
 - **Features:** `LedgerEntry` per qualified meeting (tagged campaign+batch); monthly close → Stripe
   metered invoice; **Overview** aggregations (headline, needs-attention, weekly stats, leads funnel).
+- **Quota overflow & overrides (anti-burn, from S1/S2):** an **`admin_quota_override`** toggle lifts
+  the Clay cap per client; over-cap enrichment is billed as **add-on credit micro-transactions** as
+  `LedgerEntry` rows (the paid path for clients needing >150 prospects). Also bills the **domain-setup
+  passthrough** from S4 — **amount/currency TBD (pending founder decision)**; modeled as a passthrough
+  line, no number locked.
 - **UI wired:** Workspace → *Billing ledger*; *Overview* dashboard.
 - **Tools/access:** **Stripe** (metered + webhooks), Bedrock (optional insights), EventBridge (close).
 - **AWS:** + Stripe-webhook route, EventBridge.
@@ -203,9 +265,12 @@ Assumptions — **Prod (modest):** ~10 client tenants, ~20k outreach+transaction
 | CloudWatch | ~$0 | $3–8 |
 | **AWS subtotal** | **~$0–12** | **~$80–220** |
 
-**Third-party SaaS (not AWS), prod:** Clay (credit tiers, ~$149–349) · Smartlead (~$39–94) ·
-Google Workspace (per sending/host seat, ~$12–18/seat) · Stripe (% of revenue). Budget
-**~$250–550/mo** depending on volume and how much is automated vs operator-run.
+**Third-party SaaS (not AWS), prod:** Clay (credit tiers, ~$185–495+; the per-client `monthly_quota`
+of 6,000 credits caps tenant burn — see S1/S2) · Smartlead (~$39–94) · **Smartlead SmartSenders
+lookalike domains** (per-domain registration + setup, 3 domains/client; **passed through to the
+client at S7, amount TBD**) · Google Workspace (per sending/host seat, ~$12–18/seat) · Stripe (% of
+revenue). Budget **~$250–550/mo** core, plus the (passed-through) domain-provisioning cost, depending
+on volume and how much is automated vs operator-run.
 
 > Dev stays near **$0** (free tier + scale-to-zero). Keep the $5 AWS Budget alarm on dev; set a
 > real cap before production. No NAT Gateway (Data API), no Recall.ai/Transcribe (Google Meet
@@ -213,7 +278,7 @@ Google Workspace (per sending/host seat, ~$12–18/seat) · Stripe (% of revenue
 
 ---
 
-## 6. Confirmed decisions (locked)
+## 6. Decisions — locked (1–9), open (10)
 
 1. **Compute:** Lambda + **SnapStart (Python 3.12+)**. ✅
 2. **Cold email:** **Smartlead**. ✅
@@ -221,6 +286,14 @@ Google Workspace (per sending/host seat, ~$12–18/seat) · Stripe (% of revenue
 4. **Meeting capture:** **Google Meet metadata** via Calendar + Meet REST API (no Recall.ai/Transcribe). ✅
 5. **Launch mode:** **operator-assisted MVP `S0 → S1 → S3 → S6 → S7`**. ✅
 6. **IaC:** **Terraform** (provisions Lambda+SnapStart, API GW, Aurora SLv2, SQS, EventBridge, SES, SSM, S3, IAM). ✅
+7. **Anti-burn quota:** per-client `monthly_quota` **default 6,000 Clay credits (~150 prospects)**;
+   overflow billed as paid add-on, not blocked; enforced at S2, admin-overridable. ✅
+8. **Anti-theft masking:** client approval page serves a **masked, tiered-reveal** payload; clear-text
+   contact data is backend-only (→Smartlead). ✅
+9. **Lookalike domains:** **client-approved** before purchase; provisioned via Smartlead **SmartSenders**
+   (3 domains × 2 mailboxes), kicked off at onboarding for warm-up. ⚠️ *Verify SmartSenders API
+   path/payload + Namecheap/DNS automation against current Smartlead docs before build.*
+10. **Domain-setup passthrough premium:** ⏳ *amount/currency pending founder decision.*
 
 ## 7. Sequencing
 
@@ -248,9 +321,10 @@ backend surface to build. Replace the page's co-located mock consts with these o
 | `/[client]/workspace` · Business brief + ICP | `workspace/page.tsx` | **S1** | `GET/PUT /clients/{c}/brief`, `POST /brief/structure` (Claude), `CRUD /icps` |
 | `/[client]/workspace` · Prospect list | `workspace/page.tsx` | **S2** | `POST /icps/{id}/research` (→Clay), `GET /prospects`, Clay callback webhook |
 | `/[client]/workspace` · Sendout Batch | `workspace/page.tsx` | **S3** | `CRUD /batches`, `POST /batches/{id}/send`, batch status |
-| `/[client]/approve/[token]` | `approve/[token]` | **S3** | `GET /approval/{token}`, `POST /approval/{token}/decide` (per-prospect) |
+| `/[client]/approve/[token]` | `approve/[token]` | **S3** | `GET /approval/{token}` (**masked, tiered-reveal payload**), `POST /approval/{token}/decide` (per-prospect) |
 | `/[client]/client-status` · List approval | `client-status/page.tsx` | **S3** | `GET /clients/{c}/approvals`, templates, status log |
 | `/[client]/workspace` · Campaign | `workspace/page.tsx` | **S4** | `CRUD /campaigns` (→Smartlead), send controls, `OutreachEvent` sync |
+| domain approval (lookalike) | new surface | **S4** (kicked off S1) | `GET/POST /clients/{c}/sending-domains` (propose → **client-approve** → SmartSenders purchase) |
 | `/[client]/workspace` · Reply queue | `workspace/page.tsx` | **S5** | Smartlead reply webhook, `GET /replies`, `POST /replies/{id}/send` |
 | `/[client]/book/[token]` | `book/[token]` | **S6** | `GET /booking/{token}` (slots), `POST /booking/{token}/book` (→Calendar+Meet) |
 | `/[client]/client-status` · Booking links | `client-status/page.tsx` | **S6** | `GET /clients/{c}/bookings` + invite email |
@@ -296,5 +370,7 @@ infra/
 2. Stand up auth + clients, then cut over `/login` and the client switcher to the live API (§8).
 3. Proceed S1 → S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
 
-All architecture decisions are locked (§6) — no open sub-decisions remain. Keep this file updated
-as the single source of truth: tick stages and note any decision changes with a short rationale.
+Architecture and product decisions are locked (§6 1–9). **Two items remain open and do not block S0:**
+§6 #9 — *verify the Smartlead SmartSenders API surface before building S4*; §6 #10 — *the domain-setup
+passthrough premium amount/currency is pending a founder decision*. Keep this file updated as the
+single source of truth: tick stages and note any decision changes with a short rationale.
