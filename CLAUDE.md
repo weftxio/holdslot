@@ -28,8 +28,17 @@ Next.js 15 (App Router, TS) · React 19 · pnpm workspace. Fonts: Fraunces (disp
 ```
 apps/web/         the UI. app/ routes · components/ · lib/ · globals.css
 design/           vendored Claude Design bundle (READ-ONLY reference)
+docs/             backend plans (read before any backend work)
 apps/api/ infra/  placeholders, not built yet
 ```
+
+## Backend (next phase — planning only, no code yet)
+Two planning docs in `docs/`, read before touching `apps/api`/`infra`:
+- **`backend-development-plan.md`** — full spec: architecture, domain model, build stages S0–S7,
+  locked decisions (§6), cost model (§5), USD pricing (§7), 2-year growth model (§11). LLM = **OpenRouter**.
+- **`initial-build-plan.md`** — scoped first build (dogfood MVP): the single-tenant outbound→booked-meeting
+  loop so HoldSlot sells itself. DoD = 6 signups in H1 (Oct'26–Mar'27). Builds the Clay + Smartlead +
+  meeting connections; skips billing/masking/analytics until paying signups.
 
 ## Routes (client slug = `[client]`, drives holdslot.com/<slug>)
 | Route | Source file | Shell |
