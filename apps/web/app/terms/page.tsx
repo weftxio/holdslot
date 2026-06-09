@@ -21,14 +21,21 @@ export default function Terms() {
       <h2>2 · Pricing &amp; billing</h2>
       <ul>
         <li>
-          <strong>Base fee</strong> — a monthly fee covers sourcing, copywriting, sending, and inbox
-          management.
+          <strong>Activation</strong> &middot; a one-time fee to set up and warm your sending domains
+          and mailboxes before any outreach begins.
         </li>
         <li>
-          <strong>Per qualified meeting</strong> — you are charged only when a qualified meeting
-          actually takes place. No-shows and short calls are never billable.
+          <strong>Monthly fee</strong> &middot; covers prospect sourcing, copywriting, sending, and
+          inbox management, whether or not meetings book.
         </li>
-        <li>No setup fee, no long-term retainer; you can cancel anytime.</li>
+        <li>
+          <strong>Per qualified meeting</strong> &middot; charged when a qualified meeting actually
+          takes place. No-shows and short calls are never billable.
+        </li>
+        <li>
+          Prospects beyond your monthly cap are billed at a per-prospect overage rate. You can cancel
+          anytime.
+        </li>
       </ul>
 
       <h2>3 · Your responsibilities</h2>
@@ -47,8 +54,8 @@ export default function Terms() {
       <h2>5 · Qualified-meeting definition</h2>
       <p>
         A meeting is &quot;qualified&quot; when the prospect matches the approved criteria, attends,
-        and the call meets the agreed minimum duration. Disputes are reviewed against the recorded
-        meeting metadata and audit trail.
+        and the call meets the agreed minimum duration. Disputes can be raised within 48 hours and
+        are reviewed against the recorded meeting metadata and audit trail.
       </p>
 
       <h2>6 · Liability</h2>

@@ -17,7 +17,7 @@ const STATS: { from: number; to: number; fmt: (v: number) => string; label: stri
     label: "Qualified meetings booked for clients",
   },
   { from: 0, to: 92, fmt: (v) => v + "%", label: "Average meeting show-up rate" },
-  { from: 1, to: 3, fmt: (v) => "1/" + v, label: "Cost vs. one in-house SDR hire" },
+  { from: 0, to: 30, fmt: (v) => v + "%", label: "Cost vs. one in-house SDR hire" },
 ];
 
 export default function Home() {
@@ -175,7 +175,7 @@ export default function Home() {
             <p className="hero-note">
               You approve every prospect before we reach out.
               <br />
-              <b>You only pay for meetings that actually happen.</b>
+              <b>You pay for domain setup, prospect sourcing, and meetings that actually happen.</b>
             </p>
           </div>
           <div className="hero-visual ph reveal">
@@ -219,32 +219,32 @@ export default function Home() {
                 <div className="n">01</div>
                 <h3>Share your brief</h3>
                 <p>
-                  Tell us who your ideal customer is, what you sell, and who to avoid. We turn it
-                  into a structured campaign in minutes.
+                  Tell us who you sell to, what you offer, and who to avoid. We turn it into a
+                  campaign in minutes.
                 </p>
               </div>
               <div className="flow-step dim" data-step="1">
                 <div className="n">02</div>
                 <h3>Approve your target</h3>
                 <p>
-                  We build and verify a prospect list against your rules. Nothing gets contacted
-                  until you approve it in one click.
+                  We build a prospect list that matches your rules. Nobody gets contacted until you
+                  approve it.
                 </p>
               </div>
               <div className="flow-step dim" data-step="2">
                 <div className="n">03</div>
                 <h3>We run the outreach</h3>
                 <p>
-                  Messages go out from warmed inboxes. Replies are read, sorted, and answered.
-                  Positive ones surface to you instantly.
+                  Emails go out from warmed inboxes. We read and sort every reply, and send the good
+                  ones straight to you.
                 </p>
               </div>
               <div className="flow-step dim" data-step="3">
                 <div className="n">04</div>
                 <h3>You take the meeting</h3>
                 <p>
-                  Interested buyers land on your calendar. You only get billed when a real,
-                  qualified meeting takes place.
+                  Buyers book straight onto your calendar. You pay the meeting fee only when a real,
+                  qualified meeting happens.
                 </p>
               </div>
             </div>
@@ -272,7 +272,7 @@ export default function Home() {
               <li className="anim">
                 <span className="check">✓</span>
                 <div>
-                  <strong>You only pay for meetings that happen.</strong>
+                  <strong>Meetings are billed only when they happen.</strong>
                   <span>
                     No-shows and short calls aren&apos;t billable.
                     <br />
@@ -483,7 +483,7 @@ export default function Home() {
               </div>
               <div className={"form-msg" + (msg ? " error" : "")}>{msg}</div>
               <p className="price-line">
-                <b>Pay only per qualified meeting</b>, cancel anytime.
+                <b>Pay for setup, sourcing, and qualified meetings</b>, cancel anytime.
               </p>
             </div>
             <div className={"success-state" + (sent ? " show" : "")}>

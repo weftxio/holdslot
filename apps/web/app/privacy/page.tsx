@@ -30,8 +30,8 @@ export default function Privacy() {
       <h2>2 · How we use it</h2>
       <p>
         We use the data to source and verify prospect lists, run outreach from warmed inboxes,
-        classify replies, schedule meetings, and produce meeting summaries. We bill only for
-        qualified meetings that actually take place.
+        classify replies, schedule meetings, and produce meeting summaries. Billing covers
+        activation, the monthly fee, and qualified meetings that take place.
       </p>
 
       <h2>3 · Recording &amp; consent</h2>

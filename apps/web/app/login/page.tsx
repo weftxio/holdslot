@@ -178,6 +178,7 @@ export default function Login() {
                     {showPw ? "Hide" : "Show"}
                   </button>
                 </div>
+                <div className="field-hint">Use at least 6 characters.</div>
                 <div className="field-err">{pwErr}</div>
               </div>
 
@@ -187,9 +188,6 @@ export default function Login() {
 
               <p className="alt">
                 New to HoldSlot? <Link href="/#start">Get started</Link>
-              </p>
-              <p className="demo-hint">
-                Mock: <b>any valid email and a 6+ character password</b> signs you in.
               </p>
             </div>
           )}
