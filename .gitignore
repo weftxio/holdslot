@@ -12,9 +12,16 @@ dist/
 *.tsbuildinfo
 
 # env
-.env
-.env.local
-.env.*.local
+.env*
+!.env.example
+
+# keys / credentials (never commit — e.g. Google SA JSON)
+*.pem
+*.key
+*.p12
+*service-account*.json
+client_secret*.json
+credentials*.json
 
 # python (api, later)
 __pycache__/

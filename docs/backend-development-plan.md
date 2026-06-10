@@ -74,7 +74,8 @@ stores the results.
 | Scheduling | **EventBridge Scheduler** | Link expiry/reminders, billing close, Meet ingest polling |
 | Eventing | **Google Workspace Events API → Pub/Sub** (or poll) | Fire when a conference ends → ingest Meet metadata |
 | Storage | **S3** | Transcripts, inbound payloads, exports |
-| Secrets/config | **SSM Parameter Store (SecureString)** | Free tier; fetched post-SnapStart-restore |
+| Secrets | **AWS Secrets Manager** | One JSON secret per platform (`holdslot/<env>/<platform>`); native rotation + resource policies; fetched post-SnapStart-restore. ~$0.40/secret/mo |
+| Non-secret config | **SSM Parameter Store (SecureString)** | Free tier; env/feature flags that aren't credentials |
 | Transactional email | **Amazon SES** | Approval/booking/feedback emails, reminders |
 | AI / LLM | **OpenRouter (Claude + others) — sole AI billing point**, behind one adapter | Chosen over Bedrock for reliable model access from Hong Kong. All HoldSlot-invoked LLM goes through OpenRouter: brief structuring, reply labeling/drafting, meeting summaries. We do **not** use Google smartNotes/Gemini for summaries (Meet transcript → OpenRouter instead). Clay's internal AI is part of Clay's product cost, separate category. One client adapter so the provider can be swapped without touching domains |
 | Auth | **FastAPI + JWT** (argon2, refresh tokens) | Matches the email+pw login mock |
@@ -113,10 +114,10 @@ by `client_id`.
 
 ### S0 — Core spine & deploy foundation · **P0 (MVP)**
 - **Features:** FastAPI skeleton on Lambda+SnapStart; multi-tenant DB + Alembic baseline; JWT auth
-  (login, forgot/reset); client CRUD + slug; SSM config; structured logging; CI/CD + IaC; health.
+  (login, forgot/reset); client CRUD + slug; Secrets Manager + SSM config; structured logging; CI/CD + IaC; health.
 - **UI wired:** `login` (real auth), client switcher (real clients), app shell loads live session.
-- **Tools/access:** SSM, SES (reset email), Aurora Data API, IAM.
-- **AWS:** Lambda, API Gateway, Aurora Serverless v2, SSM, SES, S3 (artifacts), CloudWatch.
+- **Tools/access:** Secrets Manager, SSM, SES (reset email), Aurora Data API, IAM.
+- **AWS:** Lambda, API Gateway, Aurora Serverless v2, Secrets Manager, SSM, SES, S3 (artifacts), CloudWatch.
 
 ### S1 — Business Brief & ICP → research-ready spec · **P1 (MVP)**
 - **Role of LLM (per direction):** OpenRouter (Claude) **structures the client's raw brief input into a
@@ -272,7 +273,7 @@ by `client_id`.
   idempotent Lambda handlers.
 - **One SQS+Lambda worker pattern** reused everywhere.
 - **AuditLog + status logs** feed Client Action Status logs and the Overview needs-attention strip.
-- **Security**: per-tenant row scoping, signed expiring tokens on all external links, SSM secrets,
+- **Security**: per-tenant row scoping, signed expiring tokens on all external links, Secrets Manager,
   least-privilege IAM, rate limiting on public/external + webhook routes (verify signatures).
 
 ---
@@ -288,7 +289,7 @@ what feed the §11 Tech COGS line, so the two sections reconcile.
 
 | Item | Minimized launch cost | Note |
 |---|--:|---|
-| AWS (Lambda+API GW · Aurora SLv2+Data API · SQS/EventBridge/SSM · S3 · SES · CloudWatch · Route53) | ~$80–150 | Scale-to-zero; Aurora 0-ACU idle + Data API (no NAT) is the floor's main driver. SnapStart cache <$4 |
+| AWS (Lambda+API GW · Aurora SLv2+Data API · SQS/EventBridge/SSM · Secrets Manager · S3 · SES · CloudWatch · Route53) | ~$80–150 | Scale-to-zero; Aurora 0-ACU idle + Data API (no NAT) is the floor's main driver. SnapStart cache <$4; Secrets Manager ~$2–3 (5 platform secrets) |
 | Smartlead — **one** platform account | ~$39–94 | Single account for all tenants; per-client isolation is the SmartSenders domains, not separate accounts |
 | Google Workspace — **pooled** operator host seats (~2–3, not per-tenant) | ~$36–54 | Meetings hosted under HoldSlot seats so Meet REST yields duration/transcript; pooling keeps this fixed |
 | **Shared floor** | **~$155–300** | Amortizes toward ~$0/tenant as the book grows |
@@ -341,7 +342,7 @@ exactly what the plan-derived enrichment cap guards (§6 #7: 150/400, $3 overage
    adapter (no Gemini/Anthropic-direct). Chosen over Bedrock for reliable model access from Hong Kong. ✅
 4. **Meeting capture:** **Google Meet metadata** via Calendar + Meet REST API (no Recall.ai/Transcribe). ✅
 5. **Launch mode:** **operator-assisted MVP `S0 → S1 → S3 → S6 → S7`**. ✅
-6. **IaC:** **Terraform** (provisions Lambda+SnapStart, API GW, Aurora SLv2, SQS, EventBridge, SES, SSM, S3, IAM). ✅
+6. **IaC:** **Terraform** (provisions Lambda+SnapStart, API GW, Aurora SLv2, SQS, EventBridge, SES, Secrets Manager, SSM, S3, IAM). ✅
 7. **Anti-burn quota:** **plan-derived** `enrichment_cap` (Free 10 once · Launch 150/mo · Growth 400/mo);
    over-cap metered at **$3/prospect**, not blocked; enforced at S2, admin-overridable. ✅
 8. **Anti-theft masking:** client approval page serves a **masked, tiered-reveal** payload; clear-text
@@ -406,7 +407,7 @@ tokens; each renders valid / success / expired (`?state=expired` in the mock).
 apps/api/                 FastAPI service (managed outside the pnpm JS workspace)
   app/
     main.py               FastAPI app + Mangum handler (Lambda + SnapStart)
-    core/                 config (SSM), auth (JWT), db (Aurora Data API client), logging
+    core/                 config (Secrets Manager + SSM), auth (JWT), db (Aurora Data API client), logging
     domains/              one package per domain: clients, briefs, icps, prospects,
                           batches, approvals, campaigns, replies, bookings, meetings,
                           feedback, billing
@@ -417,7 +418,7 @@ apps/api/                 FastAPI service (managed outside the pnpm JS workspace
 infra/
   alembic/                migrations (schema source of truth)
   terraform/              Terraform IaC for Lambda+SnapStart, API GW, Aurora SLv2, SQS,
-                          EventBridge, SES, SSM, S3, IAM — with dev/prod workspaces
+                          EventBridge, SES, Secrets Manager, SSM, S3, IAM — with dev/prod workspaces
 ```
 
 > **IaC = Terraform (locked, §6).** Use remote state (S3 backend + DynamoDB lock) and separate

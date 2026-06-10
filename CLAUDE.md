@@ -19,6 +19,9 @@ you are selling the finished house.
 - **Plain CSS** (globals + co-located page styles). No Tailwind. Tokens live once in `globals.css`.
 - Copy is exact; separators are middot `·` only (no em/en dashes). Keep `.sample`/`.ph` markers.
 - All data is placeholder in this phase (incl. homepage "meetings booked" count) — wire later.
+- **Security exception to "match exactly":** some `design/` JS concatenates user input into
+  `innerHTML` (client-switch.js, workspace.html). Never port that — render names/labels via JSX or
+  `textContent`; no `dangerouslySetInnerHTML`/`innerHTML` for any user-entered value.
 
 ## Stack
 Next.js 15 (App Router, TS) · React 19 · pnpm workspace. Fonts: Fraunces (display) + Archivo
