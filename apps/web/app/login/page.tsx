@@ -1,14 +1,14 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { DEFAULT_CLIENT_SLUG } from "@/lib/client";
-import { login as apiLogin, forgot as apiForgot, getMe, setTokens } from "@/lib/api";
+import { login as apiLogin, forgot as apiForgot, reset as apiReset, getMe, setTokens } from "@/lib/api";
 import { useCountUp } from "@/lib/useCountUp";
 import "./login.css";
 
 const validEmail = (e: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
-type View = "signin" | "forgot" | "sent";
+type View = "signin" | "forgot" | "sent" | "reset" | "reset-done";
 
 // Proof stats — mock figures that count up on load (mirrors the homepage strip).
 const PROOF: { from: number; to: number; fmt: (v: number) => string; label: string }[] = [
@@ -38,8 +38,45 @@ export default function Login() {
   const [resetEmail, setResetEmail] = useState("");
   const [resetErr, setResetErr] = useState("");
   const [resetCopy, setResetCopy] = useState(
-    "If an account exists for that address, a reset link is on its way. The link stays valid for 30 minutes."
+    "If an account exists for that address, a reset link is on its way. The link stays valid for 1 hour."
   );
+
+  // Set-new-password step (reached via the ?reset=<token> link in the email).
+  const [resetToken, setResetToken] = useState("");
+  const [newPw, setNewPw] = useState("");
+  const [newPw2, setNewPw2] = useState("");
+  const [newPwErr, setNewPwErr] = useState("");
+  const [resetting, setResetting] = useState(false);
+
+  // Open the set-new-password view when arriving from the email link.
+  useEffect(() => {
+    const token = new URLSearchParams(window.location.search).get("reset");
+    if (token) {
+      setResetToken(token);
+      setView("reset");
+      // Drop the token from the address bar so it isn't bookmarked or leaked in referrers.
+      window.history.replaceState(null, "", window.location.pathname);
+    }
+  }, []);
+
+  async function submitNewPassword() {
+    if (newPw.length < 8) {
+      setNewPwErr("Password must be at least 8 characters.");
+      return;
+    }
+    if (newPw !== newPw2) {
+      setNewPwErr("Passwords don't match.");
+      return;
+    }
+    setResetting(true);
+    try {
+      await apiReset(resetToken, newPw);
+      setView("reset-done");
+    } catch {
+      setNewPwErr("This reset link is invalid or has expired. Request a new one.");
+      setResetting(false);
+    }
+  }
 
   async function signin(e: React.FormEvent) {
     e.preventDefault();
@@ -77,7 +114,7 @@ export default function Login() {
     }
     void apiForgot(v); // best-effort; endpoint always accepts, never reveals existence
     setResetCopy(
-      `If an account exists for ${v}, a reset link is on its way. The link stays valid for 30 minutes.`
+      `If an account exists for ${v}, a reset link is on its way. The link stays valid for 1 hour.`
     );
     setView("sent");
   }
@@ -271,6 +308,108 @@ export default function Login() {
                 </a>
                 .
               </p>
+            </div>
+          )}
+
+          {view === "reset" && (
+            <div>
+              <h1>Set a new password</h1>
+              <p className="lead">Choose a new password for your HoldSlot account.</p>
+
+              {!resetToken && (
+                <div className="field">
+                  <label htmlFor="resetToken">Reset token</label>
+                  <input
+                    className="input"
+                    type="text"
+                    id="resetToken"
+                    placeholder="Paste the token from your email"
+                    autoComplete="off"
+                    value={resetToken}
+                    onChange={(e) => {
+                      setResetToken(e.target.value);
+                      setNewPwErr("");
+                    }}
+                  />
+                </div>
+              )}
+
+              <div className="field">
+                <label htmlFor="newPw">New password</label>
+                <div className="pw-wrap">
+                  <input
+                    className={"input" + (newPwErr ? " err" : "")}
+                    type={showPw ? "text" : "password"}
+                    id="newPw"
+                    placeholder="••••••••"
+                    autoComplete="new-password"
+                    style={{ paddingRight: 60 }}
+                    value={newPw}
+                    onChange={(e) => {
+                      setNewPw(e.target.value);
+                      setNewPwErr("");
+                    }}
+                  />
+                  <button type="button" className="pw-toggle" onClick={() => setShowPw((s) => !s)}>
+                    {showPw ? "Hide" : "Show"}
+                  </button>
+                </div>
+                <div className="field-hint">Use at least 8 characters.</div>
+              </div>
+
+              <div className="field">
+                <label htmlFor="newPw2">Confirm new password</label>
+                <input
+                  className={"input" + (newPwErr ? " err" : "")}
+                  type={showPw ? "text" : "password"}
+                  id="newPw2"
+                  placeholder="••••••••"
+                  autoComplete="new-password"
+                  value={newPw2}
+                  onChange={(e) => {
+                    setNewPw2(e.target.value);
+                    setNewPwErr("");
+                  }}
+                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), submitNewPassword())}
+                />
+                <div className="field-err">{newPwErr}</div>
+              </div>
+
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: "100%" }}
+                disabled={resetting || !resetToken}
+                onClick={submitNewPassword}
+              >
+                {resetting ? "Updating…" : "Set new password"}
+              </button>
+              <p className="alt">
+                <a href="#" onClick={(e) => (e.preventDefault(), setView("signin"))}>
+                  Back to sign in
+                </a>
+              </p>
+            </div>
+          )}
+
+          {view === "reset-done" && (
+            <div style={{ textAlign: "center" }}>
+              <div className="reset-tick">✓</div>
+              <h1>Password updated</h1>
+              <p className="lead" style={{ marginBottom: 24 }}>
+                Your password has been changed. Sign in with your new password.
+              </p>
+              <button
+                type="button"
+                className="btn btn-primary"
+                style={{ width: "100%" }}
+                onClick={() => {
+                  setPw("");
+                  setView("signin");
+                }}
+              >
+                Back to sign in
+              </button>
             </div>
           )}
         </form>

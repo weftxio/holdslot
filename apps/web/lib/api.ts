@@ -53,6 +53,15 @@ export async function forgot(email: string): Promise<void> {
   }).catch(() => undefined);
 }
 
+export async function reset(token: string, newPassword: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/auth/reset`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+}
+
 export async function getMe(): Promise<Me> {
   const r = await fetch(`${API_BASE}/me`, {
     headers: { authorization: `Bearer ${getAccess()}` },
