@@ -1,8 +1,8 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> Planning only — no backend code yet. This is the **first build**: make HoldSlot's own product real
-> enough that the company runs its own outbound on it and lands its first signups. Scoped cut of the
-> full spec in `backend-development-plan.md`.
+> **Status: Phase A (S0) is built & live on `dev`; Phase B (S1) is next — broken out in detail below.**
+> This is the **first build**: make HoldSlot's own product real enough that the company runs its own
+> outbound on it and lands its first signups. Scoped cut of the full spec in `backend-development-plan.md`.
 
 ## Scope & Definition of Done
 
@@ -100,14 +100,16 @@ No app code is written until A0's decisions are locked. Grounded in the locked s
 > Infra applied via Terraform (Aurora SLv2 + Data API, Lambda+SnapStart, HTTP API + custom domain
 > `api.tryholdslot.com` w/ ACM, SES, budget); schema + seed migrated to Aurora; auth/clients API +
 > central guard deployed to Lambda (alias `live`) and smoke-tested through the custom domain; UI
-> `/login` cut over to the live API; server-side CORS allows the Amplify + localhost origins.
-> Acceptance: both founders log in as owners; an ephemeral 2nd tenant + `member` role scopes
-> correctly with no schema change; `verify_keys --strict` green for app + google. 10/10 backend
-> tests pass; ruff/black clean; `terraform plan` shows no drift.
+> `/login` cut over to the live API; the console sidebar shows the signed-in user from live `/me`;
+> server-side CORS allows the Amplify + localhost origins. Acceptance: both founders log in as owners;
+> an ephemeral 2nd tenant + `member` role scopes correctly with no schema change; `verify_keys --strict`
+> green for app + google. 10/10 backend tests pass; ruff/black clean; `terraform plan` shows no drift.
 >
 > **Known follow-ups (none block Phase B; tracked here so they aren't lost):**
-> 1. **SES still in sandbox + DKIM CNAMEs not yet added** → password-reset / outreach mail won't
->    deliver to arbitrary inboxes (dev logs the body). Add DKIM DNS + request production access.
+> 1. **SES** — DKIM (3 CNAMEs) + DMARC published in Route 53 (2026-06-11) and resolving; awaiting SES
+>    auto-verification, then `no-reply@tryholdslot.com` sends. Founder password-reset works in-sandbox
+>    once verified (sandbox blocks only *unverified* recipients). **Deferred:** custom MAIL FROM (SPF
+>    alignment) and production-access / sandbox-exit — needed only for client-facing mail at Phase C+.
 > 2. **Prod environment** — single `dev` env today; Terraform is workspace-parameterised, so prod is
 >    a later `terraform workspace new prod`, not a rewrite.
 > 3. **CI/CD** — deploy is the manual one-command `apps/api/scripts/build-and-deploy.sh`; add a
@@ -117,7 +119,7 @@ No app code is written until A0's decisions are locked. Grounded in the locked s
 >    the Lambda timeout.
 > 5. **S3 state bucket** — bucket-level public-access-block not set by Terraform (private by default);
 >    add the explicit block when prod hardening lands.
-> 6. **OpenRouter `default_model`** — optional secret field, set when the LLM lands in **Phase B**.
+> 6. **OpenRouter `default_model`** — set in **Phase B/B0** when the LLM adapter lands (see below).
 > 7. **Refresh-token rotation** does not re-check `UserStatus` (only login/`get_current_user` do);
 >    harmless today (no deactivation flow), revisit if/when accounts can be disabled.
 
@@ -186,6 +188,78 @@ change**. (3) `verify_keys.py --strict` passes for `app`, `google`, `openrouter`
 "build single, design multi" real; everything downstream filters by `tenant_id` and checks role through
 A4's guard.
 
+## Phase B — Targeting (S1): step-by-step (planning, pre-code)
+
+Turns a client's raw **Business Brief** into a research-ready **`ResearchSpec`** (the bridge into Clay,
+Phase C) and lets the operator create/curate **ICP profiles** — wiring the Workspace *Business brief* and
+*ICP* tabs to the live API. This is the **first use of the LLM** (OpenRouter). Grounded in the locked spec
+(`backend-development-plan.md` §4 *S1*, §3 domain model) and the UI: `workspace/page.tsx`'s `Brief` and
+`Icp`/`IcpFields` types **are** the field spec — match them.
+
+**What Phase B delivers (DoD):** a founder fills the Brief in the live Workspace → the completeness ring
+reflects real saved data → "Structure" produces a saved `ResearchSpec` (normalized ICP attributes + the
+concrete Clay search/enrichment parameters) → one or more `ICP` profiles exist. **Clay-ready; nothing is
+sent to Clay yet** (that's Phase C).
+
+**B0 — Decisions to lock before code (no code until these are set).**
+- **OpenRouter model access from HK ⭐ (the one true gate).** Make one *real* completion through the
+  intended Claude model from Hong Kong — a valid key ≠ model access, and HK reachability is the whole
+  reason for OpenRouter over Bedrock. Then store `default_model` in `holdslot/prod/openrouter` and run
+  `verify_keys --strict openrouter`.
+- **Brief completeness rubric** — which of the ~27 Brief fields are *required* vs *optional* for
+  "complete", and how the ring scores. The UI already tags each field Required/Optional; lift that into
+  one shared server-side definition so the ring and any gating agree.
+- **`ResearchSpec` shape** — lock the exact JSON the LLM emits, **with Clay's table columns in mind** so
+  C is a clean handoff: industries, company sizes, geos, titles/seniority/departments, technologies,
+  triggers/signals, exclusions. (The **fit-scoring rubric is a Phase C input, not B.**)
+- **Outreach languages** — the Brief captures `languages[]`; confirm the supported set (English +
+  Mandarin?) so the spec and prompts localize.
+
+**B1 — Data model + migration (tenant-scoped, mirrors the UI types).** Add `Brief`, `Icp`,
+`ResearchSpec`, all `client_id`-scoped:
+- `Brief` — the ~27 global fields from the UI `Brief` type (company/offer, value props, proof points,
+  signals, objections, competitors, tone, `languages[]`, exclusions/compliance, meeting logistics,
+  qualified-meeting definition). One per client.
+- `Icp` — `short`, `tag`, `persona` + the per-profile `IcpFields` (industries, companySize, maturity,
+  geographies, technologies, jobTitles, seniority, departments, buyerVsChampion, avoidTitles). Many per
+  client.
+- `ResearchSpec` — the LLM-structured JSON, linked to the Brief + ICP(s) and **versioned** (a re-run
+  makes a new spec, never overwrites).
+- Seed the `Subscription` quota fields the spec wants initialized at S1 (`enrichment_cap`, `icp_limit`,
+  `current_month_usage`) even though enforcement is Phase C/S2 — the single owner tenant runs effectively
+  uncapped. **DoD:** migration up/down clean.
+
+**B2 — Brief CRUD API + completeness scoring.** `GET/PUT /clients/{c}/brief` (the A4 central guard already
+scopes tenant × role). The server computes completeness from the shared rubric (B0) so the ring and any
+gating share one source of truth. **DoD:** brief round-trips; completeness matches the rubric.
+
+**B3 — OpenRouter adapter (one swappable client). ⭐** A single `integrations/openrouter` adapter reading
+`holdslot/prod/openrouter` (key, `default_model`, spend cap), **lazy / SnapStart-safe** (no network at
+import), with timeout, bounded retry, and structured-output parsing. **Every** later LLM feature (reply
+labeling, summaries) reuses this one seam. **DoD:** a test does one real structured completion (auto-
+skipped without the key, like the A6 acceptance tests).
+
+**B4 — Brief → `ResearchSpec` structuring.** `POST /clients/{c}/brief/structure` → the adapter prompts
+Claude to normalize the Brief into the locked `ResearchSpec` JSON plus **gap prompts** (what's missing for
+good research). Persist the spec (versioned). **DoD:** a filled Brief yields a saved, schema-valid
+`ResearchSpec`; gaps surface as prompts.
+
+**B5 — ICP CRUD (multi-profile).** `GET/POST/PUT/DELETE /clients/{c}/icps` — create / review / delete ICP
+profiles (the UI supports several; `icp_limit` is plan-derived but the owner tenant is effectively
+unlimited). The `ResearchSpec` references the ICP attributes. **DoD:** multiple ICPs persist and
+round-trip.
+
+**B6 — Wire the Workspace + Phase-B acceptance.** Point the Workspace *Business brief* (form +
+completeness ring) and *ICP* tabs at the live API — replace the `sampleBrief`/`sampleFields` mocks with
+real calls, keeping the **exact field set + class names**. **DoD:** a founder fills the Brief and an ICP
+in the live Workspace, hits Structure, and a `ResearchSpec` is saved server-side (survives reload); tick
+**S1** in `backend-development-plan.md`.
+
+**Critical path:** B0 (OpenRouter HK) → B1 → B2 → {B3 → B4} → B5 → B6. **B0 is the only real risk**
+(model access); **B3/B4 is the highest-leverage code** — every later AI feature reuses that adapter.
+**Cost (dogfood volume):** brief structuring is a handful of cheap-model completions per client
+(~$5–20/mo, §5); **no Clay credits are spent in Phase B.**
+
 ## Materials to prepare
 
 **Accounts & keys** — **keys provisioned + verified 2026-06-10** (account/plan decisions below still open)
@@ -215,9 +289,11 @@ Remaining secret fields (downstream **resources**, added to the secret at their 
   so the app reads subject/scopes from the secret. Functionally already working.
 
 **Account/plan decisions still open (not keys — a valid key doesn't prove these):**
-- **Domain registrar / DNS access** — prerequisite for the warm-up below (SPF/DKIM/DMARC). Needed **now**.
+- ~~**Domain registrar / DNS access**~~ **Have it** — `tryholdslot.com` is in Route 53; SES DKIM + DMARC
+  published 2026-06-11 (see Phase A follow-up #1). Per-domain records for the *outbound* warm-up domains
+  still to add as those domains come online.
 - **OpenRouter** — confirm the Claude model(s) we'll use are **HK-accessible** (the whole reason for
-  OpenRouter over Bedrock); a valid key doesn't prove model access → before **Phase B**.
+  OpenRouter over Bedrock); a valid key doesn't prove model access → **Phase B/B0** (the one true gate).
 - **Clay** — credit/enrichment plan sized to dogfood volume (drives the §6 enrichment cap) → before **Phase C**.
 - **Smartlead** — plan tier with enough mailbox capacity for 2–3 domains × ~2 mailboxes → before **Phase E**.
 - **Google Workspace** — confirm host-seat count (1–2 / pooled) and that the tier enables **Meet
@@ -226,7 +302,8 @@ Remaining secret fields (downstream **resources**, added to the secret at their 
 
 **Sending infrastructure (start now — ~3-week warm-up)**
 - 2–3 alternate sending domains (e.g. `getholdslot.com`, `tryholdslot.com`), ~2 mailboxes each.
-- SPF / DKIM / DMARC records; sender names + signatures; do-not-email suppression list.
+- SPF / DKIM / DMARC records (done for `tryholdslot.com`'s **transactional** SES identity; the *outbound*
+  warm-up domains still need their own); sender names + signatures; do-not-email suppression list.
 
 **Content & assets (our own GTM)**
 - HoldSlot's own **ICP** (industries, titles, company size, geos, triggers) — consumed by Brief→spec.
