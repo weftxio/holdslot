@@ -52,6 +52,12 @@ variable "lambda_log_retention_days" {
   default     = 30
 }
 
+variable "web_base_url" {
+  description = "Base URL of the web app this API serves — used to build links in emails (e.g. password reset). Dev points at the Amplify dev branch."
+  type        = string
+  default     = "https://dev.d2w95n49ooprjf.amplifyapp.com"
+}
+
 variable "web_origins" {
   description = "Browser origins allowed to call the API (CORS). The HoldSlot web app is served from the Amplify custom domain + branch URLs; localhost is for dev."
   type        = list(string)

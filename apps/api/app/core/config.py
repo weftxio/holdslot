@@ -29,6 +29,7 @@ class Settings:
     refresh_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     reset_ttl_seconds: int = 60 * 60  # 1 hour
     email_sender: str = "no-reply@tryholdslot.com"
+    web_base_url: str = "https://tryholdslot.com"  # base for links in emails (e.g. reset)
 
 
 def _get_secret_json(name: str, region: str) -> dict:
@@ -51,6 +52,7 @@ def get_settings() -> Settings:
         db_name=os.environ.get("HOLDSLOT_DB_NAME", "holdslot"),
         jwt_signing_key=app_secret["jwt_signing_key"],
         jwt_refresh_key=app_secret["jwt_refresh_key"],
+        web_base_url=os.environ.get("HOLDSLOT_WEB_BASE_URL", "https://tryholdslot.com").rstrip("/"),
     )
 
 

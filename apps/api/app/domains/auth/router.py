@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
@@ -83,10 +84,13 @@ def forgot(body: ForgotIn, db: Session = Depends(get_db)) -> dict[str, str]:
             )
         )
         db.commit()
+        link = f"{s.web_base_url}/login?reset={quote(token)}"
         send_email(
             user.email,
             "Reset your HoldSlot password",
-            f"Use this token to reset your password (valid 1 hour):\n\n{token}\n",
+            "We received a request to reset your HoldSlot password.\n\n"
+            f"Set a new password (link valid 1 hour):\n{link}\n\n"
+            "If you didn't request this, you can ignore this email.\n",
         )
     return {"status": "accepted"}
 

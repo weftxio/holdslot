@@ -54,6 +54,7 @@ resource "aws_lambda_function" "api" {
       HOLDSLOT_DB_NAME        = aws_rds_cluster.this.database_name
       HOLDSLOT_SECRETS_PREFIX = local.secrets_prefix
       HOLDSLOT_CORS_ORIGINS   = join(",", var.web_origins)
+      HOLDSLOT_WEB_BASE_URL   = var.web_base_url
     }
   }
 
