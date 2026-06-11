@@ -28,6 +28,20 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+*.egg-info/
+# lambda build artifacts (apps/api/build)
+build/pkg/
+build/*.zip
+
+# terraform (commit .terraform.lock.hcl; ignore the rest)
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+*.tfplan
+.build/
+*.tfvars
+!*.tfvars.example
 
 # os / editor
 .DS_Store

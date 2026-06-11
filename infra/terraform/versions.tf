@@ -1,0 +1,16 @@
+terraform {
+  # S3-native state locking (use_lockfile) needs >= 1.10 — lets us drop the DynamoDB
+  # lock table entirely (one less resource to bootstrap).
+  required_version = ">= 1.10"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    archive = {
+      source  = "hashicorp/archive"
+      version = "~> 2.6"
+    }
+  }
+}
