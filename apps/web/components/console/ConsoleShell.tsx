@@ -3,6 +3,7 @@ import { useState } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Sidebar } from "./Sidebar";
+import { MeProvider } from "./MeContext";
 import { ToastProvider } from "../Toast";
 import { slugToTitle } from "@/lib/client";
 import { StatusTabCtx, STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
@@ -23,6 +24,7 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
 
   return (
     <StatusTabCtx.Provider value={{ tab: statusTab, setTab: setStatusTab }}>
+      <MeProvider>
       <ToastProvider>
         <div className="app">
           <Sidebar slug={slug} open={open} />
@@ -59,6 +61,7 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
           </div>
         </div>
       </ToastProvider>
+      </MeProvider>
     </StatusTabCtx.Provider>
   );
 }

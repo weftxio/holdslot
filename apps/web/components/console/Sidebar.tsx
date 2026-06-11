@@ -2,7 +2,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
+import { clearTokens } from "@/lib/api";
 import { ClientSwitcher } from "./ClientSwitcher";
+import { initialsOf, useMe } from "./MeContext";
 import { STATUS_TABS, useStatusTab } from "./StatusTab";
 
 export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
@@ -12,6 +14,11 @@ export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
   const onWorkspace = pathname === `${base}/workspace`;
   const onStatus = pathname === `${base}/client-status`;
   const { tab, setTab } = useStatusTab();
+
+  const { me } = useMe();
+  const name = me?.full_name || me?.email || "Loading…";
+  const role = me?.clients.find((c) => c.slug === slug)?.role;
+  const subtitle = role ? role[0].toUpperCase() + role.slice(1) : me?.email ? "Account" : "";
 
   return (
     <aside className={clsx("side", open && "open")}>
@@ -47,11 +54,11 @@ export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
         ))}
       </nav>
       <div className="side-foot">
-        <div className="av">OP</div>
+        <div className="av">{initialsOf(me)}</div>
         <div className="who">
-          Operator <span>Outbound desk</span>
+          {name} <span>{subtitle}</span>
         </div>
-        <Link href="/login" className="out" title="Sign out">
+        <Link href="/login" className="out" title="Sign out" onClick={() => clearTokens()}>
           ⏻
         </Link>
       </div>
