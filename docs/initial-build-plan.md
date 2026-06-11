@@ -15,6 +15,8 @@
 - **Timeline:** build **now → Sept'26** (~4 months); loop runs live **Oct'26 → Mar'27**.
 - **Already live (not in scope to build):** the marketing site + all 8 mock UI pages on Amplify
   (account `138743894336`). This build replaces the mock data behind the loop's screens with a live API.
+  The mock UI now **defaults to HoldSlot as the active tenant** (slug `holdslot`), so the dogfood loop
+  runs on our own tenant from screen one (Phase A then makes that tenant real, served by the API).
 
 **The long pole is not code.** Cold-email **domain warm-up takes ~3 weeks** and gates every meeting.
 Account setup (Clay / Smartlead / Google / OpenRouter keys) is **DONE** — keys provisioned in Secrets
@@ -86,6 +88,103 @@ seed/test fixture, not by building the onboarding flow).
 
 **Critical path:** A → B → C → D → E → F → G.
 **Parallel from day 0 (long-lead):** domain warm-up · ~~account setup~~ **(keys DONE 2026-06-10)** · ICP + cold-email copy.
+
+## Phase A — Foundation (S0): step-by-step (planning, pre-code)
+
+Ordered tasks to take S0 from empty placeholders (`apps/api/`, `infra/`) to **both founders logging
+into live `/holdslot/overview`**, on a schema that already admits a second, lesser-privileged tenant.
+No app code is written until A0's decisions are locked. Grounded in the locked spec
+(`backend-development-plan.md` §2 architecture, §6 decisions 1–11, §8 UI map, §9 repo layout).
+
+> **Status (2026-06-11): A0–A6 BUILT & VERIFIED on the `dev` environment.**
+> Infra applied via Terraform (Aurora SLv2 + Data API, Lambda+SnapStart, HTTP API + custom domain
+> `api.tryholdslot.com` w/ ACM, SES, budget); schema + seed migrated to Aurora; auth/clients API +
+> central guard deployed to Lambda (alias `live`) and smoke-tested through the custom domain; UI
+> `/login` cut over to the live API; server-side CORS allows the Amplify + localhost origins.
+> Acceptance: both founders log in as owners; an ephemeral 2nd tenant + `member` role scopes
+> correctly with no schema change; `verify_keys --strict` green for app + google. 10/10 backend
+> tests pass; ruff/black clean; `terraform plan` shows no drift.
+>
+> **Known follow-ups (none block Phase B; tracked here so they aren't lost):**
+> 1. **SES still in sandbox + DKIM CNAMEs not yet added** → password-reset / outreach mail won't
+>    deliver to arbitrary inboxes (dev logs the body). Add DKIM DNS + request production access.
+> 2. **Prod environment** — single `dev` env today; Terraform is workspace-parameterised, so prod is
+>    a later `terraform workspace new prod`, not a rewrite.
+> 3. **CI/CD** — deploy is the manual one-command `apps/api/scripts/build-and-deploy.sh`; add a
+>    pipeline when Phase B churn justifies it.
+> 4. **Aurora scale-to-zero vs 30s Lambda timeout** — a cold resume can approach the timeout on the
+>    first request after idle (`ensure_awake` retries). For prod, set min capacity ≥ 0.5 ACU or raise
+>    the Lambda timeout.
+> 5. **S3 state bucket** — bucket-level public-access-block not set by Terraform (private by default);
+>    add the explicit block when prod hardening lands.
+> 6. **OpenRouter `default_model`** — optional secret field, set when the LLM lands in **Phase B**.
+> 7. **Refresh-token rotation** does not re-check `UserStatus` (only login/`get_current_user` do);
+>    harmless today (no deactivation flow), revisit if/when accounts can be disabled.
+
+**Simplification principle (simple now, scalable later).** Phase A ships the *smallest* foundation that
+makes the dogfood loop real, with **no design choice that has to be undone to add a paying client**.
+Concretely: **one environment** (`dev`) to start — not dev+prod workspaces — but the Terraform is
+workspace-parameterised so prod is a later `terraform workspace new prod`, not a rewrite; **one modular
+FastAPI service** (split into microservices only if scale ever demands); **manual one-command deploy**
+now (full CI/CD deferred to Phase B when there's churn to justify it); **JWT** auth (Cognito only if
+SSO/MFA is ever needed). The two things we *do not* shortcut, because retrofitting them is expensive:
+`tenant_id` on every row + a single central access guard (A3/A4).
+
+**A0 — Inputs (LOCKED 2026-06-11, no code).**
+- **Region → us-east-1** (matches Secrets Manager + Amplify).
+- **Founders (both `owner`):** `jason.tse@tryholdslot.com`, `jason.wong@tryholdslot.com`.
+- **First password → shared build-stage secret `tryholdslot1!`**, seeded as an argon2 hash. **Build
+  stage only** — production forces a reset (the `PasswordReset` flow from A4 exists precisely so this
+  temporary credential never reaches a real client). Never commit the plaintext; the seed reads it from
+  an env var / Secrets Manager, not source.
+- **Roles:** `owner` (founders, full access) + `member` (reserved lower-privilege) — enum, so a third
+  role later is one value, not a migration.
+
+**A1 — Scaffold `apps/api` + `infra` + remote state (structure only).** Per §9:
+`app/{main.py, core/, domains/, integrations/}`, `pyproject.toml`, `infra/{alembic/, terraform/}` (skip
+`workers/`/`webhooks/` until S2 — no async in S0). Mangum-wrapped FastAPI exposing only `GET /health`;
+ruff/black/pytest. Terraform: S3 state bucket + DynamoDB lock, single `dev` workspace. **DoD:**
+`GET /health` → 200 locally; `terraform plan` clean.
+
+**A2 — Provision the S0 infra in one `terraform apply` (dev).** Aurora Serverless v2 (PostgreSQL) with
+the **Data API enabled** (Lambda stays out of the VPC → SnapStart-safe, no NAT) + the **RDS-managed
+master secret**; Lambda + API Gateway (HTTP API) + **SnapStart** alias; least-privilege IAM (Data API,
+`GetSecretValue` on `holdslot/prod/*`, SES send); SES identity for the reset email; CloudWatch log
+groups; **AWS budget alarm** (folded in here, not deferred). External keys already verified
+(`holdslot/prod/*`, 2026-06-10). **DoD:** `apply` green; Lambda reachable via API GW; **Aurora
+master-secret connection test passes**.
+
+**A3 — Schema + Alembic baseline + seed (the heart of S0). ⭐** The **multi-tenant, role-aware** core:
+`Tenant` (slug) · `User` (argon2 hash) · `Membership(user_id, tenant_id, role)` with `role` enum
+(`owner`/`member`) · `RefreshToken` · `PasswordReset`. **Every domain row carries `tenant_id` from day
+0.** Alembic baseline + a **seed migration**: HoldSlot **tenant #0** (slug `holdslot`) + the two founder
+users (build-stage password hash) + `owner` memberships. **DoD:** migrations apply up/down cleanly; seed
+produces the dogfood tenant.
+
+**A4 — Core plumbing + auth/clients API (one step).** Config loader (Secrets Manager + SSM, **re-fetched
+post-SnapStart-restore**, no secrets/RNG at import); Aurora Data API client; structured logging; **JWT
+core** (argon2 verify, access + refresh); and the **one central access guard** — a FastAPI dependency
+resolving `request → user → membership` that enforces **tenant scope × role** on every protected route.
+Surface (§8): `POST /auth/login·forgot·reset` (SES) + refresh; `GET /me`; `GET/POST /clients` (scoped to
+the caller's memberships). **DoD:** unit tests for token round-trip + guard (owner ✓ · non-member ✗ ·
+wrong-role ✗); a founder logs in via curl and gets a membership-scoped client list.
+
+**A5 — Cut the UI over to live auth (§8).** Point `apps/web` `/login`, the client switcher
+(`lib/client.ts`), and the console-shell session at the live API via `API_BASE_URL`; replace the login
+mock + default-client mock with real calls (HoldSlot tenant #0 now comes from the API, not
+`DEFAULT_CLIENTS`). Deploy = one command (`terraform apply` + push Lambda version + shift alias + smoke
+`GET /health`). **DoD:** logging in at `/login` lands a founder on live `/holdslot/overview`.
+
+**A6 — Phase-A acceptance (the DoD gate).** (1) Both founders log into live `/holdslot/overview` with
+full access. (2) An **ephemeral, in-test** fixture (created and rolled back inside the test — never
+seeded, never a product client; the build ships with **one tenant, HoldSlot**) inserts a second tenant
+whose user has a **non-owner** role and proves the guard scopes access correctly — **with no schema
+change**. (3) `verify_keys.py --strict` passes for `app`, `google`, `openrouter`; Clay/Smartlead stay
+`PEND` (Phases C/E). **DoD:** all three pass; tick S0 in `backend-development-plan.md`.
+
+**Critical path:** A0 ✅ → A1 → A2 → A3 → A4 → A5 → A6. **A3 is the highest-leverage step** — it makes
+"build single, design multi" real; everything downstream filters by `tenant_id` and checks role through
+A4's guard.
 
 ## Materials to prepare
 
