@@ -4,8 +4,10 @@
 export type Client = { name: string; slug: string };
 
 export const DEFAULT_CLIENTS: Client[] = [
-  { name: "Northwind", slug: "northwind" },
-  { name: "Acme Robotics", slug: "acme-robotics" },
+  // Single tenant for the initial build — we dogfood the product on our own tenant
+  // (HoldSlot = tenant #0; see docs/initial-build-plan.md). The schema stays
+  // multi-tenant, so adding a paying client later is one INSERT, not a redesign.
+  { name: "HoldSlot", slug: "holdslot" },
 ];
 export const DEFAULT_CLIENT_SLUG = DEFAULT_CLIENTS[0].slug;
 

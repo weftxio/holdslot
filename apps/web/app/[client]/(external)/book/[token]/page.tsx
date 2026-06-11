@@ -63,7 +63,7 @@ export default function Book() {
         <span className="eyebrow">You&apos;re invited</span>
         <h1>Book your meeting</h1>
         <p>
-          Thanks for your interest in <b>Northwind</b> <Sample>sample</Sample>. Pick a time that
+          Thanks for your interest in <b>HoldSlot</b> <Sample>sample</Sample>. Pick a time that
           works and it drops straight onto both calendars with an invite.
         </p>
         <div className="meeting-meta" style={{ marginTop: 16 }}>

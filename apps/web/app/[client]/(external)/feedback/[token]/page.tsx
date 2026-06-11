@@ -64,7 +64,7 @@ export default function Feedback() {
         <span className="eyebrow">Quick feedback</span>
         <h1>How was your meeting?</h1>
         <p>
-          Thanks for meeting with <b>Northwind</b> <Sample>sample</Sample>. A few seconds of
+          Thanks for meeting with <b>HoldSlot</b> <Sample>sample</Sample>. A few seconds of
           feedback helps us keep these intros relevant. It goes only to HoldSlot &amp; the host.
         </p>
       </div>

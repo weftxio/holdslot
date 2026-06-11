@@ -7,5 +7,10 @@
     "build": "pnpm --filter @holdslot/web build",
     "start": "pnpm --filter @holdslot/web start",
     "lint": "pnpm --filter @holdslot/web lint"
+  },
+  "pnpm": {
+    "overrides": {
+      "postcss@<8.5.10": ">=8.5.10"
+    }
   }
 }

@@ -165,7 +165,7 @@ export default function ClientStatus() {
       time: "",
       msg:
         `Hi ${r.name}, your earlier booking link expired before we could lock a time. ` +
-        `Here's a fresh suggested slot for your call with Northwind — confirm and it lands on both calendars.`,
+        `Here's a fresh suggested slot for your call with HoldSlot — confirm and it lands on both calendars.`,
     });
 
   // deep-link support: pick up the #hash on first load
@@ -182,7 +182,7 @@ export default function ClientStatus() {
 
   // editable sendout template
   const [tmpl, setTmpl] = useState({
-    subject: "Northwind: your prospect list is ready to approve",
+    subject: "HoldSlot: your prospect list is ready to approve",
     body:
       "Hi {{client_name}}, we've prepared a new batch of {{count}} prospects matched to your brief.\n\n" +
       "Nothing is contacted until you approve. Review the list, then approve it or flag anyone who isn't a fit.",
@@ -263,7 +263,7 @@ export default function ClientStatus() {
                   <div className="tmpl-mailhead">
                     <div className="trow">
                       <span className="tk">From</span>
-                      <span className="tv">HoldSlot on behalf of Northwind</span>
+                      <span className="tv">HoldSlot</span>
                     </div>
                     <div className="trow">
                       <span className="tk">To</span>
@@ -537,14 +537,14 @@ export default function ClientStatus() {
                         <div className="trow">
                           <span className="tk">Subject</span>
                           <span className="tv subj">
-                            {r.name}, your meeting time with Northwind
+                            {r.name}, your meeting time with HoldSlot
                           </span>
                         </div>
                       </div>
                       <div className="tmpl-body">
                         <p>
                           Hi {r.name}, thanks for your interest. We&apos;ve set aside a suggested
-                          time for your call with Northwind: <strong>{r.meeting}</strong>. It lands
+                          time for your call with HoldSlot: <strong>{r.meeting}</strong>. It lands
                           on both calendars once you confirm. Calls may be recorded so we can share
                           a short summary with the host.
                         </p>

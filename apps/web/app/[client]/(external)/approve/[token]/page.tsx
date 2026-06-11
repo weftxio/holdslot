@@ -62,7 +62,7 @@ export default function Approve() {
         <span className="eyebrow">Your approval needed</span>
         <h1>Approve your prospect list</h1>
         <p>
-          HoldSlot has prepared this list of prospects for <b>Northwind</b> <Sample>sample</Sample>{" "}
+          HoldSlot has prepared this list of prospects for <b>HoldSlot</b> <Sample>sample</Sample>{" "}
           for your review · please approve within 5 days so we can keep your campaign on schedule.
           Nothing is contacted until you approve. Remove anyone who isn&apos;t a fit, then approve
           in one click.

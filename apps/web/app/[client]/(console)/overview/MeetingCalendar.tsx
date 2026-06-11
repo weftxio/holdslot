@@ -21,7 +21,7 @@ const VIEWS: "month"[] = ["month"];
 
 const MEETINGS = [
   {
-    title: "Acme Robotics · Qualified",
+    title: "Cyberdyne · Qualified",
     start: new Date(2026, 5, 4, 10, 0),
     end: new Date(2026, 5, 4, 10, 45),
   },
@@ -31,7 +31,7 @@ const MEETINGS = [
     end: new Date(2026, 5, 9, 15, 0),
   },
   {
-    title: "Northwind · Demo",
+    title: "HoldSlot · Demo",
     start: new Date(2026, 5, 12, 11, 0),
     end: new Date(2026, 5, 12, 11, 45),
   },

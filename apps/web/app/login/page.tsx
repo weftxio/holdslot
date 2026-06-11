@@ -3,6 +3,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { DEFAULT_CLIENT_SLUG } from "@/lib/client";
+import { login as apiLogin, forgot as apiForgot, getMe, setTokens } from "@/lib/api";
 import { useCountUp } from "@/lib/useCountUp";
 import "./login.css";
 
@@ -40,7 +41,7 @@ export default function Login() {
     "If an account exists for that address, a reset link is on its way. The link stays valid for 30 minutes."
   );
 
-  function signin(e: React.FormEvent) {
+  async function signin(e: React.FormEvent) {
     e.preventDefault();
     let ok = true;
     if (!validEmail(email.trim())) {
@@ -53,7 +54,19 @@ export default function Login() {
     }
     if (!ok) return;
     setSigning(true);
-    setTimeout(() => router.push(`/${DEFAULT_CLIENT_SLUG}/overview`), 650);
+    setBanner(false);
+    try {
+      const res = await apiLogin(email.trim(), pw);
+      setTokens(res.access_token, res.refresh_token);
+      // Land on the caller's first tenant (HoldSlot today); fall back to the default slug.
+      const me = await getMe().catch(() => null);
+      const slug = me?.clients[0]?.slug ?? DEFAULT_CLIENT_SLUG;
+      router.push(`/${slug}/overview`);
+    } catch {
+      setPwErr("Invalid email or password.");
+      setBanner(true);
+      setSigning(false);
+    }
   }
 
   function sendReset() {
@@ -62,6 +75,7 @@ export default function Login() {
       setResetErr("Enter a valid work email.");
       return;
     }
+    void apiForgot(v); // best-effort; endpoint always accepts, never reveals existence
     setResetCopy(
       `If an account exists for ${v}, a reset link is on its way. The link stays valid for 30 minutes.`
     );

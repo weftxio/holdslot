@@ -319,8 +319,8 @@ const sampleFields = (): IcpFields => ({
 });
 
 const sampleBrief = (): Brief => ({
-  companyName: "Northwind",
-  website: "https://northwind.example",
+  companyName: "HoldSlot",
+  website: "https://holdslot.com",
   sell: "A workforce analytics platform that helps enterprises reduce attrition",
   problem:
     "Companies lose their best people without warning. We surface the early signals so leaders can act before resignations happen.",
@@ -348,7 +348,7 @@ const sampleBrief = (): Brief => ({
   attendees: "Jane Doe (AE), John Smith (Sales Lead)",
   availability: "Tue–Thu, 10am–4pm GMT",
   channel: "Slack",
-  contact: "Sample Contact, Ops · contact@northwind.example",
+  contact: "Sample Contact, Ops · contact@holdslot.com",
   approver: "Sample Approver, COO",
   meetingsPerMonth: "15",
   qualifiedDef:
