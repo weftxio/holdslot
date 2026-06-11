@@ -1,0 +1,55 @@
+[project]
+name = "holdslot-api"
+version = "0.1.0"
+description = "HoldSlot backend — FastAPI on Lambda (API Gateway HTTP API + SnapStart)"
+requires-python = ">=3.12"
+# Runtime deps. boto3/botocore are provided by the Lambda runtime — the A5 build excludes
+# them from the bundle even though sqlalchemy-aurora-data-api pulls boto3 in locally.
+dependencies = [
+    "fastapi>=0.118",
+    "mangum>=0.19",
+    "sqlalchemy>=2.0",
+    "sqlalchemy-aurora-data-api>=0.5",   # SQLAlchemy dialect over the RDS Data API (no VPC)
+    "argon2-cffi>=23.1",                 # password hashing
+    "pyjwt>=2.10",                       # access + refresh tokens
+    "email-validator>=2.0",              # pydantic EmailStr
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.9",
+    "black>=25.1",
+    "pytest>=8.3",
+    "httpx>=0.28",          # FastAPI TestClient transport
+    "alembic>=1.14",        # migrations (run locally / in CI, not in the Lambda runtime)
+    "uvicorn>=0.34",        # local dev server (Lambda uses Mangum, not uvicorn)
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# verify_keys.py is a standalone, already-verified stdlib operational script with its own
+# style; build/ holds the vendored Lambda bundle. Lint the app, not those.
+extend-exclude = ["scripts", "build"]
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, pyupgrade, bugbear.
+select = ["E", "F", "I", "UP", "B"]
+# B008: Depends()/Security() in defaults is the intended FastAPI idiom, not a bug.
+ignore = ["B008"]
+
+[tool.black]
+target-version = ["py312"]
+line-length = 100
+extend-exclude = "/(scripts|build)/"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
