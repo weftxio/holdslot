@@ -15,8 +15,9 @@
 
 ## 0. Status & how to use this doc (read first)
 
-**This document is the backend spec and build order. It is approved and ready to execute. No
-backend code exists yet — the next session starts at S0.**
+**This document is the backend spec and build order. S0 (Phase A) and S1 (Phase B) are BUILT & live on
+the `dev` environment; the current front is S2 (Phase C — Clay). See `initial-build-plan.md` for the
+consolidated as-built record and the step-by-step Phase C task list.**
 
 **What is already built and live (Phase 1):**
 - The full mock UI in `apps/web` (Next.js 15, App Router) — all 8 pages, ported pixel-faithfully
@@ -112,14 +113,14 @@ by `client_id`.
 
 ## 4. Build stages
 
-### S0 — Core spine & deploy foundation · **P0 (MVP)**
+### S0 — Core spine & deploy foundation · **P0 (MVP)** · ✅ BUILT & live on `dev`
 - **Features:** FastAPI skeleton on Lambda+SnapStart; multi-tenant DB + Alembic baseline; JWT auth
   (login, forgot/reset); client CRUD + slug; Secrets Manager + SSM config; structured logging; CI/CD + IaC; health.
 - **UI wired:** `login` (real auth), client switcher (real clients), app shell loads live session.
 - **Tools/access:** Secrets Manager, SSM, SES (reset email), Aurora Data API, IAM.
 - **AWS:** Lambda, API Gateway, Aurora Serverless v2, Secrets Manager, SSM, SES, S3 (artifacts), CloudWatch.
 
-### S1 — Business Brief & ICP → research-ready spec · **P1 (MVP)**
+### S1 — Business Brief & ICP → research-ready spec · **P1 (MVP)** · ✅ BUILT (backend live on `dev`, web on Amplify `dev`; founder acceptance test pending)
 
 > **This is the Phase B build.** The detailed step-by-step (decisions, churn-proof design rationale, the
 > locked `ResearchSpec` v1 format, LLM observability, and the UI review surface) lives in
@@ -228,7 +229,7 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
 `default_model = google/gemini-2.5-flash-lite`, fallback `openai/gpt-5-mini`, both native strict
 `json_schema`; swappable behind the B3 adapter via one config change.
 
-### S2 — Prospect research via Clay · **P1 (Milestone 2)**
+### S2 — Prospect research via Clay · **P1 (Milestone 2)** · ◀ CURRENT FRONT (Phase C — task list in `initial-build-plan.md`)
 - **Features:** `Research prospects from ICP` → send `ResearchSpec` to a **Clay** table (webhook-in)
   → Clay enrichment waterfall + Claygent → Clay HTTP API **POSTs enriched prospects back** to a
   HoldSlot callback → store `Prospect` rows with fit score + **enrichment detail rich enough for the
@@ -521,25 +522,27 @@ infra/
 
 ## 10. Next action (start of next session)
 
-**S0 is built & live on `dev`** (auth + clients + console on live data; see `initial-build-plan.md`
-Phase A status). **Current front = S1 / Phase B** — spec + task list + test cases above; step-by-step in
-`initial-build-plan.md`.
+**S0 (Phase A) + S1 (Phase B) are built & live on `dev`** — auth + clients + console on live data, and
+the Brief/ICP → `ResearchSpec` targeting loop (backend on Lambda v8, Workspace web on Amplify `dev`). The
+consolidated Phase B as-built record and the step-by-step **Phase C** task list both live in
+`initial-build-plan.md`. **Current front = S2 / Phase C (Clay).**
 
-1. **Clear B0 gates** (no code): prove a real OpenRouter/Claude completion **from HK**, store
-   `default_model` in `holdslot/prod/openrouter`, run `verify_keys --strict openrouter`; freeze the
-   required-fields list. *This is the only thing gating B3/B4 code.*
-2. **Code B1 → B2 immediately** (don't wait on B0 — schema + document endpoints + completeness have no
-   OpenRouter dependency): 4 tables (`brief`/`icp`/`research_spec`/`llm_call`) + Alembic migration; the
-   brief/icps document endpoints under the A4 guard; the rubric-driven completeness scorer (unit-TDD'd
-   first).
-3. **Code B3 → B4 once B0 is green:** the OpenRouter adapter with built-in telemetry, then
-   `POST …/brief/structure` (v1 spec + gaps + server-merged credit policy, versioned).
-4. **B5:** wire the Workspace *Business brief* + *ICP* tabs and the spec review panel; run the Phase-B
-   acceptance test; **tick S1 here.**
-5. Then proceed S2 (Clay) → S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
+1. **Founder acceptance test (S1 close-out, no code):** on dev, fill Brief+ICP → Generate Scope →
+   confirm the spec grid + gaps render and survive reload. This is S1's only open item.
+2. **Clear C0 gates (no code):** size the Clay credit/enrichment plan; build the Clay template workbook
+   (Find Companies + Find People + waterfall + HTTP API output column) and capture
+   `table_id`/`inbound_webhook_url`/`inbound_webhook_secret` into `holdslot/prod/clay`, then
+   `verify_keys --strict clay`; freeze the **fit-scoring rubric**; promote the brief exclusion fields to
+   a load-bearing suppression path. *These business inputs are the real risk, not the code.*
+3. **Code C1 → C2:** the `prospect`/`research_run` schema + migration (raw payloads to S3); the
+   suppression + push pipeline (`POST …/icps/{id}/research`) that filters before any Clay push.
+4. **Code C3 → C4:** the `POST /clay/results` callback + SQS ingest + fit scoring (reusing the B3
+   OpenRouter adapter); anti-burn quota enforcement (cap → meter/overage → monthly reset).
+5. **C5:** wire the Workspace *Prospect list* tab to live data; run the Phase-C acceptance test; **tick
+   S2 here.** Then proceed S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
 
 Architecture and product decisions are locked (§6 1–11), including the USD tiered pricing model (#11) and
-the `ResearchSpec` v1 Clay contract (§S1). **Build-time check still pending (does not block S1):** §6 #9 —
+the `ResearchSpec` v1 Clay contract (§S1). **Build-time check still pending (does not block S2):** §6 #9 —
 *verify the Smartlead SmartSenders API surface before building S4*. Keep this file the single source of
 truth: tick stages and note any decision changes with a short rationale.
 

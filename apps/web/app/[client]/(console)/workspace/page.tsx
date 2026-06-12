@@ -52,6 +52,8 @@ type Brief = {
   languageOther: string;
   excludeCustomers: string;
   excludeDeals: string;
+  noExcludeCustomers: boolean;
+  noExcludeDeals: boolean;
   doNotContact: string;
   compliance: string;
   meetingsLand: string;
@@ -336,6 +338,8 @@ const blankBrief = (): Brief => ({
   languageOther: "",
   excludeCustomers: "",
   excludeDeals: "",
+  noExcludeCustomers: false,
+  noExcludeDeals: false,
   doNotContact: "",
   compliance: "",
   meetingsLand: "",
@@ -639,6 +643,7 @@ function Section({
   title,
   sub,
   complete,
+  count,
   open,
   onToggle,
   onContinue,
@@ -651,6 +656,7 @@ function Section({
   title: string;
   sub: string;
   complete: boolean;
+  count?: { done: number; total: number };
   open: boolean;
   onToggle: () => void;
   onContinue: () => void;
@@ -679,6 +685,17 @@ function Section({
           <h3>{title}</h3>
           <div className="ph-sub">{sub}</div>
         </div>
+        {count && (
+          <span
+            className={clsx("brief-count", count.done === count.total && "done")}
+            title={count.done + " of " + count.total + " required fields complete"}
+          >
+            <span className="brief-count-bar" aria-hidden>
+              <span style={{ width: (count.done / count.total) * 100 + "%" }} />
+            </span>
+            {count.done}/{count.total}
+          </span>
+        )}
         <span className={clsx("badge", complete ? "badge-ok" : "badge-warn")}>
           <span className="bdot" />
           {complete ? "Complete" : "Pending"}
@@ -893,6 +910,19 @@ export default function Workspace() {
   };
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
+  // "Nothing to exclude" attestation: ticking it clears (and locks) the matching
+  // list + any attached CSV so we never carry contradictory data into sourcing.
+  const setNoExclude =
+    (
+      flag: "noExcludeCustomers" | "noExcludeDeals",
+      textKey: "excludeCustomers" | "excludeDeals",
+      csvKey: string
+    ) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const on = e.target.checked;
+      setBrief((s) => ({ ...s, [flag]: on, ...(on ? { [textKey]: "" } : {}) }));
+      if (on) setCsvNames((s) => ({ ...s, [csvKey]: "" }));
+    };
   const setValueProp = (i: number, val: string) =>
     setBrief((s) => {
       const next = [...s.valueProps];
@@ -948,6 +978,8 @@ export default function Workspace() {
           ...d,
           valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
           languages: Array.isArray(d.languages) ? d.languages : [],
+          noExcludeCustomers: !!d.noExcludeCustomers,
+          noExcludeDeals: !!d.noExcludeDeals,
         });
       }
       if (ics) {
@@ -1033,31 +1065,60 @@ export default function Workspace() {
       p.fields.seniority.length &&
       p.fields.departments.length
   );
+  // Required fields per section, as booleans (filled = true). Drives both the
+  // per-section "x/N" counter and the Complete/Pending status. Section 2's
+  // counter tracks the ICP currently being edited (f); its Complete badge still
+  // requires every ICP to be ready (icpReady).
+  const secReq: Record<number, boolean[]> = {
+    1: [
+      filled(brief.companyName),
+      filled(brief.website),
+      filled(brief.sell),
+      filled(brief.problem),
+      filled(brief.dealSize),
+      filled(brief.salesCycle),
+    ],
+    2: [
+      filled(f.industries),
+      filled(f.companySize),
+      filled(f.geographies),
+      filled(f.jobTitles),
+      filled(f.seniority),
+      filled(f.departments),
+    ],
+    3: [
+      brief.valueProps.some((v) => v.trim()),
+      filled(brief.proofPoints),
+      filled(brief.signals),
+      filled(brief.tone),
+      brief.languages.length > 0,
+    ],
+    4: [
+      filled(brief.excludeCustomers) || brief.noExcludeCustomers,
+      filled(brief.excludeDeals) || brief.noExcludeDeals,
+    ],
+    5: [
+      filled(brief.meetingsLand),
+      filled(brief.attendees),
+      filled(brief.availability),
+      filled(brief.channel),
+      filled(brief.contact),
+      filled(brief.approver),
+    ],
+    6: [filled(brief.meetingsPerMonth), filled(brief.qualifiedDef)],
+  };
+  const secCount = (n: number) => ({
+    done: secReq[n].filter(Boolean).length,
+    total: secReq[n].length,
+  });
   // per-section completeness (drives the status label + the top bar)
   const secComplete: Record<number, boolean> = {
-    1:
-      filled(brief.companyName) &&
-      filled(brief.website) &&
-      filled(brief.sell) &&
-      filled(brief.problem) &&
-      filled(brief.dealSize) &&
-      filled(brief.salesCycle),
+    1: secReq[1].every(Boolean),
     2: icpReady,
-    3:
-      brief.valueProps.some((v) => v.trim()) &&
-      filled(brief.proofPoints) &&
-      filled(brief.signals) &&
-      filled(brief.tone) &&
-      brief.languages.length > 0,
-    4: filled(brief.excludeCustomers) && filled(brief.excludeDeals),
-    5:
-      filled(brief.meetingsLand) &&
-      filled(brief.attendees) &&
-      filled(brief.availability) &&
-      filled(brief.channel) &&
-      filled(brief.contact) &&
-      filled(brief.approver),
-    6: filled(brief.meetingsPerMonth) && filled(brief.qualifiedDef),
+    3: secReq[3].every(Boolean),
+    4: secReq[4].every(Boolean),
+    5: secReq[5].every(Boolean),
+    6: secReq[6].every(Boolean),
   };
   const completePct = Math.round((Object.values(secComplete).filter(Boolean).length / 6) * 100);
   const errCls = (ok: boolean, base = "input") => clsx(base, submitted && !ok && "err");
@@ -1389,6 +1450,7 @@ export default function Workspace() {
               title="Company & Product Basics"
               sub="Who you are and what you sell"
               complete={secComplete[1]}
+              count={secCount(1)}
               open={openSec === 1}
               onToggle={() => toggle(1)}
               onContinue={() => saveAndContinue(1)}
@@ -1501,6 +1563,7 @@ export default function Workspace() {
               title="Ideal Customer Profiles"
               sub="The companies and people to reach · one block per profile"
               complete={secComplete[2]}
+              count={secCount(2)}
               open={openSec === 2}
               onToggle={() => toggle(2)}
               onContinue={() => saveAndContinue(2)}
@@ -1718,6 +1781,7 @@ export default function Workspace() {
               title="Message Inputs"
               sub="The raw material for your email copy"
               complete={secComplete[3]}
+              count={secCount(3)}
               open={openSec === 3}
               onToggle={() => toggle(3)}
               onContinue={() => saveAndContinue(3)}
@@ -1841,6 +1905,7 @@ export default function Workspace() {
               title="Exclusions & Guardrails"
               sub="Who we must never contact"
               complete={secComplete[4]}
+              count={secCount(4)}
               open={openSec === 4}
               onToggle={() => toggle(4)}
               onContinue={() => saveAndContinue(4)}
@@ -1855,27 +1920,37 @@ export default function Workspace() {
                     campaign.
                   </div>
                 </div>
-                <div className="field">
+                <div className={clsx("field", brief.noExcludeCustomers && "is-locked")}>
                   <Lbl
                     req
-                    done={filled(brief.excludeCustomers)}
-                    help="We will never contact these. A list of company domains is ideal."
+                    done={filled(brief.excludeCustomers) || brief.noExcludeCustomers}
+                    help="We will never contact these. A list of company domains is ideal. If you have none, tick the box below."
                   >
                     Existing customers to exclude
                   </Lbl>
                   <textarea
-                    className={errCls(filled(brief.excludeCustomers), "textarea")}
+                    className={errCls(
+                      filled(brief.excludeCustomers) || brief.noExcludeCustomers,
+                      "textarea"
+                    )}
                     value={brief.excludeCustomers}
                     placeholder="Paste company names or domains, one per line"
+                    disabled={brief.noExcludeCustomers}
                     onChange={(e) => setB("excludeCustomers", e.target.value)}
                   />
                   <div className="brief-upload">
-                    <label className="btn btn-ghost btn-sm">
+                    <label
+                      className={clsx(
+                        "btn btn-ghost btn-sm",
+                        brief.noExcludeCustomers && "disabled"
+                      )}
+                    >
                       <span className="up-ico">↥</span> Upload CSV
                       <input
                         type="file"
                         accept=".csv,text/csv"
                         hidden
+                        disabled={brief.noExcludeCustomers}
                         onChange={onCsv("customers")}
                       />
                     </label>
@@ -1885,25 +1960,45 @@ export default function Workspace() {
                         : "Or upload a CSV of customer domains."}
                     </span>
                   </div>
+                  <label className="brief-none">
+                    <input
+                      type="checkbox"
+                      checked={brief.noExcludeCustomers}
+                      onChange={setNoExclude("noExcludeCustomers", "excludeCustomers", "customers")}
+                    />
+                    We have no existing customers to exclude.
+                  </label>
                 </div>
-                <div className="field">
+                <div className={clsx("field", brief.noExcludeDeals && "is-locked")}>
                   <Lbl
                     req
-                    done={filled(brief.excludeDeals)}
-                    help="Prospects already in your sales process. Double-touching these creates friction."
+                    done={filled(brief.excludeDeals) || brief.noExcludeDeals}
+                    help="Prospects already in your sales process. Double-touching these creates friction. If you have none, tick the box below."
                   >
                     Active deals / pipeline to exclude
                   </Lbl>
                   <textarea
-                    className={errCls(filled(brief.excludeDeals), "textarea")}
+                    className={errCls(
+                      filled(brief.excludeDeals) || brief.noExcludeDeals,
+                      "textarea"
+                    )}
                     value={brief.excludeDeals}
                     placeholder="Paste company names or domains, one per line"
+                    disabled={brief.noExcludeDeals}
                     onChange={(e) => setB("excludeDeals", e.target.value)}
                   />
                   <div className="brief-upload">
-                    <label className="btn btn-ghost btn-sm">
+                    <label
+                      className={clsx("btn btn-ghost btn-sm", brief.noExcludeDeals && "disabled")}
+                    >
                       <span className="up-ico">↥</span> Upload CSV
-                      <input type="file" accept=".csv,text/csv" hidden onChange={onCsv("deals")} />
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        hidden
+                        disabled={brief.noExcludeDeals}
+                        onChange={onCsv("deals")}
+                      />
                     </label>
                     <span className="brief-hint">
                       {csvNames.deals
@@ -1911,6 +2006,14 @@ export default function Workspace() {
                         : "Or upload a CSV of pipeline domains."}
                     </span>
                   </div>
+                  <label className="brief-none">
+                    <input
+                      type="checkbox"
+                      checked={brief.noExcludeDeals}
+                      onChange={setNoExclude("noExcludeDeals", "excludeDeals", "deals")}
+                    />
+                    We have no active deals in pipeline to exclude.
+                  </label>
                 </div>
                 <div className="field">
                   <Lbl
@@ -1949,6 +2052,7 @@ export default function Workspace() {
               title="Logistics & Handoff"
               sub="How meetings and updates flow to you"
               complete={secComplete[5]}
+              count={secCount(5)}
               open={openSec === 5}
               onToggle={() => toggle(5)}
               onContinue={() => saveAndContinue(5)}
@@ -2057,6 +2161,7 @@ export default function Workspace() {
               title="Targets & Definitions"
               sub="What success looks like, and how we measure it"
               complete={secComplete[6]}
+              count={secCount(6)}
               open={openSec === 6}
               onToggle={() => toggle(6)}
               onContinue={() => saveAndContinue(6)}

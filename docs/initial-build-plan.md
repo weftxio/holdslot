@@ -1,7 +1,8 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status: Phase A (S0) + Phase B (S1) are built & live on the `dev` API (Lambda v8); S1 awaits only
-> the web deploy to Amplify `dev` + founder acceptance test. Phase C (S2, Clay) is next.**
+> **Status: Phase A (S0) + Phase B (S1) are built & live — backend on the `dev` API (Lambda v8) and the
+> Workspace web on Amplify `dev`. S1's only open item is the founder end-to-end acceptance test (fill
+> Brief+ICP → Generate Scope → reload). Phase C (S2, Clay) is next — task list below, no code yet.**
 > This is the **first build**: make HoldSlot's own product real enough that the company runs its own
 > outbound on it and lands its first signups. Scoped cut of the full spec in `backend-development-plan.md`.
 
@@ -369,22 +370,35 @@ better than another vendor; revisit only when reply-labeling (Phase E) pushes re
 
 ### Tasks
 
-> **Status (2026-06-12): B0–B5 BUILT, backend live on dev (Lambda v8).**
-> - **B0 cleared** — real strict-`json_schema` completion through OpenRouter from HK
->   (`google/gemini-2.5-flash-lite`, ~$0.00009/call); `default_model` + `models` written to
->   `holdslot/prod/openrouter`; `verify_keys --strict openrouter` = 3 passed, 0 pending.
-> - **B1–B4 (backend)** — tables `brief`/`icp`/`research_spec`/`llm_call` (Alembic `0003_phase_b`,
->   up/down clean, `updated_at` triggers); brief+ICP document endpoints, completeness scorer,
->   OpenRouter adapter + telemetry, `POST /brief/structure` (versioned spec + gaps + server-merged
->   credit policy). **31 backend tests pass** against dev Aurora (incl. real structuring + telemetry).
-> - **B5 (frontend)** — Workspace *Business brief* + *ICP* tabs wired to the live API + spec review
->   panel/gap callout (web typecheck/lint/build green).
-> - **Code review (2 reviewers) issues all fixed:** version-race retry, telemetry isolation +
->   `ensure_awake`, upstream-error surfacing + transient retry + key-cache invalidation on 401/403,
+> **Status (2026-06-12): Phase B (S1) COMPLETE — backend live on dev (Lambda v8), Workspace web deployed
+> to Amplify `dev`. Consolidated as-built record:**
+> - **B0 (gates) cleared** — real strict-`json_schema` completion through OpenRouter from HK
+>   (`google/gemini-2.5-flash-lite`, ~$0.00009/call) with `models` fallback
+>   `[gemini-2.5-flash-lite, gpt-5-mini]` + `provider.require_parameters`; `default_model` + `models`
+>   written to `holdslot/prod/openrouter`; `verify_keys --strict openrouter` = 3 passed, 0 pending.
+>   Required-fields rubric frozen (lifted from the UI Required/Optional tags).
+> - **B1–B2 (data + endpoints)** — tables `brief`/`icp`/`research_spec`/`llm_call` (Alembic
+>   `0003_phase_b`, up/down clean, `updated_at` triggers), all tenant-scoped via the A4 guard;
+>   Brief+ICP JSONB document endpoints (`GET/PUT /clients/{c}/brief`, CRUD `/icps`); server-side
+>   completeness scorer + `missing[]` driven by the frozen rubric.
+> - **B3–B4 (the one LLM seam)** — a single SnapStart-safe OpenRouter adapter (json_schema strict,
+>   models fallback, timeout + bounded retry, key-cache invalidation on 401/403) with built-in
+>   telemetry: every call writes an `llm_call` row + a structured CloudWatch line, parse failures
+>   recorded *before* retry. `POST /clients/{c}/brief/structure` → versioned, v1-valid `ResearchSpec`
+>   + gap prompts + server-merged deterministic credit policy; each spec links its `llm_call_id`.
+> - **B5 (frontend)** — Workspace *Business brief* + *ICP* tabs wired to the live API; the spec review
+>   panel is renamed **Prospect Scope** with a loading state, per-section **x/N required-field
+>   counters**, green **Done** labels on filled fields, a **"nothing to exclude" attestation checkbox**
+>   on each required exclusion list (ticking locks + clears that list so no contradictory data reaches
+>   sourcing), and the gap callout. **Generate Scope** is gated on all 6 sections complete. web
+>   typecheck/lint/build green.
+> - **Quality:** **31 backend tests pass** against dev Aurora (incl. real structuring + telemetry),
+>   ruff/black clean. **Code review (2 reviewers) issues all fixed:** version-race retry, telemetry
+>   isolation + `ensure_awake`, upstream-error surfacing + transient retry + key-cache invalidation,
 >   strict `ResearchSpecV1` bound to the json_schema, empty-brief gate, frontend persist
 >   concurrency-guard + incremental ICP-id assignment.
-> - **Remaining before ticking S1:** deploy the web to Amplify `dev` + founder end-to-end test
->   (fill Brief+ICP → Structure → spec survives reload).
+> - **Open item (does not block Phase C):** founder end-to-end acceptance test on dev — fill Brief+ICP →
+>   Generate Scope → confirm the spec grid + gaps render and survive reload. Tick S1 green once run.
 
 **B0 — Gates to clear before code (no code; now only two — the spec format is already locked above).**
 - **OpenRouter structured-output access from HK ⭐ (the one true gate).** Make one *real* `json_schema`
@@ -452,6 +466,89 @@ no API change** — and the Clay contract (`ResearchSpec` v1) is unaffected by f
 are spent in Phase B.** *(Carry to Phase C: operator transcribes `company_search` into the Clay
 template; webhook 50k-lifetime cap → one webhook table per client per quarter; suppression filters
 rows before push; HTTP-API-column callback gated on `email_valid`.)*
+
+## Phase C — Prospects + Clay (S2): step-by-step (planning, pre-code)
+
+Turns the saved **`ResearchSpec`** into enriched **`Prospect`** rows that flow back automatically, and
+wires the Workspace *Prospect list* tab to live data. This is the **first Clay integration** and the
+**first time enrichment credits are spent**, so the gates are about credit safety, not just access.
+Grounded in the locked spec (`backend-development-plan.md` §4 *S2*, §3 domain model) and the
+`ResearchSpec` v1 Clay contract (Phase B). **No code is written until C0's gates are locked.**
+
+**What Phase C delivers (DoD):** an operator transcribes the spec's `company_search` into the Clay
+template once (~10 min — the one hop with no API), HoldSlot pushes the programmatic `people_search` rows,
+Clay enriches, and enriched prospects **POST back automatically** into a tenant-scoped `Prospect` table
+with fit context — visible / filterable / selectable in the Workspace *Prospect list*. **Nothing is sent
+to a client yet** (that is Phase D).
+
+### Clay integration shape (locked from Phase B research)
+- **No public API** to create tables or configure Find Companies / Find People — those are **in-app only**.
+- Programmable surface = **webhook sources** (POST JSON rows in; **50k-lifetime-submissions cap per
+  webhook**) + the **HTTP API column** (per-row POST of enriched results back, with "only run if" gates).
+- `company_search` → **operator transcribes once** into a cloned template's Find Companies source.
+- `people_search` + `exclusions` → **fully programmatic**, per-row via the webhook.
+- Enriched rows return via the HTTP API column → `POST /clay/results`, **gated on `email_valid`** so junk
+  rows never fire (or cost) a callback.
+
+### Tasks
+
+**C0 — Gates to clear before code (no code).**
+- **Clay account / plan sized to dogfood volume ⭐** — the credit + enrichment plan that drives the §6
+  `enrichment_cap`; confirm the waterfall providers needed. A valid key ≠ a sized plan.
+- **Build the Clay template workbook (one-time, in-app)** — clone a table with: a Find Companies source,
+  a Find People step referencing row columns, the enrichment waterfall, and the **HTTP API output
+  column** POSTing back to `/clay/results`. Capture `table_id` + `inbound_webhook_url` +
+  `inbound_webhook_secret`; add them to `holdslot/prod/clay`; run `verify_keys --strict clay`.
+- **Fit-scoring rubric ⭐ (the long-open business input)** — the signals, weights, and Strong/Good
+  thresholds that produce `fit_score` + the "why a fit" reason. This is **data** (editable without code),
+  consumed by C3 scoring; it blocks the Prospect list's fit column.
+- **Promote the exclusion fields** — Phase C is the moment the brief exclusion lists (plus this phase's
+  "nothing to exclude" attestations) become **load-bearing** for suppression, so promote them from the
+  opaque Brief JSONB to a validated suppression path **now** (promote-on-demand, per the Phase B rule).
+
+**C1 — Prospect schema + migration (tenant-scoped, raw payloads archived).**
+`prospect` (client_id, icp_id, source `spec_version`, full clear-text contact + identity, `email_valid`,
+`fit_score`, `fit_reason`, dedupe key, status, enrichment JSONB, created_at) · `research_run` (which spec
+version / ICP, webhook table used, rows pushed / returned, usage) · raw Clay payloads archived to **S3**.
+All carry `client_id`; the A4 guard scopes them. **DoD:** migration up/down clean; a returned row dedupes
+idempotently on re-delivery.
+
+**C2 — Suppression + push pipeline (HoldSlot-side, credit-safe).**
+`POST /clients/{c}/icps/{id}/research` → assemble `people_search` rows from the saved spec, **apply
+suppression before any push** (brief exclusion lists + attestations + global do-not-email + dedupe
+against existing prospects — a row never created costs zero credits), check the enrichment quota, then
+push the survivors to the Clay webhook source. **Webhook lifecycle:** one webhook table per client per
+quarter (50k-lifetime cap); Clay-side exclusion lists are the backstop. **DoD:** suppressed / duplicate
+rows are never pushed; a push lands rows in the Clay table.
+
+**C3 — Clay callback ingest + fit scoring (the programmatic return). ⭐**
+`POST /clay/results` — a signature-verified public webhook receiving per-row enriched results (Clay-side
+gated on `email_valid`); an **SQS worker** ingests idempotently → stores `Prospect` rows + archives the
+raw payload to S3 → scores fit via the **B3 OpenRouter adapter** (reusing the one LLM seam + its
+telemetry) applying the C0 rubric → writes `fit_score` + `fit_reason`. **DoD:** an enriched row POSTed by
+Clay appears as a scored `Prospect`; re-delivery does not duplicate.
+
+**C4 — Anti-burn quota enforcement (seeded S1, enforced here).**
+The research orchestration checks `current_month_usage >= enrichment_cap` **before dispatch**; at the cap
+it meters the excess as **$3/prospect overage** (`LedgerEntry`) and continues, or hard-stops
+(`403 CreditQuotaExceeded`) when overage is disabled. An **EventBridge** monthly job resets
+`current_month_usage`. *MVP note:* S2 runs operator-assisted, so metering is tracked from day one but
+only bites once Clay dispatch is automated. **DoD:** a push over the cap meters (or blocks) per policy;
+the monthly reset fires.
+
+**C5 — Wire the Workspace Prospect list + Phase-C acceptance.**
+Point the Workspace *Prospect list* tab at the live API (filters, Source ICP column, fit score / reason,
+select → create batch); replace the mock prospect fixtures with live calls, keeping the **exact field set
++ class names**. Operator runbook: transcribe `company_search` into the Clay template (the one non-API
+hop). **DoD:** enriched prospects flow back **automatically** into the Prospect list with fit context and
+survive reload; tick **S2** in `backend-development-plan.md`.
+
+**Critical path:** C0 (Clay plan + template + rubric) → C1 → C2 → C3 → {C4} → C5. **C0 is the real risk**
+(credit plan + fit rubric are business inputs, not code); **C3 is the highest-leverage code** — the
+callback + scoring path every prospect rides. **Cost:** the first real Clay credits (~$50–200/mo at
+dogfood volume, §5) — which is exactly why C2 suppression + C4 quota ship with the *first* push, not
+later. *(Carry to Phase D: `Prospect` holds full clear-text; the client-facing approval serializer masks
+it — the anti-theft tiered-reveal is Phase D / S3.)*
 
 ## Materials to prepare
 

@@ -242,6 +242,57 @@
   font-weight: 400;
   margin-top: 2px;
 }
+/* Per-section required-field counter (e.g. "4/6") shown in the section header. */
+.brief-count {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 3px 10px 3px 8px;
+}
+.brief-count-bar {
+  width: 34px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--line-soft);
+  overflow: hidden;
+}
+.brief-count-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--cerulean-deep);
+  transition: width 0.3s ease;
+}
+.brief-count.done {
+  color: var(--ok);
+  background: var(--ok-wash);
+  border-color: var(--ok-wash);
+}
+.brief-count.done .brief-count-bar {
+  background: rgba(62, 142, 110, 0.22);
+}
+.brief-count.done .brief-count-bar > span {
+  background: var(--ok);
+}
+@media (max-width: 640px) {
+  .brief-count-bar {
+    display: none;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brief-count-bar > span {
+    transition: none;
+  }
+}
+
 .brief-chev {
   flex-shrink: 0;
   color: var(--ink-faint);
@@ -300,6 +351,36 @@
 .brief-upload .up-ico {
   font-size: 14px;
   line-height: 1;
+}
+
+/* "Nothing to exclude" attestation checkbox under each required exclusion field. */
+.brief-none {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 11px;
+  font-size: 12.5px;
+  color: var(--cerulean-deep);
+  cursor: pointer;
+  user-select: none;
+  width: fit-content;
+}
+.brief-none input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--cerulean-deep);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+/* When the attestation is ticked, mute the now-locked list + upload controls. */
+.field.is-locked .textarea:disabled {
+  background: var(--line-soft);
+  color: var(--ink-faint);
+  cursor: not-allowed;
+}
+.field.is-locked .brief-upload .btn.disabled {
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .brief-callout {
