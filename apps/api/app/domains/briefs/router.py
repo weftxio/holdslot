@@ -1,0 +1,170 @@
+"""Brief routes — GET/PUT the one business brief per client, with completeness scoring.
+
+A thin "JSON document resource": store the opaque form document, return it with the
+server-computed completeness (the ring's single source of truth, from `completeness.py`).
+Tenant scope × role is enforced by the A4 central guard (`require_membership`), so a caller
+can only ever reach their own client's brief.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.core.deps import AccessContext, get_db, require_membership
+from app.domains.briefs.completeness import completeness, missing_fields
+from app.domains.briefs.research_spec import (
+    PROMPT_VERSION,
+    PURPOSE,
+    RESEARCH_SPEC_JSON_SCHEMA,
+    ResearchSpecV1,
+    assemble_spec,
+    build_messages,
+)
+from app.domains.briefs.schemas import (
+    BriefIn,
+    BriefOut,
+    ResearchSpecList,
+    ResearchSpecOut,
+)
+from app.integrations.openrouter.client import LlmError, structured_completion
+from app.models import Brief, Icp, ResearchSpec
+
+router = APIRouter(tags=["briefs"])
+
+
+def _out(brief: Brief | None) -> BriefOut:
+    data = brief.data if brief is not None else {}
+    return BriefOut(
+        data=data,
+        completeness=completeness(data),
+        missing=missing_fields(data),
+        updated_at=brief.updated_at.isoformat() if brief is not None else None,
+    )
+
+
+@router.get("/{client}/brief", response_model=BriefOut)
+def get_brief(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> BriefOut:
+    brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
+    return _out(brief)
+
+
+@router.put("/{client}/brief", response_model=BriefOut)
+def put_brief(
+    body: BriefIn,
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> BriefOut:
+    # Upsert — one brief per client (the unique constraint guarantees a single row).
+    brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
+    if brief is None:
+        brief = Brief(tenant_id=ctx.tenant.id, data=body.data)
+        db.add(brief)
+    else:
+        brief.data = body.data
+    db.commit()
+    db.refresh(brief)
+    return _out(brief)
+
+
+def _spec_out(row: ResearchSpec) -> ResearchSpecOut:
+    return ResearchSpecOut(
+        version=row.version,
+        spec=row.spec,
+        gaps=row.gaps,
+        model=row.model,
+        llm_call_id=str(row.llm_call_id) if row.llm_call_id else None,
+        created_at=row.created_at.isoformat() if row.created_at else None,
+    )
+
+
+@router.post("/{client}/brief/structure", response_model=ResearchSpecOut)
+def structure_brief(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> ResearchSpecOut:
+    """Brief (+ICPs) → a new versioned ResearchSpec via the LLM. The bridge into Clay (B4)."""
+    brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
+    if brief is None or completeness(brief.data) == 0:
+        # Don't spend a (billed) LLM call structuring an empty brief.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "fill in the brief before structuring")
+
+    icps = db.execute(
+        select(Icp).where(Icp.tenant_id == ctx.tenant.id).order_by(Icp.created_at)
+    ).scalars()
+    # Canonical id/name/tag must win over any same-named keys in the opaque ICP document.
+    icp_docs = [{**i.data, "id": str(i.id), "name": i.name, "tag": i.tag} for i in icps]
+
+    messages = build_messages(brief.data, icp_docs)
+    try:
+        result = structured_completion(
+            tenant_id=ctx.tenant.id,
+            purpose=PURPOSE,
+            messages=messages,
+            schema=RESEARCH_SPEC_JSON_SCHEMA,
+            prompt_version=PROMPT_VERSION,
+        )
+    except LlmError as e:
+        # Telemetry is already persisted (e.llm_call_id); surface the specific cause.
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
+
+    # Defensive server-side validation — never persist an off-contract spec.
+    try:
+        ResearchSpecV1(**result.data)
+    except Exception as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "LLM returned an off-contract spec") from e
+
+    spec, gaps = assemble_spec(result.data)
+    # Insert the next version, retrying on the unique (tenant, version) race so a concurrent
+    # structuring never discards this already-completed (and billed) LLM result with a 500.
+    for _ in range(5):
+        next_version = (
+            db.execute(
+                select(func.coalesce(func.max(ResearchSpec.version), 0)).where(
+                    ResearchSpec.tenant_id == ctx.tenant.id
+                )
+            ).scalar_one()
+            + 1
+        )
+        row = ResearchSpec(
+            tenant_id=ctx.tenant.id,
+            version=next_version,
+            spec=spec,
+            gaps=gaps,
+            model=result.model,
+            llm_call_id=result.llm_call_id,
+        )
+        db.add(row)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            continue
+        db.refresh(row)
+        return _spec_out(row)
+    raise HTTPException(status.HTTP_409_CONFLICT, "could not allocate a spec version")
+
+
+@router.get("/{client}/research-spec", response_model=ResearchSpecList)
+def get_research_spec(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> ResearchSpecList:
+    """Latest ResearchSpec + version history for the Workspace review panel."""
+    rows = (
+        db.execute(
+            select(ResearchSpec)
+            .where(ResearchSpec.tenant_id == ctx.tenant.id)
+            .order_by(ResearchSpec.version.desc())
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return ResearchSpecList(latest=None, versions=[])
+    return ResearchSpecList(latest=_spec_out(rows[0]), versions=[r.version for r in rows])

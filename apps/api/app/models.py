@@ -21,11 +21,14 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    Integer,
+    Numeric,
     String,
     UniqueConstraint,
     func,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -59,6 +62,24 @@ def _created_at() -> Mapped[datetime]:
     return mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
+def _updated_at() -> Mapped[datetime]:
+    return mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+def _tenant_fk() -> Mapped[uuid.UUID]:
+    """Every Phase-B business row is tenant-scoped — `tenant_id` is the spec's `client_id`."""
+    return mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+
 class Tenant(Base):
     __tablename__ = "tenant"
 
@@ -72,7 +93,10 @@ class Tenant(Base):
     )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     memberships: Mapped[list[Membership]] = relationship(
@@ -95,7 +119,10 @@ class AppUser(Base):
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
     )
 
     memberships: Mapped[list[Membership]] = relationship(
@@ -113,10 +140,14 @@ class Membership(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+        PgUUID(as_uuid=True),
+        ForeignKey("app_user.id", ondelete="CASCADE"),
+        nullable=False,
     )
     tenant_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False
+        PgUUID(as_uuid=True),
+        ForeignKey("tenant.id", ondelete="CASCADE"),
+        nullable=False,
     )
     role: Mapped[MembershipRole] = mapped_column(
         Enum(MembershipRole, name="membership_role"), nullable=False
@@ -133,7 +164,9 @@ class RefreshToken(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+        PgUUID(as_uuid=True),
+        ForeignKey("app_user.id", ondelete="CASCADE"),
+        nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -147,9 +180,113 @@ class PasswordReset(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     user_id: Mapped[uuid.UUID] = mapped_column(
-        PgUUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False
+        PgUUID(as_uuid=True),
+        ForeignKey("app_user.id", ondelete="CASCADE"),
+        nullable=False,
     )
     token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+# ---------------------------------------------------------------------------
+# Phase B (S1) — Targeting: Brief & ICP → research-ready ResearchSpec.
+#
+# Churn-proof by design (see docs/initial-build-plan.md → Phase B): Brief/ICP form
+# fields live in opaque JSONB `data` documents — their only consumers are the form
+# (round-trip) and the LLM prompt (schema-tolerant), so a form change is a frontend
+# edit, never a migration. The `ResearchSpec` is the opposite — a locked v1 contract
+# to Clay — stored append-only (versioned), each linked to the `LlmCall` that produced
+# it. `LlmCall` is the one-seam telemetry every LLM feature writes through.
+# ---------------------------------------------------------------------------
+
+
+class Brief(Base):
+    """One business brief per tenant. `data` is the opaque form document."""
+
+    __tablename__ = "brief"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_brief_tenant"),
+        Index("ix_brief_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class Icp(Base):
+    """Many ICP profiles per tenant. `name`/`tag` are the card header; `data` the form document."""
+
+    __tablename__ = "icp"
+    __table_args__ = (Index("ix_icp_tenant_id", "tenant_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    name: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    tag: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class LlmCall(Base):
+    """Append-only telemetry for every OpenRouter call — the one-seam observability row.
+
+    Written by the B3 adapter on each call: served `model`, `prompt_version`, token
+    counts, `cost_usd`, latency, `status` (ok|parse_error|timeout|error), retry count,
+    and the `raw` completion JSON (the highest-value debugging signal). `status` is a
+    plain string, not a DB enum, so new states never need a migration.
+    """
+
+    __tablename__ = "llm_call"
+    __table_args__ = (
+        Index("ix_llm_call_tenant_id", "tenant_id"),
+        Index("ix_llm_call_purpose", "purpose"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    purpose: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    retries: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    raw: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ResearchSpec(Base):
+    """Append-only, versioned LLM output — the locked v1 contract bridging Brief → Clay.
+
+    A re-run never overwrites: it inserts the next `version` for the tenant. `spec` is
+    the v1 targeting JSON (company_search/people_search/exclusions + server-merged credit
+    policy); `gaps` are the value-loop prompts. `llm_call_id` ties the spec to the exact
+    model/prompt/cost/raw output that produced it.
+    """
+
+    __tablename__ = "research_spec"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "version", name="uq_research_spec_tenant_version"),
+        Index("ix_research_spec_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    gaps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    llm_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True),
+        ForeignKey("llm_call.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = _created_at()
