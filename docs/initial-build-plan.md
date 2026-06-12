@@ -1,6 +1,7 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status: Phase A (S0) is built & live on `dev`; Phase B (S1) is next — broken out in detail below.**
+> **Status: Phase A (S0) + Phase B (S1) are built & live on the `dev` API (Lambda v8); S1 awaits only
+> the web deploy to Amplify `dev` + founder acceptance test. Phase C (S2, Clay) is next.**
 > This is the **first build**: make HoldSlot's own product real enough that the company runs its own
 > outbound on it and lands its first signups. Scoped cut of the full spec in `backend-development-plan.md`.
 
@@ -106,10 +107,12 @@ No app code is written until A0's decisions are locked. Grounded in the locked s
 > green for app + google. 10/10 backend tests pass; ruff/black clean; `terraform plan` shows no drift.
 >
 > **Known follow-ups (none block Phase B; tracked here so they aren't lost):**
-> 1. **SES** — DKIM (3 CNAMEs) + DMARC published in Route 53 (2026-06-11) and resolving; awaiting SES
->    auto-verification, then `no-reply@tryholdslot.com` sends. Founder password-reset works in-sandbox
->    once verified (sandbox blocks only *unverified* recipients). **Deferred:** custom MAIL FROM (SPF
->    alignment) and production-access / sandbox-exit — needed only for client-facing mail at Phase C+.
+> 1. **SES — DONE for dogfood.** DKIM (3 CNAMEs) + DMARC published in Route 53 and **SES-verified**
+>    (DKIM=SUCCESS, Verified=true, 2026-06-11); `no-reply@tryholdslot.com` sends. The founder
+>    **password-reset is a one-click link flow, live on `dev`** (forgot → emailed link →
+>    `/login?reset=<token>` set-new-password screen → sign in). Works in-sandbox because founder
+>    recipients are at the verified domain. **Deferred:** custom MAIL FROM (SPF alignment) and
+>    production-access / sandbox-exit — needed only for client-facing mail at Phase C+.
 > 2. **Prod environment** — single `dev` env today; Terraform is workspace-parameterised, so prod is
 >    a later `terraform workspace new prod`, not a rewrite.
 > 3. **CI/CD** — deploy is the manual one-command `apps/api/scripts/build-and-deploy.sh`; add a
@@ -188,77 +191,267 @@ change**. (3) `verify_keys.py --strict` passes for `app`, `google`, `openrouter`
 "build single, design multi" real; everything downstream filters by `tenant_id` and checks role through
 A4's guard.
 
-## Phase B — Targeting (S1): step-by-step (planning, pre-code)
+## Phase B — Targeting (S1)
 
 Turns a client's raw **Business Brief** into a research-ready **`ResearchSpec`** (the bridge into Clay,
 Phase C) and lets the operator create/curate **ICP profiles** — wiring the Workspace *Business brief* and
 *ICP* tabs to the live API. This is the **first use of the LLM** (OpenRouter). Grounded in the locked spec
-(`backend-development-plan.md` §4 *S1*, §3 domain model) and the UI: `workspace/page.tsx`'s `Brief` and
-`Icp`/`IcpFields` types **are** the field spec — match them.
+(`backend-development-plan.md` §4 *S1*, §3 domain model); the UI `Brief`/`IcpFields` types in
+`workspace/page.tsx` define the *form*, but the backend deliberately does **not** mirror them (see the
+design rule below).
 
 **What Phase B delivers (DoD):** a founder fills the Brief in the live Workspace → the completeness ring
-reflects real saved data → "Structure" produces a saved `ResearchSpec` (normalized ICP attributes + the
-concrete Clay search/enrichment parameters) → one or more `ICP` profiles exist. **Clay-ready; nothing is
-sent to Clay yet** (that's Phase C).
+reflects real saved data → "Structure" produces a saved, versioned `ResearchSpec` + gap prompts → one or
+more `ICP` profiles exist. **Clay-ready; nothing is sent to Clay yet** (that's Phase C).
 
-**B0 — Decisions to lock before code (no code until these are set).**
-- **OpenRouter model access from HK ⭐ (the one true gate).** Make one *real* completion through the
-  intended Claude model from Hong Kong — a valid key ≠ model access, and HK reachability is the whole
-  reason for OpenRouter over Bedrock. Then store `default_model` in `holdslot/prod/openrouter` and run
-  `verify_keys --strict openrouter`.
-- **Brief completeness rubric** — which of the ~27 Brief fields are *required* vs *optional* for
-  "complete", and how the ring scores. The UI already tags each field Required/Optional; lift that into
-  one shared server-side definition so the ring and any gating agree.
-- **`ResearchSpec` shape** — lock the exact JSON the LLM emits, **with Clay's table columns in mind** so
-  C is a clean handoff: industries, company sizes, geos, titles/seniority/departments, technologies,
-  triggers/signals, exclusions. (The **fit-scoring rubric is a Phase C input, not B.**)
-- **Outreach languages** — the Brief captures `languages[]`; confirm the supported set (English +
-  Mandarin?) so the spec and prompts localize.
+### Why the LLM is here — position + value loop
 
-**B1 — Data model + migration (tenant-scoped, mirrors the UI types).** Add `Brief`, `Icp`,
-`ResearchSpec`, all `client_id`-scoped:
-- `Brief` — the ~27 global fields from the UI `Brief` type (company/offer, value props, proof points,
-  signals, objections, competitors, tone, `languages[]`, exclusions/compliance, meeting logistics,
-  qualified-meeting definition). One per client.
-- `Icp` — `short`, `tag`, `persona` + the per-profile `IcpFields` (industries, companySize, maturity,
-  geographies, technologies, jobTitles, seniority, departments, buyerVsChampion, avoidTitles). Many per
-  client.
-- `ResearchSpec` — the LLM-structured JSON, linked to the Brief + ICP(s) and **versioned** (a re-run
-  makes a new spec, never overwrites).
-- Seed the `Subscription` quota fields the spec wants initialized at S1 (`enrichment_cap`, `icp_limit`,
-  `current_month_usage`) even though enforcement is Phase C/S2 — the single owner tenant runs effectively
-  uncapped. **DoD:** migration up/down clean.
+**Position: one job — the translator at one seam.** The Brief is free text in the client's business
+language ("we sell X to teams struggling with Y"); Clay needs machine-actionable search parameters
+(industries, size bands, geos, titles/seniority, technologies, trigger signals, exclusions). That
+translation is otherwise **operator labour, per client, per revision** — exactly the labour a
+done-for-you margin can't afford, and deterministic rules can't read free text. So the LLM sits at one
+seam only: **Brief (+ICPs) in → `ResearchSpec` + gap prompts out.** In Phase B it does *not* score fit
+(Phase C input), draft email (Phase E), or converse with the client.
 
-**B2 — Brief CRUD API + completeness scoring.** `GET/PUT /clients/{c}/brief` (the A4 central guard already
-scopes tenant × role). The server computes completeness from the shared rubric (B0) so the ring and any
-gating share one source of truth. **DoD:** brief round-trips; completeness matches the rubric.
+**How it compounds (the value loop):**
+1. Client states the business **in their own words** — intake stays low-friction; the form never has to
+   force clients to think in Clay columns.
+2. LLM structures that into a **versioned** `ResearchSpec` → Clay sources prospects (C) → outreach (E)
+   → meetings (F).
+3. The *same completion* returns **gap prompts** — what's missing or too vague for good research —
+   pushing the client to sharpen the Brief **before** credits are spent on bad targeting.
+4. Outcomes (which ICP/persona/signal actually converted) feed the next Brief/ICP revision → re-run
+   Structure → **spec vN+1 targets better than vN.**
 
-**B3 — OpenRouter adapter (one swappable client). ⭐** A single `integrations/openrouter` adapter reading
-`holdslot/prod/openrouter` (key, `default_model`, spend cap), **lazy / SnapStart-safe** (no network at
-import), with timeout, bounded retry, and structured-output parsing. **Every** later LLM feature (reply
-labeling, summaries) reuses this one seam. **DoD:** a test does one real structured completion (auto-
-skipped without the key, like the A6 acceptance tests).
+Versioned specs are the loop's **memory**: every re-run appends a new version, so targeting quality is
+observable over time and a bad revision is a one-step rollback. Phase B builds arc 1–3; the loop closes
+when C–F land — but versioning + gap prompts are designed in *now* because retrofitting loop memory is
+expensive.
+
+**Value math:** gap prompts protect the two most expensive downstream resources — Clay enrichment
+credits and warmed-inbox sending capacity — at the cheapest possible point: a few cheap-model
+completions (~$5–20/mo, §5) versus burned credits and weeks of mis-aimed sending.
+
+### Design rule: the form will churn — the backend must not care
+
+Assume the ~27-field Brief and the ICP form **change often after MVP**. Therefore **no field
+mirroring** in the backend:
+
+- **Brief and ICP fields are stored as one JSONB document each**, not as typed columns. Their only
+  consumers are the form (round-trip, opaque) and the LLM prompt (schema-tolerant by nature) — neither
+  needs the database to know field names.
+- A form change costs: **a frontend edit + (maybe) one entry in the required-fields list. Zero
+  migrations, zero API churn, prompt unaffected.**
+- **Promote-on-demand:** the moment one field becomes load-bearing for backend *logic* (e.g. Phase C
+  consumes the exclusion lists), promote **that field** to a validated path/column **then** — never
+  pre-emptively.
+- **Two stability profiles, deliberately different.** The Brief/ICP *form documents* churn freely
+  (JSONB, opaque to the backend). The `ResearchSpec` is the opposite: a **locked v1 contract** (next
+  section) — it's the interface to Clay, and Clay's consumable surface is now researched, so its shape
+  is stable even while the form churns. The LLM is the shock absorber between the two: whatever the
+  form looks like, the prompt's *output* schema stays the spec. Versions are **append-only** JSONB
+  rows (`spec`, `gaps`, `model`, `created_at`).
+
+**Cut from the previous Phase-B plan (YAGNI at dogfood volume):**
+- ~~Mirror the ~27 `Brief` + `IcpFields` fields as a relational model~~ → JSONB documents (above).
+- ~~Seed `Subscription` quota fields (`enrichment_cap`, `icp_limit`, `current_month_usage`)~~ —
+  enforcement is C+/billing-era; tenant #0 runs uncapped; adding them later is one ordinary migration.
+- ~~Model the ICP↔spec linkage relationally~~ — each spec version snapshots the ICP docs it used inside
+  its own JSON; no join tables.
+- ~~Lock the outreach-language set in B0~~ — the Brief already captures `languages[]` as data;
+  localization matters when *drafting* (Phase E), not when structuring.
+
+### The `ResearchSpec` v1 format (Clay-aligned — locked from research, 2026-06-12)
+
+**Clay integration reality (verified against Clay docs/changelog):** Clay has **no public API to create
+tables or configure Find Companies / Find People searches** — those are in-app only. The programmable
+surface is: **webhook sources** (POST JSON rows into a pre-built table; note a 50k-lifetime-submissions
+cap per webhook) and the **HTTP API column** (per-row POST of enriched results back to our endpoint,
+with "only run if" gates). So the spec has two halves with different consumers:
+
+- **`company_search`** → an **operator transcribes it once** into a cloned Clay template workbook's
+  *Find Companies* source (~10 min; fields map 1:1 to Clay's modal). No API for this hop exists.
+- **`people_search` + `exclusions`** → **fully programmatic**, riding per-row through the webhook into
+  the people-build table (Find People can reference row columns dynamically).
+- Enriched rows come **back** via an HTTP API column → `POST /clay/results` (Phase C), gated on
+  `email_valid` so junk rows never fire the callback.
+
+**The format (what the LLM emits, mapped 1:1 to Clay's filter taxonomies):**
+
+```jsonc
+{
+  "spec_version": 1,
+  "company_search": {                       // → operator → Clay "Find Companies" (in-app)
+    "industries_include": [], "industries_exclude": [],          // LinkedIn industry labels
+    "description_keywords_include": [], "description_keywords_exclude": [],
+    "semantic_description": "",                                  // Clay AI filter — one plain sentence
+    "employee_count": { "min": null, "max": null },              // free integers; no fixed bands
+    "revenue_usd":    { "min": null, "max": null },
+    "company_types": [],                                         // Clay enum (Privately Held | Public …)
+    "founded": { "after": null, "before": null },
+    "locations_include": { "countries": [], "states": [], "cities": [] },
+    "locations_exclude": { "countries": [], "states": [], "cities": [] },
+    "technographics": { "enabled": false, "vendors": [] },       // default OFF — 3 credits/company
+    "max_results": 500
+  },
+  "people_search": [{                       // one entry per ICP → per-row via webhook (programmatic)
+    "icp_id": "",
+    "job_title_keywords": [],                                    // PRIMARY field (Clay's own guidance)
+    "job_title_match_mode": "is_similar",                        // is_similar | contains | is_exactly
+    "job_title_exclude": [],
+    "seniority": [], "departments": [],                          // advisory — titles do the real work
+    "max_per_company": 2, "max_total": 800
+  }],
+  "exclusions": { "domains": [], "company_linkedin_urls": [], "emails": [] },
+  "gaps": [{ "field": "", "why": "", "ask": "" }]                // the value-loop prompts
+}
+```
+
+**Division of labour (important):** the LLM emits **targeting only** — `company_search`,
+`people_search`, `exclusions`, `gaps`. The **credit policy** (`enrichment_plan` waterfall order +
+"only run if" gates, `test_batch_size` ≈ 10, per-batch caps) is **deterministic server config merged in
+at save time**, never LLM-inferred — credit rules are policy, not judgment. Suppression is applied
+HoldSlot-side *before* any row is pushed (a row never created costs zero credits); Clay-side exclusion
+lists are the backstop. These policy knobs become real in Phase C; the spec carries them from v1 so C
+is a consumer, not a redesign.
+
+### Displaying the spec for review (UI plan — existing classes only, no new CSS)
+
+The Workspace Brief tab already has every primitive needed; the review block reuses them verbatim:
+
+- **Trigger:** a "Structure research spec" `.btn .btn-accent` beside the brief progress bar
+  (`.brief-top`), enabled when completeness clears the rubric threshold.
+- **Review panel** — a read-only `.panel` rendered after the last brief section once a spec exists:
+  - Header: title + `.badge-info` version chip (`v2 · 12 Jun`) + re-run button. Older versions listed
+    as `.badge-neutral` chips (read-only history — append-only versions made visible).
+  - Body: the `.icp-grid` / `.icp-cell` (`.k` label + `.v` value) grid the ICP cards already use —
+    one cell per spec group (Industries, Size, Geography, Keywords, per-ICP Titles, Caps), multi-values
+    as `.icp-chips`/`.icp-chip`, exclusions as `.icp-chip.warn`.
+  - **Gap prompts:** one `.brief-callout` (the existing warn-wash callout) listing each gap's
+    field · why · ask — this is the loop's "fix it before credits are spent" surface. Gap count also
+    badges the brief header (`.badge-warn`).
+  - The existing `.est` line ("estimated matching accounts", `workspace/page.tsx:1390`) is the natural
+    home for `max_results`/cap display.
+- Until Phase C wires Clay, the panel carries the standard `.sample` marker convention on any
+  estimated figure. Nothing here invents new design — it's the ICP card grammar applied to the spec.
+
+### LLM observability (built into the seam, not bolted on)
+
+The whole point of the single B3 adapter is that there is **one door every LLM call walks through** —
+so observability lives there once and every later feature (reply labeling, summaries, drafting)
+inherits it for free. Right-sized for dogfood volume:
+
+- **One append-only `llm_call` table** (tenant-scoped, written by the adapter on every call):
+  `purpose` (`brief_structure` today) · `model` · **`prompt_version`** · input/output tokens ·
+  `cost_usd` (OpenRouter returns usage/cost in the response) · latency · `status`
+  (`ok | parse_error | timeout | error`) · retry count · the **raw completion** (JSONB) ·
+  `created_at`. At a handful of calls per client this is pennies of storage and the entire
+  debugging story: when structuring produces a bad spec, the raw completion + prompt version is
+  sitting next to the spec row.
+- **`research_spec` links its `llm_call_id`** — every spec version is traceable to the exact model,
+  prompt version, cost, and raw output that produced it.
+- **`prompt_version` is the loop's instrument.** "Spec vN+1 targets better than vN" is only observable
+  if each spec records which prompt produced it — prompt iterations become comparable (gap counts,
+  operator edit rate after structuring) instead of vibes.
+- **Structured CloudWatch log line per call** (same fields, minus raw payload) — this rides the
+  existing Lambda logging; failures and latency are greppable today, alarmable later.
+- **Cost control, two layers:** hard stop = the **$50 spend cap already set on the OpenRouter key**
+  (provider-side, can't be exceeded by a bug); soft signal = `SELECT sum(cost_usd)` over `llm_call`
+  by month/purpose — the billing-era per-tenant metering query already exists the day billing lands.
+- **Parse failures are data, not just errors:** a completion that fails v1-schema validation is
+  recorded (`parse_error` + raw payload) before the bounded retry — the highest-value signal for
+  prompt iteration.
+
+**Deliberately cut:** third-party LLM-ops platforms (Langfuse/LangSmith/Helicone), OTel tracing,
+eval harnesses — at dogfood volume (tens of calls/month) a queryable table + CloudWatch is strictly
+better than another vendor; revisit only when reply-labeling (Phase E) pushes real volume.
+
+### Tasks
+
+> **Status (2026-06-12): B0–B5 BUILT, backend live on dev (Lambda v8).**
+> - **B0 cleared** — real strict-`json_schema` completion through OpenRouter from HK
+>   (`google/gemini-2.5-flash-lite`, ~$0.00009/call); `default_model` + `models` written to
+>   `holdslot/prod/openrouter`; `verify_keys --strict openrouter` = 3 passed, 0 pending.
+> - **B1–B4 (backend)** — tables `brief`/`icp`/`research_spec`/`llm_call` (Alembic `0003_phase_b`,
+>   up/down clean, `updated_at` triggers); brief+ICP document endpoints, completeness scorer,
+>   OpenRouter adapter + telemetry, `POST /brief/structure` (versioned spec + gaps + server-merged
+>   credit policy). **31 backend tests pass** against dev Aurora (incl. real structuring + telemetry).
+> - **B5 (frontend)** — Workspace *Business brief* + *ICP* tabs wired to the live API + spec review
+>   panel/gap callout (web typecheck/lint/build green).
+> - **Code review (2 reviewers) issues all fixed:** version-race retry, telemetry isolation +
+>   `ensure_awake`, upstream-error surfacing + transient retry + key-cache invalidation on 401/403,
+>   strict `ResearchSpecV1` bound to the json_schema, empty-brief gate, frontend persist
+>   concurrency-guard + incremental ICP-id assignment.
+> - **Remaining before ticking S1:** deploy the web to Amplify `dev` + founder end-to-end test
+>   (fill Brief+ICP → Structure → spec survives reload).
+
+**B0 — Gates to clear before code (no code; now only two — the spec format is already locked above).**
+- **OpenRouter structured-output access from HK ⭐ (the one true gate).** Make one *real* `json_schema`
+  (`strict:true`) completion **through OpenRouter** from Hong Kong — a valid key ≠ working access.
+  OpenRouter proxies server-side, so this is model-**agnostic** (HK reaches OpenRouter, not the model
+  host directly), which de-risks the gate vs Bedrock. **Model decision (locked 2026-06-12):**
+  `default_model = google/gemini-2.5-flash-lite` with `models` fallback array
+  `["google/gemini-2.5-flash-lite", "openai/gpt-5-mini"]` and `provider.require_parameters = true`
+  (only route to hosts honoring `structured_outputs`). Chosen for native strict `json_schema` support +
+  lowest cost (~$0.0009/call); cost is a non-constraint at dogfood volume (<$1/mo). Store `default_model`
+  (and the fallback) in `holdslot/prod/openrouter`, then run `verify_keys --strict openrouter`.
+- **Required-fields list** — which Brief keys count toward "complete" (lift from the UI's existing
+  Required/Optional tags). This is **a list of key names, not a schema** — the whole completeness
+  rubric is data, editable without code changes.
+
+**B1 — Thin schema + migration (4 tables, tenant-scoped).**
+`brief` (one per client · `data` JSONB) · `icp` (many per client · `name`/`tag` + `data` JSONB) ·
+`research_spec` (append-only versions · `spec` + `gaps` JSONB · `llm_call_id` · `created_at`) ·
+`llm_call` (append-only telemetry per the observability section: purpose, model, prompt_version,
+tokens, cost_usd, latency, status, retries, raw completion). All carry `client_id`; the A4 guard
+scopes them. **DoD:** migration up/down clean; a Brief survives adding/removing arbitrary form fields
+with no schema change.
+
+**B2 — Document endpoints (one shared pattern).** `GET/PUT /clients/{c}/brief` and
+`GET/POST/PUT/DELETE /clients/{c}/icps` are the **same thin "JSON document resource" shape** — store,
+return, scope. The brief response also carries `completeness` + `missing[]`, computed server-side from
+the B0 required-fields list (single source of truth for the ring and any future gating). **DoD:** brief
++ ICPs round-trip; completeness matches the list; changing the list changes the score with no code edit.
+
+**B3 — OpenRouter adapter (one swappable client) + observability. ⭐** A single
+`integrations/openrouter` adapter reading `holdslot/prod/openrouter` (key, `default_model`, `models`
+fallback array, spend cap), **lazy / SnapStart-safe** (no network at import). It sends
+`response_format: json_schema` (`strict:true`), the `models` fallback array
+(`google/gemini-2.5-flash-lite` → `openai/gpt-5-mini`), and `provider.require_parameters:true` so only
+schema-honoring hosts serve it; with timeout, bounded retry, and structured-output parsing — and the
+**observability duties built in**: every call writes an `llm_call` row (model actually served, tokens,
+cost_usd, latency, status, prompt_version, raw completion; parse failures recorded *before* retry) and
+emits the structured CloudWatch log line. **Every** later LLM feature (reply labeling, summaries,
+drafting) reuses this one seam and inherits the telemetry. **DoD:** a test does one real structured
+completion (auto-skipped without the key, like the A6 acceptance tests) **and** the call's `llm_call`
+row lands with sane token/cost/latency values + the served model; a forced parse failure records
+`parse_error` + raw payload.
 
 **B4 — Brief → `ResearchSpec` structuring.** `POST /clients/{c}/brief/structure` → the adapter prompts
-Claude to normalize the Brief into the locked `ResearchSpec` JSON plus **gap prompts** (what's missing for
-good research). Persist the spec (versioned). **DoD:** a filled Brief yields a saved, schema-valid
-`ResearchSpec`; gaps surface as prompts.
+Claude with the **whole Brief + ICP documents** (no per-field plumbing — this is what makes the prompt
+churn-proof) to emit the **locked v1 targeting sections + gap prompts**; the server merges the
+deterministic credit-policy defaults and validates against the v1 schema (strict on structure, lenient
+on string content), then appends a new `research_spec` version **linked to its `llm_call_id`** — every
+spec is traceable to the model, prompt version, cost, and raw completion that produced it. **DoD:** a
+filled Brief yields a saved, v1-valid spec; gaps surface as prompts; re-running appends v2 without
+touching v1; the spec row resolves to its `llm_call` telemetry.
 
-**B5 — ICP CRUD (multi-profile).** `GET/POST/PUT/DELETE /clients/{c}/icps` — create / review / delete ICP
-profiles (the UI supports several; `icp_limit` is plan-derived but the owner tenant is effectively
-unlimited). The `ResearchSpec` references the ICP attributes. **DoD:** multiple ICPs persist and
-round-trip.
+**B5 — Wire the Workspace + Phase-B acceptance.** Point the Workspace *Business brief* (form +
+completeness ring) and *ICP* tabs at the live API — the form state serializes to the JSON document
+as-is; replace the `sampleBrief`/`sampleFields` mocks with real calls, keeping the **exact field set +
+class names** — and render the **spec review panel + gap callout** per the UI plan above (existing
+classes only). **DoD:** a founder fills the Brief and an ICP in the live Workspace, hits Structure, and
+sees the spec grid + gaps; the spec survives reload; tick **S1** in `backend-development-plan.md`.
 
-**B6 — Wire the Workspace + Phase-B acceptance.** Point the Workspace *Business brief* (form +
-completeness ring) and *ICP* tabs at the live API — replace the `sampleBrief`/`sampleFields` mocks with
-real calls, keeping the **exact field set + class names**. **DoD:** a founder fills the Brief and an ICP
-in the live Workspace, hits Structure, and a `ResearchSpec` is saved server-side (survives reload); tick
-**S1** in `backend-development-plan.md`.
-
-**Critical path:** B0 (OpenRouter HK) → B1 → B2 → {B3 → B4} → B5 → B6. **B0 is the only real risk**
-(model access); **B3/B4 is the highest-leverage code** — every later AI feature reuses that adapter.
-**Cost (dogfood volume):** brief structuring is a handful of cheap-model completions per client
-(~$5–20/mo, §5); **no Clay credits are spent in Phase B.**
+**Critical path:** B0 (OpenRouter HK) → B1 → B2 → {B3 → B4} → B5. **B0 is the only real risk** (model
+access); **B3/B4 is the highest-leverage code** — every later AI feature reuses that adapter. After
+Phase B, the cost of a Brief/ICP form change is a frontend edit + a rubric-list entry — **no migration,
+no API change** — and the Clay contract (`ResearchSpec` v1) is unaffected by form churn. **Cost
+(dogfood volume):** a handful of cheap-model completions per client (~$5–20/mo, §5); **no Clay credits
+are spent in Phase B.** *(Carry to Phase C: operator transcribes `company_search` into the Clay
+template; webhook 50k-lifetime cap → one webhook table per client per quarter; suppression filters
+rows before push; HTTP-API-column callback gated on `email_valid`.)*
 
 ## Materials to prepare
 
