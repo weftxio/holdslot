@@ -154,6 +154,7 @@
   color: var(--ink-soft);
 }
 .brief-req,
+.brief-done,
 .brief-opt {
   font-size: 9.5px;
   font-weight: 700;
@@ -166,12 +167,17 @@
   background: var(--danger-wash);
   color: var(--danger);
 }
+.brief-done {
+  background: var(--ok-wash);
+  color: var(--ok);
+}
 .brief-opt {
   background: var(--line-soft);
   color: var(--ink-faint);
 }
 /* badge sits at the end of a field label */
 .field label .brief-req,
+.field label .brief-done,
 .field label .brief-opt {
   margin-left: 8px;
   vertical-align: middle;
@@ -942,7 +948,7 @@
 .icp-foot {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 14px;
   margin-top: 16px;
   flex-wrap: wrap;
@@ -1366,6 +1372,36 @@
   color: var(--ink-faint);
   border: 1px dashed var(--line);
   border-radius: 12px;
+}
+
+/* inline spinner + panel-level loading state (brief/ICP/spec hydrate) */
+@keyframes hs-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.hs-spinner {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--cerulean-wash);
+  border-top-color: var(--cerulean-deep);
+  border-radius: 50%;
+  animation: hs-spin 0.7s linear infinite;
+}
+.panel-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 56px 18px;
+  font-size: 13.5px;
+  color: var(--ink-faint);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hs-spinner {
+    animation: none;
+  }
 }
 
 /* summary meta tags */
