@@ -1,11 +1,23 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { highlightBody } from "@/lib/tmpl";
+import {
+  type IcpApi,
+  type ResearchSpecResult,
+  createIcp as apiCreateIcp,
+  deleteIcp as apiDeleteIcp,
+  getBrief,
+  getResearchSpec,
+  listIcps,
+  putBrief,
+  structureBrief,
+  updateIcp as apiUpdateIcp,
+} from "@/lib/api";
 import "./workspace.css";
 
 // ICP (section 2) + Personas (section 3), held per profile
@@ -21,7 +33,7 @@ type IcpFields = {
   buyerVsChampion: string;
   avoidTitles: string[];
 };
-type Icp = { short: string; tag: string; persona: string; fields: IcpFields };
+type Icp = { id?: string; short: string; tag: string; persona: string; fields: IcpFields };
 // Global brief sections (1, 4, 5, 6, 7) — filled once
 type Brief = {
   companyName: string;
@@ -305,57 +317,183 @@ const blankFields = (): IcpFields => ({
   avoidTitles: [],
 });
 
-const sampleFields = (): IcpFields => ({
-  industries: ["SaaS", "Fintech"],
-  companySize: "50–500 employees",
-  maturity: "Growth",
-  geographies: ["North America", "UK"],
-  technologies: ["Salesforce", "Outreach"],
-  jobTitles: ["Head of Sales", "VP Revenue"],
-  seniority: ["VP", "Director"],
-  departments: ["Sales", "RevOps"],
-  buyerVsChampion: "CRO signs off, Head of Sales champions",
-  avoidTitles: ["Procurement", "Junior analysts"],
-});
-
-const sampleBrief = (): Brief => ({
-  companyName: "HoldSlot",
-  website: "https://holdslot.com",
-  sell: "A workforce analytics platform that helps enterprises reduce attrition",
-  problem:
-    "Companies lose their best people without warning. We surface the early signals so leaders can act before resignations happen.",
-  dealSize: "$25,000 / year",
-  salesCycle: "1–3 months",
-  valueProps: [
-    "Predict attrition 90 days out",
-    "Cut onboarding time 40%",
-    "One view for every team lead",
-  ],
-  proofPoints:
-    "Work with 3 of the top 10 logistics firms in the region · Cut onboarding time by 40% for a Fortune 500 client · Backed by a tier-1 investor.",
-  signals:
-    "Just hired a VP Sales · Recently expanded to a new market · Just raised funding · Posting about scaling the team.",
-  objections: "We already have a tool · No budget this quarter",
-  competitors: "Competitor A, Competitor B",
-  tone: "Professional & friendly",
-  languages: ["English"],
+// An all-empty brief (every key present so the controlled inputs stay controlled). The live
+// brief loaded from the API is merged over this, so missing keys default to empty, not sample.
+const blankBrief = (): Brief => ({
+  companyName: "",
+  website: "",
+  sell: "",
+  problem: "",
+  dealSize: "",
+  salesCycle: "",
+  valueProps: ["", "", ""],
+  proofPoints: "",
+  signals: "",
+  objections: "",
+  competitors: "",
+  tone: "",
+  languages: [],
   languageOther: "",
   excludeCustomers: "",
   excludeDeals: "",
   doNotContact: "",
   compliance: "",
-  meetingsLand: "Round-robin across 3 AEs",
-  attendees: "Jane Doe (AE), John Smith (Sales Lead)",
-  availability: "Tue–Thu, 10am–4pm GMT",
-  channel: "Slack",
-  contact: "Sample Contact, Ops · contact@holdslot.com",
-  approver: "Sample Approver, COO",
-  meetingsPerMonth: "15",
-  qualifiedDef:
-    "A decision-maker at a company in our ICP who shows up to a 20-minute call and has genuine interest in solving the problem we address.",
-  first90:
-    "A predictable flow of 12–15 qualified meetings a month and at least 2 deals in late-stage pipeline.",
+  meetingsLand: "",
+  attendees: "",
+  availability: "",
+  channel: "",
+  contact: "",
+  approver: "",
+  meetingsPerMonth: "",
+  qualifiedDef: "",
+  first90: "",
 });
+
+const blankIcp = (): Icp => ({
+  short: "ICP A",
+  tag: "New profile",
+  persona: "",
+  fields: blankFields(),
+});
+
+// The ICP card model ⇄ the API's {name, tag, data} document (persona + fields live in data).
+const icpToApi = (icp: Icp) => ({
+  name: icp.short,
+  tag: icp.tag,
+  data: { persona: icp.persona, fields: icp.fields },
+});
+const apiToIcp = (a: IcpApi): Icp => {
+  const d = (a.data ?? {}) as { persona?: string; fields?: Partial<IcpFields> };
+  return {
+    id: a.id,
+    short: a.name,
+    tag: a.tag,
+    persona: d.persona ?? "",
+    fields: { ...blankFields(), ...(d.fields ?? {}) },
+  };
+};
+
+// Read-only chips for a ResearchSpec value list (— when empty). Reuses the ICP card grammar.
+function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
+  if (!items || !items.length) return <span className="ph">—</span>;
+  return (
+    <div className="icp-chips">
+      {items.map((v, i) => (
+        <span key={i} className={"icp-chip" + (warn ? " warn" : "")}>
+          {v}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// The LLM-generated ResearchSpec, rendered for operator review with existing classes only.
+function SpecReview({ spec, versions }: { spec: ResearchSpecResult; versions: number[] }) {
+  const s = spec.spec as {
+    company_search?: {
+      industries_include?: string[];
+      description_keywords_include?: string[];
+      employee_count?: { min?: number | null; max?: number | null };
+      locations_include?: { countries?: string[] };
+      max_results?: number;
+    };
+    people_search?: { job_title_keywords?: string[] }[];
+    exclusions?: { domains?: string[] };
+  };
+  const cs = s.company_search ?? {};
+  const titles = (s.people_search ?? []).flatMap((p) => p.job_title_keywords ?? []);
+  const ec = cs.employee_count;
+  const size =
+    ec?.min != null && ec?.max != null
+      ? `${ec.min}–${ec.max}`
+      : ec?.min != null
+        ? `${ec.min}+`
+        : ec?.max != null
+          ? `up to ${ec.max}`
+          : null;
+  return (
+    <div className="panel" style={{ marginTop: 18 }}>
+      <div className="panel-head">
+        <h3>Research specification</h3>
+        <div className="row" style={{ gap: 8 }}>
+          <span className="badge badge-info">v{spec.version}</span>
+          {versions
+            .filter((v) => v !== spec.version)
+            .map((v) => (
+              <span key={v} className="badge badge-neutral">
+                v{v}
+              </span>
+            ))}
+        </div>
+      </div>
+      <div className="panel-pad">
+        {spec.model && (
+          <div className="info-line" style={{ marginBottom: 14 }}>
+            Generated by <strong>{spec.model}</strong> · Clay-ready targeting parameters
+          </div>
+        )}
+        <div className="icp-grid">
+          <div className="icp-cell">
+            <div className="k">Industries</div>
+            <div className="v">
+              <SpecChips items={cs.industries_include} />
+            </div>
+          </div>
+          <div className="icp-cell">
+            <div className="k">Company size</div>
+            <div className="v">{size ?? <span className="ph">—</span>}</div>
+          </div>
+          <div className="icp-cell">
+            <div className="k">Geography</div>
+            <div className="v">
+              <SpecChips items={cs.locations_include?.countries} />
+            </div>
+          </div>
+          <div className="icp-cell">
+            <div className="k">Keywords</div>
+            <div className="v">
+              <SpecChips items={cs.description_keywords_include} />
+            </div>
+          </div>
+          <div className="icp-cell">
+            <div className="k">Target titles</div>
+            <div className="v">
+              <SpecChips items={titles} />
+            </div>
+          </div>
+          <div className="icp-cell">
+            <div className="k">Exclusions</div>
+            <div className="v">
+              <SpecChips items={s.exclusions?.domains} warn />
+            </div>
+          </div>
+        </div>
+        <div className="icp-foot">
+          <div className="est">
+            Up to {cs.max_results ?? "—"} matching accounts <Sample>sample</Sample>
+          </div>
+        </div>
+        {spec.gaps.length > 0 && (
+          <div className="brief-callout" style={{ marginTop: 8 }}>
+            <span className="ci">!</span>
+            <div>
+              <strong>
+                {spec.gaps.length} gap{spec.gaps.length > 1 ? "s" : ""} to sharpen targeting
+              </strong>
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                {spec.gaps.map((g, i) => (
+                  <li key={i}>
+                    <strong>{g.field}</strong> — {g.ask}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // type-and-enter chips for multi-value fields
 function TagInput({
@@ -661,42 +799,32 @@ export default function Workspace() {
   }
 
   // ICPs
-  const [icps, setIcps] = useState<Icp[]>([
-    {
-      short: "ICP A",
-      tag: "Primary persona",
-      persona: "Placeholder: the primary buyer we target, their role, and why they buy.",
-      fields: sampleFields(),
-    },
-    {
-      short: "ICP B",
-      tag: "Expansion segment",
-      persona: "Placeholder: a secondary segment to expand into once the primary lands.",
-      fields: sampleFields(),
-    },
-  ]);
+  // Starts with one empty profile so `icps[icpSel]` is always defined; the live ICPs from
+  // the API replace this on load (or it stays as the first, unsaved profile).
+  const [icps, setIcps] = useState<Icp[]>([blankIcp()]);
   const [icpSel, setIcpSel] = useState(0);
   function newIcp() {
-    const letter = String.fromCharCode(65 + icps.length);
+    // Functional append so two rapid clicks can't collide on the same letter/length.
     setIcps((s) => [
       ...s,
       {
-        short: "ICP " + letter,
+        short: "ICP " + String.fromCharCode(65 + s.length),
         tag: "New profile",
         persona: "",
         fields: blankFields(),
       },
     ]);
     setIcpSel(icps.length);
-    toast("ICP " + letter + " created");
+    toast("ICP profile created");
   }
   function delIcp() {
     if (icps.length <= 1) return toast("Keep at least one ICP", "warn");
-    const nm = icps[icpSel].short;
+    const cur = icps[icpSel];
+    if (cur.id) setDeletedIcpIds((s) => [...s, cur.id!]);
     const next = icps.filter((_, i) => i !== icpSel);
     setIcps(next);
     setIcpSel((s) => Math.min(s, next.length - 1));
-    toast(nm + " deleted", "warn");
+    toast(cur.short + " deleted", "warn");
   }
   const updateIcp = (patch: Partial<Icp>) =>
     setIcps((s) => s.map((x, i) => (i === icpSel ? { ...x, ...patch } : x)));
@@ -706,7 +834,7 @@ export default function Workspace() {
     );
 
   // Business brief (global sections)
-  const [brief, setBrief] = useState<Brief>(sampleBrief);
+  const [brief, setBrief] = useState<Brief>(blankBrief);
   const [submitted, setSubmitted] = useState(false);
   // CSV attachment name per exclusion field (keyed: "customers", "deals")
   const [csvNames, setCsvNames] = useState<Record<string, string>>({});
@@ -743,10 +871,105 @@ export default function Workspace() {
     setOpenSec(next);
     if (next) scrollToSec(next);
   };
-  function saveAndContinue(cur: number) {
+  // --- Phase B: live brief + ICP + ResearchSpec ----------------------------
+  const [saving, setSaving] = useState(false);
+  const [structuring, setStructuring] = useState(false);
+  const [spec, setSpec] = useState<ResearchSpecResult | null>(null);
+  const [specVersions, setSpecVersions] = useState<number[]>([]);
+  // IDs of saved ICPs the operator has deleted; flushed to the API on the next save.
+  const [deletedIcpIds, setDeletedIcpIds] = useState<string[]>([]);
+  // Guards against concurrent persist() runs (rapid section saves / save-during-structure).
+  const savingRef = useRef(false);
+
+  // Hydrate the brief + ICPs + latest spec for this client.
+  useEffect(() => {
+    if (!client) return;
+    let alive = true;
+    (async () => {
+      // Load independently so one failing endpoint doesn't blank the others.
+      const b = await getBrief(client).catch(() => null);
+      const ics = await listIcps(client).catch(() => null);
+      const rs = await getResearchSpec(client).catch(() => null);
+      if (!alive) return;
+      if (b) {
+        const d = (b.data ?? {}) as Partial<Brief>;
+        // Coerce the multi-value fields to arrays so the controlled inputs never crash on a
+        // malformed document (the form always writes arrays, but be defensive on read).
+        setBrief({
+          ...blankBrief(),
+          ...d,
+          valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
+          languages: Array.isArray(d.languages) ? d.languages : [],
+        });
+      }
+      if (ics) {
+        setIcps(ics.length ? ics.map(apiToIcp) : [blankIcp()]);
+        setIcpSel(0);
+        setDeletedIcpIds([]);
+      }
+      if (rs) {
+        setSpec(rs.latest);
+        setSpecVersions(rs.versions);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+
+  // Persist the brief + sync every ICP (create new, update existing, delete removed).
+  // Sequential so a new ICP's server id is recorded immediately — a mid-sync failure can
+  // never cause the same ICP to be re-created (and duplicated) on the next save.
+  async function persist() {
+    if (savingRef.current) return; // drop overlapping saves (same data) rather than duplicate
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await putBrief(client, brief as unknown as Record<string, unknown>);
+      for (const icp of icps) {
+        if (icp.id) {
+          await apiUpdateIcp(client, icp.id, icpToApi(icp));
+        } else {
+          const created = await apiCreateIcp(client, icpToApi(icp));
+          // Record the new id immediately (reference-matched) so it survives a later failure.
+          setIcps((s) => s.map((x) => (x === icp ? { ...x, id: created.id } : x)));
+        }
+      }
+      for (const id of deletedIcpIds) await apiDeleteIcp(client, id);
+      setDeletedIcpIds([]);
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  }
+
+  // Save the brief + ICPs, then structure them into a new ResearchSpec version.
+  async function runStructure() {
+    setStructuring(true);
+    try {
+      await persist();
+      const rs = await structureBrief(client);
+      setSpec(rs);
+      setSpecVersions(await getResearchSpec(client).then((r) => r.versions));
+      toast("Research spec v" + rs.version + " generated");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Structuring failed", "warn");
+    } finally {
+      setStructuring(false);
+    }
+  }
+
+  async function saveAndContinue(cur: number) {
     // Surface missing required fields once the operator tries to save.
     setSubmitted(true);
-    toast("Draft saved");
+    let ok = true;
+    try {
+      await persist(); // confirm the save before claiming progress
+    } catch (e) {
+      ok = false;
+      toast(e instanceof Error ? e.message : "Save failed", "warn");
+    }
+    if (ok) toast("Saved");
     const order = [1, 2, 3, 4, 5, 6];
     const next = order.find((n) => n > cur && !secComplete[n]) ?? (cur < 6 ? cur + 1 : cur);
     setOpenSec(next);
@@ -1102,6 +1325,19 @@ export default function Workspace() {
             </div>
             <span className="bp-label">{completePct}% complete</span>
           </div>
+          <button
+            type="button"
+            className="btn btn-accent btn-sm"
+            disabled={structuring || saving || completePct === 0}
+            onClick={runStructure}
+            title={
+              completePct === 0
+                ? "Fill in the brief first"
+                : "Turn this brief and its ICPs into a research-ready spec"
+            }
+          >
+            {structuring ? "Structuring…" : "Structure research spec"}
+          </button>
         </div>
 
         {/* 1 · Company & Product Basics */}
@@ -1214,7 +1450,7 @@ export default function Workspace() {
             <div className="icp-tabs">
               {icps.map((p, i) => (
                 <button
-                  key={p.short}
+                  key={p.id ?? "new-" + i}
                   className={clsx("icp-pill", i === icpSel && "on")}
                   onClick={() => setIcpSel(i)}
                 >
@@ -1752,6 +1988,8 @@ export default function Workspace() {
             </div>
           </div>
         </Section>
+
+        {spec && <SpecReview spec={spec} versions={specVersions} />}
       </section>
 
       {/* PROSPECT LIST */}
@@ -1800,8 +2038,8 @@ export default function Workspace() {
             </div>
             <select className="select" value={fIcp} onChange={(e) => setFIcp(e.target.value)}>
               <option value="">All ICPs</option>
-              {icps.map((p) => (
-                <option key={p.short}>{p.short}</option>
+              {icps.map((p, i) => (
+                <option key={p.id ?? "new-" + i}>{p.short}</option>
               ))}
             </select>
             <select className="select" value={fBatch} onChange={(e) => setFBatch(e.target.value)}>

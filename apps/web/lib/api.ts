@@ -63,9 +63,108 @@ export async function reset(token: string, newPassword: string): Promise<void> {
 }
 
 export async function getMe(): Promise<Me> {
-  const r = await fetch(`${API_BASE}/me`, {
-    headers: { authorization: `Bearer ${getAccess()}` },
+  const r = await fetch(`${API_BASE}/me`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// --- Phase B (S1) — Brief, ICP, ResearchSpec --------------------------------
+
+function authHeaders(json = false): Record<string, string> {
+  const h: Record<string, string> = {};
+  const token = getAccess();
+  if (token) h["authorization"] = `Bearer ${token}`;
+  if (json) h["content-type"] = "application/json";
+  return h;
+}
+
+export type BriefDoc = Record<string, unknown>;
+export type BriefResult = {
+  data: BriefDoc;
+  completeness: number;
+  missing: string[];
+  updated_at: string | null;
+};
+export type IcpApi = {
+  id: string;
+  name: string;
+  tag: string;
+  data: Record<string, unknown>;
+  updated_at: string | null;
+};
+export type ResearchSpecResult = {
+  version: number;
+  spec: Record<string, unknown>;
+  gaps: { field: string; why: string; ask: string }[];
+  model: string | null;
+  llm_call_id: string | null;
+  created_at: string | null;
+};
+export type ResearchSpecList = { latest: ResearchSpecResult | null; versions: number[] };
+
+export async function getBrief(client: string): Promise<BriefResult> {
+  const r = await fetch(`${API_BASE}/${client}/brief`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function putBrief(client: string, data: BriefDoc): Promise<BriefResult> {
+  const r = await fetch(`${API_BASE}/${client}/brief`, {
+    method: "PUT",
+    headers: authHeaders(true),
+    body: JSON.stringify({ data }),
   });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function listIcps(client: string): Promise<IcpApi[]> {
+  const r = await fetch(`${API_BASE}/${client}/icps`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+type IcpBody = { name: string; tag: string; data: Record<string, unknown> };
+
+export async function createIcp(client: string, body: IcpBody): Promise<IcpApi> {
+  const r = await fetch(`${API_BASE}/${client}/icps`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function updateIcp(client: string, id: string, body: IcpBody): Promise<IcpApi> {
+  const r = await fetch(`${API_BASE}/${client}/icps/${id}`, {
+    method: "PUT",
+    headers: authHeaders(true),
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function deleteIcp(client: string, id: string): Promise<void> {
+  const r = await fetch(`${API_BASE}/${client}/icps/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (!r.ok && r.status !== 404) throw new Error(await detail(r));
+}
+
+export async function structureBrief(client: string): Promise<ResearchSpecResult> {
+  const r = await fetch(`${API_BASE}/${client}/brief/structure`, {
+    method: "POST",
+    headers: authHeaders(true),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function getResearchSpec(client: string): Promise<ResearchSpecList> {
+  const r = await fetch(`${API_BASE}/${client}/research-spec`, { headers: authHeaders() });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
