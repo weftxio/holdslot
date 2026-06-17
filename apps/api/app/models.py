@@ -283,6 +283,10 @@ class ResearchSpec(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     spec: Mapped[dict] = mapped_column(JSONB, nullable=False)
     gaps: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    # Proposed ICPs inferred from the existing-customer list (alongside gaps, not in `spec`).
+    icp_suggestions: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     llm_call_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True),

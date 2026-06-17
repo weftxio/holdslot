@@ -123,7 +123,7 @@ export default function Home() {
                 Log in
               </Link>
               <a href="#start" className="btn btn-primary" style={{ padding: "11px 18px" }}>
-                Get started
+                Get Leads
               </a>
               <button
                 className="menu-btn"
@@ -146,7 +146,7 @@ export default function Home() {
             Log in
           </Link>
           <a href="#start" className="btn btn-primary">
-            Get started
+            Get Leads
           </a>
         </div>
       </header>
@@ -166,7 +166,7 @@ export default function Home() {
             </p>
             <div className="hero-ctas">
               <a href="#start" className="btn btn-primary">
-                Get started
+                Get Leads
               </a>
               <a href="#how" className="btn btn-ghost">
                 See how it works
@@ -478,7 +478,7 @@ export default function Home() {
                   onKeyDown={(e) => e.key === "Enter" && submit()}
                 />
                 <button className="btn" onClick={submit}>
-                  {sending ? "Sending…" : "Get my free list"}
+                  {sending ? "Sending…" : "Get Free Leads"}
                 </button>
               </div>
               <div className={"form-msg" + (msg ? " error" : "")}>{msg}</div>

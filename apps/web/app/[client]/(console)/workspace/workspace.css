@@ -353,12 +353,99 @@
   line-height: 1;
 }
 
-/* "Nothing to exclude" attestation checkbox under each required exclusion field. */
+/* Data-format guide above each exclusion textarea: three fixed columns + a worked example. */
+.excl-format {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px 14px;
+  margin: 0 0 8px;
+  padding: 9px 12px;
+  background: var(--cerulean-wash);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.excl-format .ef-cols {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+.excl-format .ef-col {
+  font-weight: 600;
+  color: var(--cerulean-deep);
+  letter-spacing: 0.01em;
+}
+.excl-format .ef-sep {
+  color: var(--ink-faint);
+}
+.excl-format .ef-note {
+  margin-left: 4px;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+.excl-format .ef-ex {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--ink-soft);
+}
+
+/* Skipped-row report shown under an exclusion field after a CSV import. */
+.csv-errors {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: var(--danger-wash);
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+.csv-errors .ce-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-weight: 600;
+  color: var(--danger);
+  margin-bottom: 6px;
+}
+.csv-errors .ce-x {
+  border: none;
+  background: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.csv-errors ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.csv-errors li {
+  line-height: 1.4;
+}
+.csv-errors .ce-raw {
+  color: var(--ink-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+.csv-errors .ce-more {
+  margin-top: 5px;
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+/* "Nothing to exclude" attestation checkbox — sits on the upload row, pushed to its right end. */
 .brief-none {
   display: flex;
   align-items: center;
   gap: 9px;
-  margin-top: 11px;
+  margin-left: auto;
   font-size: 12.5px;
   color: var(--cerulean-deep);
   cursor: pointer;
@@ -994,6 +1081,49 @@
 .icp-cell {
   background: #fff;
   padding: 14px 16px;
+}
+/* Suggested-ICP card (from the customer-list comparison) under the Prospect Scope panel. */
+.icp-suggest {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--info-wash);
+  border: 1px solid var(--cerulean);
+  border-radius: 10px;
+}
+.icp-suggest .is-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.icp-suggest .is-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.icp-suggest .is-why {
+  margin: 8px 0 4px;
+  font-size: 12.5px;
+  color: var(--ink-soft);
+  line-height: 1.45;
+}
+.icp-suggest .is-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.icp-suggest .is-row .k {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  min-width: 64px;
 }
 .icp-cell .k {
   font-size: 10.5px;

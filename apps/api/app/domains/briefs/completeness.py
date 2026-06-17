@@ -32,7 +32,7 @@ REQUIRED_BRIEF_FIELDS: tuple[str, ...] = (
     "excludeCustomers",
     "excludeDeals",
     # §5 Logistics & handoff
-    "meetingsLand",
+    "attendeeEmails",
     "attendees",
     "availability",
     "channel",

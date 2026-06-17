@@ -24,6 +24,7 @@ class ResearchSpecOut(BaseModel):
     version: int
     spec: dict
     gaps: list[dict]
+    icp_suggestions: list[dict] = []
     model: str | None = None
     llm_call_id: str | None = None
     created_at: str | None = None

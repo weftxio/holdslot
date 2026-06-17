@@ -247,6 +247,19 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
   (fit scoring/dedupe), EventBridge (usage reset). *MVP:* operator runs the Clay table; results flow
   back via webhook.
 - **AWS:** + SQS, worker Lambda, API Gateway callback route, S3 (raw payloads), EventBridge.
+- **Phase C remark (2026-06-14):** S2 is finalized as **Clay seed + AI sourcing loop**, built **MVP-first
+  on Clay's FREE tier**. Probed 2026-06-14: Clay has **no API to create tables/sources on any tier**
+  (the stored key is a webhook auth token, not a REST key) → a one-time in-app generic enrichment table
+  is unavoidable but reused for all clients. **Rows IN are programmatic** (push to the webhook source,
+  works on free); only **results OUT** differ — free lacks the HTTP API output column (Growth-gated) and
+  caps ~200 rows, so MVP exports CSV → `POST …/prospects/import`. **No SQS, no callback, no signature
+  verification, no new AWS resources**; application code + one migration.
+  The Growth-tier **callback + SQS + programmatic push + BYOK** path is a documented **drop-in upgrade
+  that swaps only the ingest transport** — suppression, dedupe, fit-scoring, schema, and UI are identical.
+  The fit rubric + sourcing prompt v1 are **authored and locked** (`docs/prompts/`); the LLM loop uses
+  OpenRouter `:online` (no separate web-research provider). `source` / `source_lineage` /
+  `outreach_outcome` land in the schema now so S4/S5 responses close the self-improve loop with no
+  redesign. Finalized build order C0–C6 (each tagged [MVP]/[SCALE]): `initial-build-plan.md` Phase C.
 
 ### S3 — Sendout batch & client approval · **P0 (MVP, revenue precondition)**
 - **Features:** Create `Batch` from selected prospects (pending/approved/rejected + approved/total).
@@ -408,6 +421,13 @@ not Clay, dominates at low tenant counts; Clay dominates once the book grows.
 including churn that never books) — not **per meeting billed** (winners only). That asymmetry is
 exactly what the plan-derived enrichment cap guards (§6 #7: 150/400, $3 overage past it).
 
+> **Re-pricing remark (2026-06-13, affects Phase C):** Clay's 2026-03-11 overhaul supersedes the legacy
+> credit math in table B ("~40 credits/prospect at ~$0.017/cr"): dual currency (Data Credits ~$0.05 +
+> Actions <$0.01), **failed lookups free**, the **HTTP API column reportedly Growth-plan-gated**
+> (~$446–495/mo platform fee — a shared-floor item, not per-tenant), and **BYOK = 0 Data Credits**
+> (~$0.03–0.10/verified email floor). The Phase C AI sourcing loop further lowers blended $/prospect by
+> enriching only fit-passed candidates. **Re-cost this section at C0 from Clay's in-app cost preview.**
+
 **Cost-minimization decisions (full feature, least spend):**
 1. **Clay cap + wave sourcing** — the cap bounds worst-case burn; source in waves (partial first
    batch, top up only on approval traction) so a churn client that quits in month 2–3 never burns the
@@ -524,22 +544,27 @@ infra/
 
 **S0 (Phase A) + S1 (Phase B) are built & live on `dev`** — auth + clients + console on live data, and
 the Brief/ICP → `ResearchSpec` targeting loop (backend on Lambda v8, Workspace web on Amplify `dev`). The
-consolidated Phase B as-built record and the step-by-step **Phase C** task list both live in
-`initial-build-plan.md`. **Current front = S2 / Phase C (Clay).**
+consolidated Phase B as-built record and the **finalized Phase C build order (C0–C6, 2026-06-13)** both
+live in `initial-build-plan.md`. **Current front = S2 / Phase C (Clay seed + AI sourcing loop).**
 
 1. **Founder acceptance test (S1 close-out, no code):** on dev, fill Brief+ICP → Generate Scope →
    confirm the spec grid + gaps render and survive reload. This is S1's only open item.
-2. **Clear C0 gates (no code):** size the Clay credit/enrichment plan; build the Clay template workbook
-   (Find Companies + Find People + waterfall + HTTP API output column) and capture
-   `table_id`/`inbound_webhook_url`/`inbound_webhook_secret` into `holdslot/prod/clay`, then
-   `verify_keys --strict clay`; freeze the **fit-scoring rubric**; promote the brief exclusion fields to
-   a load-bearing suppression path. *These business inputs are the real risk, not the code.*
-3. **Code C1 → C2:** the `prospect`/`research_run` schema + migration (raw payloads to S3); the
-   suppression + push pipeline (`POST …/icps/{id}/research`) that filters before any Clay push.
-4. **Code C3 → C4:** the `POST /clay/results` callback + SQS ingest + fit scoring (reusing the B3
-   OpenRouter adapter); anti-burn quota enforcement (cap → meter/overage → monthly reset).
-5. **C5:** wire the Workspace *Prospect list* tab to live data; run the Phase-C acceptance test; **tick
-   S2 here.** Then proceed S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
+2. **Clear C0 gates (MVP, no code):** create the Clay **FREE** account + build the template workbook
+   (CSV-export ingest — confirm the HTTP API column is absent), capture `table_id` into
+   `holdslot/prod/clay`; promote the exclusion fields (incl. `doNotContact`). The **fit-scoring rubric v1
+   and sourcing prompt v1 are already authored & locked** (`docs/prompts/`). *(SCALE gates — Growth plan,
+   HTTP API verify, BYOK, `verify_keys --strict clay` — defer to the Growth move.)*
+3. **Code C1 → C2 [MVP]:** schema + migration with `source`/`source_lineage`/`outreach_outcome` lineage,
+   `fit_components`, and `sourcing_doc` versions (seed v1 from the prompt files; raw CSV row in JSONB —
+   no S3 at MVP); the suppression+dedupe gate as a pure, unit-tested function.
+4. **Code C3 → C4 [MVP]:** the `POST …/prospects/import` CSV ingest → suppression → `prospect_fit`
+   scoring (B3 adapter, default model; synchronous, no SQS); usage tracking + the per-source
+   $/accepted-prospect scoreboard. *(SCALE: swap to `POST /clay/results` callback + SQS + S3; enforce the
+   cap → $3/prospect overage → EventBridge reset.)*
+5. **Code C5 → C6 [MVP]:** the AI sourcing loop v1 (`POST …/sourcing-rounds`, human-in-the-loop,
+   sonnet-4.6 **`:online`** — adds per-purpose model routing); wire the Workspace *Prospect list* + CSV
+   import + Sourcing controls panel; run the Phase-C acceptance; **tick S2 here.** Then proceed
+   S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
 
 Architecture and product decisions are locked (§6 1–11), including the USD tiered pricing model (#11) and
 the `ResearchSpec` v1 Clay contract (§S1). **Build-time check still pending (does not block S2):** §6 #9 —

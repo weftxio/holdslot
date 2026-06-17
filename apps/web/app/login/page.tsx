@@ -238,7 +238,7 @@ export default function Login() {
               </button>
 
               <p className="alt">
-                New to HoldSlot? <Link href="/#start">Get started</Link>
+                New to HoldSlot? <Link href="/#start">Get Leads</Link>
               </p>
             </div>
           )}

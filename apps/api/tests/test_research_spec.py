@@ -46,6 +46,17 @@ def _valid_targeting() -> dict:
         ],
         "exclusions": {"domains": [], "company_linkedin_urls": [], "emails": []},
         "gaps": [{"field": "revenue_usd", "why": "unknown budget", "ask": "What ACV?"}],
+        "icp_suggestions": [
+            {
+                "name": "Enterprise 3PLs (paying-customer lookalike)",
+                "rationale": "Existing customers skew larger than the stated mid-market ICP.",
+                "resembles_stated_icp": False,
+                "evidence_companies": ["dhl.com", "kuehne-nagel.com"],
+                "suggested_industries": ["Logistics"],
+                "suggested_titles": ["VP of Supply Chain"],
+                "confidence": "low",
+            }
+        ],
     }
 
 
@@ -87,12 +98,15 @@ def test_assemble_merges_server_credit_policy_not_llm():
     targeting = _valid_targeting()
     # Even if the model tried to set a credit policy, assemble must use the server's.
     targeting["credit_policy"] = {"test_batch_size": 9999, "evil": True}
-    spec, gaps = RS.assemble_spec(targeting)
+    spec, gaps, icp_suggestions = RS.assemble_spec(targeting)
     assert spec["credit_policy"] == RS.CREDIT_POLICY  # server-set, deterministic
     assert spec["credit_policy"]["test_batch_size"] == 10
     assert spec["spec_version"] == RS.SPEC_VERSION
     assert spec["company_search"]["industries_include"] == ["Logistics"]
     assert gaps and gaps[0]["field"] == "revenue_usd"
+    # icp_suggestions are split out alongside gaps — never folded into the Clay-bound spec.
+    assert "icp_suggestions" not in spec
+    assert icp_suggestions and icp_suggestions[0]["resembles_stated_icp"] is False
 
 
 def test_json_schema_is_strict():
@@ -100,8 +114,14 @@ def test_json_schema_is_strict():
     assert s["strict"] is True
     root = s["schema"]
     assert root["additionalProperties"] is False
-    # All four groups are required at the root.
-    assert set(root["required"]) == {"company_search", "people_search", "exclusions", "gaps"}
+    # All five groups are required at the root.
+    assert set(root["required"]) == {
+        "company_search",
+        "people_search",
+        "exclusions",
+        "gaps",
+        "icp_suggestions",
+    }
 
 
 # --- gated integration ---------------------------------------------------------

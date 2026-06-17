@@ -20,7 +20,7 @@ import json
 from pydantic import BaseModel, ConfigDict
 
 SPEC_VERSION = 1
-PROMPT_VERSION = "brief-structure-v1"
+PROMPT_VERSION = "brief-structure-v2"
 PURPOSE = "brief_structure"
 
 # Deterministic credit policy (server-merged, NOT LLM-set). Encodes the credit-minimization
@@ -117,6 +117,22 @@ _GAP_ITEM = _obj(
     }
 )
 
+# Proposed ICP derived from the existing-customer list (the realest proof of who pays),
+# surfaced when the paying customers diverge from every stated ICP. Stored alongside `gaps`
+# (NOT in the Clay-bound spec); the operator accepts → it becomes a real ICP. A cheap
+# first-pass — the data-confirmed version lands in Phase C after Clay enriches the customers.
+_ICP_SUGGESTION_ITEM = _obj(
+    {
+        "name": {"type": "string"},
+        "rationale": {"type": "string"},
+        "resembles_stated_icp": {"type": "boolean"},
+        "evidence_companies": _arr_str(),
+        "suggested_industries": _arr_str(),
+        "suggested_titles": _arr_str(),
+        "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+    }
+)
+
 RESEARCH_SPEC_JSON_SCHEMA: dict = {
     "name": "ResearchSpec",
     "strict": True,
@@ -126,6 +142,7 @@ RESEARCH_SPEC_JSON_SCHEMA: dict = {
             "people_search": {"type": "array", "items": _PEOPLE_ITEM},
             "exclusions": _EXCLUSIONS,
             "gaps": {"type": "array", "items": _GAP_ITEM},
+            "icp_suggestions": {"type": "array", "items": _ICP_SUGGESTION_ITEM},
         }
     ),
 }
@@ -211,6 +228,17 @@ class GapV1(BaseModel):
     ask: str
 
 
+class IcpSuggestionV1(BaseModel):
+    model_config = _STRICT
+    name: str
+    rationale: str
+    resembles_stated_icp: bool
+    evidence_companies: list[str]
+    suggested_industries: list[str]
+    suggested_titles: list[str]
+    confidence: str
+
+
 class ResearchSpecV1(BaseModel):
     """Validates the LLM targeting output — exactly as strict as the json_schema."""
 
@@ -219,19 +247,35 @@ class ResearchSpecV1(BaseModel):
     people_search: list[PeopleSearchItemV1]
     exclusions: ExclusionsV1
     gaps: list[GapV1]
+    icp_suggestions: list[IcpSuggestionV1]
 
 
 def build_messages(brief_data: dict, icps: list[dict]) -> list[dict]:
     """Prompt the model with the WHOLE brief + ICP documents — no per-field plumbing."""
     system = (
-        "You are a B2B go-to-market analyst. Translate a client's business brief and ICP "
-        "profiles into Clay prospecting parameters. Map prose to concrete filters: LinkedIn "
-        "industry labels, employee-count and revenue ranges, locations, and job-title keywords "
-        "(prefer specific titles over seniority). Emit ONLY the schema. When a field cannot be "
-        "determined from the brief, leave its array empty or value null AND add a precise entry "
-        "to `gaps` (field, why it matters for targeting, and a one-line ask to the client). Do "
-        "not invent facts; gaps are better than guesses. Do not include enrichment or credit "
-        "settings — those are set by the system."
+        "You are a B2B go-to-market analyst. From a client's business brief and ICP profiles "
+        "you do TWO jobs.\n\n"
+        "(1) TARGETING. Translate the brief + ICPs into Clay prospecting parameters. Map prose "
+        "to concrete filters: LinkedIn industry labels, employee-count and revenue ranges, "
+        "locations, and job-title keywords (prefer specific titles over seniority).\n\n"
+        "(2) ICP VALIDATION. Treat the client's stated ICPs as HYPOTHESES — clients often list "
+        "markets they aspire to or assume want them. Their existing-customer list is the "
+        "strongest proof of who actually buys; their active deals / pipeline should resemble the "
+        "stated ICPs. When an existing-customer list is present (brief field `excludeCustomers`, "
+        "one company per line as `domain, name, website`), characterize the real paying-customer "
+        "profile from the companies you recognize, then compare it to the stated ICPs. If the "
+        "paying customers MATERIALLY DIFFER from every stated ICP, propose EXACTLY ONE additional "
+        "ICP that resembles them in `icp_suggestions`, with a short rationale naming the "
+        "discrepancy and listing the customers that evidence it. If the customers already fit a "
+        "stated ICP, return an empty `icp_suggestions`.\n\n"
+        "RULES. Emit ONLY the schema. Targeting: when a field cannot be determined from the "
+        "brief, leave its array empty or value null AND add a precise `gaps` entry (field, why "
+        "it matters, one-line ask). Do not invent facts; gaps beat guesses. ICP validation: base "
+        "any suggestion ONLY on companies you actually recognize and set `confidence` honestly "
+        '(use "low" when based on few or unfamiliar companies); never fabricate firmographics '
+        "for companies you don't know — if you cannot characterize the customer list, return an "
+        "empty `icp_suggestions` and add a `gaps` entry noting enrichment is needed to compare. "
+        "Do not include enrichment or credit settings — those are set by the system."
     )
     payload = {"brief": brief_data, "icps": icps}
     user = (
@@ -244,8 +288,12 @@ def build_messages(brief_data: dict, icps: list[dict]) -> list[dict]:
     ]
 
 
-def assemble_spec(targeting: dict) -> tuple[dict, list[dict]]:
-    """Split the validated LLM output into the persisted spec + gaps, merging credit policy."""
+def assemble_spec(targeting: dict) -> tuple[dict, list[dict], list[dict]]:
+    """Split the validated LLM output into the persisted spec + gaps + icp_suggestions.
+
+    `icp_suggestions` are a learning signal, NOT part of the Clay-bound contract, so they
+    live in their own column next to `gaps` — never inside `spec`.
+    """
     spec = {
         "spec_version": SPEC_VERSION,
         "company_search": targeting["company_search"],
@@ -254,4 +302,5 @@ def assemble_spec(targeting: dict) -> tuple[dict, list[dict]]:
         "credit_policy": CREDIT_POLICY,  # deterministic, server-set
     }
     gaps = targeting.get("gaps", [])
-    return spec, gaps
+    icp_suggestions = targeting.get("icp_suggestions", [])
+    return spec, gaps, icp_suggestions

@@ -77,6 +77,7 @@ def _spec_out(row: ResearchSpec) -> ResearchSpecOut:
         version=row.version,
         spec=row.spec,
         gaps=row.gaps,
+        icp_suggestions=row.icp_suggestions,
         model=row.model,
         llm_call_id=str(row.llm_call_id) if row.llm_call_id else None,
         created_at=row.created_at.isoformat() if row.created_at else None,
@@ -119,7 +120,7 @@ def structure_brief(
     except Exception as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "LLM returned an off-contract spec") from e
 
-    spec, gaps = assemble_spec(result.data)
+    spec, gaps, icp_suggestions = assemble_spec(result.data)
     # Insert the next version, retrying on the unique (tenant, version) race so a concurrent
     # structuring never discards this already-completed (and billed) LLM result with a 500.
     for _ in range(5):
@@ -136,6 +137,7 @@ def structure_brief(
             version=next_version,
             spec=spec,
             gaps=gaps,
+            icp_suggestions=icp_suggestions,
             model=result.model,
             llm_call_id=result.llm_call_id,
         )

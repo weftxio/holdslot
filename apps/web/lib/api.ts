@@ -92,10 +92,20 @@ export type IcpApi = {
   data: Record<string, unknown>;
   updated_at: string | null;
 };
+export type IcpSuggestion = {
+  name: string;
+  rationale: string;
+  resembles_stated_icp: boolean;
+  evidence_companies: string[];
+  suggested_industries: string[];
+  suggested_titles: string[];
+  confidence: "low" | "medium" | "high";
+};
 export type ResearchSpecResult = {
   version: number;
   spec: Record<string, unknown>;
   gaps: { field: string; why: string; ask: string }[];
+  icp_suggestions: IcpSuggestion[];
   model: string | null;
   llm_call_id: string | null;
   created_at: string | null;

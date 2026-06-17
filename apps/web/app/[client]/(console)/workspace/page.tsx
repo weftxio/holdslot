@@ -6,8 +6,10 @@ import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { highlightBody } from "@/lib/tmpl";
+import { type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
 import {
   type IcpApi,
+  type IcpSuggestion,
   type ResearchSpecResult,
   createIcp as apiCreateIcp,
   deleteIcp as apiDeleteIcp,
@@ -55,8 +57,9 @@ type Brief = {
   noExcludeCustomers: boolean;
   noExcludeDeals: boolean;
   doNotContact: string;
+  noDoNotContact: boolean;
   compliance: string;
-  meetingsLand: string;
+  attendeeEmails: string;
   attendees: string;
   availability: string;
   channel: string;
@@ -341,8 +344,9 @@ const blankBrief = (): Brief => ({
   noExcludeCustomers: false,
   noExcludeDeals: false,
   doNotContact: "",
+  noDoNotContact: false,
   compliance: "",
-  meetingsLand: "",
+  attendeeEmails: "",
   attendees: "",
   availability: "",
   channel: "",
@@ -400,12 +404,14 @@ function SpecReview({
   saving,
   completePct,
   onStructure,
+  onAcceptIcp,
 }: {
   spec: ResearchSpecResult | null;
   structuring: boolean;
   saving: boolean;
   completePct: number;
   onStructure: () => void;
+  onAcceptIcp: (s: IcpSuggestion) => void;
 }) {
   const s = (spec?.spec ?? {}) as {
     company_search?: {
@@ -524,6 +530,45 @@ function SpecReview({
               </div>
             </div>
           )}
+          {(spec.icp_suggestions ?? []).map((sug, i) => (
+            <div className="icp-suggest" key={i}>
+              <div className="is-head">
+                <div className="is-title">
+                  <span className="badge badge-info">Suggested ICP</span>
+                  <strong>{sug.name}</strong>
+                  <span className={"badge badge-" + (sug.confidence === "high" ? "ok" : "neutral")}>
+                    {sug.confidence} confidence
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-accent btn-sm"
+                  onClick={() => onAcceptIcp(sug)}
+                >
+                  Add as ICP
+                </button>
+              </div>
+              <div className="is-why">{sug.rationale}</div>
+              {sug.evidence_companies.length > 0 && (
+                <div className="is-row">
+                  <span className="k">Based on</span>
+                  <SpecChips items={sug.evidence_companies} />
+                </div>
+              )}
+              {sug.suggested_industries.length > 0 && (
+                <div className="is-row">
+                  <span className="k">Industries</span>
+                  <SpecChips items={sug.suggested_industries} />
+                </div>
+              )}
+              {sug.suggested_titles.length > 0 && (
+                <div className="is-row">
+                  <span className="k">Titles</span>
+                  <SpecChips items={sug.suggested_titles} />
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -634,6 +679,69 @@ function Lbl({
       </label>
       {help && <div className="brief-help">{help}</div>}
     </>
+  );
+}
+
+// Data-format guide for the exclusion lists. Each record carries three columns in a fixed
+// order — identical to the CSV upload — so the textarea is just inline CSV and the on-screen
+// format and the file format are taught once. Shown above each exclusion textarea.
+function ExclFormat() {
+  return (
+    <div className="excl-format" aria-hidden="true">
+      <div className="ef-cols">
+        <span className="ef-col">company domain</span>
+        <span className="ef-sep">,</span>
+        <span className="ef-col">company name</span>
+        <span className="ef-sep">,</span>
+        <span className="ef-col">website</span>
+        <span className="ef-note">· one company per line</span>
+      </div>
+      <div className="ef-ex">tryholdslot.com, HoldSlot, https://tryholdslot.com/</div>
+    </div>
+  );
+}
+
+const EXCL_PLACEHOLDER = "tryholdslot.com, HoldSlot, https://tryholdslot.com/";
+
+// CSV import: field key → the brief text field it fills, plus sane upload guards.
+const EXCL_TEXT_KEY: Record<
+  "customers" | "deals" | "doNotContact",
+  "excludeCustomers" | "excludeDeals" | "doNotContact"
+> = {
+  customers: "excludeCustomers",
+  deals: "excludeDeals",
+  doNotContact: "doNotContact",
+};
+const MAX_CSV_BYTES = 1_000_000; // 1 MB
+const MAX_CSV_ROWS = 5000;
+
+// Skipped-row report shown under an exclusion field after an import.
+function CsvErrors({ errors, onDismiss }: { errors?: RowError[]; onDismiss: () => void }) {
+  if (!errors || errors.length === 0) return null;
+  const shown = errors.slice(0, 8);
+  return (
+    <div className="csv-errors">
+      <div className="ce-head">
+        <span>
+          {errors.length} row{errors.length > 1 ? "s" : ""} skipped — fix and re-upload, or add by
+          hand
+        </span>
+        <button type="button" className="ce-x" onClick={onDismiss} aria-label="Dismiss">
+          ✕
+        </button>
+      </div>
+      <ul>
+        {shown.map((e) => (
+          <li key={e.line}>
+            <b>Line {e.line}</b>: {e.reasons.join(", ")}
+            {e.raw && <span className="ce-raw"> · {e.raw}</span>}
+          </li>
+        ))}
+      </ul>
+      {errors.length > shown.length && (
+        <div className="ce-more">+{errors.length - shown.length} more…</div>
+      )}
+    </div>
   );
 }
 
@@ -867,18 +975,47 @@ export default function Workspace() {
   const [icps, setIcps] = useState<Icp[]>([blankIcp()]);
   const [icpSel, setIcpSel] = useState(0);
   function newIcp() {
-    // Functional append so two rapid clicks can't collide on the same letter/length.
-    setIcps((s) => [
-      ...s,
-      {
-        short: "ICP " + String.fromCharCode(65 + s.length),
-        tag: "",
-        persona: "",
-        fields: blankFields(),
-      },
-    ]);
-    setIcpSel(icps.length);
+    // Functional append so two rapid clicks can't collide on the same letter/length;
+    // capture the new index from the same snapshot so the selection can't go stale either.
+    let added = 0;
+    setIcps((s) => {
+      added = s.length;
+      return [
+        ...s,
+        {
+          short: "ICP " + String.fromCharCode(65 + s.length),
+          tag: "",
+          persona: "",
+          fields: blankFields(),
+        },
+      ];
+    });
+    setIcpSel(added);
     toast("ICP profile created");
+  }
+  // Accept an LLM ICP suggestion (derived from the customer list) → a new, prefilled ICP the
+  // founder reviews and saves. Jumps to the ICP section so it's edited in context.
+  function acceptIcpSuggestion(sug: IcpSuggestion) {
+    let added = 0;
+    setIcps((s) => {
+      added = s.length;
+      return [
+        ...s,
+        {
+          short: sug.name || "ICP " + String.fromCharCode(65 + s.length),
+          tag: "from customers",
+          persona: "",
+          fields: {
+            ...blankFields(),
+            industries: sug.suggested_industries ?? [],
+            jobTitles: sug.suggested_titles ?? [],
+          },
+        },
+      ];
+    });
+    setIcpSel(added);
+    setOpenSec(2);
+    toast("ICP added from suggestion · review & save");
   }
   function delIcp() {
     if (icps.length <= 1) return toast("Keep at least one ICP", "warn");
@@ -901,27 +1038,79 @@ export default function Workspace() {
   const [submitted, setSubmitted] = useState(false);
   // CSV attachment name per exclusion field (keyed: "customers", "deals")
   const [csvNames, setCsvNames] = useState<Record<string, string>>({});
-  const onCsv = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setCsvNames((s) => ({ ...s, [key]: file.name }));
-    toast(file.name + " attached");
-    e.target.value = "";
-  };
+  // Invalid/skipped rows from the last import, per field — shown back to the user.
+  const [csvErrors, setCsvErrors] = useState<Record<string, RowError[]>>({});
+  // CSV import: parse → validate against the three-column contract → merge valid rows
+  // (dedupe by domain) into the field → persist immediately → report skipped rows.
+  const onCsv =
+    (key: "customers" | "deals" | "doNotContact") =>
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      e.target.value = ""; // allow re-uploading the same file
+      if (!file) return;
+
+      const textKey = EXCL_TEXT_KEY[key];
+      if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
+        toast("Please upload a .csv file", "warn");
+        return;
+      }
+      if (file.size > MAX_CSV_BYTES) {
+        toast("CSV is too large (max 1 MB)", "warn");
+        return;
+      }
+      let text: string;
+      try {
+        text = await file.text();
+      } catch {
+        toast("Could not read the file", "warn");
+        return;
+      }
+
+      const { valid, errors, total } = parseExclusionCsv(text);
+      if (total > MAX_CSV_ROWS) {
+        toast(`CSV has too many rows (max ${MAX_CSV_ROWS.toLocaleString()})`, "warn");
+        return;
+      }
+      if (valid.length === 0 && errors.length === 0) {
+        toast("No rows found in the CSV", "warn");
+        return;
+      }
+
+      setCsvNames((s) => ({ ...s, [key]: file.name }));
+      setCsvErrors((s) => ({ ...s, [key]: errors }));
+
+      if (valid.length === 0) {
+        toast("No valid rows — see the issues below", "warn");
+        return;
+      }
+
+      const { text: merged, added, duplicates } = mergeExclusionText(brief[textKey], valid);
+      const next = { ...brief, [textKey]: merged };
+      setBrief(next);
+
+      const parts = [`Imported ${added}`];
+      if (duplicates) parts.push(`${duplicates} duplicate${duplicates > 1 ? "s" : ""} skipped`);
+      if (errors.length) parts.push(`${errors.length} invalid skipped`);
+      toast(parts.join(" · "));
+      void persist(next); // save to DB immediately (state updates are async — pass the snapshot)
+    };
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
   // "Nothing to exclude" attestation: ticking it clears (and locks) the matching
   // list + any attached CSV so we never carry contradictory data into sourcing.
   const setNoExclude =
     (
-      flag: "noExcludeCustomers" | "noExcludeDeals",
-      textKey: "excludeCustomers" | "excludeDeals",
+      flag: "noExcludeCustomers" | "noExcludeDeals" | "noDoNotContact",
+      textKey: "excludeCustomers" | "excludeDeals" | "doNotContact",
       csvKey: string
     ) =>
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const on = e.target.checked;
       setBrief((s) => ({ ...s, [flag]: on, ...(on ? { [textKey]: "" } : {}) }));
-      if (on) setCsvNames((s) => ({ ...s, [csvKey]: "" }));
+      if (on) {
+        setCsvNames((s) => ({ ...s, [csvKey]: "" }));
+        setCsvErrors((s) => ({ ...s, [csvKey]: [] }));
+      }
     };
   const setValueProp = (i: number, val: string) =>
     setBrief((s) => {
@@ -957,6 +1146,9 @@ export default function Workspace() {
   const [deletedIcpIds, setDeletedIcpIds] = useState<string[]>([]);
   // Guards against concurrent persist() runs (rapid section saves / save-during-structure).
   const savingRef = useRef(false);
+  // Latest snapshot that arrived while a save was in flight — flushed when it finishes, so a
+  // CSV import (or any edit) saved mid-save isn't silently dropped. Last-write-wins.
+  const pendingBriefRef = useRef<Brief | null>(null);
 
   // Hydrate the brief + ICPs + latest spec for this client.
   useEffect(() => {
@@ -978,8 +1170,16 @@ export default function Workspace() {
           ...d,
           valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
           languages: Array.isArray(d.languages) ? d.languages : [],
+          // Read-migration: the handoff target was renamed `meetingsLand` → `attendeeEmails`.
+          // Salvage the old value so a previously-complete §5 isn't silently blanked on load.
+          attendeeEmails:
+            d.attendeeEmails ||
+            (typeof (d as Record<string, unknown>).meetingsLand === "string"
+              ? ((d as Record<string, unknown>).meetingsLand as string)
+              : ""),
           noExcludeCustomers: !!d.noExcludeCustomers,
           noExcludeDeals: !!d.noExcludeDeals,
+          noDoNotContact: !!d.noDoNotContact,
         });
       }
       if (ics) {
@@ -1000,12 +1200,16 @@ export default function Workspace() {
   // Persist the brief + sync every ICP (create new, update existing, delete removed).
   // Sequential so a new ICP's server id is recorded immediately — a mid-sync failure can
   // never cause the same ICP to be re-created (and duplicated) on the next save.
-  async function persist() {
-    if (savingRef.current) return; // drop overlapping saves (same data) rather than duplicate
+  async function persist(briefSnapshot: Brief = brief) {
+    if (savingRef.current) {
+      // Don't drop — queue the latest snapshot and flush it when the in-flight save finishes.
+      pendingBriefRef.current = briefSnapshot;
+      return;
+    }
     savingRef.current = true;
     setSaving(true);
     try {
-      await putBrief(client, brief as unknown as Record<string, unknown>);
+      await putBrief(client, briefSnapshot as unknown as Record<string, unknown>);
       for (const icp of icps) {
         if (icp.id) {
           await apiUpdateIcp(client, icp.id, icpToApi(icp));
@@ -1020,6 +1224,12 @@ export default function Workspace() {
     } finally {
       savingRef.current = false;
       setSaving(false);
+    }
+    // Flush a save that arrived mid-flight (e.g. a CSV import). Latest snapshot only.
+    const queued = pendingBriefRef.current;
+    if (queued) {
+      pendingBriefRef.current = null;
+      await persist(queued);
     }
   }
 
@@ -1098,7 +1308,7 @@ export default function Workspace() {
       filled(brief.excludeDeals) || brief.noExcludeDeals,
     ],
     5: [
-      filled(brief.meetingsLand),
+      filled(brief.attendeeEmails),
       filled(brief.attendees),
       filled(brief.availability),
       filled(brief.channel),
@@ -1924,17 +2134,18 @@ export default function Workspace() {
                   <Lbl
                     req
                     done={filled(brief.excludeCustomers) || brief.noExcludeCustomers}
-                    help="We will never contact these. A list of company domains is ideal. If you have none, tick the box below."
+                    help="We will never contact these. Add one company per line using the three columns below, or upload a CSV. If you have none, tick the box."
                   >
                     Existing customers to exclude
                   </Lbl>
+                  <ExclFormat />
                   <textarea
                     className={errCls(
                       filled(brief.excludeCustomers) || brief.noExcludeCustomers,
                       "textarea"
                     )}
                     value={brief.excludeCustomers}
-                    placeholder="Paste company names or domains, one per line"
+                    placeholder={EXCL_PLACEHOLDER}
                     disabled={brief.noExcludeCustomers}
                     onChange={(e) => setB("excludeCustomers", e.target.value)}
                   />
@@ -1957,33 +2168,38 @@ export default function Workspace() {
                     <span className="brief-hint">
                       {csvNames.customers
                         ? "Attached: " + csvNames.customers
-                        : "Or upload a CSV of customer domains."}
+                        : "Or upload a CSV with columns: company domain, company name, website."}
                     </span>
+                    <label className="brief-none">
+                      <input
+                        type="checkbox"
+                        checked={brief.noExcludeCustomers}
+                        onChange={setNoExclude("noExcludeCustomers", "excludeCustomers", "customers")}
+                      />
+                      We have no existing customers to exclude.
+                    </label>
                   </div>
-                  <label className="brief-none">
-                    <input
-                      type="checkbox"
-                      checked={brief.noExcludeCustomers}
-                      onChange={setNoExclude("noExcludeCustomers", "excludeCustomers", "customers")}
-                    />
-                    We have no existing customers to exclude.
-                  </label>
+                  <CsvErrors
+                    errors={csvErrors.customers}
+                    onDismiss={() => setCsvErrors((s) => ({ ...s, customers: [] }))}
+                  />
                 </div>
                 <div className={clsx("field", brief.noExcludeDeals && "is-locked")}>
                   <Lbl
                     req
                     done={filled(brief.excludeDeals) || brief.noExcludeDeals}
-                    help="Prospects already in your sales process. Double-touching these creates friction. If you have none, tick the box below."
+                    help="Prospects already in your sales process. Double-touching these creates friction. Same three columns as above, or upload a CSV. If you have none, tick the box."
                   >
                     Active deals / pipeline to exclude
                   </Lbl>
+                  <ExclFormat />
                   <textarea
                     className={errCls(
                       filled(brief.excludeDeals) || brief.noExcludeDeals,
                       "textarea"
                     )}
                     value={brief.excludeDeals}
-                    placeholder="Paste company names or domains, one per line"
+                    placeholder={EXCL_PLACEHOLDER}
                     disabled={brief.noExcludeDeals}
                     onChange={(e) => setB("excludeDeals", e.target.value)}
                   />
@@ -2003,30 +2219,67 @@ export default function Workspace() {
                     <span className="brief-hint">
                       {csvNames.deals
                         ? "Attached: " + csvNames.deals
-                        : "Or upload a CSV of pipeline domains."}
+                        : "Or upload a CSV with columns: company domain, company name, website."}
                     </span>
+                    <label className="brief-none">
+                      <input
+                        type="checkbox"
+                        checked={brief.noExcludeDeals}
+                        onChange={setNoExclude("noExcludeDeals", "excludeDeals", "deals")}
+                      />
+                      We have no active deals in pipeline to exclude.
+                    </label>
                   </div>
-                  <label className="brief-none">
-                    <input
-                      type="checkbox"
-                      checked={brief.noExcludeDeals}
-                      onChange={setNoExclude("noExcludeDeals", "excludeDeals", "deals")}
-                    />
-                    We have no active deals in pipeline to exclude.
-                  </label>
+                  <CsvErrors
+                    errors={csvErrors.deals}
+                    onDismiss={() => setCsvErrors((s) => ({ ...s, deals: [] }))}
+                  />
                 </div>
-                <div className="field">
+                <div className={clsx("field", brief.noDoNotContact && "is-locked")}>
                   <Lbl
-                    done={filled(brief.doNotContact)}
-                    help="Competitors, partners, investors, or any sensitive relationships to keep off the list."
+                    done={filled(brief.doNotContact) || brief.noDoNotContact}
+                    help="Competitors, partners, investors, or any sensitive relationships to keep off the list. Same three columns as above, or upload a CSV. If you have none, tick the box."
                   >
                     Competitors & do-not-contact (any reason)
                   </Lbl>
+                  <ExclFormat />
                   <textarea
                     className="textarea"
                     value={brief.doNotContact}
-                    placeholder="Competitors, partners, investors, sensitive relationships — one per line"
+                    placeholder={EXCL_PLACEHOLDER}
+                    disabled={brief.noDoNotContact}
                     onChange={(e) => setB("doNotContact", e.target.value)}
+                  />
+                  <div className="brief-upload">
+                    <label
+                      className={clsx("btn btn-ghost btn-sm", brief.noDoNotContact && "disabled")}
+                    >
+                      <span className="up-ico">↥</span> Upload CSV
+                      <input
+                        type="file"
+                        accept=".csv,text/csv"
+                        hidden
+                        disabled={brief.noDoNotContact}
+                        onChange={onCsv("doNotContact")}
+                      />
+                    </label>
+                    <span className="brief-hint">
+                      {csvNames.doNotContact
+                        ? "Attached: " + csvNames.doNotContact
+                        : "Or upload a CSV with columns: company domain, company name, website."}
+                    </span>
+                    <label className="brief-none">
+                      <input
+                        type="checkbox"
+                        checked={brief.noDoNotContact}
+                        onChange={setNoExclude("noDoNotContact", "doNotContact", "doNotContact")}
+                      />
+                      We have no competitors or do-not-contact companies.
+                    </label>
+                  </div>
+                  <CsvErrors
+                    errors={csvErrors.doNotContact}
+                    onDismiss={() => setCsvErrors((s) => ({ ...s, doNotContact: [] }))}
                   />
                 </div>
                 <div className="field" style={{ marginBottom: 0 }}>
@@ -2061,16 +2314,16 @@ export default function Workspace() {
                 <div className="field">
                   <Lbl
                     req
-                    done={filled(brief.meetingsLand)}
-                    help="A calendar link, a specific rep's calendar, or round-robin across a team."
+                    done={filled(brief.attendeeEmails)}
+                    help="The email addresses on your side to invite. We create the Google Meet and send the calendar invite to these people — one per line, or comma-separated."
                   >
-                    Where should booked meetings land?
+                    Meeting attendee emails
                   </Lbl>
-                  <input
-                    className={errCls(filled(brief.meetingsLand))}
-                    value={brief.meetingsLand}
-                    placeholder="e.g. Calendly link, or round-robin across 3 AEs"
-                    onChange={(e) => setB("meetingsLand", e.target.value)}
+                  <textarea
+                    className={errCls(filled(brief.attendeeEmails), "textarea")}
+                    value={brief.attendeeEmails}
+                    placeholder={"jane@yourcompany.com\njohn@yourcompany.com"}
+                    onChange={(e) => setB("attendeeEmails", e.target.value)}
                   />
                 </div>
                 <div className="field">
@@ -2221,6 +2474,7 @@ export default function Workspace() {
               saving={saving}
               completePct={completePct}
               onStructure={runStructure}
+              onAcceptIcp={acceptIcpSuggestion}
             />
           </>
         )}
