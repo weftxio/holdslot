@@ -5,6 +5,7 @@ import clsx from "clsx";
 import {
   addClient,
   DEFAULT_CLIENTS,
+  DEFAULT_CLIENT_PAGE,
   loadClients,
   saveClients,
   slugify,
@@ -40,7 +41,7 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
 
   function select(slug: string) {
     setOpen(false);
-    router.push(`/${slug}/overview`);
+    router.push(`/${slug}/${DEFAULT_CLIENT_PAGE}`);
   }
   function create() {
     if (!newName.trim()) return;

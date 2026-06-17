@@ -247,7 +247,7 @@ h3 {
 }
 
 /* ============================================================
-   CONSOLE SHELL  (sidebar + topbar, shared by overview/workspace)
+   CONSOLE SHELL  (sidebar + topbar, shared by performance-summary/workspace)
    ============================================================ */
 .app {
   display: grid;

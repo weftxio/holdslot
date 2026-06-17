@@ -365,12 +365,12 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
   item + **metered** usage for qualified meetings ($500) and **enrichment overage** ($3/prospect over
   cap). Free = no Stripe customer until upgrade.
 - **Features:** `LedgerEntry` per chargeable event (kinds: activation, subscription, qualified-meeting,
-  enrichment-overage; meetings tagged campaign+batch); monthly close → Stripe invoice; **Overview**
+  enrichment-overage; meetings tagged campaign+batch); monthly close → Stripe invoice; **Performance Summary**
   aggregations (headline, needs-attention, weekly stats, leads funnel).
 - **Enrichment overage & overrides (anti-burn, from S1/S2):** over-cap enrichment is metered at
   **$3/prospect** as `enrichment-overage` `LedgerEntry` rows (the paid path past 150/400). An
   **`admin_quota_override`** toggle adjusts/limits this per client.
-- **UI wired:** Workspace → *Billing ledger*; *Overview* dashboard.
+- **UI wired:** Workspace → *Billing ledger*; *Performance Summary* dashboard.
 - **Tools/access:** **Stripe** (subscription + invoice items + metered + webhooks), OpenRouter (optional
   insights), EventBridge (dispute-window timer + monthly close).
 - **AWS:** + Stripe-webhook route, EventBridge.
@@ -379,7 +379,7 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
 - **Webhooks** (Clay callback, Smartlead, Google/Pub-Sub, Stripe, SES events) → API Gateway →
   idempotent Lambda handlers.
 - **One SQS+Lambda worker pattern** reused everywhere.
-- **AuditLog + status logs** feed Client Action Status logs and the Overview needs-attention strip.
+- **AuditLog + status logs** feed Client Action Status logs and the Performance Summary needs-attention strip.
 - **Security**: per-tenant row scoping, signed expiring tokens on all external links, Secrets Manager,
   least-privilege IAM, rate limiting on public/external + webhook routes (verify signatures).
 
@@ -508,7 +508,7 @@ backend surface to build. Replace the page's co-located mock consts with these o
 | `/[client]/feedback/[token]` | `feedback/[token]` | **S6** | `GET /feedback/{token}`, `POST /feedback/{token}` |
 | `/[client]/workspace` · Meeting summaries | `workspace/page.tsx` | **S6** | `GET /meetings` (Meet metadata + OpenRouter summary) |
 | `/[client]/workspace` · Billing ledger | `workspace/page.tsx` | **S7** | `GET /clients/{c}/ledger`, monthly close → Stripe |
-| `/[client]/overview` | `overview/page.tsx` | **S7** | `GET /clients/{c}/overview` (aggregations) |
+| `/[client]/performance-summary` | `performance-summary/page.tsx` | **S7** | `GET /clients/{c}/performance-summary` (aggregations) |
 
 External links (`approve`/`book`/`feedback`) are unauthenticated and reached by signed, expiring
 tokens; each renders valid / success / expired (`?state=expired` in the mock).

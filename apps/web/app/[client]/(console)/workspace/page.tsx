@@ -1,12 +1,12 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
-import { highlightBody } from "@/lib/tmpl";
-import { type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
+import { CampaignTab } from "./CampaignTab";
+import { type ExclRow, type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
 import {
   type IcpApi,
   type IcpSuggestion,
@@ -79,7 +79,13 @@ type Batch = {
   sentAt?: string;
   approvedAt?: string;
 };
-type Campaign = { name: string; batch: string; status: "Live" | "Pending"; variants: string[] };
+// `locked` = the sendout batch has been confirmed for this campaign. A freshly created
+// campaign is an unlocked draft until the operator picks a batch and confirms it.
+type Campaign = {
+  name: string;
+  batch: string;
+  locked: boolean;
+};
 type Row = {
   id: number;
   fit: "Strong" | "Good";
@@ -126,6 +132,41 @@ const BATCH_STATUS_CLS: Record<string, string> = {
   Pending: "badge-warn",
 };
 const batchBadge = (b: string) => (b === "Unassigned" ? "badge-neutral" : "badge-info");
+
+// Per-prospect enrichment shown in the expanded Approval Batches table (mock — wired in Phase C/E).
+// Mirrors the columns an external sourcing tool surfaces: a fit score (grade · intent heat),
+// the prospect's industry, and which of the client's people they're connected to.
+const SCORE_TIERS = [
+  { grade: "A", heat: "Burning", cls: "badge-ok" },
+  { grade: "B", heat: "Warm", cls: "badge-warn" },
+  { grade: "C", heat: "Cool", cls: "badge-neutral" },
+] as const;
+const SAMPLE_INDUSTRIES = [
+  "Artificial Intelligence",
+  "Software",
+  "Fintech",
+  "Logistics",
+  "Healthtech",
+  "Retail",
+  "Manufacturing",
+  "Media",
+];
+const SAMPLE_CONNECTIONS = [
+  "Sam Blond",
+  "Malay Desai",
+  "Shek Viswanathan",
+  "Tommy Hung",
+  "Stan Rapp",
+];
+const STAFF_ROLES = [
+  "VP Sales",
+  "Head of Ops",
+  "RevOps Lead",
+  "COO",
+  "Marketing Dir.",
+  "CTO",
+  "Procurement",
+];
 
 const SEED: Omit<Row, "id" | "checked">[] = [
   { fit: "Strong", batch: "Batch 3", status: "Ready", icp: "ICP A" },
@@ -402,14 +443,14 @@ function SpecReview({
   spec,
   structuring,
   saving,
-  completePct,
+  ready,
   onStructure,
   onAcceptIcp,
 }: {
   spec: ResearchSpecResult | null;
   structuring: boolean;
   saving: boolean;
-  completePct: number;
+  ready: boolean;
   onStructure: () => void;
   onAcceptIcp: (s: IcpSuggestion) => void;
 }) {
@@ -435,7 +476,7 @@ function SpecReview({
         : ec?.max != null
           ? `up to ${ec.max}`
           : null;
-  const blocked = structuring || saving || completePct < 100;
+  const blocked = structuring || saving || !ready;
   return (
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="panel-head">
@@ -452,7 +493,7 @@ function SpecReview({
           <span
             style={{ display: "inline-flex" }}
             title={
-              completePct < 100
+              !ready
                 ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects in Clay."
                 : "Summarize this brief with AI into a Clay-ready prospect scope."
             }
@@ -825,132 +866,44 @@ function Section({
   );
 }
 
-const DEFAULT_VARIANT_BODIES: Record<string, string> = {
-  A: "Hi {{first_name}}, a placeholder opening line about the current context at {{company}}. Placeholder one-sentence value proposition tied to a likely pain point. Placeholder soft ask for a short call.\n{{sender}}",
-  B: "Hi {{first_name}}, a placeholder pattern-interrupt opener. Placeholder proof point with a concrete number. Placeholder direct ask for {{time_window}}.\n{{sender}}",
-  C: "Hi {{first_name}}, a placeholder question-led opener about {{industry}}. Placeholder mutual-connection or trigger-event line. Placeholder low-friction ask.\n{{sender}}",
-};
-const defaultBody = (tag: string) =>
-  DEFAULT_VARIANT_BODIES[tag] ?? "Placeholder message body for variant " + tag + ".";
-// Variant bodies are stored per campaign so editing one campaign's copy never
-// changes another's. Key = "<campaignName>:<tag>" (name is stable across reorder/delete).
-const bodyKey = (campName: string, tag: string) => campName + ":" + tag;
-
-function Variants({
-  tags,
-  editable,
-  campName,
-  bodies,
-  editKey,
-  onRemove,
-  onAdd,
-  onEdit,
-  onBody,
-}: {
-  tags: string[];
-  editable: boolean;
-  campName: string;
-  bodies: Record<string, string>;
-  editKey: string | null;
-  onRemove: (tag: string) => void;
-  onAdd: () => void;
-  onEdit: (tag: string) => void;
-  onBody: (tag: string, val: string) => void;
-}) {
-  return (
-    <>
-      {tags.map((tag, i) => {
-        const key = bodyKey(campName, tag);
-        const body = bodies[key] ?? defaultBody(tag);
-        const editing = editKey === key;
-        return (
-          <div className={clsx("variant", i === 0 && "win")} key={tag}>
-            <div className="variant-head">
-              <div className="vt">
-                <span className="vtag">{tag}</span>Variant {tag}
-                {i === 0 && (
-                  <span className="badge badge-ok" style={{ marginLeft: 4 }}>
-                    <span className="bdot" />
-                    Leading
-                  </span>
-                )}
-              </div>
-              <div className="variant-stats">
-                <div className="vs">
-                  <b>
-                    <Sample>n</Sample>%
-                  </b>
-                  Open
-                </div>
-                <div className="vs">
-                  <b>
-                    <Sample>n</Sample>%
-                  </b>
-                  Reply
-                </div>
-                {editable && (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-xs"
-                    onClick={() => onEdit(tag)}
-                  >
-                    {editing ? "Done" : "Edit"}
-                  </button>
-                )}
-                {editable && (
-                  <button
-                    type="button"
-                    className="variant-rm"
-                    aria-label={"Remove variant " + tag}
-                    onClick={() => onRemove(tag)}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            </div>
-            {editing ? (
-              <textarea
-                className="textarea variant-edit"
-                value={body}
-                onChange={(e) => onBody(tag, e.target.value)}
-              />
-            ) : (
-              <div className="variant-body">{highlightBody(body)}</div>
-            )}
-          </div>
-        );
-      })}
-      {editable && (
-        <button type="button" className="variant-add" onClick={onAdd}>
-          ＋ Add variant
-        </button>
-      )}
-    </>
-  );
-}
-
 // Do-not-contact list — the three exclusion sources from the Brief. Everyone here is
 // suppressed from every batch and campaign; it is pinned to the top of Approval Batches
 // for review and never overlaps a sendout batch.
-const EXCLUSIONS: { label: string; tag: string; cls: string; entries: string[] }[] = [
+// Each entry mirrors the Brief exclusion input format: company domain · company name · website.
+const EXCLUSIONS: {
+  label: string;
+  tag: string;
+  cls: string;
+  entries: ExclRow[];
+}[] = [
   {
     label: "Existing customers to exclude",
     tag: "Customer",
     cls: "badge-info",
-    entries: ["Acme Corp", "Globex Inc", "Initech"],
+    entries: [
+      { domain: "acme.com", name: "Acme Corp", website: "https://acme.com" },
+      { domain: "globex.com", name: "Globex Inc", website: "https://globex.com" },
+      { domain: "initech.com", name: "Initech", website: "https://initech.com" },
+    ],
   },
   {
     label: "Active deals / pipeline to exclude",
     tag: "Active deal",
     cls: "badge-warn",
-    entries: ["Umbrella Co", "Soylent Ltd"],
+    entries: [
+      { domain: "umbrella.co", name: "Umbrella Co", website: "https://umbrella.co" },
+      { domain: "soylent.com", name: "Soylent Ltd", website: "https://soylent.com" },
+    ],
   },
   {
     label: "Competitors & do-not-contact (any reason)",
     tag: "Competitor / DNC",
     cls: "badge-danger",
-    entries: ["Competitor A", "Competitor B", "Hooli"],
+    entries: [
+      { domain: "competitor-a.com", name: "Competitor A", website: "https://competitor-a.com" },
+      { domain: "competitor-b.io", name: "Competitor B", website: "https://competitor-b.io" },
+      { domain: "hooli.com", name: "Hooli", website: "https://hooli.com" },
+    ],
   },
 ];
 const EXCLUSION_COUNT = EXCLUSIONS.reduce((n, g) => n + g.entries.length, 0);
@@ -1333,7 +1286,13 @@ export default function Workspace() {
     5: secReq[5].every(Boolean),
     6: secReq[6].every(Boolean),
   };
-  const completePct = Math.round((Object.values(secComplete).filter(Boolean).length / 6) * 100);
+  // Top-bar percentage tracks required fields filled across all sections (not sections done /6),
+  // so each field moves the bar rather than only a whole completed section.
+  const allReq = Object.values(secReq).flat();
+  const completePct = Math.round((allReq.filter(Boolean).length / allReq.length) * 100);
+  // Prospect-Scope gating stays section-based (every ICP ready, not just the current one), so the
+  // field-based bar above can read 100% without unblocking before all sections are truly done.
+  const allComplete = Object.values(secComplete).every(Boolean);
   const errCls = (ok: boolean, base = "input") => clsx(base, submitted && !ok && "err");
 
   // Batches / campaigns
@@ -1369,8 +1328,8 @@ export default function Workspace() {
     },
   ]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([
-    { name: "Campaign 1", batch: "Batch 1", status: "Live", variants: ["A", "B", "C"] },
-    { name: "Campaign 2", batch: "Batch 2", status: "Pending", variants: ["A", "B", "C"] },
+    { name: "Campaign 1", batch: "Batch 1", locked: true },
+    { name: "Campaign 2", batch: "Batch 2", locked: true },
   ]);
   // Campaigns can only be linked to client-approved batches — pending/rejected
   // batches are never selectable, so a linked campaign is always safe to send.
@@ -1537,22 +1496,6 @@ export default function Workspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // editable variant bodies, keyed per campaign ("<campName>:<tag>"); defaults come
-  // from defaultBody() at render, so we only store edits here.
-  const [variantBodies, setVariantBodies] = useState<Record<string, string>>({});
-  const [editVar, setEditVar] = useState<string | null>(null);
-  const editVariant = (campName: string, tag: string) => {
-    const key = bodyKey(campName, tag);
-    if (editVar === key) {
-      setEditVar(null);
-      toast("Variant " + tag + " saved");
-    } else {
-      setEditVar(key);
-    }
-  };
-  const setVariantBody = (campName: string, tag: string, val: string) =>
-    setVariantBodies((s) => ({ ...s, [bodyKey(campName, tag)]: val }));
-
   // batch approval action: send the approval email, or nudge if it was already sent
   const sendApproval = (name: string) => {
     const alreadySent = !!batches.find((x) => x.name === name)?.sentAt;
@@ -1562,53 +1505,43 @@ export default function Workspace() {
     toast(alreadySent ? "Follow-up nudge sent to client" : "Approval email sent to client");
   };
 
-  // expandable campaigns (all collapsed by default)
-  const [openCamp, setOpenCamp] = useState<number | null>(null);
-  const removeVariant = (ci: number, tag: string) => {
-    const c = campaigns[ci];
-    if (!c) return;
-    if (c.variants.length <= 1) return toast("Keep at least one variant", "warn");
-    setCampaigns((s) =>
-      s.map((x, i) => (i === ci ? { ...x, variants: x.variants.filter((t) => t !== tag) } : x))
-    );
-    toast("Variant " + tag + " removed", "warn");
-  };
-  const addVariant = (ci: number) => {
-    const c = campaigns[ci];
-    if (!c) return;
-    let code = 65; // 'A'
-    while (c.variants.includes(String.fromCharCode(code))) code++;
-    const next = String.fromCharCode(code);
-    setCampaigns((s) =>
-      s.map((x, i) => (i === ci ? { ...x, variants: [...x.variants, next] } : x))
-    );
-    toast("Variant " + next + " added");
-  };
-  const toggleCamp = (ci: number, open: boolean) => {
-    setOpenCamp(open ? null : ci);
-    if (!open) {
-      setTimeout(
-        () =>
-          document
-            .getElementById("camp-" + ci)
-            ?.scrollIntoView({ behavior: "smooth", block: "start" }),
-        60
-      );
+  // Group a batch's prospects under their company — company is the primary row, its related
+  // staff listed beneath. Distributes b.count people across companies of 2–3, sorted by company.
+  const batchCompanies = (b: Batch) => {
+    const groups: {
+      company: string;
+      domain: string;
+      score: (typeof SCORE_TIERS)[number];
+      industry: string;
+      connectedTo: string;
+      people: { name: string; role: string; status: string }[];
+    }[] = [];
+    let placed = 0;
+    let ci = 0;
+    while (placed < b.count) {
+      const size = Math.min((ci % 2) + 2, b.count - placed); // 2, 3, 2, 3 …
+      const people = Array.from({ length: size }, (_, k) => {
+        const idx = placed + k;
+        return {
+          name: "Prospect " + (idx + 1),
+          role: STAFF_ROLES[idx % STAFF_ROLES.length],
+          status:
+            idx < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
+        };
+      });
+      groups.push({
+        company: "Sample Co " + (ci + 1),
+        domain: "sampleco" + (ci + 1) + ".com",
+        score: SCORE_TIERS[ci % SCORE_TIERS.length],
+        industry: SAMPLE_INDUSTRIES[ci % SAMPLE_INDUSTRIES.length],
+        connectedTo: SAMPLE_CONNECTIONS[ci % SAMPLE_CONNECTIONS.length],
+        people,
+      });
+      placed += size;
+      ci++;
     }
+    return groups;
   };
-  const deleteCampaign = (ci: number) => {
-    const c = campaigns[ci];
-    if (!c || c.status === "Live") return;
-    setCampaigns((s) => s.filter((_, i) => i !== ci));
-    setOpenCamp(null);
-    toast(c.name + " deleted", "warn");
-  };
-  const batchProspects = (b: Batch) =>
-    Array.from({ length: b.count }, (_, i) => ({
-      name: "Prospect " + (i + 1),
-      company: "Sample Co " + (i + 1),
-      status: i < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
-    }));
 
   return (
     <>
@@ -2475,7 +2408,7 @@ export default function Workspace() {
               spec={spec}
               structuring={structuring}
               saving={saving}
-              completePct={completePct}
+              ready={allComplete}
               onStructure={runStructure}
               onAcceptIcp={acceptIcpSuggestion}
             />
@@ -2681,25 +2614,27 @@ export default function Workspace() {
                   <table className="tbl">
                     <thead>
                       <tr>
-                        <th>Excluded</th>
+                        <th>Company domain</th>
+                        <th>Company name</th>
+                        <th>Website</th>
                         <th>Type</th>
-                        <th>Reason</th>
                       </tr>
                     </thead>
                     <tbody>
                       {EXCLUSIONS.flatMap((g) =>
-                        g.entries.map((name) => (
-                          <tr key={g.label + name}>
+                        g.entries.map((e) => (
+                          <tr key={g.label + e.domain}>
                             <td>
-                              <span className="nm">{name}</span> <Sample>sample</Sample>
+                              <span className="nm">{e.domain}</span>
                             </td>
+                            <td className="muted">{e.name}</td>
+                            <td className="muted">{e.website}</td>
                             <td>
                               <span className={clsx("badge", g.cls)}>
                                 <span className="bdot" />
                                 {g.tag}
                               </span>
                             </td>
-                            <td className="muted">{g.label}</td>
                           </tr>
                         ))
                       )}
@@ -2733,7 +2668,7 @@ export default function Workspace() {
                   <div className="sob-ico">B{i + 1}</div>
                   <div className="sob-main">
                     <div className="sob-name">
-                      {b.name} <Sample>sample</Sample>
+                      {b.name}
                     </div>
                     <div className="sob-meta">
                       <b style={{ color: "var(--ink)" }}>{b.approved}</b> approved ·{" "}
@@ -2782,30 +2717,58 @@ export default function Workspace() {
                       <table className="tbl">
                         <thead>
                           <tr>
-                            <th>Prospect</th>
                             <th>Company</th>
+                            <th>Score</th>
+                            <th>Industries</th>
+                            <th>Connected to</th>
+                            <th>Prospect</th>
                             <th>Approval</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {batchProspects(b).map((p, j) => (
-                            <tr key={j}>
-                              <td>
-                                <span className="nm">{p.name}</span> <Sample>sample</Sample>
-                              </td>
-                              <td className="muted">{p.company}</td>
-                              <td>
-                                <span
-                                  className={clsx(
-                                    "badge",
-                                    BATCH_STATUS_CLS[p.status] || "badge-neutral"
+                          {batchCompanies(b).map((co) => (
+                            <Fragment key={co.company}>
+                              {co.people.map((p, pj) => (
+                                <tr key={co.company + p.name}>
+                                  {/* Company-level cells span the company's staff rows (first row only) */}
+                                  {pj === 0 && (
+                                    <>
+                                      <td className="vtop" rowSpan={co.people.length}>
+                                        <span className="nm">{co.company}</span>
+                                        <div className="sub">{co.domain}</div>
+                                      </td>
+                                      <td className="vtop" rowSpan={co.people.length}>
+                                        <span className={clsx("badge", co.score.cls)}>
+                                          <span className="bdot" />
+                                          {co.score.grade} · {co.score.heat}
+                                        </span>
+                                      </td>
+                                      <td className="vtop" rowSpan={co.people.length}>
+                                        <span className="icp-chip">{co.industry}</span>
+                                      </td>
+                                      <td className="vtop muted" rowSpan={co.people.length}>
+                                        {co.connectedTo}
+                                      </td>
+                                    </>
                                   )}
-                                >
-                                  <span className="bdot" />
-                                  {p.status}
-                                </span>
-                              </td>
-                            </tr>
+                                  <td>
+                                    <span className="nm">{p.name}</span>
+                                    <div className="sub">{p.role}</div>
+                                  </td>
+                                  <td>
+                                    <span
+                                      className={clsx(
+                                        "badge",
+                                        BATCH_STATUS_CLS[p.status] || "badge-neutral"
+                                      )}
+                                    >
+                                      <span className="bdot" />
+                                      {p.status}
+                                    </span>
+                                  </td>
+                                </tr>
+                              ))}
+                            </Fragment>
                           ))}
                         </tbody>
                       </table>
@@ -2823,163 +2786,36 @@ export default function Workspace() {
 
       {/* CAMPAIGN */}
       <section className={clsx("tabpane", tab === "campaign" && "active")}>
-        <div className="between" style={{ marginBottom: 18, flexWrap: "wrap", gap: 14 }}>
-          <div className="section-label" style={{ marginBottom: 0 }}>
-            Campaigns · variants and send status per sendout batch
-          </div>
-          <button
-            className="btn btn-ghost btn-sm"
-            disabled={approvedBatches.length === 0}
-            title={approvedBatches.length === 0 ? "Approve a sendout batch first" : undefined}
-            onClick={() => {
-              const batch = approvedBatches[0]?.name;
-              if (!batch) return;
-              setCampaigns((s) => [
-                ...s,
-                {
-                  name: "Campaign " + (s.length + 1),
-                  batch,
-                  status: "Pending" as const,
-                  variants: ["A", "B", "C"],
-                },
-              ]);
-              toast("Campaign " + (campaigns.length + 1) + " created");
-            }}
-          >
-            ＋ New campaign
-          </button>
-        </div>
-        <div>
-          {campaigns.map((cp, ci) => {
-            const open = openCamp === ci;
-            const live = cp.status === "Live";
-            const cb = batches.find((x) => x.name === cp.batch);
-            const size = cb?.count ?? 0;
-            const sendN = live ? size : 0;
-            const openN = live ? Math.round(size * 0.42) : 0;
-            const replyN = live ? Math.round(size * 0.13) : 0;
-            const bookedN = live ? Math.round(size * 0.05) : 0;
-            return (
-              <div className={clsx("camp", open && "open")} key={ci} id={"camp-" + ci}>
-                <div
-                  className="camp-head"
-                  role="button"
-                  tabIndex={0}
-                  aria-expanded={open}
-                  onClick={() => toggleCamp(ci, open)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      toggleCamp(ci, open);
-                    }
-                  }}
-                >
-                  <div className="ct">
-                    <span className="vtag">{ci + 1}</span>
-                    {cp.name} <Sample>sample</Sample>
-                  </div>
-                  <div className="cmeta">
-                    <span className="muted">Sendout batch</span>
-                    <select
-                      className="select select-sm"
-                      style={{ minWidth: 118 }}
-                      value={cp.batch}
-                      onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setCampaigns((s) => s.map((c, i) => (i === ci ? { ...c, batch: v } : c)));
-                        toast("Campaign linked to " + v);
-                      }}
-                    >
-                      {approvedBatches.map((b) => (
-                        <option key={b.name}>{b.name}</option>
-                      ))}
-                    </select>
-                    <span className="badge badge-info">
-                      <span className="bdot" />
-                      {cp.variants.length} variants
-                    </span>
-                    {!live && (
-                      <button
-                        className="btn btn-accent btn-sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setCampaigns((s) =>
-                            s.map((c, i) => (i === ci ? { ...c, status: "Live" } : c))
-                          );
-                          toast(cp.name + " launched · sending to " + cp.batch);
-                        }}
-                      >
-                        Send campaign
-                      </button>
-                    )}
-                    {!live && (
-                      <button
-                        className="btn btn-ghost btn-sm camp-del"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          deleteCampaign(ci);
-                        }}
-                        aria-label={"Delete " + cp.name}
-                      >
-                        Delete
-                      </button>
-                    )}
-                    <span className="camp-chev" aria-hidden>
-                      ⌄
-                    </span>
-                  </div>
-                </div>
-                <div className="camp-body">
-                  <div className="camp-stats">
-                    <div className="cstat">
-                      <div className="cl">Deploy status</div>
-                      <div className="cv">
-                        <span className={clsx("badge", live ? "badge-ok" : "badge-warn")}>
-                          <span className="bdot" />
-                          {live ? "Live" : "Pending launch"}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="cstat">
-                      <div className="cl">Total batch size</div>
-                      <div className="cv">{size}</div>
-                    </div>
-                    <div className="cstat">
-                      <div className="cl">Sending count</div>
-                      <div className="cv">{sendN}</div>
-                    </div>
-                    <div className="cstat">
-                      <div className="cl">Open count</div>
-                      <div className="cv">{openN}</div>
-                    </div>
-                    <div className="cstat">
-                      <div className="cl">Reply count</div>
-                      <div className="cv">{replyN}</div>
-                    </div>
-                    <div className="cstat">
-                      <div className="cl">Booked meeting</div>
-                      <div className="cv">{bookedN}</div>
-                    </div>
-                  </div>
-                  {open && (
-                    <Variants
-                      tags={cp.variants}
-                      editable={!live}
-                      campName={cp.name}
-                      bodies={variantBodies}
-                      editKey={editVar}
-                      onRemove={(tag) => removeVariant(ci, tag)}
-                      onAdd={() => addVariant(ci)}
-                      onEdit={(tag) => editVariant(cp.name, tag)}
-                      onBody={(tag, val) => setVariantBody(cp.name, tag, val)}
-                    />
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
+        <CampaignTab
+          campaigns={campaigns}
+          batchOptions={approvedBatches.map((b) => ({ name: b.name, count: b.count }))}
+          onNewCampaign={() => {
+            const batch = approvedBatches[0]?.name;
+            if (!batch) {
+              toast("Approve a sendout batch first", "warn");
+              return null;
+            }
+            // Derive the next number from existing names (not the count) so a
+            // prior rename can't make this collide with a live campaign name.
+            const taken = new Set(campaigns.map((c) => c.name));
+            let n = campaigns.length + 1;
+            while (taken.has("Campaign " + n)) n++;
+            const name = "Campaign " + n;
+            setCampaigns((s) => [...s, { name, batch, locked: false }]);
+            toast(name + " created · pick a batch and confirm");
+            return name;
+          }}
+          onSetBatch={(name, batch) =>
+            setCampaigns((s) => s.map((c) => (c.name === name ? { ...c, batch } : c)))
+          }
+          onConfirm={(name) => {
+            setCampaigns((s) => s.map((c) => (c.name === name ? { ...c, locked: true } : c)));
+            toast("Batch locked · " + name + " confirmed");
+          }}
+          onRename={(oldName, newName) =>
+            setCampaigns((s) => s.map((c) => (c.name === oldName ? { ...c, name: newName } : c)))
+          }
+        />
       </section>
 
       {/* REPLY QUEUE */}
@@ -3025,7 +2861,7 @@ export default function Workspace() {
                   <div className="av-sm">R{i + 1}</div>
                   <div className="meta">
                     <div className="nm">
-                      {r.n} <Sample>sample</Sample>
+                      {r.n}
                     </div>
                     <div className="ro">{r.role}</div>
                     <div className="tagline">
@@ -3129,7 +2965,7 @@ export default function Workspace() {
             <div>
               <h3>Billing Ledger</h3>
               <div className="ph-sub">
-                Only completed, qualified meetings are billable · all rows <Sample>sample</Sample>
+                Only completed, qualified meetings are billable
               </div>
             </div>
             <button className="btn btn-ghost btn-sm" onClick={exportLedgerCsv}>
@@ -3155,7 +2991,7 @@ export default function Workspace() {
                     <td className="muted">Placeholder date</td>
                     <td>
                       <div className="nm">
-                        Prospect {i + 1} <Sample>sample</Sample>
+                        Prospect {i + 1}
                       </div>
                       <div className="sub">Sample Co {i + 1}</div>
                     </td>
@@ -3225,7 +3061,7 @@ export default function Workspace() {
                 <div className="sh">
                   <div>
                     <div className="sm">
-                      Meeting {sx + 1} · Prospect {sx + 1} <Sample>sample</Sample>
+                      Meeting {sx + 1} · Prospect {sx + 1}
                     </div>
                     <div className="smeta">
                       Placeholder date · Sample Co {sx + 1} · recording on file

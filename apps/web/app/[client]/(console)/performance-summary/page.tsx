@@ -4,10 +4,10 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useParams } from "next/navigation";
 import { Sample } from "@/components/Sample";
-import "./overview.css";
+import "./performance-summary.css";
 
 // Lazy-load the calendar (react-big-calendar ~70kB) so it streams in after the
-// dashboard is interactive instead of blocking /overview hydration.
+// dashboard is interactive instead of blocking /performance-summary hydration.
 const MeetingCalendar = dynamic(() => import("./MeetingCalendar"), {
   ssr: false,
   loading: () => <div className="cal-wrap" style={{ height: 580 }} />,
@@ -25,7 +25,7 @@ const FUNNEL: { label: string; color: string; n: number }[] = [
 ];
 const FUNNEL_TOP = FUNNEL[0].n;
 
-export default function Overview() {
+export default function PerformanceSummary() {
   const { client } = useParams<{ client: string }>();
 
   useEffect(() => {

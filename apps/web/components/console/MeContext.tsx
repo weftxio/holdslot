@@ -2,6 +2,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { clearTokens, getAccess, getMe, type Me } from "@/lib/api";
+import { nameInitials } from "@/lib/initials";
 
 type MeState = { me: Me | null; loading: boolean };
 
@@ -37,13 +38,6 @@ export const useMe = () => useContext(MeCtx);
 
 /** Up-to-two-letter initials from a name, falling back to the email's first letter. */
 export function initialsOf(me: Me | null): string {
-  if (me?.full_name) {
-    return me.full_name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((p) => p[0]!.toUpperCase())
-      .join("");
-  }
-  return me?.email?.[0]?.toUpperCase() ?? "—";
+  const fromName = me?.full_name ? nameInitials(me.full_name) : "";
+  return fromName || me?.email?.[0]?.toUpperCase() || "—";
 }

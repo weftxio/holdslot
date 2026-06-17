@@ -11,6 +11,10 @@ export const DEFAULT_CLIENTS: Client[] = [
 ];
 export const DEFAULT_CLIENT_SLUG = DEFAULT_CLIENTS[0].slug;
 
+// The page a user lands on after login / client switch / clicking the logo.
+// Single source of truth so the default landing changes in one place.
+export const DEFAULT_CLIENT_PAGE = "workspace";
+
 const KEY = "holdslot_clients";
 
 export function slugify(s: string): string {

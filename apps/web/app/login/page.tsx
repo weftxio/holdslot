@@ -2,7 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { DEFAULT_CLIENT_SLUG } from "@/lib/client";
+import { DEFAULT_CLIENT_SLUG, DEFAULT_CLIENT_PAGE } from "@/lib/client";
 import { login as apiLogin, forgot as apiForgot, reset as apiReset, getMe, setTokens } from "@/lib/api";
 import { useCountUp } from "@/lib/useCountUp";
 import "./login.css";
@@ -98,7 +98,7 @@ export default function Login() {
       // Land on the caller's first tenant (HoldSlot today); fall back to the default slug.
       const me = await getMe().catch(() => null);
       const slug = me?.clients[0]?.slug ?? DEFAULT_CLIENT_SLUG;
-      router.push(`/${slug}/overview`);
+      router.push(`/${slug}/${DEFAULT_CLIENT_PAGE}`);
     } catch {
       setPwErr("Invalid email or password.");
       setBanner(true);

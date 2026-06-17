@@ -48,7 +48,7 @@ Two planning docs in `docs/`, read before touching `apps/api`/`infra`:
 |---|---|---|
 | `/` | `home.html` | marketing (self-contained) |
 | `/login` | `login.html` | marketing |
-| `/[client]/overview` | `overview.html` | console |
+| `/[client]/performance-summary` | `overview.html` | console |
 | `/[client]/workspace` | `workspace.html` | console |
 | `/[client]/client-status` | `external-status.html` | console |
 | `/[client]/approve/[token]` | `client-approval.html` | external |
@@ -59,9 +59,9 @@ Two planning docs in `docs/`, read before touching `apps/api`/`infra`:
 
 ## Three shells
 - **marketing** — standalone; home keeps its own page styles.
-- **console** — dark sidebar (logo, client switcher, nav groups "Get Meeting" = Overview/Workspace,
+- **console** — dark sidebar (logo, client switcher, nav groups "Get Meeting" = Workspace/Performance Summary,
   "Client Action Status" = List approval/Booking links/Feedback forms → all to `client-status`
-  tabs) + topbar (breadcrumb w/ client name, mobile toggle) + scrim. Shared by overview/workspace/
+  tabs) + topbar (breadcrumb w/ client name, mobile toggle) + scrim. Shared by performance-summary/workspace/
   client-status. CSS class `.app/.side/.topbar/.content` in holdslot.css.
 - **external** — cerulean `.ext-body` + `.ext-card`; each page renders valid / success / expired
   (read `?state=expired`). Class `.ext-*` in holdslot.css.
@@ -75,15 +75,15 @@ console shell · external card · `.ph`/`.sample` markers.
 
 ## Client switcher (`client-switch.js` → port to `lib/client.ts` + context)
 Clients + selection persist in localStorage; name → slug; updates `[data-client-name]`. Defaults:
-Northwind, Acme Robotics. Switching navigates to `/[client]/overview`.
+Northwind, Acme Robotics. Switching navigates to `/[client]/workspace` (the default page).
 
 ## Page interactions (all client-side, mock)
 - **home**: sticky nav + mobile menu · pinned 300vh "how it works" scroll (progress fill + active
   step) · trust parallax · pricing formula · lead-form validation→success · IntersectionObserver
   reveals · honor `prefers-reduced-motion`.
 - **login**: 3 views (sign-in / forgot / reset-sent), email+pw validation, show/hide pw, mock submit
-  → `/[client]/overview`.
-- **overview**: headline band · needs-attention (links to client-status tabs) · weekly stats ·
+  → `/[client]/workspace` (the default page).
+- **performance-summary**: headline band · needs-attention (links to client-status tabs) · weekly stats ·
   animated funnel bars.
 - **workspace**: 7 tabs synced to URL hash — Business brief (form+completeness ring+ICP profiles),
   Prospect list (filter table, select, create batch), Sendout Batch, Campaign (send controls + A/B/C

@@ -75,7 +75,7 @@ seed/test fixture, not by building the onboarding flow).
 | **Smartlead connection** — batch → campaign, leads, A/B/C sequences, send controls, open/reply sync, reply-to-thread | **BUILD** |
 | **Meeting connection** — booking link + Google Calendar event + Meet link + invites; capture held + duration via Meet REST | **BUILD** |
 | Sending domains + warm-up | operate (manual setup — start now) |
-| AI reply drafting · summaries/transcripts · feedback links · anti-theft masking · billing/Stripe · overview analytics · multi-tenant **operations** (onboarding/self-signup — schema is multi-tenant-ready, see *Tenancy & access model*) · automated SmartSenders | **SKIP** → return when onboarding paying signups |
+| AI reply drafting · summaries/transcripts · feedback links · anti-theft masking · billing/Stripe · performance-summary analytics · multi-tenant **operations** (onboarding/self-signup — schema is multi-tenant-ready, see *Tenancy & access model*) · automated SmartSenders | **SKIP** → return when onboarding paying signups |
 
 ## Phases (dependency- and priority-ordered)
 
@@ -85,7 +85,7 @@ seed/test fixture, not by building the onboarding flow).
 | **B** | Targeting (S1) | Brief intake → OpenRouter structures a ResearchSpec; ICP record | A | **P0** | ResearchSpec saved, Clay-ready |
 | **C** | Prospects + Clay (S2) | ResearchSpec → Clay table → callback → ingest `Prospect` rows w/ fit context; filter/select | B · Clay | **P0** | Enriched prospects flow in automatically |
 | **D** | Batch (S3 minimal) | Batch from selected prospects, mark approved internally. No external masked page | C | **P1** | Approved batch ready to send |
-| **E** | Outreach + Smartlead (S4) | Batch → Smartlead campaign; leads + A/B/C sequences; send controls; webhook sync → `OutreachEvent`; reply-to-thread | D · warmed domains · Smartlead | **P0** | Live campaign sending; replies tracked in-app |
+| **E** | Outreach + Smartlead (S4/S5) | Batch → Smartlead campaign; leads + A/B/C sequences; send controls; webhook sync → `OutreachEvent`; **cross-campaign Reply Queue** (triage + filters); reply-to-thread | D · warmed domains · Smartlead | **P0** | Live campaign sending; all replies triaged in one cross-campaign queue |
 | **F** | Book + meeting (S6 minimal) | Booking link + slot picker → Google Calendar event + Meet link + invites; capture held + duration via Meet REST | E · Google Workspace | **P0** | Prospect self-books a Meet call; held/duration recorded |
 | **G** | Run & close (human) | Meeting → founder pitches the live product → close → onboard signup = create their tenant (reuse A) | F | **P0** | **6 signups over H1** |
 
@@ -96,7 +96,7 @@ seed/test fixture, not by building the onboarding flow).
 ## Phase A — Foundation (S0): step-by-step (planning, pre-code)
 
 Ordered tasks to take S0 from empty placeholders (`apps/api/`, `infra/`) to **both founders logging
-into live `/holdslot/overview`**, on a schema that already admits a second, lesser-privileged tenant.
+into live `/holdslot/workspace`**, on a schema that already admits a second, lesser-privileged tenant.
 No app code is written until A0's decisions are locked. Grounded in the locked spec
 (`backend-development-plan.md` §2 architecture, §6 decisions 1–11, §8 UI map, §9 repo layout).
 
@@ -187,9 +187,9 @@ wrong-role ✗); a founder logs in via curl and gets a membership-scoped client 
 (`lib/client.ts`), and the console-shell session at the live API via `API_BASE_URL`; replace the login
 mock + default-client mock with real calls (HoldSlot tenant #0 now comes from the API, not
 `DEFAULT_CLIENTS`). Deploy = one command (`terraform apply` + push Lambda version + shift alias + smoke
-`GET /health`). **DoD:** logging in at `/login` lands a founder on live `/holdslot/overview`.
+`GET /health`). **DoD:** logging in at `/login` lands a founder on live `/holdslot/workspace`.
 
-**A6 — Phase-A acceptance (the DoD gate).** (1) Both founders log into live `/holdslot/overview` with
+**A6 — Phase-A acceptance (the DoD gate).** (1) Both founders log into live `/holdslot/workspace` with
 full access. (2) An **ephemeral, in-test** fixture (created and rolled back inside the test — never
 seeded, never a product client; the build ships with **one tenant, HoldSlot**) inserts a second tenant
 whose user has a **non-owner** role and proves the guard scopes access correctly — **with no schema
@@ -715,6 +715,239 @@ already exists. **MVP cost:** Clay $0 (free) + LLM <$10/mo — effectively free 
 **The MVP→Growth seam is the ingest transport only**: CSV import today, callback + SQS later, with
 suppression / dedupe / scoring / schema / UI identical across the swap. *(Carry to Phase D: `Prospect`
 holds full clear-text; the approval serializer masks it — tiered-reveal is Phase D / S3.)*
+
+## Phase E — Outreach + Smartlead (S4): the campaign funnel made real
+
+Turns an **approved batch** (Phase D) into a **live cold-email campaign on Smartlead** and makes the
+rebuilt **Outreach Campaigns** tab real. That tab is no longer a flat send-controls panel: it is a
+**7-stage funnel** — *Initial outreach → Follow-up → Positive reply → Meeting schedule → No show →
+Qualified billable → Drop / DNC* — where each prospect is a card that moves stage→stage, each
+message-sending stage carries **A/B/C variants** with live open/reply metrics + a "leading" winner, and
+each prospect carries a **conversation log** (Email · LinkedIn · Calendar · Stripe · System events). The
+four KPIs across the top — **Prospects · Replies · Meetings · Billable** — are funnel roll-ups. **Phase E
+lights up the first half of that funnel** (Initial outreach, Follow-up, Positive reply, Drop) plus the
+KPI plumbing; the **Meeting schedule / No show / Qualified billable** stages are lit by **Phase F** (they
+share one funnel, two phases). Grounded in the locked spec (`backend-development-plan.md` §4 *S4/S5*, §3
+domain model). **No code until E0's gates clear — the real gate is warmed inboxes, not code.**
+
+> **★ Build posture: lean, webhook-driven, one Smartlead adapter.** Smartlead is the "dumb sender": we
+> own the funnel state; Smartlead owns delivery + raw events. At dogfood volume (one domain, 2 inboxes,
+> ~50 sends/day) webhook ingest is **synchronous insert, ZERO new AWS resources** — the signed webhook is
+> just a FastAPI route on the existing `$default` proxy. **[SCALE]** SQS + a worker enter only when event
+> volume justifies them; the ingest *transport* swaps, the funnel-state code does not. Every task is
+> tagged **[MVP]** (build now) or **[SCALE]** (documented now, built at volume).
+
+### The funnel ↔ Smartlead mapping (what is HoldSlot state vs. Smartlead state)
+
+| Funnel stage (UI `Stage.id`) | What makes a prospect enter it | Smartlead source |
+|---|---|---|
+| **Initial outreach** (`contacted`) | batch confirmed & locked → leads added & sequence started | `lead added` + `EMAIL_SENT` |
+| **Follow-up** (`followup`) | sequence step ≥2 sent, no reply yet | `EMAIL_SENT` (step n) |
+| **Positive reply** (`replied`) | a reply arrives **and a founder classifies it positive** | `EMAIL_REPLY` → manual move |
+| **Drop / DNC** (`drop`) | negative/unsubscribe reply, bounce, or manual drop | `EMAIL_REPLY`(neg) · `LEAD_UNSUBSCRIBED` · `EMAIL_BOUNCE` |
+| Meeting schedule · No show · Qualified billable | **Phase F** (booking + Meet REST) | — |
+
+**The deliberate MVP line: reply *classification* is human, not LLM.** A reply lands as an
+`OutreachEvent` and surfaces in two places: the prospect's per-campaign **conversation log** (in the
+Campaign funnel) *and* the **Reply Queue** tab — the **cross-campaign triage inbox** (see E5). The founder
+reads it in the Reply Queue and uses the **stage-move control** to send the lead to *Positive reply* or
+*Drop*. This matches the UI (manual `movePerson`) and keeps the AI-drafting/classification work **[SKIP]
+until paying signups** per *Build vs. skip*. **[SCALE]** an `reply_classify` purpose on the B3 adapter
+auto-suggests the move and a `reply_draft` purpose pre-writes the booking reply — both drop into the same
+Reply Queue with no redesign.
+
+**Variant fidelity (an honest mapping decision).** The UI lets variants be edited/added/deleted per
+stage and shows a per-prospect variant selector. Smartlead's A/Z testing is **sequence-step-level**, not
+arbitrary per-lead. **MVP:** campaign variants map 1:1 to Smartlead sequence-step variants (A/B/C);
+per-variant open/reply syncs back to drive the metric bars + the "leading" winner; the per-prospect
+selector assigns the variant **at lead-add time** (before send) and locks once sent — exactly the UI's
+`p.sent` lock. Editing a variant after send creates the **next** version, it never rewrites a sent
+message (append-only, same grammar as `ResearchSpec`/`sourcing_doc`).
+
+### Tasks (build order — `[MVP]` now; `[SCALE]` at volume)
+
+**E0 — Gates to clear before code (no code).**
+1. **[MVP] Warmed inboxes ready ⭐ (the only real gate).** `getholdslot.com` warm-up **started
+   2026-06-17** → first real cold sends ~early Jul'26 (see *Sending infrastructure*). E **cannot send**
+   before this; build E1–E3 against the warm-up clock so code is ready when inboxes are.
+2. **[MVP] Smartlead secret complete + verified.** Founder writes `webhook_signing_secret` +
+   `sending_account_ids` into `holdslot/prod/smartlead` → `verify_keys --strict smartlead` green.
+3. **[MVP] Cold-email copy (A/B/C) + sequence authored** — the *Initial outreach* and *Follow-up* variant
+   bodies, with `{{first_name}}`/`{{company}}`-style tokens (same token grammar the UI's `highlightBody`
+   already renders).
+4. **[MVP] Compliance confirmed** — unsubscribe link + suppression owner + CAN-SPAM/GDPR/HK-PDPO posture
+   (gates E per *Decisions needed*); the do-not-email list from Phase C feeds the suppression already in place.
+
+**E1 — [MVP] Schema + migration (tenant-scoped; funnel state + event lineage from day one).**
+`campaign` (client_id, batch_id, `smartlead_campaign_id`, name, status `draft|live|paused`, created_at) ·
+`message_variant` (campaign_id, `stage`, `variant_id` A/B/C, body, `smartlead_variant_id`, version,
+`open_count`, `reply_count`, `is_winner`) · `campaign_lead` (campaign_id, prospect_id, `smartlead_lead_id`,
+**`stage`** (`contacted|followup|replied|meeting|noshow|billable|drop` — the funnel's single source of
+truth), `variant`, updated_at) · `outreach_event` (campaign_id, prospect_id, `type`, `channel`, payload
+JSONB, `occurred_at` — the conversation-log source **and** the stage-transition driver). All carry
+`client_id`; the A4 guard scopes them. **DoD:** migration up/down clean; a lead's funnel stage + its event
+log both reconstruct from these rows; re-delivering the same Smartlead webhook is idempotent (dedupe on
+Smartlead's event id).
+
+**E2 — [MVP] Smartlead adapter (one swappable integration client). ⭐** A single
+`integrations/smartlead` adapter reading `holdslot/prod/smartlead`, **lazy / SnapStart-safe** (no network
+at import), covering: create campaign · add leads · set sequence + A/B/C step variants · start/pause/resume
+· **reply-to-thread** (master-inbox send) · register the webhook. Timeout + bounded retry + structured
+CloudWatch line per call, mirroring the B3 adapter's discipline. **DoD:** a test creates a campaign, adds
+a lead, sets a 1-step A/B sequence, and pauses it (auto-skipped without the key, like A6/B3 tests).
+
+**E3 — [MVP] Confirm & lock → Smartlead campaign (the funnel's top). ⭐** The UI's **"Confirm & lock"**
+on a selected approved batch is the trigger: `POST /clients/{c}/campaigns` (idempotent on batch_id) →
+create the Smartlead campaign → add the batch's prospects as leads (assigned their chosen variant) →
+push the A/B/C sequence bodies as step variants → start sending (respecting Smartlead's daily caps from
+the warm-up config). On success the leads land in **Initial outreach** with `stage=contacted` — exactly
+the UI's `seedFunnel` behaviour, now real. Send controls (pause/resume) proxy to E2. **DoD:** locking a
+batch creates a live Smartlead campaign whose leads appear in the Initial-outreach stage; pause halts sends.
+
+**E4 — [MVP] Webhook ingest → events → funnel stages. ⭐** `POST /smartlead/webhook`
+(signature-verified via `webhook_signing_secret`, **fast 2xx, idempotent** on event id) → write
+`outreach_event` → advance funnel state: `EMAIL_SENT`(step n) keeps/sets `contacted`/`followup`;
+`EMAIL_OPEN` updates variant `open_count`; `EMAIL_REPLY` records the reply in the log and **flags the lead
+for founder review** (no auto-classify at MVP); `LEAD_UNSUBSCRIBED`/`EMAIL_BOUNCE`/negative reply → `drop`.
+The founder reads the reply in the conversation log and uses the **stage-move control** to send positives
+to `replied`. **DoD:** a simulated webhook stream drives a lead contacted→followup→(reply logged)→replied
+via one manual move; the conversation log renders from `outreach_event`. **[SCALE]** swap synchronous
+insert for API-GW→SQS→worker; add `reply_classify`/`reply_draft` LLM purposes that *suggest* the move.
+
+**E5 — [MVP] Reply Queue — the cross-campaign triage inbox. ⭐** The **Reply Queue** Workspace tab
+aggregates **every replied conversation across all of the tenant's campaigns** into one inbox — not a
+per-campaign view (that's the funnel's conversation log) but the single place a founder triages the day's
+replies. It is a **read/aggregation over E1's `outreach_event` + `campaign_lead`** (no new schema): the
+projection is "leads with an inbound `EMAIL_REPLY`", each row showing the prospect, **which campaign +
+stage** it belongs to, the latest reply snippet, and the full thread on expand. **Filters (the
+requirement):** by **campaign**, by **triage state** (Needs review / Positive / Negative / Handled), and
+the existing reply-status pips — all client-scoped by the A4 guard. Triage actions live here: read →
+classify → **move the lead** to *Positive reply* or *Drop* (the same `movePerson` transition, which
+removes it from the Needs-review filter) → approve/edit/send the threaded reply (E6). A lead's stage is
+the source of truth for "handled"; an optional `reply_status` projection is added only if the simple
+stage-derived filter proves insufficient. **DoD:** replies from two different live campaigns appear in one
+Reply Queue; filtering by campaign and by triage state works; classifying a reply moves the lead in its
+own campaign funnel and clears it from Needs-review. **[SCALE]** the `reply_classify` purpose pre-sorts the
+queue and `reply_draft` pre-fills the reply box.
+
+**E6 — [MVP] Reply-to-thread + variant scoreboard.** From the **Positive reply** stage (reached via the
+Reply Queue triage in E5), send the booking message back **into the existing thread** via E2's
+master-inbox reply (the UI's per-stage *Booking message* variants). Roll `open_count`/`reply_count` per
+variant into the metric bars and compute `is_winner` (the "Leading" pill) by reply rate. **DoD:** a
+positive-reply lead receives a threaded booking message; the variant panel shows live open/reply rates
+with the leading variant marked.
+
+**E7 — [MVP] Wire the Workspace Campaign tab + Reply Queue + Phase-E acceptance.** Point `CampaignTab`
+**and the Reply Queue tab** at the live API — campaigns list, funnel stages + counts, per-stage variants
+(live metrics), per-prospect conversation log + stage-move, KPIs (**Prospects = contacted · Replies =
+replied · Meetings/Billable = Phase F**), and the cross-campaign Reply Queue (E5) — keeping the **exact
+class names + funnel grammar** already built (no new CSS). Replace the mock `SAMPLE_FUNNEL`/`draftFunnels`
+and the mock reply list with real reads; "Confirm & lock" calls E3. **DoD:** a founder locks an approved
+batch, watches real sends land in Initial outreach, sees opens/replies sync, triages a reply from the
+**cross-campaign Reply Queue**, advances it to Positive reply, and sends a threaded booking message — all
+on live data; tick **S4/S5** in `backend-development-plan.md`.
+
+**Critical path:** E0(warmed inboxes) → E1 → E2 → E3 → E4 → {E5 · E6} → E7. **E0 is the schedule risk**
+(3-week warm-up, already running); **E3/E4 is the highest-leverage code** — Confirm-&-lock + the webhook
+funnel-driver are what make the rebuilt tab live, and **E5 (the cross-campaign Reply Queue) is where the
+founder actually works the replies**. **Cost:** Smartlead Basic $32/mo covers the whole MVP (warm-up
+free); LLM stays out of E at MVP (manual reply triage). *(Carry to Phase F: a lead in `replied`
+that books becomes a `meeting` row; the `Meeting schedule`/`No show`/`Qualified billable` stages and the
+Meetings/Billable KPIs are lit by Phase F against the **same** `campaign_lead.stage`.)*
+
+## Phase F — Book + meeting (S6 minimal): the billable seam into Ledger + Recaps
+
+Lights up the **bottom half of the same campaign funnel** — *Meeting schedule → No show → Qualified
+billable* — by making booking + the meeting real (Google Calendar event + Meet link + invites; held +
+duration via **Meet REST v2**), and **wires those two terminal stages forward to the Workspace *Billing
+ledger* and *Meeting recaps* tabs**. The locked **billing rule** is the hinge: a meeting is **Qualified
+billable iff (a) the prospect has a client approval AND (b) Meet metadata shows it was held ≥ 10 minutes**
+— otherwise it lands in **No show** (re-book or park). Grounded in `backend-development-plan.md` §4
+*S6/S7*, §3 domain model. **No code until F0's gates clear.**
+
+> **★ Build posture: build the meeting connection + the data seam; defer Stripe and LLM recaps.** Per
+> *Build vs. skip*, **billing/Stripe and transcript summaries are [SKIP] until paying signups.** So Phase
+> F **builds the `meeting` record that both future tabs read** and renders the *Billing ledger* +
+> *Meeting recaps* tabs from **real meeting-derived data** — but **Stripe invoicing** (the ledger's
+> push) and **LLM transcript summarization** (the recap's body) are explicit **[SKIP→later]** seams, not
+> built now. The funnel's *Qualified billable* "$X · Stripe" chip is a **computed amount**, not a real
+> charge, until Phase G onboards a payer. This is the "design the seam now, build the engine later" rule
+> the whole plan follows.
+
+### The seam: one `meeting` row feeds three surfaces
+
+The single `meeting` record is the join between the funnel and the two downstream tabs — designed now so
+neither tab is a redesign when its engine lands:
+
+| Consumer | Reads from `meeting` | Built in Phase F? |
+|---|---|---|
+| **Campaign funnel** (*Meeting schedule / No show / Qualified billable*) | `scheduled_at`, `held`, `duration_min`, `qualified` → sets `campaign_lead.stage` | **YES** |
+| **Billing ledger** tab (qualified/no-show, billed/held, `recId`, won/lost, CSV) | `qualified`, `amount`, `held`, `duration_min`, `conference_record_id`(→ the UI's `recId`) | **rows YES · Stripe push [SKIP→later]** |
+| **Meeting recaps** tab (recording, summary, deal won/lost) | `meet_link`, `conference_record_id`, attendees, (transcript ref) | **scaffold YES · LLM summary [SKIP→later]** |
+
+*(The existing `page.tsx` Billing-ledger mock already carries `recId` + `won` and the Meeting-summaries
+tab already exists — Phase F replaces their mock data with `meeting`-derived rows.)*
+
+### Tasks (build order)
+
+**F0 — Gates to clear before code (no code).**
+1. **Google Workspace host seat(s) confirmed** + Meet REST **conference-records** scope — already
+   verified in `holdslot/prod/google` (SA + domain-wide delegation + Calendar + Meet REST all 200,
+   2026-06-10). Confirm the seat tier exposes the conference-record duration/attendee signal (Business
+   Starter suffices for the held-≥10-min read; recording/transcripts need Standard — only relevant to the
+   [SKIP] recap engine, not the billing signal).
+2. **Booking-link lifetime / expiry decided** (the external page already renders valid/success/expired)
+   + reminder cadence — drives the EventBridge schedules (gates F per *Decisions needed*).
+3. **Qualified-meeting definition reconfirmed** = client-approved **AND** held ≥ 10 min (locked) — the
+   exact billing trigger; F4 encodes it verbatim.
+
+**F1 — Schema + migration (tenant-scoped; lineage for Ledger + Recaps from day one).**
+`booking_link` (campaign_id, prospect_id, token, `expires_at`, status `valid|booked|expired`) ·
+`meeting` (client_id, campaign_id, prospect_id, `google_event_id`, `meet_link`, `scheduled_at`, `held`,
+`duration_min`, `attendee_count`, **`conference_record_id`** (the UI's `recId`), **`qualified`**,
+**`amount`**, `outcome` (`won|lost|null`), status, created_at). All carry `client_id`; the A4 guard scopes
+them. **DoD:** migration up/down clean; a `meeting` row resolves to its lead, its campaign, and the future
+ledger/recap fields without any further schema change.
+
+**F2 — Google adapter extension (reuse the existing one client).** Extend the working Google integration:
+create a **Calendar event + Meet link + invites** for a confirmed booking; read **Meet REST v2 conference
+records** for held/duration/attendee count. SnapStart-safe, reads `holdslot/prod/google`. **DoD:** a test
+creates an event with a Meet link and reads back a conference record's duration (auto-skipped without the SA key).
+
+**F3 — Booking link + slot picker → event → Meeting schedule.** The tokenized external **booking page**
+already exists (slot picker, valid/success/expired). On confirm → F2 creates the Calendar event + Meet
+link + invites → the lead moves to **`stage=meeting`** (Meeting schedule) in the campaign funnel.
+**EventBridge** schedules a pre-meeting reminder + the post-meeting poll (F4). **DoD:** a prospect
+self-books from the external page; a Meet event is created; the lead appears in the Meeting-schedule stage.
+
+**F4 — Held + duration capture → qualify (the billing trigger). ⭐** After `scheduled_at`, an EventBridge
+poll reads the Meet REST conference record → set `held` + `duration_min` + `attendee_count` → apply the
+locked rule: **approved AND duration ≥ 10 → `qualified=true`, `stage=billable`** (Qualified billable) and
+compute `amount` from the §7 pricing; **else → `stage=noshow`** (No show — re-book or park). **DoD:** a
+held ≥10-min approved meeting becomes `qualified` and lands in Qualified billable with an amount; a
+missed/short meeting lands in No show; the transition is idempotent on re-poll.
+
+**F5 — The Ledger + Recaps seam (rows now, engines later).** Read endpoints serve `meeting`-derived rows
+to the Workspace **Billing ledger** tab (qualified/no-show, held/duration, `recId`, computed amount,
+won/lost) and the **Meeting recaps** tab (Meet link, conference id, attendees; deal won/lost toggle) —
+replacing those tabs' mock data with real meeting data. **Explicit [SKIP→later] seams:** the ledger's
+**Stripe invoice push** and the recap's **LLM transcript summary** (a future `meeting_summary` purpose on
+the B3 adapter) are *not* built now — the funnel's "$X · Stripe" chip is a computed amount, not a charge.
+**DoD:** both tabs render real meeting rows; flipping a deal won/lost persists; no Stripe call and no LLM
+call is made.
+
+**F6 — Wire the Workspace + Phase-F acceptance.** Drive the **Meeting schedule / No show / Qualified
+billable** funnel stages and the **Meetings/Billable KPIs** from real `meeting` rows; the external
+booking page, Billing-ledger, and Meeting-recaps tabs all run on live data. **DoD:** a founder watches a
+positive-reply lead self-book → attend → auto-qualify into Qualified billable, sees it reflected in the
+KPIs, the Billing ledger, and the Recaps tab — end-to-end, no Stripe/LLM; tick **S6** (and the read-only
+parts of **S7**) in `backend-development-plan.md`.
+
+**Critical path:** F0 → F1 → F2 → F3 → F4 → F5 → F6. **F4 is the highest-leverage code** — it encodes
+the one billing rule the whole business model rests on. **Cost:** Google Workspace ~$15/mo (already
+running); $0 Stripe until Phase G. *(Carry to Phase G + billing era: the `meeting` rows are the
+`LedgerEntry` source the day Stripe lands; the recap scaffold is the `meeting_summary` consumer the day
+transcripts are turned on — both are inserts/new purposes, not redesigns.)*
 
 ## Production isolation (post-build — run AFTER A→G are complete)
 

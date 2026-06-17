@@ -9,7 +9,7 @@ import { slugToTitle } from "@/lib/client";
 import { StatusTabCtx, STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
 
 const LABELS: Record<string, string> = {
-  overview: "Overview",
+  "performance-summary": "Performance Summary",
   workspace: "Workspace",
   "client-status": "Client Action",
 };
@@ -18,8 +18,8 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
   const [open, setOpen] = useState(false);
   const [statusTab, setStatusTab] = useState<StatusTabKey>("approval");
   const pathname = usePathname();
-  const seg = pathname.split("/").pop() || "overview";
-  const label = LABELS[seg] || "Overview";
+  const seg = pathname.split("/").pop() || "workspace";
+  const label = LABELS[seg] || "Workspace";
   const onStatus = seg === "client-status";
 
   return (

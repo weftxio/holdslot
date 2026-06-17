@@ -3,6 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { clearTokens } from "@/lib/api";
+import { DEFAULT_CLIENT_PAGE } from "@/lib/client";
 import { ClientSwitcher } from "./ClientSwitcher";
 import { initialsOf, useMe } from "./MeContext";
 import { STATUS_TABS, useStatusTab } from "./StatusTab";
@@ -10,7 +11,7 @@ import { STATUS_TABS, useStatusTab } from "./StatusTab";
 export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
   const pathname = usePathname();
   const base = `/${slug}`;
-  const onOverview = pathname === `${base}/overview`;
+  const onPerformance = pathname === `${base}/performance-summary`;
   const onWorkspace = pathname === `${base}/workspace`;
   const onStatus = pathname === `${base}/client-status`;
   const { tab, setTab } = useStatusTab();
@@ -23,7 +24,7 @@ export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
   return (
     <aside className={clsx("side", open && "open")}>
       <div className="side-top">
-        <Link href={`${base}/overview`} className="logo">
+        <Link href={`${base}/${DEFAULT_CLIENT_PAGE}`} className="logo">
           <span className="dot" />
           HoldSlot
         </Link>
@@ -31,11 +32,11 @@ export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
       </div>
       <nav className="side-nav">
         <span className="grp">Get Meeting</span>
-        <Link href={`${base}/overview`} className={clsx(onOverview && "active")}>
-          Overview
-        </Link>
         <Link href={`${base}/workspace`} className={clsx(onWorkspace && "active")}>
           Workspace
+        </Link>
+        <Link href={`${base}/performance-summary`} className={clsx(onPerformance && "active")}>
+          Performance Summary
         </Link>
         <span className="grp">Client Action</span>
         {STATUS_TABS.map(([key, label]) => (
