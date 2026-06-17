@@ -90,7 +90,8 @@ seed/test fixture, not by building the onboarding flow).
 | **G** | Run & close (human) | Meeting → founder pitches the live product → close → onboard signup = create their tenant (reuse A) | F | **P0** | **6 signups over H1** |
 
 **Critical path:** A → B → C → D → E → F → G.
-**Parallel from day 0 (long-lead):** domain warm-up · ~~account setup~~ **(keys DONE 2026-06-10)** · ICP + cold-email copy.
+**Parallel from day 0 (long-lead):** ~~domain warm-up~~ **STARTED 2026-06-17** (`getholdslot.com`, 2 inboxes, Smartlead-native warm-up → ready ~early Jul'26; see *Sending infrastructure*) · ~~account setup~~ **(keys DONE 2026-06-10)** · ICP + cold-email copy.
+**After G (post-build, decided 2026-06-17):** stand up a truly isolated `prod` (`terraform workspace new prod`) — sequenced **after** the full loop is proven on `dev`; see *Production isolation (post-build)*.
 
 ## Phase A — Foundation (S0): step-by-step (planning, pre-code)
 
@@ -115,8 +116,14 @@ No app code is written until A0's decisions are locked. Grounded in the locked s
 >    `/login?reset=<token>` set-new-password screen → sign in). Works in-sandbox because founder
 >    recipients are at the verified domain. **Deferred:** custom MAIL FROM (SPF alignment) and
 >    production-access / sandbox-exit — needed only for client-facing mail at Phase C+.
-> 2. **Prod environment** — single `dev` env today; Terraform is workspace-parameterised, so prod is
->    a later `terraform workspace new prod`, not a rewrite.
+> 2. **Prod environment — DECIDED: true prod isolation, deferred until AFTER the full build plan (A→G).**
+>    One `dev` env today; Terraform is workspace-parameterised, so prod is a later
+>    `terraform workspace new prod`, **not a rewrite**. The founder **wants real prod/dev isolation**
+>    (separate Aurora + Lambda + secrets), but the **sequencing is deliberate: finish the whole dogfood
+>    loop on `dev` first, then cut over** — full rollout in *Production isolation (post-build)* at the end
+>    of this plan. *(Interim reality, 2026-06-17: the Amplify `main` site is live but its
+>    `NEXT_PUBLIC_API_BASE_URL` points at the **`dev`** API/DB — so "prod frontend" currently runs on dev
+>    data until the cutover. Keep `aurora_min_acu = 0` on dev as chosen; the cutover sets prod ≥ 0.5.)*
 > 3. **CI/CD** — deploy is the manual one-command `apps/api/scripts/build-and-deploy.sh`; add a
 >    pipeline when Phase B churn justifies it.
 > 4. **Aurora scale-to-zero vs 30s Lambda timeout** — a cold resume can approach the timeout on the
@@ -709,6 +716,45 @@ already exists. **MVP cost:** Clay $0 (free) + LLM <$10/mo — effectively free 
 suppression / dedupe / scoring / schema / UI identical across the swap. *(Carry to Phase D: `Prospect`
 holds full clear-text; the approval serializer masks it — tiered-reveal is Phase D / S3.)*
 
+## Production isolation (post-build — run AFTER A→G are complete)
+
+**Decision (2026-06-17): build the whole dogfood loop on `dev` first; stand up a truly isolated `prod`
+only once the loop is proven end-to-end.** Until then `dev` is the single live environment and the
+Amplify `main` site deliberately runs against it. This is a **cutover, not a rewrite** — the Terraform is
+already workspace-parameterised (`local.env` from `terraform.workspace`, `name_prefix = holdslot-${env}`,
+per-workspace state key), so prod is a new workspace, not new code.
+
+**Trigger:** Phase **G** DoD is met (the outbound→booked-meeting loop runs end-to-end on `dev`; ideally
+once the H1 signups start landing). Not before — isolating early just doubles the surface to maintain
+while the loop is still changing daily.
+
+**Rollout (one ordered pass):**
+1. **New workspace + infra.** `terraform workspace new prod` → `terraform apply`. Spins up a separate
+   `holdslot-prod-aurora`, `holdslot-prod-api` Lambda + `live` alias, its own HTTP API + a prod API
+   domain (e.g. a distinct hostname or the apex `api.tryholdslot.com` reassigned to prod with dev moving
+   to `api-dev.…`), CloudWatch, budget — all isolated by `name_prefix`.
+2. **Aurora sizing (folds in Phase-A follow-up #4).** Set **`aurora_min_acu ≥ 0.5` on prod** (no
+   scale-to-zero) so the public site never eats the ~15–30 s cold-resume; `dev` stays at `0` for cost.
+3. **Secrets.** First-party app secrets (`jwt_signing_key`/`jwt_refresh_key`) get **fresh prod values**
+   in a prod-scoped path; external keys (OpenRouter/Clay/Smartlead/Google) can stay shared or be split
+   per-env. **Founder writes all secrets** (`claude_code` is read-only). Note the current quirk: dev
+   already reads `holdslot/prod/*` (see `locals.tf`) — pick the prod path namespace deliberately at
+   cutover so dev and prod don't collide on first-party secrets.
+4. **Schema + data.** `alembic upgrade head` against the prod cluster + the seed migration (HoldSlot
+   tenant #0 + founders). **Decide:** start prod clean vs. migrate the dogfood data from dev — default to
+   **clean prod** (dev becomes staging; dogfood history stays on dev) unless real signup data must carry
+   over.
+5. **SES production access.** Exit the SES sandbox for prod (client-facing mail) — this is the
+   Phase-A follow-up #1 deferral; it becomes load-bearing once real clients receive approval/booking mail.
+6. **Frontend cutover.** Point Amplify `main`'s `NEXT_PUBLIC_API_BASE_URL` at the **prod** API and
+   redeploy; leave `dev`/localhost on the dev API. Verify CORS `web_origins` lists the prod origin
+   (already does for `tryholdslot.com`).
+7. **Harden (do alongside).** Set the S3 state bucket public-access-block (follow-up #5); add the CI/CD
+   pipeline (follow-up #3) now that two environments justify it.
+
+**DoD:** `prod` is fully isolated from `dev` (separate DB, Lambda, secrets); `main`/`tryholdslot.com`
+serves the prod API/DB; `dev` remains the staging environment; prod Aurora does not scale to zero.
+
 ## Materials to prepare
 
 **Accounts & keys** — **keys provisioned + verified 2026-06-10** (account/plan decisions below still open)
@@ -758,10 +804,43 @@ Remaining secret fields (downstream **resources**, added to the secret at their 
   recording/transcripts**; provision an **OAuth client** if any phase needs user-consent (vs delegation) → **Phase F**.
 - **AWS** — budget alarm before prod. *(Stripe — not this phase.)*
 
-**Sending infrastructure (start now — ~3-week warm-up)**
-- 2–3 alternate sending domains (e.g. `getholdslot.com`, `tryholdslot.com`), ~2 mailboxes each.
-- SPF / DKIM / DMARC records (done for `tryholdslot.com`'s **transactional** SES identity; the *outbound*
-  warm-up domains still need their own); sender names + signatures; do-not-email suppression list.
+**Sending infrastructure — warm-up STARTED 2026-06-17 (the long pole; gates Phase E)**
+
+**Decision (2026-06-17): Smartlead-native warm-up + Google Workspace mailboxes on a dedicated lookalike
+domain.** Cold mail is sent **only** from `getholdslot.com`, never from `tryholdslot.com` (the
+primary/transactional domain — SES, marketing site, `info@`); a deliverability hit must not burn the
+real domain. Smartlead bundles **unlimited warm-up on every plan at $0 per inbox**, so no standalone
+warm-up tool (saves ~$120/mo vs. Warmbox/Mailwarm at ~$20/inbox).
+
+**As-built (domain #1, live):**
+- **Domain:** `getholdslot.com` (Route 53 zone `Z03649691ONFGOKEILOAK`), added as a **secondary domain**
+  to the existing **single** Google Workspace org. `tryholdslot.com` stays clean for transactional mail.
+- **Mailboxes (2):** `jason.tse@getholdslot.com`, `jason.wong@getholdslot.com` (real human names/sigs).
+- **DNS auth (all live, verified on the zone's authoritative NS):** **MX** `1 smtp.google.com` · **SPF**
+  `v=spf1 include:_spf.google.com ~all` (published alongside the Google site-verification TXT) · **DKIM**
+  `google._domainkey` — one TXT record, two concatenated strings (the Route 53 console split it into two
+  separate records first; fixed via `change-resource-record-sets` UPSERT to a single record) — Google
+  status "Authenticating email with DKIM" = active · **DMARC** `_dmarc` `v=DMARC1; p=none;
+  rua=mailto:dmarc@tryholdslot.com`.
+- **Smartlead warm-up (both inboxes, Enabled=Yes):** total 40/day ceiling · Daily Rampup ON (+5/day) ·
+  randomise 3–40 · reply rate 30% · daily reply-target 40 · weekdays-only ON · campaign daily send limit 15.
+- **Clock:** started **2026-06-17** → first real cold sends ~**week 3 (early Jul'26)** at 5–10/inbox/day,
+  warm-up continuing underneath; scale toward ~25/inbox/day after.
+- **Cost:** ~$15/mo incremental (2 Google seats ~$14 + domain ~$1); Smartlead sub paid for sending anyway.
+
+**MVP scope (decided 2026-06-17): ONE domain only.** Prove the whole loop on `getholdslot.com` (2
+inboxes, ~50 cold sends/day at plateau) before spending on more. A 2nd lookalike domain is a **[SCALE]**
+item — add it for capacity/redundancy only when dogfood volume justifies it (single domain = zero sending
+capacity if it's ever flagged, plus a fresh 3-week warm-up; acceptable risk at MVP). `claude_code` has
+Route 53 write, so a 2nd domain's MX/SPF/DKIM/DMARC can be scripted in one pass when that day comes.
+
+**Still to do (parallel, non-blocking):**
+- Optional: cross-domain DMARC report-authorization record in `tryholdslot.com` (`getholdslot.com._report
+  ._dmarc.tryholdslot.com` `"v=DMARC1"`) if aggregate reports are wanted — not needed for warm-up.
+- **do-not-email suppression list** — collect now; promotes to the C2/C4 suppression path in Phase C.
+- Sender names + signatures set; outbound **cold-email copy** (A/B/C) needed before week-3 real sends.
+- Smartlead secret: capture `webhook_signing_secret` + `sending_account_ids` into
+  `holdslot/prod/smartlead` (founder writes) → `verify_keys --strict smartlead` before Phase E.
 
 **Content & assets (our own GTM)**
 - HoldSlot's own **ICP** (industries, titles, company size, geos, triggers) — consumed by Brief→spec.
@@ -774,3 +853,44 @@ Remaining secret fields (downstream **resources**, added to the secret at their 
 - **Fit-scoring rubric** (what makes a good HoldSlot prospect) — blocks C.
 - **Cold-outreach compliance** (CAN-SPAM / GDPR / HK PDPO) + unsubscribe + suppression owner — gates E.
 - Booking-link lifetime / expiry — F. · AWS region / data residency — A.
+
+## MVP running cost (actual plan prices, 2026-06-17)
+
+Scoped to what the dogfood MVP actually runs: **single tenant** (HoldSlot dogfooding itself), **one
+domain** (`getholdslot.com`), **2 inboxes**, low volume. Much lighter than the 10-tenant model in
+`backend-development-plan.md` (Table 2/4) — those remain authoritative for Growth sizing.
+
+**Fixed SaaS (the bulk):**
+
+| Item | Plan | $/mo |
+|---|---|---|
+| **Clay** | Launch | **185.00** |
+| **Smartlead** | Basic — warm-up included free, both inboxes fit | **32.00** |
+| **Google Workspace** | 2 × Business Starter @ $7.20 | **14.40** |
+| **OpenRouter** | pay-per-use; Brief→spec, fit-scoring, drafts at dogfood volume | **~5–30** |
+| **`getholdslot.com`** | ~$15/yr amortized | **~1.25** |
+| | **SaaS subtotal** | **~$238–263** |
+
+**AWS (serverless, scale-to-zero, single tenant):**
+
+| Item | $/mo |
+|---|---|
+| **Aurora Serverless v2** (min ACU; swing factor — near-$0 idle, ~0.5 ACU under use) | ~5–30 |
+| Lambda · API GW · SES · S3 · SSM · SQS · EventBridge · CloudWatch · Route 53 · Amplify | ~3–10 |
+| | **AWS subtotal ~$8–40** |
+
+**Total: ~$280/mo typical** (low ~$246, high ~$320 with Standard Workspace tier + heavier LLM/Aurora)
+· **≈ 2,180 HKD/mo** at 7.8.
+
+**Cost levers:**
+- **Clay (~66% of total) is the one lever.** Launch is $185/mo but the real constraint is **credits**
+  (consumed per prospect enriched, *not* per meeting). The planned C2 path already ingests via **free-tier
+  CSV export** — so the loop can be proven on **Clay $0** and Launch deferred until Phase C runs hot.
+- **Smartlead $32 Basic covers the whole MVP** (warm-up free, 2 inboxes). No add-on until **[SCALE]**.
+- **Workspace Business Starter ($7.20) suffices** for dogfood; bump to Standard ($14.40) only if native
+  Meet recording/transcripts are wanted (the held-≥10-min billing signal reads Meet REST conference
+  records, which Starter exposes; you're not billing yourself in dogfood anyway).
+- **Stripe = $0** until a real signup pays (Phase G); then ~2.9% + per-txn, revenue-driven.
+
+**Honest floor to run the loop end-to-end, deferring Clay Launch:** Smartlead $32 + Workspace ~$15 +
+AWS/LLM/domain ~$10 ≈ **$55–65/mo**. With Clay Launch on: **~$280/mo**.

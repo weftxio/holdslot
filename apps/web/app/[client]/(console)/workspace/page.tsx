@@ -1042,9 +1042,12 @@ export default function Workspace() {
   const [csvErrors, setCsvErrors] = useState<Record<string, RowError[]>>({});
   // CSV import: parse → validate against the three-column contract → merge valid rows
   // (dedupe by domain) into the field → persist immediately → report skipped rows.
-  const onCsv =
-    (key: "customers" | "deals" | "doNotContact") =>
-    async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Called from an inline arrow at each <input> (not curried in JSX) so it's recognised as an
+  // event handler — letting persist() read its refs without a refs-during-render warning.
+  const onCsv = async (
+    key: "customers" | "deals" | "doNotContact",
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
       const file = e.target.files?.[0];
       e.target.value = ""; // allow re-uploading the same file
       if (!file) return;
@@ -2162,7 +2165,7 @@ export default function Workspace() {
                         accept=".csv,text/csv"
                         hidden
                         disabled={brief.noExcludeCustomers}
-                        onChange={onCsv("customers")}
+                        onChange={(e) => onCsv("customers", e)}
                       />
                     </label>
                     <span className="brief-hint">
@@ -2213,7 +2216,7 @@ export default function Workspace() {
                         accept=".csv,text/csv"
                         hidden
                         disabled={brief.noExcludeDeals}
-                        onChange={onCsv("deals")}
+                        onChange={(e) => onCsv("deals", e)}
                       />
                     </label>
                     <span className="brief-hint">
@@ -2260,7 +2263,7 @@ export default function Workspace() {
                         accept=".csv,text/csv"
                         hidden
                         disabled={brief.noDoNotContact}
-                        onChange={onCsv("doNotContact")}
+                        onChange={(e) => onCsv("doNotContact", e)}
                       />
                     </label>
                     <span className="brief-hint">
