@@ -34,6 +34,8 @@ from app.domains.prospects.schemas import (
     SourcingDocOut,
     SourcingRoundIn,
     SourcingRoundResult,
+    SourcingSettingsIn,
+    SourcingSettingsOut,
 )
 from app.domains.prospects.suppression import Candidate, extract_exclusions, suppress
 from app.integrations.openrouter.client import LlmError
@@ -472,7 +474,21 @@ def get_sourcing_docs(
         fit_rubric=_doc_out(_latest_doc(db, ctx.tenant.id, "fit_rubric")),
         prompt_versions=versions["sourcing_prompt"],
         rubric_versions=versions["fit_rubric"],
+        seed_limit=ctx.tenant.seed_limit,
     )
+
+
+@router.put("/{client}/sourcing-settings", response_model=SourcingSettingsOut)
+def save_sourcing_settings(
+    body: SourcingSettingsIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> SourcingSettingsOut:
+    """Persist the per-client seed_limit (scalar config, not a versioned doc)."""
+    ctx.tenant.seed_limit = body.seed_limit
+    db.add(ctx.tenant)
+    db.commit()
+    return SourcingSettingsOut(seed_limit=ctx.tenant.seed_limit)
 
 
 @router.post("/{client}/sourcing-docs", response_model=SourcingDocOut, status_code=201)

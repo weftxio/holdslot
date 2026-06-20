@@ -1,10 +1,12 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
+import { TopbarSlotCtx } from "@/components/console/ConsoleShell";
 import { STATUS_TABS, useStatusTab, type StatusTabKey } from "@/components/console/StatusTab";
 import { highlightTokens } from "@/lib/tmpl";
 import "./client-status.css";
@@ -155,6 +157,9 @@ export default function ClientStatus() {
   const { client } = useParams<{ client: string }>();
   const toast = useToast();
   const { tab, setTab } = useStatusTab();
+  // The tab bar renders into the console topbar (replacing the breadcrumb); the back button on
+  // the right is rendered by ConsoleShell.
+  const tabSlot = useContext(TopbarSlotCtx);
   const [approvalBatch, setApprovalBatch] = useState("");
 
   // "Propose new time" inline editor for expired bookings (one open at a time)
@@ -202,19 +207,23 @@ export default function ClientStatus() {
 
   const approveHref = `/${client}/approve/sample-link`;
 
+  const tabBar = (
+    <div className="tabs" role="tablist">
+      {STATUS_TABS.map(([k, label]) => (
+        <button
+          key={k}
+          className={clsx("tab", tab === k && "active")}
+          onClick={() => activate(k)}
+        >
+          {label}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <>
-      <div className="tabs" role="tablist">
-        {STATUS_TABS.map(([k, label]) => (
-          <button
-            key={k}
-            className={clsx("tab", tab === k && "active")}
-            onClick={() => activate(k)}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      {tabSlot ? createPortal(tabBar, tabSlot) : tabBar}
 
       {/* LIST APPROVAL */}
       <section className={clsx("es-section", tab === "approval" && "active")}>

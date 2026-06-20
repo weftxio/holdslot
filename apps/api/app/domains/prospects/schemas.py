@@ -104,12 +104,13 @@ class SourcingDocOut(BaseModel):
 
 
 class SourcingDocList(BaseModel):
-    """Latest + version list per kind, for the Sourcing-controls panel chips."""
+    """Latest + version list per kind, plus the scalar seed_limit, for the Sourcing-settings modal."""
 
     sourcing_prompt: SourcingDocOut | None = None
     fit_rubric: SourcingDocOut | None = None
     prompt_versions: list[int] = []
     rubric_versions: list[int] = []
+    seed_limit: int = 10
 
 
 class SourcingDocIn(BaseModel):
@@ -117,6 +118,16 @@ class SourcingDocIn(BaseModel):
 
     kind: str  # sourcing_prompt | fit_rubric
     body: str
+
+
+class SourcingSettingsIn(BaseModel):
+    """Per-client scalar sourcing config (not versioned). seed_limit ∈ [1, 50]."""
+
+    seed_limit: int = Field(ge=1, le=50)
+
+
+class SourcingSettingsOut(BaseModel):
+    seed_limit: int
 
 
 class SourcingRoundIn(BaseModel):

@@ -1,17 +1,20 @@
 "use client";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
+import { Modal } from "@/components/Modal";
+import { TopbarSlotCtx } from "@/components/console/ConsoleShell";
 import { useToast } from "@/components/Toast";
 import { CampaignTab } from "./CampaignTab";
 import { type ExclRow, type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
+import { slugToTitle } from "@/lib/client";
 import {
   type IcpApi,
   type IcpSuggestion,
   type ProspectApi,
-  type ResearchRunApi,
   type ResearchSpecResult,
   type SourcingDocList,
   acceptCandidates,
@@ -23,10 +26,10 @@ import {
   importProspectsCsv,
   listIcps,
   listProspects,
-  listResearchRuns,
   putBrief,
   runSourcingRound,
   saveSourcingDoc,
+  saveSourcingSettings,
   structureBrief,
   updateIcp as apiUpdateIcp,
 } from "@/lib/api";
@@ -118,8 +121,8 @@ const TABS = [
   ["batches", "Approval Batches"],
   ["campaign", "Outreach Campaigns"],
   ["replies", "Reply Queue"],
-  ["billing", "Billing Ledger"],
   ["summaries", "Meeting Recaps"],
+  ["billing", "Billing Ledger"],
 ] as const;
 
 const FIT_CLS: Record<string, string> = {
@@ -132,17 +135,21 @@ const FIT_CLS: Record<string, string> = {
 const STATUS_CLS: Record<string, string> = {
   scored: "badge-ok",
   new: "badge-info",
+  pushed: "badge-info",
   pending_review: "badge-warn",
   accepted: "badge-info",
   gated: "badge-neutral",
+  suppressed: "badge-neutral",
   score_error: "badge-danger",
 };
 const STATUS_LABEL: Record<string, string> = {
   scored: "Scored",
   new: "New",
+  pushed: "Pushed",
   pending_review: "Pending review",
   accepted: "Accepted",
   gated: "Gated",
+  suppressed: "Suppressed",
   score_error: "Score error",
 };
 // Origin chip (not transport): where the prospect came from.
@@ -196,6 +203,9 @@ type LedgerRow = {
   billing: string;
   billingBadge: string;
 };
+// Locked pricing constant (USD) — backend-development-plan §6.11 / §7. Supersedes the old
+// HKD 6,000 + HKD 4,000 model. The rate is a fixed business rule, not per-client data.
+const PER_MEETING_USD = 500;
 const LEDGER: LedgerRow[] = [
   {
     outcome: "Qualified",
@@ -921,7 +931,10 @@ const EXCLUSION_COUNT = EXCLUSIONS.reduce((n, g) => n + g.entries.length, 0);
 
 export default function Workspace() {
   const { client } = useParams<{ client: string }>();
+  const clientName = slugToTitle(client);
   const toast = useToast();
+  // The tab bar renders into the console topbar (replacing the breadcrumb) via this slot.
+  const tabSlot = useContext(TopbarSlotCtx);
 
   const [tab, setTab] = useState<string>("brief");
   useEffect(() => {
@@ -1358,20 +1371,19 @@ export default function Workspace() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [fFit, setFFit] = useState("");
-  const [fStatus, setFStatus] = useState("");
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
-  const [fSource, setFSource] = useState("");
   const [newBatchName, setNewBatchName] = useState("");
   const [importing, setImporting] = useState(false);
   const [sourcing, setSourcing] = useState(false);
   const [seedLimit, setSeedLimit] = useState(10); // candidates the AI loop anchors on per round
 
-  // Sourcing controls (the founder-edited, versioned prompt + rubric) + round history.
+  // Sourcing settings (per-client seed limit + versioned prompt + rubric), edited in a modal.
+  const [showSourcing, setShowSourcing] = useState(false);
   const [docs, setDocs] = useState<SourcingDocList | null>(null);
   const [promptDraft, setPromptDraft] = useState("");
   const [rubricDraft, setRubricDraft] = useState("");
   const [savingDoc, setSavingDoc] = useState<"sourcing_prompt" | "fit_rubric" | null>(null);
-  const [runs, setRuns] = useState<ResearchRunApi[]>([]);
+  const [savingSeed, setSavingSeed] = useState(false);
 
   const icpNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1384,10 +1396,9 @@ export default function Workspace() {
     try {
       // Let errors propagate — a failed reload must surface, never silently blank the list
       // (which reads as "no prospects" and tempts a re-import / re-spend).
-      const [ps, rs] = await Promise.all([listProspects(client), listResearchRuns(client)]);
+      const ps = await listProspects(client);
       if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
       setProspects(ps);
-      setRuns(rs);
       setChecked(new Set());
     } catch (e) {
       if (clientRef.current === client) {
@@ -1398,7 +1409,7 @@ export default function Workspace() {
     }
   }
 
-  // Hydrate the prospect list, sourcing docs, and round history for this client. Selection and
+  // Hydrate the prospect list and sourcing docs for this client. Selection and
   // filters are reset here — they reference the *previous* client's prospect/ICP ids and would
   // otherwise leak across a switch (a stale fIcp silently hides the new client's rows; stale
   // checked ids feed accept/createBatch). Load errors surface as a toast and never blank the
@@ -1410,22 +1421,16 @@ export default function Workspace() {
     setSearch("");
     setFIcp("");
     setFFit("");
-    setFStatus("");
-    setFSource("");
     let alive = true;
     (async () => {
       try {
-        const [ps, rs, dl] = await Promise.all([
-          listProspects(client),
-          listResearchRuns(client),
-          getSourcingDocs(client),
-        ]);
+        const [ps, dl] = await Promise.all([listProspects(client), getSourcingDocs(client)]);
         if (!alive) return;
         setProspects(ps);
-        setRuns(rs);
         setDocs(dl);
         setPromptDraft(dl?.sourcing_prompt?.body ?? "");
         setRubricDraft(dl?.fit_rubric?.body ?? "");
+        setSeedLimit(dl?.seed_limit ?? 10);
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       }
@@ -1442,15 +1447,25 @@ export default function Workspace() {
         return (
           (!search || text.includes(search.toLowerCase())) &&
           (!fIcp || p.icp_id === fIcp) &&
-          (!fFit || p.fit_tier === fFit) &&
-          (!fStatus || p.status === fStatus) &&
-          (!fSource || p.source === fSource)
+          (!fFit || p.fit_tier === fFit)
         );
       }),
-    [prospects, search, fIcp, fFit, fStatus, fSource]
+    [prospects, search, fIcp, fFit]
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
   const allChecked = visible.length > 0 && selCount === visible.length;
+  // Group the visible rows by company so prospects from the same company sit together (the
+  // company cell is then merged via rowSpan). First-seen order is preserved across groups.
+  const companyGroups = useMemo(() => {
+    const m = new Map<string, ProspectApi[]>();
+    for (const p of visible) {
+      const key = p.company || p.domain || "—";
+      const g = m.get(key);
+      if (g) g.push(p);
+      else m.set(key, [p]);
+    }
+    return Array.from(m, ([company, rows]) => ({ company, rows }));
+  }, [visible]);
 
   function toggleRow(id: string) {
     setChecked((s) => {
@@ -1512,6 +1527,21 @@ export default function Workspace() {
       toast(err instanceof Error ? err.message : "Import failed", "warn");
     } finally {
       setImporting(false);
+    }
+  }
+
+  // Persist the per-client seed limit (scalar config, not versioned).
+  async function saveSeed() {
+    setSavingSeed(true);
+    try {
+      const res = await saveSourcingSettings(client, seedLimit);
+      setSeedLimit(res.seed_limit);
+      setDocs((d) => (d ? { ...d, seed_limit: res.seed_limit } : d));
+      toast(`Seed limit saved · ${res.seed_limit}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "warn");
+    } finally {
+      setSavingSeed(false);
     }
   }
 
@@ -1604,18 +1634,18 @@ export default function Workspace() {
       "Outcome",
       "Feedback",
       "Status",
-      "Amount (HKD)",
+      "Amount (USD)",
     ];
-    const rows = LEDGER.map((ou, i) => [
+    const rows = LEDGER.map((row, i) => [
       "Placeholder date",
       "Prospect " + (i + 1),
       "Sample Co " + (i + 1),
       "Campaign 1",
       "Batch 3",
-      ou.outcome,
-      ou.feedback,
-      ou.billing,
-      ou.billing === "Billed" ? "4000" : "",
+      row.outcome,
+      row.feedback,
+      row.billing,
+      row.billing === "Billed" ? String(PER_MEETING_USD) : "",
     ]);
     const csv = [headers, ...rows]
       .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
@@ -1710,24 +1740,28 @@ export default function Workspace() {
     return groups;
   };
 
+  const tabBar = (
+    <div className="tabs ws-tabs" role="tablist">
+      {TABS.map(([k, label]) => (
+        <button
+          key={k}
+          className={clsx("tab", tab === k && "active")}
+          onClick={() => activate(k)}
+        >
+          {label}
+          {k === "batches" && <span className="cnt">{batches.length}</span>}
+          {k === "campaign" && <span className="cnt">{campaigns.length}</span>}
+          {k === "replies" && (
+            <span className={clsx("cnt", remaining > 0 && "alert")}>{remaining}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
     <>
-      <div className="tabs ws-tabs" role="tablist">
-        {TABS.map(([k, label]) => (
-          <button
-            key={k}
-            className={clsx("tab", tab === k && "active")}
-            onClick={() => activate(k)}
-          >
-            {label}
-            {k === "batches" && <span className="cnt">{batches.length}</span>}
-            {k === "campaign" && <span className="cnt">{campaigns.length}</span>}
-            {k === "replies" && (
-              <span className={clsx("cnt", remaining > 0 && "alert")}>{remaining}</span>
-            )}
-          </button>
-        ))}
-      </div>
+      {tabSlot ? createPortal(tabBar, tabSlot) : tabBar}
 
       {/* BUSINESS BRIEF */}
       <section className={clsx("tabpane", tab === "brief" && "active")}>
@@ -2584,17 +2618,32 @@ export default function Workspace() {
       </section>
 
       {/* PROSPECT LIST */}
-      <section className={clsx("tabpane", tab === "list" && "active")}>
+      <section className={clsx("tabpane list-pane", tab === "list" && "active")}>
         <div className="panel">
+          <div className="batch-row">
+            <span className="br-label">Create Batch for Approval</span>
+            <div className="batch-controls">
+              <input
+                className="input"
+                type="text"
+                placeholder="Name by ICP or campaign · e.g. Enterprise CTOs · Q3 outreach"
+                value={newBatchName}
+                onChange={(e) => setNewBatchName(e.target.value)}
+              />
+              <span className="sel-pill">{selCount} selected</span>
+              <button className="btn btn-primary btn-sm" onClick={createBatch}>
+                Create batch
+              </button>
+            </div>
+          </div>
           <div className="panel-head">
             <div>
-              <h3>Prospect list review</h3>
-              <div className="ph-sub">
-                Import a Clay CSV export or run an AI sourcing round, review fit, then batch the ones
-                worth sending.
-              </div>
+              <h3>Prospect Selection</h3>
             </div>
             <div className="row">
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
+                ⚙ Sourcing settings
+              </button>
               <label className={clsx("btn btn-ghost btn-sm", importing && "disabled")}>
                 {importing ? "Importing…" : "Import Clay CSV"}
                 <input
@@ -2612,23 +2661,10 @@ export default function Workspace() {
               >
                 {accepting ? "Accepting…" : "Accept selected (AI)"}
               </button>
+              <button className="btn btn-accent btn-sm" onClick={runRound} disabled={sourcing}>
+                {sourcing ? "Sourcing…" : "Run sourcing round"}
+              </button>
             </div>
-          </div>
-          <div className="batch-row">
-            <span className="br-label">
-              <span className="nbi">＋</span>Create sendout batch from selection
-            </span>
-            <input
-              className="input"
-              type="text"
-              placeholder="Name this batch (e.g. Batch 4)"
-              value={newBatchName}
-              onChange={(e) => setNewBatchName(e.target.value)}
-            />
-            <span className="sel-pill">{selCount} selected</span>
-            <button className="btn btn-primary btn-sm" onClick={createBatch}>
-              Create batch
-            </button>
           </div>
           <div className="filter-row" style={{ borderBottom: "1px solid var(--line)" }}>
             <div className="search">
@@ -2651,11 +2687,6 @@ export default function Workspace() {
                   </option>
                 ))}
             </select>
-            <select className="select" value={fSource} onChange={(e) => setFSource(e.target.value)}>
-              <option value="">Any source</option>
-              <option value="clay">Clay</option>
-              <option value="ai_loop">AI</option>
-            </select>
             <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
               <option value="">Any fit</option>
               <option value="Strong">Strong fit</option>
@@ -2663,18 +2694,11 @@ export default function Workspace() {
               <option value="Moderate">Moderate fit</option>
               <option value="Below">Below</option>
             </select>
-            <select className="select" value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
-              <option value="">Any status</option>
-              <option value="scored">Scored</option>
-              <option value="pending_review">Pending review</option>
-              <option value="accepted">Accepted</option>
-              <option value="gated">Gated</option>
-            </select>
             <span className="fcount">
               <b>{visible.length}</b> shown · <b>{selCount}</b> selected
             </span>
           </div>
-          <div style={{ overflowX: "auto" }}>
+          <div className="list-scroll">
             <table className="tbl">
               <thead>
                 <tr>
@@ -2686,199 +2710,167 @@ export default function Workspace() {
                       onChange={(e) => toggleAll(e.target.checked)}
                     />
                   </th>
+                  <th>Company</th>
                   <th>Prospect</th>
                   <th>Title</th>
-                  <th>Company</th>
                   <th>Source ICP</th>
                   <th>Source</th>
                   <th>Fit</th>
                   <th>Status</th>
                 </tr>
               </thead>
-              <tbody>
-                {visible.map((p) => (
-                  <tr key={p.id}>
-                    <td>
-                      <input
-                        type="checkbox"
-                        className="tbl-check"
-                        checked={checked.has(p.id)}
-                        onChange={() => toggleRow(p.id)}
-                      />
-                    </td>
-                    <td>
-                      <div className="who-cell">
-                        <div className="av-sm">
-                          {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="nm">{p.full_name || "—"}</div>
-                          <div className="sub">{p.email || "no email yet"}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="muted">{p.title || "—"}</td>
-                    <td>{p.company || p.domain || "—"}</td>
-                    <td className="muted">
-                      {(p.icp_id && icpNameById.get(p.icp_id)) || "—"}
-                    </td>
-                    <td>
-                      <span className={clsx("badge", SOURCE_CLS[p.source] ?? "badge-neutral")}>
-                        <span className="bdot" />
-                        {SOURCE_LABEL[p.source] ?? p.source}
-                      </span>
-                    </td>
-                    <td>
-                      {p.fit_tier ? (
-                        <span title={p.fit_reason || undefined}>
-                          <span className={clsx("badge", FIT_CLS[p.fit_tier] ?? "badge-neutral")}>
+              {visible.length > 0 && (
+                <tbody>
+                  {companyGroups.map((g) =>
+                    g.rows.map((p, ri) => (
+                      <tr key={p.id}>
+                        <td>
+                          <input
+                            type="checkbox"
+                            className="tbl-check"
+                            checked={checked.has(p.id)}
+                            onChange={() => toggleRow(p.id)}
+                          />
+                        </td>
+                        {ri === 0 && (
+                          <td className="vtop" rowSpan={g.rows.length}>
+                            {g.company}
+                          </td>
+                        )}
+                        <td>
+                          <div className="who-cell">
+                            <div className="av-sm">
+                              {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
+                            </div>
+                            <div>
+                              <div className="nm">{p.full_name || "—"}</div>
+                              <div className="sub">{p.email || "no email yet"}</div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="muted">{p.title || "—"}</td>
+                        <td className="muted">
+                          {(p.icp_id && icpNameById.get(p.icp_id)) || "—"}
+                        </td>
+                        <td>
+                          <span className={clsx("badge", SOURCE_CLS[p.source] ?? "badge-neutral")}>
                             <span className="bdot" />
-                            {p.fit_tier}
+                            {SOURCE_LABEL[p.source] ?? p.source}
                           </span>
-                          {p.fit_reason ? <div className="sub">{p.fit_reason}</div> : null}
-                        </span>
-                      ) : (
-                        <span className="muted">—</span>
-                      )}
-                    </td>
-                    <td>
-                      <span className={clsx("badge", STATUS_CLS[p.status] ?? "badge-neutral")}>
-                        <span className="bdot" />
-                        {STATUS_LABEL[p.status] ?? p.status}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-                {visible.length === 0 && (
-                  <tr>
-                    <td colSpan={8} className="muted" style={{ textAlign: "center", padding: 24 }}>
-                      {prospectsLoading
-                        ? "Loading prospects…"
-                        : "No prospects yet — import a Clay CSV or run a sourcing round below."}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
+                        </td>
+                        <td>
+                          {p.fit_tier ? (
+                            <span title={p.fit_reason || undefined}>
+                              <span
+                                className={clsx("badge", FIT_CLS[p.fit_tier] ?? "badge-neutral")}
+                              >
+                                <span className="bdot" />
+                                {p.fit_tier}
+                              </span>
+                              {p.fit_reason ? <div className="sub">{p.fit_reason}</div> : null}
+                            </span>
+                          ) : (
+                            <span className="muted">—</span>
+                          )}
+                        </td>
+                        <td>
+                          <span className={clsx("badge", STATUS_CLS[p.status] ?? "badge-neutral")}>
+                            <span className="bdot" />
+                            {STATUS_LABEL[p.status] ?? p.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              )}
             </table>
+            {visible.length === 0 && (
+              <div className="list-empty muted">
+                {prospectsLoading
+                  ? "Loading prospects…"
+                  : "No prospects yet — import a Clay CSV or run a sourcing round."}
+              </div>
+            )}
           </div>
         </div>
 
-        {/* SOURCING CONTROLS — founder-edited, versioned prompt + rubric, round history */}
-        <div className="panel" style={{ marginTop: 18 }}>
-          <div className="panel-head">
-            <div>
-              <h3>Sourcing controls</h3>
-              <div className="ph-sub">
-                The AI sourcing loop runs on these. Edit and save a new version, then run a round.
-              </div>
-            </div>
-            <div className="row">
-              <span className="badge badge-neutral">
-                Prompt v{docs?.sourcing_prompt?.version ?? "—"}
+        {/* SOURCING SETTINGS MODAL — per-client seed limit + versioned prompt + rubric */}
+        <Modal
+          open={showSourcing}
+          onClose={() => setShowSourcing(false)}
+          title={`Sourcing settings · ${clientName}`}
+          className="modal-lg"
+          footer={
+            <button className="btn btn-primary btn-sm" onClick={() => setShowSourcing(false)}>
+              Done
+            </button>
+          }
+        >
+          <div className="field">
+            <label>Seed limit</label>
+            <div className="row" style={{ gap: 10, alignItems: "center" }}>
+              <input
+                className="input"
+                type="number"
+                min={1}
+                max={50}
+                value={seedLimit}
+                onChange={(e) =>
+                  setSeedLimit(Math.max(1, Math.min(50, Number(e.target.value) || 1)))
+                }
+                disabled={savingSeed}
+                style={{ width: "5rem", padding: "9px 12px", fontSize: 13.5 }}
+              />
+              <span className="ph-sub" style={{ flex: 1, whiteSpace: "nowrap" }}>
+                Passed-fit prospects the AI loop anchors on per round.
               </span>
-              <span className="badge badge-neutral">Rubric v{docs?.fit_rubric?.version ?? "—"}</span>
-              <label
-                className="row"
-                style={{ gap: 6, fontSize: 13, fontWeight: 600, color: "var(--ink)" }}
-              >
-                Seed limit
-                <input
-                  className="input"
-                  type="number"
-                  min={1}
-                  max={50}
-                  value={seedLimit}
-                  onChange={(e) =>
-                    setSeedLimit(Math.max(1, Math.min(50, Number(e.target.value) || 1)))
-                  }
-                  disabled={sourcing}
-                  style={{ width: "4.5rem", padding: "9px 12px", fontSize: 13.5 }}
-                />
-              </label>
-              <button className="btn btn-accent btn-sm" onClick={runRound} disabled={sourcing}>
-                {sourcing ? "Sourcing…" : "Run sourcing round"}
-              </button>
-            </div>
-          </div>
-          <div className="field">
-            <label>Sourcing prompt (v{docs?.sourcing_prompt?.version ?? "—"})</label>
-            <textarea
-              className="textarea"
-              rows={8}
-              value={promptDraft}
-              onChange={(e) => setPromptDraft(e.target.value)}
-            />
-            <div className="row" style={{ marginTop: 8 }}>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => saveDoc("sourcing_prompt")}
-                disabled={savingDoc === "sourcing_prompt"}
+                onClick={saveSeed}
+                disabled={savingSeed || seedLimit === docs?.seed_limit}
               >
-                {savingDoc === "sourcing_prompt" ? "Saving…" : "Save as new version"}
+                {savingSeed ? "Saving…" : "Save"}
               </button>
             </div>
           </div>
-          <div className="field">
-            <label>Fit rubric (v{docs?.fit_rubric?.version ?? "—"})</label>
-            <textarea
-              className="textarea"
-              rows={8}
-              value={rubricDraft}
-              onChange={(e) => setRubricDraft(e.target.value)}
-            />
-            <div className="row" style={{ marginTop: 8 }}>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => saveDoc("fit_rubric")}
-                disabled={savingDoc === "fit_rubric"}
-              >
-                {savingDoc === "fit_rubric" ? "Saving…" : "Save as new version"}
-              </button>
+          <div className="sourcing-cols">
+            <div className="field">
+              <div className="between">
+                <label>Sourcing prompt (v{docs?.sourcing_prompt?.version ?? "—"})</label>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => saveDoc("sourcing_prompt")}
+                  disabled={savingDoc === "sourcing_prompt"}
+                >
+                  {savingDoc === "sourcing_prompt" ? "Saving…" : "Save as new version"}
+                </button>
+              </div>
+              <textarea
+                className="textarea"
+                value={promptDraft}
+                onChange={(e) => setPromptDraft(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <div className="between">
+                <label>Fit rubric (v{docs?.fit_rubric?.version ?? "—"})</label>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => saveDoc("fit_rubric")}
+                  disabled={savingDoc === "fit_rubric"}
+                >
+                  {savingDoc === "fit_rubric" ? "Saving…" : "Save as new version"}
+                </button>
+              </div>
+              <textarea
+                className="textarea"
+                value={rubricDraft}
+                onChange={(e) => setRubricDraft(e.target.value)}
+              />
             </div>
           </div>
-          <div style={{ overflowX: "auto" }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Round</th>
-                  <th>Source</th>
-                  <th>Prompt v</th>
-                  <th>Pushed</th>
-                  <th>Accepted</th>
-                  <th>$/accepted</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {runs.map((r) => (
-                  <tr key={r.run_id}>
-                    <td className="muted">{r.run_id.slice(0, 8)}</td>
-                    <td>
-                      <span className={clsx("badge", SOURCE_CLS[r.source] ?? "badge-neutral")}>
-                        <span className="bdot" />
-                        {SOURCE_LABEL[r.source] ?? r.source}
-                      </span>
-                    </td>
-                    <td className="muted">{r.prompt_version ?? "—"}</td>
-                    <td>{r.rows_pushed}</td>
-                    <td>{r.rows_accepted}</td>
-                    {/* server rounds to 4dp; $/accepted is often sub-cent (qwen-flash), so keep
-                        the small value rather than toFixed(2)-ing it to a misleading $0.00. */}
-                    <td>{r.cost_per_accepted != null ? `$${r.cost_per_accepted}` : "—"}</td>
-                    <td className="muted">{r.created_at ? r.created_at.slice(0, 10) : "—"}</td>
-                  </tr>
-                ))}
-                {runs.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="muted" style={{ textAlign: "center", padding: 16 }}>
-                      No rounds yet.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        </Modal>
       </section>
 
       {/* SENDOUT BATCH */}
@@ -3276,9 +3268,7 @@ export default function Workspace() {
           </div>
           <div className="ls accent">
             <div className="lcap">Per qualified meeting</div>
-            <div className="ln">
-              $<Sample>rate</Sample>
-            </div>
+            <div className="ln">${PER_MEETING_USD}</div>
           </div>
         </div>
         <div className="panel">
@@ -3293,7 +3283,7 @@ export default function Workspace() {
               Export CSV
             </button>
           </div>
-          <div style={{ overflowX: "auto" }}>
+          <div className="tbl-scroll">
             <table className="tbl">
               <thead>
                 <tr>
@@ -3303,43 +3293,39 @@ export default function Workspace() {
                   <th>Outcome</th>
                   <th>Feedback</th>
                   <th>Status</th>
-                  <th style={{ textAlign: "right" }}>Amount</th>
+                  <th className="amt-cell">Amount</th>
                 </tr>
               </thead>
               <tbody>
-                {LEDGER.map((ou, i) => (
+                {LEDGER.map((row, i) => (
                   <tr key={i}>
                     <td className="muted">Placeholder date</td>
                     <td>
-                      <div className="nm">
-                        Prospect {i + 1}
-                      </div>
+                      <div className="nm">Prospect {i + 1}</div>
                       <div className="sub">Sample Co {i + 1}</div>
                     </td>
                     <td>
-                      <div className="sum-tags" style={{ margin: 0 }}>
+                      <div className="sum-tags">
                         <span className="stag">Campaign 1</span>
                         <span className="stag">Batch 3</span>
                       </div>
                     </td>
                     <td>
-                      <span className={clsx("badge", ou.outcomeBadge)}>
+                      <span className={clsx("badge", row.outcomeBadge)}>
                         <span className="bdot" />
-                        {ou.outcome}
+                        {row.outcome}
                       </span>
                     </td>
-                    <td className="muted">{ou.feedback}</td>
+                    <td className="muted">{row.feedback}</td>
                     <td>
-                      <span className={clsx("badge", ou.billingBadge)}>
+                      <span className={clsx("badge", row.billingBadge)}>
                         <span className="bdot" />
-                        {ou.billing}
+                        {row.billing}
                       </span>
                     </td>
-                    <td style={{ textAlign: "right" }} className="tnum">
-                      {ou.billing === "Billed" ? (
-                        <>
-                          $<Sample>amt</Sample>
-                        </>
+                    <td className="amt-cell">
+                      {row.billing === "Billed" ? (
+                        `$${PER_MEETING_USD}`
                       ) : (
                         <span className="muted">·</span>
                       )}

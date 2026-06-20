@@ -1,0 +1,41 @@
+/* Console topbar variants — class selectors only (this file is global in Next; it's imported by
+   ConsoleShell so it applies on every console route, unlike a page's co-located CSS).
+
+   Two pages lift their tab bar into the topbar (replacing the breadcrumb): workspace and
+   client-status. A page portals its tab bar into the `.topbar-tabs` slot rendered here. */
+.topbar-tabs {
+  min-width: 0;
+  align-self: stretch;
+  display: flex;
+  align-items: flex-end;
+}
+/* tabs in the topbar drop their own divider + bottom margin (the topbar has its own border) */
+.topbar-tabs .tabs {
+  margin-bottom: 0;
+  border-bottom: none;
+}
+
+/* workspace: equal-width tabs span the whole bar (there is no back button on the right) */
+.topbar--ws .row {
+  flex: 1;
+  min-width: 0;
+}
+.topbar--ws .topbar-tabs {
+  flex: 1;
+}
+.topbar--ws .topbar-tabs .ws-tabs {
+  width: 100%;
+}
+.topbar--ws + .content {
+  padding-top: 12px;
+}
+
+/* client-status: tabs sit left of the back button (natural width), so the topbar keeps its
+   space-between layout — tabs left, back button right. */
+
+/* performance-summary: no header on desktop; the menu toggle still appears on mobile */
+@media (min-width: 881px) {
+  .topbar--bare {
+    display: none;
+  }
+}

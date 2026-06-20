@@ -1,0 +1,66 @@
+/* Modal scaffold — class selectors only (this file is global in Next). Sits above the console
+   shell (sidebar scrim z-index 55, topbar 20) and below toasts (z-index 200). */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  background: rgba(14, 17, 22, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px 20px;
+  overflow-y: auto;
+}
+.modal-dialog {
+  width: 100%;
+  max-width: 640px;
+  max-height: calc(100vh - 56px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* wider variant — for side-by-side editors */
+.modal-dialog.modal-lg {
+  max-width: 1040px;
+}
+.modal-x {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: none;
+  color: var(--ink-faint);
+  font-size: 13px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-x:hover {
+  background: var(--cerulean-wash);
+  color: var(--ink);
+}
+.modal-body {
+  padding: 20px 24px;
+  overflow-y: auto;
+}
+.modal-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 14px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--cerulean-wash);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .modal-dialog {
+    animation: modal-pop 0.16s ease-out;
+  }
+  @keyframes modal-pop {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+  }
+}

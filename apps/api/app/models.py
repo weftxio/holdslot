@@ -91,6 +91,9 @@ class Tenant(Base):
         nullable=False,
         server_default=TenantStatus.active.value,
     )
+    # AI sourcing knob: how many passed-fit prospects anchor each round. Per-client config,
+    # edited in the Sourcing-settings modal; a scalar (not a versioned SourcingDoc).
+    seed_limit: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

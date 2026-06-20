@@ -308,6 +308,7 @@ export type SourcingDocList = {
   fit_rubric: SourcingDocApi | null;
   prompt_versions: number[];
   rubric_versions: number[];
+  seed_limit: number;
 };
 export type SourcingCandidate = {
   identity_key: string;
@@ -360,6 +361,19 @@ export async function saveSourcingDoc(
     method: "POST",
     json: true,
     body: JSON.stringify({ kind, body }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function saveSourcingSettings(
+  client: string,
+  seedLimit: number
+): Promise<{ seed_limit: number }> {
+  const r = await authFetch(`/${client}/sourcing-settings`, {
+    method: "PUT",
+    json: true,
+    body: JSON.stringify({ seed_limit: seedLimit }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();

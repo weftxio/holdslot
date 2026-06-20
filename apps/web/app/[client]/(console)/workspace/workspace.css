@@ -5,6 +5,33 @@
 .vtop {
   vertical-align: top;
 }
+
+/* Prospect list fills the viewport so the panel — and its empty state — leverages the full
+   height instead of sitting in a short box with dead space below. */
+.list-pane.active {
+  display: flex;
+  flex-direction: column;
+}
+.list-pane > .panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100vh - 120px);
+}
+.list-scroll {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.list-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
 /* workspace tab bar: equal-width tabs spanning the full row */
 .ws-tabs {
   gap: 0;
@@ -13,6 +40,8 @@
   flex: 1 1 0;
   justify-content: center;
 }
+/* (Topbar tab-slot layout lives in components/console/console-shell.css — shared with
+   client-status, which also lifts its tabs into the topbar.) */
 
 .grid2 {
   display: grid;
@@ -730,6 +759,19 @@
 .ledger-sum .ls.accent .ln {
   color: var(--cerulean-deep);
 }
+/* Billing ledger table utilities — replace ad-hoc inline styles so the column styling is
+   defined once. .amt-cell right-aligns the Amount header + cells with tabular figures. */
+.tbl-scroll {
+  overflow-x: auto;
+}
+.tbl .amt-cell {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+/* the tag pill group carries a bottom margin in summary cards; zero it inside table cells */
+.tbl .sum-tags {
+  margin-bottom: 0;
+}
 
 /* summaries */
 .sum-card {
@@ -960,32 +1002,46 @@
 }
 .batch-row {
   display: flex;
-  align-items: center;
-  gap: 12px;
+  flex-direction: column;
+  gap: 10px;
   padding: 14px 24px; /* align left edge with the panel-head inset */
   border-bottom: 1px solid var(--line);
   background: var(--cerulean-wash);
-  flex-wrap: wrap;
+  /* first child of the panel — round the top corners to nest inside its 14px
+     radius (less the 1px border), so the wash fill doesn't spill past them. */
+  border-radius: 13px 13px 0 0;
 }
 .batch-row .br-label {
   font-size: 12.5px;
   font-weight: 700;
   color: var(--ink);
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
-.batch-row .br-label .nbi {
-  width: 24px;
-  height: 24px;
-  border-radius: 7px;
-  background: #fff;
-  border: 1px solid var(--line);
+.batch-row .batch-controls {
   display: flex;
   align-items: center;
-  justify-content: center;
-  color: var(--cerulean-deep);
-  font-size: 14px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+/* Sourcing-settings modal: prompt + rubric editors side-by-side (stack on narrow screens). */
+.sourcing-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+.sourcing-cols .field {
+  margin-bottom: 0;
+}
+.sourcing-cols .textarea {
+  min-height: 58vh;
+  resize: vertical;
+}
+@media (max-width: 760px) {
+  .sourcing-cols {
+    grid-template-columns: 1fr;
+  }
+  .sourcing-cols .textarea {
+    min-height: 220px;
+  }
 }
 .batch-row input[type="text"] {
   flex: 1;
@@ -1285,6 +1341,7 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
+  padding-bottom: 16px;
   margin-bottom: 16px;
 }
 .cmp-top-field {
@@ -1305,9 +1362,14 @@
   padding: 9px 12px;
   font-size: 13.5px;
 }
-.cmp-top-spacer {
-  flex: 1;
-  min-width: 12px;
+/* KPIs + locked batch + New campaign, kept together and pushed right so New campaign is the
+   last control on the top row (wraps as one unit on narrow screens, button still last). */
+.cmp-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-left: auto;
 }
 .cmp-kpis {
   display: flex;
@@ -1383,7 +1445,9 @@
 }
 .cmp-rail {
   position: sticky;
-  top: 0;
+  top: 72px; /* pin just below the console topbar (64px) while the page scrolls */
+  max-height: calc(100vh - 84px); /* a taller funnel scrolls within the pinned rail */
+  overflow-y: auto;
 }
 .cmp-eyebrow {
   font-size: 10.5px;
@@ -1507,9 +1571,8 @@
 
 /* detail panel — bounded so it scrolls internally while the rail stays put */
 .cmp-detail {
-  max-height: calc(100vh - 220px);
-  overflow-y: auto;
-  padding-right: 4px;
+  /* flows with the page (no inner scroll box) so funnel + prospects fill the space */
+  min-width: 0;
 }
 .cmp-detail > .cmp-sec:first-child {
   margin-top: 0;

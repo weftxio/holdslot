@@ -518,9 +518,9 @@ export function CampaignTab({
       {/* Top bar: campaign selector + KPIs + locked batch */}
       <div className="cmp-top">
         <label className="cmp-top-field">
-          <span className="cmp-top-lbl">Campaign</span>
           <select
             className="select select-sm"
+            aria-label="Campaign"
             value={selected}
             onChange={(e) => {
               setSelected(e.target.value);
@@ -543,7 +543,7 @@ export function CampaignTab({
             if (e.key === "Enter") e.currentTarget.blur();
           }}
         />
-        <span className="cmp-top-spacer" />
+        <div className="cmp-top-actions">
         <div className="cmp-kpis">
           {kpis.map((k) => (
             <div key={k.lbl} className={clsx("cmp-kpi", k.accent && "accent")}>
@@ -590,6 +590,7 @@ export function CampaignTab({
         <button type="button" className="btn btn-ghost btn-sm" onClick={handleNewCampaign}>
           ＋ New campaign
         </button>
+        </div>
       </div>
 
       <div className="cmp-shell">
