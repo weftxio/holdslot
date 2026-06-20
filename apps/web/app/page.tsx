@@ -175,7 +175,7 @@ export default function Home() {
             <p className="hero-note">
               You approve every prospect before we reach out.
               <br />
-              <b>You pay for domain setup, prospect sourcing, and meetings that actually happen.</b>
+              <b>You pay for setup, sourcing, and meetings that actually happen.</b>
             </p>
           </div>
           <div className="hero-visual reveal">

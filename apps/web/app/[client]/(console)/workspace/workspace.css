@@ -906,12 +906,20 @@
   margin-right: 4px;
 }
 
+/* Accent buttons drop their border globally (.btn-accent { border:none }), which
+   leaves them 2px shorter than the ghost/primary buttons they sit beside in the
+   workspace toolbars. Restore a transparent 1px border so every toolbar button
+   shares one btn-sm height. */
+.tabpane .btn-accent {
+  border: 1px solid transparent;
+}
+
 /* prospect list toolbar */
 .filter-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 15px 18px;
+  padding: 15px 24px; /* align left edge with the panel-head inset */
   flex-wrap: wrap;
 }
 .filter-row .search {
@@ -919,9 +927,12 @@
   flex: 1;
   min-width: 180px;
 }
+/* compact to btn-sm height (9px pad / 13.5px) so search, selects and buttons
+   sit on one line at the same height and font. */
 .filter-row .search input {
   width: 100%;
-  padding-left: 34px;
+  padding: 9px 12px 9px 34px;
+  font-size: 13.5px;
 }
 .filter-row .search .si {
   position: absolute;
@@ -934,7 +945,7 @@
 .filter-row .select {
   width: auto;
   min-width: 120px;
-  padding: 10px 12px;
+  padding: 9px 12px; /* match btn-sm / search height */
   font-size: 13.5px;
 }
 .filter-row .fcount {
@@ -951,7 +962,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 18px;
+  padding: 14px 24px; /* align left edge with the panel-head inset */
   border-bottom: 1px solid var(--line);
   background: var(--cerulean-wash);
   flex-wrap: wrap;
@@ -980,6 +991,8 @@
   flex: 1;
   min-width: 160px;
   background: #fff;
+  padding: 9px 12px; /* match the Create-batch button height */
+  font-size: 13.5px;
 }
 .batch-row .sel-pill {
   font-size: 12px;

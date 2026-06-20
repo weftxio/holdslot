@@ -2764,7 +2764,7 @@ export default function Workspace() {
         </div>
 
         {/* SOURCING CONTROLS — founder-edited, versioned prompt + rubric, round history */}
-        <div className="panel">
+        <div className="panel" style={{ marginTop: 18 }}>
           <div className="panel-head">
             <div>
               <h3>Sourcing controls</h3>
@@ -2792,7 +2792,7 @@ export default function Workspace() {
                     setSeedLimit(Math.max(1, Math.min(50, Number(e.target.value) || 1)))
                   }
                   disabled={sourcing}
-                  style={{ width: "4.5rem" }}
+                  style={{ width: "4.5rem", padding: "9px 12px", fontSize: 13.5 }}
                 />
               </label>
               <button className="btn btn-accent btn-sm" onClick={runRound} disabled={sourcing}>
