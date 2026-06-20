@@ -1,15 +1,12 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status:** Phase A (S0) + Phase B (S1) **built & live** — backend on the `dev` API (Lambda v8),
-> Workspace web on Amplify `dev`. **Phase C (S2: Clay seed + AI sourcing loop) — full MVP BUILT +
-> POST-BUILD REVIEW FINALIZED (2026-06-19, dev): C0.4 → C6 complete** (migration `0005`; the `prospects`
-> API domain = suppression gate, Clay push, CSV ingest + fit scoring, usage scoreboard, AI sourcing loop;
-> review fixes applied — credit double-spend closed, C4 cost scoreboard live, accept/import accounting
-> corrected, owner-gated spend, frontend race fixed; round 2 (2026-06-20) dropped `credits_used` (no Clay
-> API), fixed run-attribution double-count, added the seed-limit control, rounded all costs to 6 dp; 37
-> backend tests green / web typecheck + ruff clean). **Migration `0005` run on `dev` Aurora 2026-06-20**
-> (head `0005_phase_c`; prospect/research_run/sourcing_doc + seed v1 docs verified). **Remaining to tick
-> S2 — the one operational gate below: a real founder end-to-end round on Clay free.**
+> **Status (2026-06-20):** Phases **A (S0)** + **B (S1)** + **C (S2)** all **built, reviewed & live on
+> `dev`** — backend on the `dev` API (Lambda **v11**, alias `live`), Workspace web on Amplify `dev`.
+> Phase C (Clay seed + AI sourcing loop) ships the `prospects` API domain end to end: suppression gate →
+> Clay push → CSV ingest + fit scoring → usage scoreboard → AI sourcing loop + Workspace wiring. Migration
+> `0005` applied to `dev` Aurora (head `0005_phase_c`; prospect/research_run/sourcing_doc + seed v1 docs
+> verified). 37 backend tests green; web typecheck + ruff clean. **One gate left to tick S2:** a real
+> founder end-to-end round on Clay (operational, no code — see *Operational sign-off* under Phase C).
 
 **The first build:** make HoldSlot's own product real enough to run our own outbound on it and land our
 first signups. Scoped cut of the full spec in `backend-development-plan.md`.
@@ -266,11 +263,10 @@ more. **Build + test C1–C6 on the free tier** (small sample batches fit the 20
 | Tier | $/mo | Role | Ingest | **Move to it when** |
 |---|---|---|---|---|
 | **Free** | $0 | pipeline proof (done) | CSV | — (already outgrown) |
-| **Launch** | ~$185 | **MVP dogfood run (real volume)** | manual CSV | **the first real-volume sourcing round** — a single run blows free's 200-row / 100-credit cap. *(Build + test C1–C6 on free with small batches; subscribe Launch only when running a real round.)* |
+| **Launch** | ~$185 | **MVP dogfood run (real volume)** | manual CSV | **the first real-volume sourcing round** — a single run blows free's 200-row / 100-credit cap. |
 | **Growth** | ~$446–495 | scale / automation | **HTTP API auto-callback** + BYOK | (a) manual CSV export becomes a bottleneck (frequent rounds / multi-client), **or** (b) Launch's 2,500 credits/mo run out and **BYOK** (own provider keys = 0 Clay credits) would save money, **or** (c) hands-off multi-client volume. |
 
-- **Build + test C1–C6 on free** (small sample batches fit the 200-row cap); **subscribe Launch only at
-  the first real-volume round** — CSV ingest is byte-identical across tiers, so nothing rebuilds.
+- CSV ingest is **byte-identical across tiers**, so subscribing Launch at the first real round rebuilds nothing.
 - **Growth changes only the ingest *transport*** (CSV → auto-callback) **+ 0-credit BYOK** — suppression,
   dedupe, scoring, schema, and UI are unchanged (that's the C3 `[SCALE]` swap + C0.6 gates).
 
@@ -440,100 +436,85 @@ spine (adapter, telemetry, tenant guard, proxy) already exists. **MVP cost:** Cl
 (free tier was proof-only) + LLM <$10/mo. **The MVP→Growth seam is the ingest transport only**
 (CSV → callback) + BYOK, with suppression / dedupe / scoring / schema / UI identical across the swap.
 
-### Post-build review — fixes applied (2026-06-19) ✅ FINALIZED
+### Post-build review — finalized (2026-06-19 → 2026-06-20) ✅
 
-A deep logic + code review of the C0.4→C6 diff surfaced a credit-leak / data-integrity cluster around
-the push/accept paths and a dead C4 KPI. All high- and medium-severity findings were fixed; tests
-(37 passed / 7 DB-skipped), web typecheck, and ruff are green.
+Two multi-angle review passes (correctness + simplify) over the C0.4→C6 diff hardened a credit-leak /
+data-integrity cluster around the push/accept/import paths and turned the dead C4 KPI into a live one.
+All findings are fixed and deployed; 37 backend tests green (7 DB-skipped), web typecheck + ruff clean.
+Grouped by theme (the decisions, not the round they surfaced in):
 
-- **Credit double-spend closed (the core risk).** A C2 push now **records each pushed identity as a
-  `prospect` row immediately** (`status=pushed`) — the DB is the system of record, so a paid push is
-  visible to `_seen_keys` *before* the CSV round-trips back. This shuts the window where a re-push or an
-  AI round in between paid Clay twice. Import upserts those rows on `(tenant, identity_key)`.
-- **`accept` no longer creates zombies or double-pays.** It dedupes against **already-pushed**
-  identities (`_seen_keys(include_pending=False)` — so the very rows being accepted aren't mistaken for
-  dups of themselves), and **only survivors are marked `accepted` + pushed**; suppressed-on-accept rows
-  become `suppressed`, never stranded as un-enriched "accepted".
-- **C4 scoreboard made real.** Per-call `cost_usd` now flows `StructuredResult → fit.score / sourcing →
-  research_run.cost_usd` (accumulated for import, set for a sourcing round). `cost_per_accepted` is a
-  live number, not always-null. Re-imports skip re-scoring, so cost isn't double-counted.
-- **Import accounting corrected.** `rows_accepted` counts **only scored rows** (gated/errored rows no
-  longer inflate it); gated no-email rows get their own **`Gated`** tier bucket (not conflated with a
-  genuine "Below"); a re-import of an unchanged, already-scored row **skips the paid LLM call**.
-- **Spend/config endpoints gated to `owner`** (research, import, sourcing-round, accept, sourcing-docs);
-  reads stay any-member. The dogfood operator is the tenant owner (signup → owner), so no lockout.
-- **`identity_key` hardened:** the `dlf:` key now requires **both** first and last name (a bare
-  `dlf:dom|last|` over-merged same-surname people and split named-vs-unnamed records) → falls through to
-  email.
-- **Frontend race + selection bugs fixed:** a client-switch generation guard (`clientRef`) drops stale
-  async reloads onto the wrong client; reload failures **surface a toast instead of silently blanking
-  the list**; `Accept` has an in-flight guard against double-submit; `accept` / `create batch` act on the
-  **full selection**, not just the filtered view.
+**Credit safety — never pay Clay twice, never strand a row.**
+- A C2 push **records each pushed identity as a `prospect` row immediately** (`status=pushed`). The DB is
+  the system of record, so a paid push is visible to `_seen_keys` *before* the CSV round-trips back —
+  closing the window where a re-push or an interleaved AI round paid Clay twice. Import upserts on
+  `(tenant, identity_key)`.
+- **Partial-push safe.** `clay.push_rows` returns the rows Clay *accepted* and raises `ClayPushError`
+  carrying what landed before a mid-batch transport failure; a shared `_push_to_clay` helper commits
+  exactly those identities before surfacing the 502. `run_research` and `accept` share this one path, so
+  a retry never re-pays and an un-landed row is never stranded.
+- **`accept` is push-before-persist.** It dedupes against already-pushed identities
+  (`_seen_keys(include_pending=False)`, so the rows being accepted aren't read as dups of themselves),
+  pushes to Clay **first**, then marks only landed survivors `accepted`; a push failure leaves the rest
+  `pending_review` (re-acceptable), never `accepted`-but-never-enriched. Suppressed-on-accept rows become
+  `suppressed`, not stranded.
 
-**Deliberately deferred (noted, low-risk at MVP scale):** SAVEPOINT-per-insert against the unique
-constraint (single-operator concurrency ≈ nil; would need verifying Data-API SAVEPOINT support);
-a frontend `seed_limit` control (backend default = 20).
+**Accounting & the C4 scoreboard — a live `cost_per_accepted`.**
+- Per-call `cost_usd` flows `StructuredResult → fit.score / sourcing → research_run.cost_usd`, so
+  `cost_per_accepted` is a real number. A prospect is **owned by the run that first landed it**
+  (`prospect.run_id` set once, never reassigned on re-import), and each run's `rows_accepted` is
+  recomputed from the source of truth — its owned, currently-`scored` prospects — not a per-import delta.
+  A re-import (same run or new `run_id`) converges instead of tallying one identity under two runs.
+- `rows_accepted` counts **scored rows only** (gated/errored no longer inflate it); gated no-email rows
+  get their own **`Gated`** tier bucket. A sourcing round records `rows_pushed = 0` (it pushes nothing —
+  that's accept) with `rows_accepted` = candidates-surfaced for the `$/surfaced` denominator.
+- **All costs rounded to 6 dp at the source** (the B3 OpenRouter adapter), so every downstream sink —
+  `llm_call`, `research_run.cost_usd`, `cost_per_accepted` — inherits one consistent micro-dollar
+  precision; the raw cost stays in the `llm_call.raw` audit payload.
 
-#### Review round 2 — hardening + simplification (2026-06-19) ✅
+**Idempotency & identity.**
+- Import is **atomic** — one commit per import (was ≈1/row) and one `run_id.in_(…)` attribution update
+  (was an N-query loop); a mid-loop crash rolls back cleanly.
+- The re-score guard compares the **whole `enrichment`** (was `email`-only), so a richer re-enrichment
+  (new title/size/industry) re-scores while an unchanged row skips the paid LLM call.
+- `identity_key`'s `dlf:` form requires **both** first and last name (a bare `dlf:dom|last|` over-merged
+  same-surname people) → falls through to email.
 
-A second multi-angle review (correctness + simplify) of the same diff. Confirmed bugs fixed; two
-flagged items verified as false positives (kept as-is with a note); tests/typecheck/ruff green.
+**Access & frontend.**
+- Spend/config endpoints (research, import, sourcing-round, accept, sourcing-docs) are **owner-gated**;
+  reads stay any-member. The dogfood operator signs up as owner, so no lockout.
+- Frontend: a client-switch generation guard (`clientRef`) drops stale async reloads onto the wrong
+  client and **resets selection + filters** on switch (stale `fIcp`/`checked` leaked across clients);
+  load failures **surface a toast** instead of silently blanking the list; `Accept` has an in-flight
+  guard; `accept` / `create batch` act on the **full selection**, not the filtered view; 5 MB import-CSV
+  guard. The AI-loop **seed-limit** is a frontend control (default 10).
 
-- **Partial-push double-pay closed (was deferred).** `clay.push_rows` now returns the rows Clay
-  *accepted* and raises `ClayPushError` carrying what landed *before* a mid-batch transport failure.
-  A new `_push_to_clay` helper records exactly those accepted identities (and commits them) before
-  surfacing the 502 — so a retry never re-pays Clay, and a row that never reached Clay is never
-  stranded. `run_research` and `accept` share this one path.
-- **`accept` ordering fixed (real money/state bug).** It now pushes to Clay **before** persisting
-  status. Previously `accepted`/`suppressed` were committed first, so a 502 left rows permanently
-  `accepted`-but-never-enriched and un-re-acceptable (the retry only matches `pending_review`). Now a
-  push failure leaves un-landed survivors as `pending_review` (re-acceptable). Also dropped a
-  non-tenant-scoped run re-`SELECT` (uses the in-session run object).
-- **Import is now atomic.** Removed the per-row `db.commit()` (≈1 commit/row → 1 per import) and the
-  N-query attribution loop (→ one `run_id.in_(…)` update). A mid-loop crash rolls back cleanly; a
-  re-import (idempotent) redoes it without re-paying for unchanged rows.
-- **Re-score guard widened.** The "skip the paid LLM call" guard compared `email` only, so a richer
-  re-enrichment (new title/size/industry, same email) kept a stale fit tier. It now compares the whole
-  `enrichment` — unchanged → skip, any material change → re-score.
-- **Sourcing-round `rows_pushed` corrected.** A sourcing round pushes nothing to Clay (that happens on
-  accept), so it now records `rows_pushed = 0` instead of `len(pending)`; `rows_accepted` still carries
-  candidates-surfaced for the `$/surfaced` denominator.
-- **Frontend client-switch hardened.** The hydrate effect now **resets selection + filters** on a
-  client switch (a stale `fIcp`/`checked` leaked across clients, hiding rows / feeding accept) and
-  **surfaces load errors via toast** instead of `.catch(()=>[])` silently blanking the list. Added a
-  5 MB import-CSV size guard (large Clay exports). 
-- **Simplified `router.py`.** One `_latest_spec`/`_latest_brief` pair replaces four hand-rolled "latest
-  version" queries; import fetches brief+spec once; a shared `Candidate.to_enrichment` /
-  `from_enrichment` mapper replaces four drifting enrichment-dict copies (and fixed an asymmetry where
-  accept read back `linkedin_url`/`email` that sourcing never wrote).
+**Simplification.** One `_latest_spec`/`_latest_brief` pair replaces four hand-rolled "latest version"
+queries (import fetches brief+spec once); a shared `Candidate.to_enrichment` / `from_enrichment` mapper
+replaces four drifting enrichment-dict copies (and fixed an asymmetry where accept read back fields
+sourcing never wrote).
 
-**Verified false positives (kept):** identity-key "flip" on re-enrichment — `identity_key` is our
-stamped correlation column that Clay echoes back, not recomputed on ingest, so no duplicate row. The
-`_decode_csv` raw-vs-base64 heuristic — base64 has no comma/newline, so a real CSV always fails
-`validate=True` and is returned raw; misdetection is not constructible. `cost_per_accepted` precision —
-already server-rounded to 4dp and usually sub-cent, so it's shown raw (a `toFixed(2)` would mask it as
-`$0.00`). **Removed (2026-06-20):** `credits_used` — Clay exposes no API for per-run enrichment-credit
-cost (UI dashboard only; an API is an open community feature request), so the field was dropped from the
-model, schema, router, migration 0005, and frontend type rather than left as a permanently-null column.
-The operator reconciles Clay credit spend manually from the Clay dashboard; `cost_usd` (LLM spend) stays
-live. Also: the AI-loop **seed-limit** is now a frontend control (default lowered 20 → 10).
+**Removed.** `credits_used` — Clay exposes no API for per-run enrichment-credit cost (UI dashboard only;
+an API is an open community request), so the field was dropped from the model, schema, router, migration
+`0005`, and frontend rather than left permanently null. The operator reconciles Clay spend by hand from
+the dashboard; `cost_usd` (LLM spend) stays live.
 
-**Fixed (2026-06-20) — run-attribution double-count:** a prospect is now owned by the run that *first*
-landed it (`prospect.run_id` is set once and never reassigned on re-import), and each run's
-`rows_accepted` is recomputed from the source of truth (its owned, currently-`scored` prospects) rather
-than from a per-import delta. A re-import — same run or under a new `run_id` — now converges instead of
-tallying one identity under two runs. Scoring `cost_usd` rolls up to the owning run too, so
-`cost_per_accepted` stays coherent. **No remaining known C4 scoreboard issues.**
+**Deferred (low-risk at MVP scale).** SAVEPOINT-per-insert against the unique constraint — single-operator
+concurrency ≈ nil; would need verifying Data-API SAVEPOINT support.
+
+**Verified false positives (kept as-is).** The `identity_key` "flip" on re-enrichment — it's our stamped
+correlation column that Clay echoes back, not recomputed on ingest, so no duplicate row. The `_decode_csv`
+raw-vs-base64 heuristic — base64 has no comma/newline, so a real CSV always fails `validate=True` and is
+returned raw; misdetection isn't constructible.
 
 ### Operational sign-off — what's left to tick S2 (not code)
 
-The Phase C *code* is built, reviewed (2 rounds), and green. Ticking S2 needs two operational steps,
-tracked here in the Phase B style (✅ done / ⏳ pending):
+The Phase C *code* is built, reviewed, and green. Ticking S2 needs two operational steps, tracked here
+in the Phase B style (✅ done / ⏳ pending):
 
 - ✅ **Migration `0005` applied to `dev` Aurora — 2026-06-20.** Run over the RDS Data API
   (`alembic upgrade head`); DB at head `0005_phase_c`. Verified: `prospect`, `research_run`,
-  `sourcing_doc` tables present; `research_run` carries **no** `credits_used` column (per the round-2
-  removal); seed `sourcing_prompt` v1 + `fit_rubric` v1 rows present.
+  `sourcing_doc` tables present; `research_run` carries **no** `credits_used` column (per the *Removed*
+  note above); seed `sourcing_prompt` v1 + `fit_rubric` v1 rows present.
 - ⏳ **Founder end-to-end round on Clay (free tier) — PENDING (operator action, no code).**
   **DoD:** from the live Workspace, founder runs the full loop once on real data —
   **push** suppressed identity-keyed rows to the Clay webhook → Clay **enriches** → operator **exports**
