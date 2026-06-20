@@ -10,13 +10,23 @@ import { type ExclRow, type RowError, mergeExclusionText, parseExclusionCsv } fr
 import {
   type IcpApi,
   type IcpSuggestion,
+  type ProspectApi,
+  type ResearchRunApi,
   type ResearchSpecResult,
+  type SourcingDocList,
+  acceptCandidates,
   createIcp as apiCreateIcp,
   deleteIcp as apiDeleteIcp,
   getBrief,
   getResearchSpec,
+  getSourcingDocs,
+  importProspectsCsv,
   listIcps,
+  listProspects,
+  listResearchRuns,
   putBrief,
+  runSourcingRound,
+  saveSourcingDoc,
   structureBrief,
   updateIcp as apiUpdateIcp,
 } from "@/lib/api";
@@ -86,14 +96,6 @@ type Campaign = {
   batch: string;
   locked: boolean;
 };
-type Row = {
-  id: number;
-  fit: "Strong" | "Good";
-  batch: string;
-  status: "Ready" | "New" | "Needs review";
-  icp: string;
-  checked: boolean;
-};
 type Reply = {
   n: string;
   role: string;
@@ -120,18 +122,37 @@ const TABS = [
   ["summaries", "Meeting Recaps"],
 ] as const;
 
-const FIT_CLS: Record<string, string> = { Strong: "badge-ok", Good: "badge-info" };
-const STATUS_CLS: Record<string, string> = {
-  Ready: "badge-neutral",
-  New: "badge-info",
-  "Needs review": "badge-warn",
+const FIT_CLS: Record<string, string> = {
+  Strong: "badge-ok",
+  Good: "badge-info",
+  Moderate: "badge-warn",
+  Below: "badge-neutral",
 };
+// Live prospect pipeline statuses (string, not enum, on the API side).
+const STATUS_CLS: Record<string, string> = {
+  scored: "badge-ok",
+  new: "badge-info",
+  pending_review: "badge-warn",
+  accepted: "badge-info",
+  gated: "badge-neutral",
+  score_error: "badge-danger",
+};
+const STATUS_LABEL: Record<string, string> = {
+  scored: "Scored",
+  new: "New",
+  pending_review: "Pending review",
+  accepted: "Accepted",
+  gated: "Gated",
+  score_error: "Score error",
+};
+// Origin chip (not transport): where the prospect came from.
+const SOURCE_CLS: Record<string, string> = { clay: "badge-neutral", ai_loop: "badge-info" };
+const SOURCE_LABEL: Record<string, string> = { clay: "Clay", ai_loop: "AI" };
 const BATCH_STATUS_CLS: Record<string, string> = {
   Approved: "badge-ok",
   Rejected: "badge-danger",
   Pending: "badge-warn",
 };
-const batchBadge = (b: string) => (b === "Unassigned" ? "badge-neutral" : "badge-info");
 
 // Per-prospect enrichment shown in the expanded Approval Batches table (mock — wired in Phase C/E).
 // Mirrors the columns an external sourcing tool surfaces: a fit score (grade · intent heat),
@@ -166,19 +187,6 @@ const STAFF_ROLES = [
   "Marketing Dir.",
   "CTO",
   "Procurement",
-];
-
-const SEED: Omit<Row, "id" | "checked">[] = [
-  { fit: "Strong", batch: "Batch 3", status: "Ready", icp: "ICP A" },
-  { fit: "Strong", batch: "Batch 3", status: "Ready", icp: "ICP A" },
-  { fit: "Good", batch: "Batch 3", status: "New", icp: "ICP B" },
-  { fit: "Strong", batch: "Unassigned", status: "New", icp: "ICP A" },
-  { fit: "Good", batch: "Unassigned", status: "Needs review", icp: "ICP B" },
-  { fit: "Good", batch: "Batch 3", status: "Ready", icp: "ICP A" },
-  { fit: "Strong", batch: "Unassigned", status: "Ready", icp: "ICP B" },
-  { fit: "Good", batch: "Unassigned", status: "New", icp: "ICP A" },
-  { fit: "Strong", batch: "Batch 3", status: "Ready", icp: "ICP B" },
-  { fit: "Good", batch: "Unassigned", status: "Needs review", icp: "ICP A" },
 ];
 
 type LedgerRow = {
@@ -755,6 +763,9 @@ const EXCL_TEXT_KEY: Record<
 };
 const MAX_CSV_BYTES = 1_000_000; // 1 MB
 const MAX_CSV_ROWS = 5000;
+// Clay enrichment exports carry ~30 columns/row, so allow more than the exclusion-list cap; the
+// payload is base64-wrapped (~+33%) and stays under the API Gateway 10 MB body limit.
+const MAX_IMPORT_CSV_BYTES = 5_000_000; // 5 MB
 
 // Skipped-row report shown under an exclusion field after an import.
 function CsvErrors({ errors, onDismiss }: { errors?: RowError[]; onDismiss: () => void }) {
@@ -1335,64 +1346,219 @@ export default function Workspace() {
   // batches are never selectable, so a linked campaign is always safe to send.
   const approvedBatches = batches.filter((b) => b.status === "Approved");
 
-  // Prospect list
-  const [rows, setRows] = useState<Row[]>(() =>
-    SEED.map((d, i) => ({ ...d, id: i + 1, checked: false }))
-  );
-  const [nextId, setNextId] = useState(SEED.length + 1);
+  // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
+  // are loaded from the API; selection is by prospect id. Batch creation stays client-side until
+  // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
+  const [prospects, setProspects] = useState<ProspectApi[]>([]);
+  const [prospectsLoading, setProspectsLoading] = useState(false);
+  const [accepting, setAccepting] = useState(false);
+  // Tracks the live client so an async reload/handler that resolves *after* a client switch can
+  // bail before writing the previous client's data into the new client's view.
+  const clientRef = useRef(client);
+  const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [fBatch, setFBatch] = useState("");
   const [fFit, setFFit] = useState("");
   const [fStatus, setFStatus] = useState("");
-  const [fIcp, setFIcp] = useState("");
+  const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
+  const [fSource, setFSource] = useState("");
   const [newBatchName, setNewBatchName] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [sourcing, setSourcing] = useState(false);
+  const [seedLimit, setSeedLimit] = useState(10); // candidates the AI loop anchors on per round
+
+  // Sourcing controls (the founder-edited, versioned prompt + rubric) + round history.
+  const [docs, setDocs] = useState<SourcingDocList | null>(null);
+  const [promptDraft, setPromptDraft] = useState("");
+  const [rubricDraft, setRubricDraft] = useState("");
+  const [savingDoc, setSavingDoc] = useState<"sourcing_prompt" | "fit_rubric" | null>(null);
+  const [runs, setRuns] = useState<ResearchRunApi[]>([]);
+
+  const icpNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const p of icps) if (p.id) m.set(p.id, p.short);
+    return m;
+  }, [icps]);
+
+  async function reloadProspects() {
+    setProspectsLoading(true);
+    try {
+      // Let errors propagate — a failed reload must surface, never silently blank the list
+      // (which reads as "no prospects" and tempts a re-import / re-spend).
+      const [ps, rs] = await Promise.all([listProspects(client), listResearchRuns(client)]);
+      if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
+      setProspects(ps);
+      setRuns(rs);
+      setChecked(new Set());
+    } catch (e) {
+      if (clientRef.current === client) {
+        toast(e instanceof Error ? e.message : "Couldn’t refresh prospects", "warn");
+      }
+    } finally {
+      if (clientRef.current === client) setProspectsLoading(false);
+    }
+  }
+
+  // Hydrate the prospect list, sourcing docs, and round history for this client. Selection and
+  // filters are reset here — they reference the *previous* client's prospect/ICP ids and would
+  // otherwise leak across a switch (a stale fIcp silently hides the new client's rows; stale
+  // checked ids feed accept/createBatch). Load errors surface as a toast and never blank the
+  // list silently (that reads as "no prospects" and tempts a re-import / re-spend).
+  useEffect(() => {
+    if (!client) return;
+    clientRef.current = client;
+    setChecked(new Set());
+    setSearch("");
+    setFIcp("");
+    setFFit("");
+    setFStatus("");
+    setFSource("");
+    let alive = true;
+    (async () => {
+      try {
+        const [ps, rs, dl] = await Promise.all([
+          listProspects(client),
+          listResearchRuns(client),
+          getSourcingDocs(client),
+        ]);
+        if (!alive) return;
+        setProspects(ps);
+        setRuns(rs);
+        setDocs(dl);
+        setPromptDraft(dl?.sourcing_prompt?.body ?? "");
+        setRubricDraft(dl?.fit_rubric?.body ?? "");
+      } catch (e) {
+        if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [client]);
 
   const visible = useMemo(
     () =>
-      rows.filter((r) => {
-        const text = `prospect ${r.id} sample co ${r.id}`;
+      prospects.filter((p) => {
+        const text = `${p.full_name} ${p.company} ${p.email} ${p.title}`.toLowerCase();
         return (
           (!search || text.includes(search.toLowerCase())) &&
-          (!fIcp || r.icp === fIcp) &&
-          (!fBatch || r.batch === fBatch) &&
-          (!fFit || r.fit === fFit) &&
-          (!fStatus || r.status === fStatus)
+          (!fIcp || p.icp_id === fIcp) &&
+          (!fFit || p.fit_tier === fFit) &&
+          (!fStatus || p.status === fStatus) &&
+          (!fSource || p.source === fSource)
         );
       }),
-    [rows, search, fIcp, fBatch, fFit, fStatus]
+    [prospects, search, fIcp, fFit, fStatus, fSource]
   );
-  const selCount = visible.filter((r) => r.checked).length;
+  const selCount = visible.filter((p) => checked.has(p.id)).length;
   const allChecked = visible.length > 0 && selCount === visible.length;
 
-  function toggleRow(id: number) {
-    setRows((s) => s.map((r) => (r.id === id ? { ...r, checked: !r.checked } : r)));
+  function toggleRow(id: string) {
+    setChecked((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
   }
   function toggleAll(on: boolean) {
-    const ids = new Set(visible.map((r) => r.id));
-    setRows((s) => s.map((r) => (ids.has(r.id) ? { ...r, checked: on } : r)));
+    const ids = visible.map((p) => p.id);
+    setChecked((s) => {
+      const n = new Set(s);
+      for (const id of ids) on ? n.add(id) : n.delete(id);
+      return n;
+    });
   }
-  function research() {
-    const targetIcp = fIcp || icps[0]?.short || "ICP A";
-    const fits: Row["fit"][] = ["Strong", "Good", "Good", "Strong", "Good", "Strong"];
-    const added: Row[] = fits.map((fit, k) => ({
-      id: nextId + k,
-      fit,
-      batch: "Unassigned",
-      status: "New",
-      icp: targetIcp,
-      checked: false,
-    }));
-    setRows((s) => [...added, ...s]);
-    setNextId((n) => n + 6);
-    toast("Researched 6 prospects from " + targetIcp);
+
+  // Run one AI sourcing round (C5) for the selected ICP filter (or any). Lands candidates as
+  // `ai_loop · pending_review` for accept/reject; reloads the list + scoreboard.
+  async function runRound() {
+    setSourcing(true);
+    try {
+      const res = await runSourcingRound(client, fIcp || null, seedLimit);
+      toast(
+        `Round done · ${res.pending_review} candidate${res.pending_review === 1 ? "" : "s"} pending review`
+      );
+      await reloadProspects();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Sourcing round failed", "warn");
+    } finally {
+      setSourcing(false);
+    }
   }
+
+  // Import a Clay CSV export (C3): coalesce → suppress → store → fit-score, then reload.
+  async function importCsv(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
+      return toast("Please upload a .csv file", "warn");
+    }
+    if (file.size > MAX_IMPORT_CSV_BYTES) {
+      return toast("CSV is too large (max 5 MB) — split the export and import in batches", "warn");
+    }
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const res = await importProspectsCsv(client, text);
+      const tiers = Object.entries(res.by_tier)
+        .map(([t, n]) => `${n} ${t}`)
+        .join(" · ");
+      toast(
+        `Imported ${res.stored} · scored ${res.scored}${res.suppressed ? ` · ${res.suppressed} suppressed` : ""}${tiers ? ` · ${tiers}` : ""}`
+      );
+      await reloadProspects();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Import failed", "warn");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  // Save the founder's edit as the next version of the prompt or rubric (append-only vN+1).
+  async function saveDoc(kind: "sourcing_prompt" | "fit_rubric") {
+    const body = (kind === "sourcing_prompt" ? promptDraft : rubricDraft).trim();
+    if (!body) return toast("Nothing to save", "warn");
+    setSavingDoc(kind);
+    try {
+      await saveSourcingDoc(client, kind, body);
+      const dl = await getSourcingDocs(client);
+      setDocs(dl);
+      toast(`Saved ${kind === "sourcing_prompt" ? "sourcing prompt" : "fit rubric"} v${kind === "sourcing_prompt" ? dl.sourcing_prompt?.version : dl.fit_rubric?.version}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "warn");
+    } finally {
+      setSavingDoc(null);
+    }
+  }
+
+  // Accept selected AI candidates (pending_review) → push through the same suppression path.
+  async function acceptSelected() {
+    if (accepting) return; // guard against a double-click firing two accept POSTs
+    // Act on the whole selection, not just the filtered view — a filter change must not silently
+    // drop rows the operator already checked.
+    const keys = prospects
+      .filter((p) => checked.has(p.id) && p.status === "pending_review")
+      .map((p) => p.identity_key);
+    if (!keys.length) return toast("Select pending-review AI candidates to accept", "warn");
+    setAccepting(true);
+    try {
+      const res = await acceptCandidates(client, keys);
+      toast(`Accepted ${res.pushed} · ${res.suppressed} suppressed`);
+      await reloadProspects();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Accept failed", "warn");
+    } finally {
+      setAccepting(false);
+    }
+  }
+
   function createBatch() {
     const name = newBatchName.trim() || "Batch " + (batches.length + 1);
-    const picked = visible.filter((r) => r.checked);
+    // Whole selection, not just the filtered view (a filter change must not drop checked rows).
+    const picked = prospects.filter((p) => checked.has(p.id));
     if (!picked.length) return toast("Select at least one prospect first", "warn");
-    const ids = new Set(picked.map((r) => r.id));
-    setRows((s) => s.map((r) => (ids.has(r.id) ? { ...r, batch: name } : r)));
-    const icpSet = new Set(picked.map((r) => r.icp));
+    const icpSet = new Set(picked.map((p) => (p.icp_id ? icpNameById.get(p.icp_id) : null) || "—"));
     setBatches((s) => [
       ...s,
       {
@@ -1405,6 +1571,7 @@ export default function Workspace() {
       },
     ]);
     setNewBatchName("");
+    setChecked(new Set());
     toast(name + " created with " + picked.length + " prospects, pending client approval");
   }
 
@@ -2423,13 +2590,27 @@ export default function Workspace() {
             <div>
               <h3>Prospect list review</h3>
               <div className="ph-sub">
-                Research from an ICP, review the results, then batch the ones worth sending · all
-                rows <Sample>sample</Sample>
+                Import a Clay CSV export or run an AI sourcing round, review fit, then batch the ones
+                worth sending.
               </div>
             </div>
             <div className="row">
-              <button className="btn btn-accent btn-sm" onClick={research}>
-                Research prospects from ICP
+              <label className={clsx("btn btn-ghost btn-sm", importing && "disabled")}>
+                {importing ? "Importing…" : "Import Clay CSV"}
+                <input
+                  type="file"
+                  accept=".csv,text/csv"
+                  style={{ display: "none" }}
+                  disabled={importing}
+                  onChange={importCsv}
+                />
+              </label>
+              <button
+                className="btn btn-accent btn-sm"
+                onClick={acceptSelected}
+                disabled={prospectsLoading || accepting}
+              >
+                {accepting ? "Accepting…" : "Accept selected (AI)"}
               </button>
             </div>
           </div>
@@ -2462,27 +2643,32 @@ export default function Workspace() {
             </div>
             <select className="select" value={fIcp} onChange={(e) => setFIcp(e.target.value)}>
               <option value="">All ICPs</option>
-              {icps.map((p, i) => (
-                <option key={p.id ?? "new-" + i}>{p.short}</option>
-              ))}
+              {icps
+                .filter((p) => p.id)
+                .map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.short}
+                  </option>
+                ))}
             </select>
-            <select className="select" value={fBatch} onChange={(e) => setFBatch(e.target.value)}>
-              <option value="">All batches</option>
-              <option value="Unassigned">Unassigned pool</option>
-              {batches.map((b) => (
-                <option key={b.name}>{b.name}</option>
-              ))}
+            <select className="select" value={fSource} onChange={(e) => setFSource(e.target.value)}>
+              <option value="">Any source</option>
+              <option value="clay">Clay</option>
+              <option value="ai_loop">AI</option>
             </select>
             <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
               <option value="">Any fit</option>
               <option value="Strong">Strong fit</option>
               <option value="Good">Good fit</option>
+              <option value="Moderate">Moderate fit</option>
+              <option value="Below">Below</option>
             </select>
             <select className="select" value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
               <option value="">Any status</option>
-              <option value="Ready">Ready</option>
-              <option value="New">New</option>
-              <option value="Needs review">Needs review</option>
+              <option value="scored">Scored</option>
+              <option value="pending_review">Pending review</option>
+              <option value="accepted">Accepted</option>
+              <option value="gated">Gated</option>
             </select>
             <span className="fcount">
               <b>{visible.length}</b> shown · <b>{selCount}</b> selected
@@ -2504,56 +2690,191 @@ export default function Workspace() {
                   <th>Title</th>
                   <th>Company</th>
                   <th>Source ICP</th>
+                  <th>Source</th>
                   <th>Fit</th>
-                  <th>Batch</th>
                   <th>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {visible.map((r) => (
-                  <tr key={r.id}>
+                {visible.map((p) => (
+                  <tr key={p.id}>
                     <td>
                       <input
                         type="checkbox"
                         className="tbl-check"
-                        checked={r.checked}
-                        onChange={() => toggleRow(r.id)}
+                        checked={checked.has(p.id)}
+                        onChange={() => toggleRow(p.id)}
                       />
                     </td>
                     <td>
                       <div className="who-cell">
-                        <div className="av-sm">P{r.id}</div>
+                        <div className="av-sm">
+                          {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
+                        </div>
                         <div>
-                          <div className="nm">
-                            Prospect {r.id} <Sample>sample</Sample>
-                          </div>
-                          <div className="sub">placeholder@company.example</div>
+                          <div className="nm">{p.full_name || "—"}</div>
+                          <div className="sub">{p.email || "no email yet"}</div>
                         </div>
                       </div>
                     </td>
-                    <td className="muted">Placeholder title</td>
-                    <td>Sample Co {r.id}</td>
-                    <td className="muted">{r.icp}</td>
+                    <td className="muted">{p.title || "—"}</td>
+                    <td>{p.company || p.domain || "—"}</td>
+                    <td className="muted">
+                      {(p.icp_id && icpNameById.get(p.icp_id)) || "—"}
+                    </td>
                     <td>
-                      <span className={clsx("badge", FIT_CLS[r.fit])}>
+                      <span className={clsx("badge", SOURCE_CLS[p.source] ?? "badge-neutral")}>
                         <span className="bdot" />
-                        {r.fit}
+                        {SOURCE_LABEL[p.source] ?? p.source}
                       </span>
                     </td>
                     <td>
-                      <span className={clsx("badge", batchBadge(r.batch))}>
-                        <span className="bdot" />
-                        {r.batch}
-                      </span>
+                      {p.fit_tier ? (
+                        <span title={p.fit_reason || undefined}>
+                          <span className={clsx("badge", FIT_CLS[p.fit_tier] ?? "badge-neutral")}>
+                            <span className="bdot" />
+                            {p.fit_tier}
+                          </span>
+                          {p.fit_reason ? <div className="sub">{p.fit_reason}</div> : null}
+                        </span>
+                      ) : (
+                        <span className="muted">—</span>
+                      )}
                     </td>
                     <td>
-                      <span className={clsx("badge", STATUS_CLS[r.status])}>
+                      <span className={clsx("badge", STATUS_CLS[p.status] ?? "badge-neutral")}>
                         <span className="bdot" />
-                        {r.status}
+                        {STATUS_LABEL[p.status] ?? p.status}
                       </span>
                     </td>
                   </tr>
                 ))}
+                {visible.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="muted" style={{ textAlign: "center", padding: 24 }}>
+                      {prospectsLoading
+                        ? "Loading prospects…"
+                        : "No prospects yet — import a Clay CSV or run a sourcing round below."}
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* SOURCING CONTROLS — founder-edited, versioned prompt + rubric, round history */}
+        <div className="panel">
+          <div className="panel-head">
+            <div>
+              <h3>Sourcing controls</h3>
+              <div className="ph-sub">
+                The AI sourcing loop runs on these. Edit and save a new version, then run a round.
+              </div>
+            </div>
+            <div className="row">
+              <span className="badge badge-neutral">
+                Prompt v{docs?.sourcing_prompt?.version ?? "—"}
+              </span>
+              <span className="badge badge-neutral">Rubric v{docs?.fit_rubric?.version ?? "—"}</span>
+              <label
+                className="row"
+                style={{ gap: 6, fontSize: 13, fontWeight: 600, color: "var(--ink)" }}
+              >
+                Seed limit
+                <input
+                  className="input"
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={seedLimit}
+                  onChange={(e) =>
+                    setSeedLimit(Math.max(1, Math.min(50, Number(e.target.value) || 1)))
+                  }
+                  disabled={sourcing}
+                  style={{ width: "4.5rem" }}
+                />
+              </label>
+              <button className="btn btn-accent btn-sm" onClick={runRound} disabled={sourcing}>
+                {sourcing ? "Sourcing…" : "Run sourcing round"}
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <label>Sourcing prompt (v{docs?.sourcing_prompt?.version ?? "—"})</label>
+            <textarea
+              className="textarea"
+              rows={8}
+              value={promptDraft}
+              onChange={(e) => setPromptDraft(e.target.value)}
+            />
+            <div className="row" style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => saveDoc("sourcing_prompt")}
+                disabled={savingDoc === "sourcing_prompt"}
+              >
+                {savingDoc === "sourcing_prompt" ? "Saving…" : "Save as new version"}
+              </button>
+            </div>
+          </div>
+          <div className="field">
+            <label>Fit rubric (v{docs?.fit_rubric?.version ?? "—"})</label>
+            <textarea
+              className="textarea"
+              rows={8}
+              value={rubricDraft}
+              onChange={(e) => setRubricDraft(e.target.value)}
+            />
+            <div className="row" style={{ marginTop: 8 }}>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => saveDoc("fit_rubric")}
+                disabled={savingDoc === "fit_rubric"}
+              >
+                {savingDoc === "fit_rubric" ? "Saving…" : "Save as new version"}
+              </button>
+            </div>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Round</th>
+                  <th>Source</th>
+                  <th>Prompt v</th>
+                  <th>Pushed</th>
+                  <th>Accepted</th>
+                  <th>$/accepted</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                {runs.map((r) => (
+                  <tr key={r.run_id}>
+                    <td className="muted">{r.run_id.slice(0, 8)}</td>
+                    <td>
+                      <span className={clsx("badge", SOURCE_CLS[r.source] ?? "badge-neutral")}>
+                        <span className="bdot" />
+                        {SOURCE_LABEL[r.source] ?? r.source}
+                      </span>
+                    </td>
+                    <td className="muted">{r.prompt_version ?? "—"}</td>
+                    <td>{r.rows_pushed}</td>
+                    <td>{r.rows_accepted}</td>
+                    {/* server rounds to 4dp; $/accepted is often sub-cent (qwen-flash), so keep
+                        the small value rather than toFixed(2)-ing it to a misleading $0.00. */}
+                    <td>{r.cost_per_accepted != null ? `$${r.cost_per_accepted}` : "—"}</td>
+                    <td className="muted">{r.created_at ? r.created_at.slice(0, 10) : "—"}</td>
+                  </tr>
+                ))}
+                {runs.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="muted" style={{ textAlign: "center", padding: 16 }}>
+                      No rounds yet.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

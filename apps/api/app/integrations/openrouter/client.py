@@ -96,6 +96,14 @@ def _envelope_error_detail(err: object) -> str:
     return str(err)[:300]
 
 
+# All recorded USD costs are rounded here at the source (micro-dollar / 6 dp): per-call costs are
+# sub-cent, so 6 dp keeps real precision while everything downstream (llm_call telemetry, the run
+# scoreboard cost_usd, cost_per_accepted) inherits one consistent rounding. The full raw cost stays
+# in the LlmCall.raw audit payload.
+def _round_cost(cost: object) -> float | None:
+    return round(float(cost), 6) if cost is not None else None
+
+
 def _post(body: dict, *, timeout: int) -> dict:
     """POST to OpenRouter and return the parsed response envelope. Raises on transport error."""
     cfg = _config()
@@ -112,14 +120,22 @@ def _post(body: dict, *, timeout: int) -> dict:
         return json.loads(r.read().decode())
 
 
-def _build_body(messages: list[dict], schema: dict, models: list[str]) -> dict:
-    return {
+def _build_body(
+    messages: list[dict], schema: dict, models: list[str], extra_body: dict | None = None
+) -> dict:
+    body = {
         "models": models,
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": schema},
         "messages": messages,
         "usage": {"include": True},
     }
+    # Per-purpose knobs the caller pins (Phase C): `temperature`, provider-specific
+    # `enable_thinking:false` (Qwen), `reasoning` effort + `plugins:[{id:"web"}]` (DeepSeek
+    # sourcing). Merged generically so a new purpose needs no adapter change.
+    if extra_body:
+        body.update(extra_body)
+    return body
 
 
 def _execute(
@@ -127,6 +143,7 @@ def _execute(
     schema: dict,
     *,
     models: list[str] | None = None,
+    extra_body: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = 1,
 ) -> CallOutcome:
@@ -137,7 +154,7 @@ def _execute(
     up on the next call without waiting for a cold start.
     """
     models = models or _config().models
-    body = _build_body(messages, schema, models)
+    body = _build_body(messages, schema, models, extra_body)
     started = time.monotonic()
     retries = 0
 
@@ -219,6 +236,7 @@ def _execute(
             )
 
         usage = resp.get("usage") or {}
+        cost = _round_cost(usage.get("cost"))
         content = (resp.get("choices") or [{}])[0].get("message", {}).get("content")
         try:
             parsed = json.loads(content) if content is not None else None
@@ -234,7 +252,7 @@ def _execute(
                 model=resp.get("model"),
                 input_tokens=usage.get("prompt_tokens"),
                 output_tokens=usage.get("completion_tokens"),
-                cost_usd=usage.get("cost"),
+                cost_usd=cost,
                 latency_ms=ms(),
                 retries=retries,
                 raw=resp,
@@ -247,7 +265,7 @@ def _execute(
             model=resp.get("model"),
             input_tokens=usage.get("prompt_tokens"),
             output_tokens=usage.get("completion_tokens"),
-            cost_usd=usage.get("cost"),
+            cost_usd=cost,
             latency_ms=ms(),
             retries=retries,
             raw=resp,
@@ -303,6 +321,7 @@ class StructuredResult:
     data: dict
     llm_call_id: str | None
     model: str | None
+    cost_usd: float | None = None
 
 
 def structured_completion(
@@ -312,10 +331,16 @@ def structured_completion(
     messages: list[dict],
     schema: dict,
     prompt_version: str | None = None,
+    models: list[str] | None = None,
+    extra_body: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT,
     session_factory=None,
 ) -> StructuredResult:
     """Run one strict-`json_schema` completion, persist telemetry, return the parsed object.
+
+    `models` overrides the default fallback list for per-purpose routing (Phase C pins
+    `prospect_fit`→qwen, `sourcing_round`→deepseek). `extra_body` pins per-purpose request
+    knobs (temperature, `enable_thinking`, `reasoning`, web-search `plugins`).
 
     Telemetry is written for every outcome (ok / parse_error / timeout / error). On any
     non-ok status an `LlmError` is raised carrying the persisted `llm_call_id`. A telemetry
@@ -327,7 +352,7 @@ def structured_completion(
 
         session_factory = get_session
 
-    outcome = _execute(messages, schema, timeout=timeout)
+    outcome = _execute(messages, schema, models=models, extra_body=extra_body, timeout=timeout)
     try:
         call_id: str | None = _persist(session_factory, tenant_id, purpose, prompt_version, outcome)
     except Exception:
@@ -340,4 +365,9 @@ def structured_completion(
             status=outcome.status,
             llm_call_id=call_id,
         )
-    return StructuredResult(data=outcome.data, llm_call_id=call_id, model=outcome.model)
+    return StructuredResult(
+        data=outcome.data,
+        llm_call_id=call_id,
+        model=outcome.model,
+        cost_usd=outcome.cost_usd,
+    )

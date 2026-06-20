@@ -178,10 +178,14 @@ export default function Home() {
               <b>You pay for domain setup, prospect sourcing, and meetings that actually happen.</b>
             </p>
           </div>
-          <div className="hero-visual ph reveal">
-            <span className="ph-tag">
-              Placeholder · product shot · &quot;meetings booked&quot; dashboard / calendar
-            </span>
+          <div className="hero-visual reveal">
+            {/* eslint-disable-next-line @next/next/no-img-element -- animated GIF; next/image
+                breaks GIF animation, so a plain <img> is intentional here. */}
+            <img
+              src="/holdslot-hero-calendar.gif"
+              alt="A week of qualified sales meetings booked on your calendar by HoldSlot."
+              loading="eager"
+            />
           </div>
         </div>
       </section>

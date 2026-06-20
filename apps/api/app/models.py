@@ -294,3 +294,116 @@ class ResearchSpec(Base):
         nullable=True,
     )
     created_at: Mapped[datetime] = _created_at()
+
+
+# ---------------------------------------------------------------------------
+# Phase C (S2) — Prospects: Clay seed + AI sourcing loop.
+#
+# The one boundary that drives everything (see docs/initial-build-plan.md → Phase C):
+# **Clay is stateless enrichment compute; this DB is the only system of record.** Rows flow
+# *through* Clay (push → enrich → pull → clear); tenant ownership, dedup, suppression, fit
+# scoring, and lineage all live here. The MVP ships these three tenant-scoped tables; the
+# `person`/`enrichment_request` enrich-once cache is the additive SCALE step (2nd tenant), not
+# built. `identity_key` + `last_enriched_at` on `prospect` are that future `person` FK seam.
+# ---------------------------------------------------------------------------
+
+
+class Prospect(Base):
+    """One targeting record per (identity × tenant) — enriched, fit-scored, lineage-tracked.
+
+    `enrichment` holds the raw Clay/callback row (no S3 at MVP volume); `fit_components` holds
+    the 12 rubric line-items + reason tags (the moat — three consumers, one structure). Re-import
+    of the same `identity_key` for a tenant is idempotent (the unique constraint makes it an
+    upsert), which is what makes a re-export safe to ingest twice.
+    """
+
+    __tablename__ = "prospect"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "identity_key", name="uq_prospect_tenant_identity"),
+        Index("ix_prospect_tenant_id", "tenant_id"),
+        Index("ix_prospect_identity_key", "identity_key"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
+    )
+    spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    identity_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    enrichment: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    email_valid: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fit_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fit_components: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop
+    source_lineage: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="new")
+    outreach_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_enriched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ResearchRun(Base):
+    """One row per sourcing round or CSV import — the loop's scoreboard + Clay correlation handle.
+
+    `run_id` is the value stamped on every Clay row pushed for this round and matched back on
+    ingest. `rows_pushed`/`rows_accepted` + `cost_usd` (LLM spend) drive the per-source
+    $/accepted scoreboard (C4); `prompt_version`/`rubric_version` tie a round to the exact
+    `sourcing_doc` versions that produced it. Clay enrichment-credit cost is not recorded —
+    Clay exposes no API for it (UI dashboard only), so the operator reconciles it manually.
+    """
+
+    __tablename__ = "research_run"
+    __table_args__ = (
+        UniqueConstraint("run_id", name="uq_research_run_run_id"),
+        Index("ix_research_run_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rubric_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    rows_pushed: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    rows_accepted: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    cost_usd: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class SourcingDoc(Base):
+    """Append-only founder-edited prompt/rubric — versioned data, never overwritten.
+
+    Two kinds (`sourcing_prompt` | `fit_rubric`), each independently versioned per tenant. Seed
+    v1 of both lands in the migration from `docs/prompts/*-v1.md`; the founder edits between
+    rounds → a new (kind, version). A round records which versions it ran via `research_run`.
+    """
+
+    __tablename__ = "sourcing_doc"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "kind", "version", name="uq_sourcing_doc_tenant_kind_version"
+        ),
+        Index("ix_sourcing_doc_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # sourcing_prompt | fit_rubric
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    body: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = _created_at()

@@ -178,3 +178,147 @@ export async function getResearchSpec(client: string): Promise<ResearchSpecList>
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
+
+// --- Phase C (S2) — Prospects: Clay seed + AI sourcing loop ------------------
+
+export type ProspectApi = {
+  id: string;
+  identity_key: string;
+  icp_id: string | null;
+  run_id: string | null;
+  full_name: string;
+  company: string;
+  domain: string;
+  email: string;
+  email_valid: boolean;
+  title: string;
+  company_industry: string;
+  company_size: string;
+  fit_score: number | null;
+  fit_tier: string | null;
+  fit_reason: string;
+  reason_tags: string[];
+  source: string; // "clay" | "ai_loop"
+  status: string;
+  created_at: string | null;
+};
+export type ImportResult = {
+  run_id: string | null;
+  parsed: number;
+  stored: number;
+  suppressed: number;
+  scored: number;
+  score_errors: number;
+  by_tier: Record<string, number>;
+};
+export type ResearchRunApi = {
+  run_id: string;
+  source: string;
+  prompt_version: string | null;
+  rubric_version: string | null;
+  rows_pushed: number;
+  rows_accepted: number;
+  cost_usd: number | null;
+  cost_per_accepted: number | null;
+  created_at: string | null;
+};
+export type SourcingDocApi = {
+  kind: string;
+  version: number;
+  body: string;
+  created_at: string | null;
+};
+export type SourcingDocList = {
+  sourcing_prompt: SourcingDocApi | null;
+  fit_rubric: SourcingDocApi | null;
+  prompt_versions: number[];
+  rubric_versions: number[];
+};
+export type SourcingCandidate = {
+  identity_key: string;
+  full_name: string;
+  company: string;
+  domain: string;
+  preliminary_tier: string;
+  evidence: Record<string, unknown>;
+};
+export type SourcingRoundResult = {
+  run_id: string;
+  returned: number;
+  validated: number;
+  suppressed: number;
+  pending_review: number;
+  candidates: SourcingCandidate[];
+};
+
+export async function listProspects(client: string): Promise<ProspectApi[]> {
+  const r = await fetch(`${API_BASE}/${client}/prospects`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Send the raw CSV text base64-wrapped (the $default proxy path); the API coalesces, suppresses,
+// stores, and fit-scores it synchronously.
+export async function importProspectsCsv(client: string, csvText: string): Promise<ImportResult> {
+  const b64 = btoa(unescape(encodeURIComponent(csvText)));
+  const r = await fetch(`${API_BASE}/${client}/prospects/import`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ csv: b64 }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function getSourcingDocs(client: string): Promise<SourcingDocList> {
+  const r = await fetch(`${API_BASE}/${client}/sourcing-docs`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function saveSourcingDoc(
+  client: string,
+  kind: "sourcing_prompt" | "fit_rubric",
+  body: string
+): Promise<SourcingDocApi> {
+  const r = await fetch(`${API_BASE}/${client}/sourcing-docs`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ kind, body }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function runSourcingRound(
+  client: string,
+  icpId: string | null,
+  seedLimit: number
+): Promise<SourcingRoundResult> {
+  const r = await fetch(`${API_BASE}/${client}/sourcing-rounds`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ icp_id: icpId, seed_limit: seedLimit }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function listResearchRuns(client: string): Promise<ResearchRunApi[]> {
+  const r = await fetch(`${API_BASE}/${client}/research-runs`, { headers: authHeaders() });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function acceptCandidates(
+  client: string,
+  identityKeys: string[]
+): Promise<{ run_id: string; pushed: number; suppressed: number }> {
+  const r = await fetch(`${API_BASE}/${client}/prospects/accept`, {
+    method: "POST",
+    headers: authHeaders(true),
+    body: JSON.stringify({ identity_keys: identityKeys }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}

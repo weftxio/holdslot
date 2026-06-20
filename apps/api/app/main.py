@@ -15,6 +15,7 @@ from app.domains.auth.router import router as auth_router
 from app.domains.briefs.router import router as briefs_router
 from app.domains.clients.router import router as clients_router
 from app.domains.icps.router import router as icps_router
+from app.domains.prospects.router import router as prospects_router
 
 app = FastAPI(title="HoldSlot API", version="0.1.0")
 
@@ -41,6 +42,7 @@ app.include_router(auth_router)
 app.include_router(clients_router)
 app.include_router(briefs_router)
 app.include_router(icps_router)
+app.include_router(prospects_router)
 
 # AWS Lambda entrypoint: API Gateway (HTTP API) → Mangum → FastAPI.
 handler = Mangum(app)
