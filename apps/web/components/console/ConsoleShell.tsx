@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import Link from "next/link";
 import { Sidebar } from "./Sidebar";
 import { MeProvider } from "./MeContext";
+import { SessionGuard } from "./SessionGuard";
 import { ToastProvider } from "../Toast";
 import { slugToTitle } from "@/lib/client";
 import { StatusTabCtx, STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
@@ -26,6 +27,7 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
     <StatusTabCtx.Provider value={{ tab: statusTab, setTab: setStatusTab }}>
       <MeProvider>
       <ToastProvider>
+        <SessionGuard />
         <div className="app">
           <Sidebar slug={slug} open={open} />
           <div className={"scrim" + (open ? " open" : "")} onClick={() => setOpen(false)} />

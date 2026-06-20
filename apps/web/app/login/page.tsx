@@ -33,6 +33,7 @@ export default function Login() {
   const [emailErr, setEmailErr] = useState("");
   const [pwErr, setPwErr] = useState("");
   const [banner, setBanner] = useState(false);
+  const [expired, setExpired] = useState(false);
   const [signing, setSigning] = useState(false);
 
   const [resetEmail, setResetEmail] = useState("");
@@ -48,13 +49,18 @@ export default function Login() {
   const [newPwErr, setNewPwErr] = useState("");
   const [resetting, setResetting] = useState(false);
 
-  // Open the set-new-password view when arriving from the email link.
+  // Open the set-new-password view when arriving from the email link; show a notice when the
+  // console bounced us here on an expired session.
   useEffect(() => {
-    const token = new URLSearchParams(window.location.search).get("reset");
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("reset");
     if (token) {
       setResetToken(token);
       setView("reset");
-      // Drop the token from the address bar so it isn't bookmarked or leaked in referrers.
+    }
+    if (params.get("expired")) setExpired(true);
+    if (token || params.get("expired")) {
+      // Drop the token/flag from the address bar so it isn't bookmarked or leaked in referrers.
       window.history.replaceState(null, "", window.location.pathname);
     }
   }, []);
@@ -170,7 +176,11 @@ export default function Login() {
           {view === "signin" && (
             <div>
               <h1>Sign in</h1>
-              <p className="lead">Welcome back. Sign in to open your console.</p>
+              <p className="lead">
+                {expired
+                  ? "Your session expired. Please sign in again to continue."
+                  : "Welcome back. Sign in to open your console."}
+              </p>
 
               <div className={"form-banner" + (banner ? " show" : "")}>
                 <span>✕</span>

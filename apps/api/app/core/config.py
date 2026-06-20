@@ -25,7 +25,7 @@ class Settings:
     db_name: str
     jwt_signing_key: str
     jwt_refresh_key: str
-    access_ttl_seconds: int = 30 * 60  # 30 min
+    access_ttl_seconds: int = 8 * 60 * 60  # 8 h — the web client silently refreshes on 401
     refresh_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     reset_ttl_seconds: int = 60 * 60  # 1 hour
     email_sender: str = "no-reply@tryholdslot.com"
