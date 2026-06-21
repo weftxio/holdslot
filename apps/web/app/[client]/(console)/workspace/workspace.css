@@ -2179,3 +2179,463 @@
     overflow: visible;
   }
 }
+
+/* ============================================================================
+   Phase C #list — company-first sourcing flow (band header + sticky action dock,
+   AI-score tooltip, website / linkedin cells). Class selectors only (page CSS is
+   global in Next), reusing the design tokens from globals.css.
+   ========================================================================== */
+
+/* Mock palette, scoped to this page so nothing leaks to the console shell or other tabs. These
+   mirror the attached sourcing-flow mock (near-white surfaces, blue accent, dark primary). */
+.list-pane {
+  --m-surface: #fcfdfe;
+  --m-faint: #9aa3af;
+  --m-soft: #5b6470;
+  --m-accent: #2563eb;
+  --m-sel: #eef3ff;
+  --m-sel-edge: #e2e8f1;
+  --m-tip: #14171c;
+  --m-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Row 1 — tabs. Match the mock: small uppercase "STEP n" prefix (blue when active), bold name,
+   faint count, a chevron between, ink underline on the active tab. Scoped to the #list panel-head
+   so the global `.tab` styling (and its leaked 24px margin) doesn't apply. */
+.list-pane .panel-head {
+  padding: 12px 24px 0;
+  align-items: flex-end;
+}
+.list-pane .panel-head .tabs {
+  margin-bottom: 0;
+  gap: 2px;
+  border-bottom: none;
+}
+.list-pane .panel-head .tab {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--m-faint);
+  padding: 8px 4px 14px;
+  gap: 6px;
+}
+.list-pane .panel-head .tab.active {
+  color: var(--ink);
+  border-bottom-color: var(--ink);
+}
+.tab-num {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--m-faint);
+}
+.tab.active .tab-num {
+  color: var(--cerulean-deep);
+}
+.tab-ct {
+  font-weight: 600;
+  color: var(--m-faint);
+}
+.tab-chev {
+  align-self: center;
+  margin: 0 6px 6px;
+  color: var(--m-sel-edge);
+  font-size: 15px;
+}
+/* The settings button sits at the tab baseline, smaller/lighter per the mock. */
+.list-pane .panel-head > .btn {
+  margin-bottom: 8px;
+  font-weight: 500;
+  color: var(--m-soft);
+}
+
+/* Row 2 — band: title + Free pill + sub note all on one line. */
+.list-band {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px;
+  border-bottom: 1px solid var(--line-soft);
+  background: var(--m-surface);
+}
+.list-band h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+/* "Free" pill — small uppercase tag, matching the mock. */
+.list-band h3 .badge {
+  font-size: 10.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+}
+.band-sub {
+  font-size: 12.5px;
+  color: var(--m-faint);
+}
+
+/* Row 3 — toolbar: search + filter on the left, +Add / Import on the right. */
+.list-toolbar {
+  padding: 13px 24px;
+  border-bottom: 1px solid var(--line);
+}
+/* search grows to fill the row (flex:1 from .filter-row .search); the select and
+   the +Add / Trigger buttons keep their intrinsic width and sit to its right.
+   Pin every control to one height — the select, button and input share padding
+   but differ in intrinsic line-height, so without this they render unequal. */
+.list-toolbar .search input,
+.list-toolbar .select,
+.list-toolbar .btn {
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 1;
+}
+
+/* Row 4 — count line beneath the toolbar. */
+.countrow {
+  padding: 9px 24px;
+  font-size: 12.5px;
+  color: var(--m-faint);
+  border-bottom: 1px solid var(--line-soft);
+}
+.countrow b {
+  color: var(--m-soft);
+  font-weight: 650;
+}
+
+/* Table — uppercase header labels on the near-white surface, mono domains, row hover/selection. */
+.list-pane .tbl thead th {
+  text-transform: uppercase;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.055em;
+  color: var(--m-faint);
+  background: var(--m-surface);
+}
+.list-pane .tbl tbody tr:hover {
+  background: #fbfcfe;
+}
+.list-pane .tbl tbody tr.row-sel {
+  background: var(--m-sel);
+}
+.list-pane .tbl tbody tr.row-sel:hover {
+  background: #e7eefc;
+}
+.list-pane .domain {
+  font-family: var(--m-mono);
+  font-size: 12.5px;
+  color: var(--m-soft);
+}
+
+/* Sticky action dock — docked to the panel base (the list-scroll above flexes to fill). */
+.list-dock {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 24px;
+  border-top: 1px solid var(--line);
+  background: var(--m-surface);
+  border-radius: 0 0 13px 13px;
+  box-shadow:
+    0 -2px 8px rgba(16, 24, 40, 0.04),
+    0 -12px 32px rgba(16, 24, 40, 0.06);
+}
+.dock-count {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.dock-count.empty {
+  color: var(--m-faint);
+  font-weight: 500;
+}
+.dock-count .sub {
+  color: var(--m-faint);
+  font-weight: 400;
+}
+.dock-clear {
+  font-size: 13px;
+  color: var(--m-soft);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 7px;
+}
+.dock-clear:hover {
+  background: #eef1f4;
+  color: var(--ink);
+}
+.dock-spacer {
+  flex: 1;
+}
+/* shrink the full-size action buttons + name input so the dock stays compact */
+.list-dock .btn {
+  height: 36px;
+  padding-top: 0;
+  padding-bottom: 0;
+  font-size: 14px;
+}
+/* Each action sits in a pill that lights up (accent-soft + inset ring) when it's the eligible
+   move, and dims when it isn't — find before enrich, enrich before batch. */
+.dock-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 6px 5px 12px;
+  border-radius: 11px;
+  transition:
+    opacity 0.15s ease,
+    background 0.15s ease;
+}
+.dock-act.on {
+  background: var(--m-sel);
+  box-shadow: 0 0 0 1px var(--m-sel-edge) inset;
+}
+.dock-act.off {
+  opacity: 0.45;
+}
+.dock-cost {
+  font-size: 12.5px;
+  color: var(--m-soft);
+  font-variant-numeric: tabular-nums;
+}
+.dock-cost b {
+  color: var(--ink);
+}
+.dock-or {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--m-faint);
+}
+.dock-name {
+  min-width: 240px;
+  height: 36px;
+  background: #fff;
+  padding: 0 14px;
+  font-size: 13.5px;
+  border-radius: 9px;
+}
+
+/* AI Score cell — a clean fit chip + an info-i tooltip carrying the "why a fit" reason. */
+.fit-ai {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.fit-chip {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.fit-chip--strong {
+  color: #1f8a54;
+  background: #e7f6ee;
+}
+.fit-chip--good {
+  color: #2563eb;
+  background: #eaf1ff;
+}
+.fit-chip--moderate {
+  color: #b7791f;
+  background: #fdf3e2;
+}
+.fit-chip--below {
+  color: #6b7280;
+  background: #f1f3f6;
+}
+.fit-tip {
+  position: relative;
+  display: inline-flex;
+  cursor: help;
+  outline: none;
+}
+.fit-i {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  border: 1px solid var(--m-sel-edge);
+  color: var(--m-faint);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.fit-pop {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: -8px;
+  z-index: 30;
+  width: 220px;
+  background: var(--m-tip);
+  color: #fff;
+  font-size: 11.5px;
+  line-height: 1.45;
+  padding: 9px 11px;
+  border-radius: 8px;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(4px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
+}
+.fit-pop::after {
+  content: "";
+  position: absolute;
+  top: 100%;
+  left: 16px;
+  border: 5px solid transparent;
+  border-top-color: var(--m-tip);
+}
+.fit-tip:hover .fit-pop,
+.fit-tip:focus .fit-pop {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+/* Website link + LinkedIn glyph cells. */
+.weblink {
+  font-size: 12.5px;
+  color: var(--m-accent);
+  text-decoration: none;
+}
+.weblink:hover {
+  text-decoration: underline;
+}
+.li-ico {
+  display: inline-flex;
+  align-items: center;
+  color: #0a66c2;
+  opacity: 0.85;
+  transition: opacity 0.12s ease;
+}
+.li-ico:hover {
+  opacity: 1;
+}
+
+/* Two-line status — colored dot + label, with a faint meta line beneath. */
+.st2 {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.st {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+}
+.st-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--m-faint);
+}
+.st--found {
+  color: var(--m-soft);
+}
+.st--enriched {
+  color: #1f8a54;
+  font-weight: 600;
+}
+.st--enriched .st-dot {
+  background: #1f8a54;
+}
+.st--error {
+  color: var(--danger);
+}
+.st--error .st-dot {
+  background: var(--danger);
+}
+.st-meta {
+  font-size: 11px;
+  color: var(--m-faint);
+  padding-left: 13px;
+}
+
+/* AI scoping-prompt popup (View prompt): System (editable, left) + Input (read-only, right),
+   side-by-side columns. Stacks on narrow screens. */
+.prompt-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+.prompt-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.prompt-col-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.prompt-col-head label {
+  font-weight: 600;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.prompt-pre,
+.prompt-edit {
+  margin: 0;
+  padding: 12px 14px;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  height: 52vh;
+  overflow: auto;
+  box-sizing: border-box;
+}
+.prompt-edit {
+  width: 100%;
+  resize: vertical;
+  background: #fff;
+}
+.prompt-edit:focus {
+  outline: none;
+  border-color: var(--cerulean-deep);
+}
+.prompt-hint {
+  margin-top: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 760px) {
+  .prompt-cols {
+    grid-template-columns: 1fr;
+  }
+  .prompt-pre,
+  .prompt-edit {
+    height: 36vh;
+  }
+}

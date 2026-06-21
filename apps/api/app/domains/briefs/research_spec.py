@@ -250,32 +250,44 @@ class ResearchSpecV1(BaseModel):
     icp_suggestions: list[IcpSuggestionV1]
 
 
-def build_messages(brief_data: dict, icps: list[dict]) -> list[dict]:
-    """Prompt the model with the WHOLE brief + ICP documents — no per-field plumbing."""
+# The default system prompt. Operators can override it per client (stored as a SourcingDoc of
+# kind `brief_system_prompt`); `build_messages` takes the effective prompt via `system_override`.
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a B2B go-to-market analyst. From a client's business brief and ICP profiles "
+    "you do TWO jobs.\n\n"
+    "(1) TARGETING. Translate the brief + ICPs into Clay prospecting parameters. Map prose "
+    "to concrete filters: LinkedIn industry labels, employee-count and revenue ranges, "
+    "locations, and job-title keywords (prefer specific titles over seniority).\n\n"
+    "(2) ICP VALIDATION. Treat the client's stated ICPs as HYPOTHESES — clients often list "
+    "markets they aspire to or assume want them. Their existing-customer list is the "
+    "strongest proof of who actually buys; their active deals / pipeline should resemble the "
+    "stated ICPs. When an existing-customer list is present (brief field `excludeCustomers`, "
+    "one company per line as `domain, name, website`), characterize the real paying-customer "
+    "profile from the companies you recognize, then compare it to the stated ICPs. If the "
+    "paying customers MATERIALLY DIFFER from every stated ICP, propose EXACTLY ONE additional "
+    "ICP that resembles them in `icp_suggestions`, with a short rationale naming the "
+    "discrepancy and listing the customers that evidence it. If the customers already fit a "
+    "stated ICP, return an empty `icp_suggestions`.\n\n"
+    "RULES. Emit ONLY the schema. Targeting: when a field cannot be determined from the "
+    "brief, leave its array empty or value null AND add a precise `gaps` entry (field, why "
+    "it matters, one-line ask). Do not invent facts; gaps beat guesses. ICP validation: base "
+    "any suggestion ONLY on companies you actually recognize and set `confidence` honestly "
+    '(use "low" when based on few or unfamiliar companies); never fabricate firmographics '
+    "for companies you don't know — if you cannot characterize the customer list, return an "
+    "empty `icp_suggestions` and add a `gaps` entry noting enrichment is needed to compare. "
+    "Do not include enrichment or credit settings — those are set by the system."
+)
+
+
+def build_messages(
+    brief_data: dict, icps: list[dict], system_override: str | None = None
+) -> list[dict]:
+    """Prompt the model with the WHOLE brief + ICP documents — no per-field plumbing.
+
+    `system_override` (a non-empty operator-saved system prompt) replaces the default; the user
+    message is always the brief + ICP documents (it carries the client's data, never edited)."""
     system = (
-        "You are a B2B go-to-market analyst. From a client's business brief and ICP profiles "
-        "you do TWO jobs.\n\n"
-        "(1) TARGETING. Translate the brief + ICPs into Clay prospecting parameters. Map prose "
-        "to concrete filters: LinkedIn industry labels, employee-count and revenue ranges, "
-        "locations, and job-title keywords (prefer specific titles over seniority).\n\n"
-        "(2) ICP VALIDATION. Treat the client's stated ICPs as HYPOTHESES — clients often list "
-        "markets they aspire to or assume want them. Their existing-customer list is the "
-        "strongest proof of who actually buys; their active deals / pipeline should resemble the "
-        "stated ICPs. When an existing-customer list is present (brief field `excludeCustomers`, "
-        "one company per line as `domain, name, website`), characterize the real paying-customer "
-        "profile from the companies you recognize, then compare it to the stated ICPs. If the "
-        "paying customers MATERIALLY DIFFER from every stated ICP, propose EXACTLY ONE additional "
-        "ICP that resembles them in `icp_suggestions`, with a short rationale naming the "
-        "discrepancy and listing the customers that evidence it. If the customers already fit a "
-        "stated ICP, return an empty `icp_suggestions`.\n\n"
-        "RULES. Emit ONLY the schema. Targeting: when a field cannot be determined from the "
-        "brief, leave its array empty or value null AND add a precise `gaps` entry (field, why "
-        "it matters, one-line ask). Do not invent facts; gaps beat guesses. ICP validation: base "
-        "any suggestion ONLY on companies you actually recognize and set `confidence` honestly "
-        '(use "low" when based on few or unfamiliar companies); never fabricate firmographics '
-        "for companies you don't know — if you cannot characterize the customer list, return an "
-        "empty `icp_suggestions` and add a `gaps` entry noting enrichment is needed to compare. "
-        "Do not include enrichment or credit settings — those are set by the system."
+        system_override if (system_override and system_override.strip()) else DEFAULT_SYSTEM_PROMPT
     )
     payload = {"brief": brief_data, "icps": icps}
     user = (

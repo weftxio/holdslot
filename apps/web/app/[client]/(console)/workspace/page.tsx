@@ -12,22 +12,29 @@ import { CampaignTab } from "./CampaignTab";
 import { type ExclRow, type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
 import { slugToTitle } from "@/lib/client";
 import {
+  type CompanyApi,
   type IcpApi,
   type IcpSuggestion,
   type ProspectApi,
   type ResearchSpecResult,
+  type ScopingPrompt,
   type SourcingDocList,
-  acceptCandidates,
+  addCompany,
+  addProspect,
   createIcp as apiCreateIcp,
   deleteIcp as apiDeleteIcp,
+  enrichProspects,
   getBrief,
   getResearchSpec,
+  getScopingPrompt,
   getSourcingDocs,
+  saveScopingSystemPrompt,
+  importCompaniesCsv,
   importProspectsCsv,
+  listCompanies,
   listIcps,
   listProspects,
   putBrief,
-  runSourcingRound,
   saveSourcingDoc,
   saveSourcingSettings,
   structureBrief,
@@ -125,25 +132,14 @@ const TABS = [
   ["billing", "Billing Ledger"],
 ] as const;
 
-const FIT_CLS: Record<string, string> = {
-  Strong: "badge-ok",
-  Good: "badge-info",
-  Moderate: "badge-warn",
-  Below: "badge-neutral",
-};
-// Live prospect pipeline statuses (string, not enum, on the API side).
-const STATUS_CLS: Record<string, string> = {
-  scored: "badge-ok",
-  new: "badge-info",
-  pushed: "badge-info",
-  pending_review: "badge-warn",
-  accepted: "badge-info",
-  gated: "badge-neutral",
-  suppressed: "badge-neutral",
-  score_error: "badge-danger",
-};
+// Live prospect pipeline statuses (string, not enum, on the API side). Two-stage flow:
+// found (sourced + scored, unenriched) → confirmed (chosen to enrich) → scored (enriched + scored).
+// Status is rendered as a colored dot + label + meta line (see the `.st` styles), so only the
+// label map is needed here; the dot color is derived from the status in the row render.
 const STATUS_LABEL: Record<string, string> = {
-  scored: "Scored",
+  scored: "Enriched",
+  found: "Found",
+  confirmed: "To enrich",
   new: "New",
   pushed: "Pushed",
   pending_review: "Pending review",
@@ -152,9 +148,19 @@ const STATUS_LABEL: Record<string, string> = {
   suppressed: "Suppressed",
   score_error: "Score error",
 };
-// Origin chip (not transport): where the prospect came from.
-const SOURCE_CLS: Record<string, string> = { clay: "badge-neutral", ai_loop: "badge-info" };
-const SOURCE_LABEL: Record<string, string> = { clay: "Clay", ai_loop: "AI" };
+// Origin chip (not transport): where the row came from.
+const SOURCE_CLS: Record<string, string> = {
+  clay: "badge-neutral",
+  ai_loop: "badge-info",
+  manual: "badge-warn",
+};
+const SOURCE_LABEL: Record<string, string> = { clay: "Clay", ai_loop: "AI", manual: "Manual" };
+// Clay Work-Email waterfall cost per head — the only spend in the two-stage flow (sourcing is
+// free). Drives the Step-2 dock cost preview; the real spend is reconciled in Clay (no API).
+const ENRICH_COST_USD = 0.03;
+// People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
+const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
+const ENRICHED_STATUS = "scored";
 const BATCH_STATUS_CLS: Record<string, string> = {
   Approved: "badge-ok",
   Rejected: "badge-danger",
@@ -454,10 +460,71 @@ function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
   );
 }
 
+// AI Score cell — a clean fit chip (4 tier colors) + a hover/focus info tooltip carrying the
+// "why a fit" reason. Reason is rendered as JSX text (never innerHTML).
+const FIT_CHIP: Record<string, string> = {
+  Strong: "fit-chip--strong",
+  Good: "fit-chip--good",
+  Moderate: "fit-chip--moderate",
+  Below: "fit-chip--below",
+};
+function FitScore({
+  tier,
+  score,
+  reason,
+}: {
+  tier: string | null;
+  score?: number | null;
+  reason?: string;
+}) {
+  if (!tier) return <span className="muted">—</span>;
+  return (
+    <span className="fit-ai">
+      <span className={clsx("fit-chip", FIT_CHIP[tier] ?? "fit-chip--below")}>
+        {tier}
+        {score != null ? ` · ${score}` : ""}
+      </span>
+      {reason ? (
+        <span className="fit-tip" tabIndex={0}>
+          <span className="fit-i">i</span>
+          <span className="fit-pop">{reason}</span>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// Clickable company website — links to the raw URL when known, else derives one from the domain.
+// Both are user/CSV-sourced strings, so render the label as JSX text and force a safe scheme.
+function WebLink({ website, domain }: { website?: string; domain?: string }) {
+  const label = website || domain || "";
+  if (!label) return <span className="muted">—</span>;
+  const href = /^https?:\/\//i.test(label) ? label : `https://${label.replace(/^\/+/, "")}`;
+  return (
+    <a className="weblink" href={href} target="_blank" rel="noopener noreferrer">
+      {label} ↗
+    </a>
+  );
+}
+
+// LinkedIn glyph link for a person; nothing rendered when no profile is known.
+function LinkedInLink({ url }: { url?: string }) {
+  if (!url) return <span className="muted">—</span>;
+  const href = /^https?:\/\//i.test(url) ? url : `https://${url.replace(/^\/+/, "")}`;
+  return (
+    <a className="li-ico" href={href} target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z" />
+      </svg>
+    </a>
+  );
+}
+
 // The LLM-generated ResearchSpec, rendered for operator review with existing classes only.
 // Always rendered: the Structure/Re-structure control lives in this panel's header, so the
 // first spec is generated from here too. Before any spec exists, an empty state is shown.
 function SpecReview({
+  client,
   spec,
   structuring,
   saving,
@@ -465,6 +532,7 @@ function SpecReview({
   onStructure,
   onAcceptIcp,
 }: {
+  client: string;
   spec: ResearchSpecResult | null;
   structuring: boolean;
   saving: boolean;
@@ -472,6 +540,47 @@ function SpecReview({
   onStructure: () => void;
   onAcceptIcp: (s: IcpSuggestion) => void;
 }) {
+  // Prompt popup: the System prompt (left) is editable + saved per client; the Input prompt
+  // (right) is read-only — it is always the client brief + ICPs.
+  const [promptOpen, setPromptOpen] = useState(false);
+  const [prompt, setPrompt] = useState<ScopingPrompt | null>(null);
+  const [promptErr, setPromptErr] = useState<string | null>(null);
+  const [promptLoading, setPromptLoading] = useState(false);
+  const [systemDraft, setSystemDraft] = useState("");
+  const [isCustom, setIsCustom] = useState(false);
+  const [savingPrompt, setSavingPrompt] = useState(false);
+  const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  async function openPrompt() {
+    setPromptOpen(true);
+    setPromptLoading(true);
+    setPromptErr(null);
+    setSaveMsg(null);
+    try {
+      const p = await getScopingPrompt(client);
+      setPrompt(p);
+      setSystemDraft(p.system);
+      setIsCustom(p.system_is_custom);
+    } catch (e) {
+      setPromptErr(e instanceof Error ? e.message : "Could not load the prompt");
+    } finally {
+      setPromptLoading(false);
+    }
+  }
+  async function saveSystemPrompt() {
+    setSavingPrompt(true);
+    setSaveMsg(null);
+    try {
+      const r = await saveScopingSystemPrompt(client, systemDraft);
+      setSystemDraft(r.system);
+      setIsCustom(r.is_custom);
+      setSaveMsg(r.is_custom ? "Saved" : "Reset to default");
+      setTimeout(() => setSaveMsg(null), 1600);
+    } catch (e) {
+      setSaveMsg(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSavingPrompt(false);
+    }
+  }
   const s = (spec?.spec ?? {}) as {
     company_search?: {
       industries_include?: string[];
@@ -496,6 +605,7 @@ function SpecReview({
           : null;
   const blocked = structuring || saving || !ready;
   return (
+    <>
     <div className="panel" style={{ marginTop: 18 }}>
       <div className="panel-head">
         <div>
@@ -506,14 +616,22 @@ function SpecReview({
           </div>
         </div>
         <div className="row" style={{ gap: 8 }}>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            title="Show the exact system + input prompt sent to the AI to generate this scope."
+            onClick={openPrompt}
+          >
+            View prompt
+          </button>
           {/* The span carries the tooltip; the disabled button gets pointer-events:none so the
               hover falls through to the span and the title shows (disabled buttons swallow it). */}
           <span
             style={{ display: "inline-flex" }}
             title={
               !ready
-                ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects in Clay."
-                : "Summarize this brief with AI into a Clay-ready prospect scope."
+                ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
+                : "Summarize this brief with AI into a prospect scope."
             }
           >
             <button
@@ -631,6 +749,76 @@ function SpecReview({
         </div>
       )}
     </div>
+
+      <Modal
+        open={promptOpen}
+        onClose={() => setPromptOpen(false)}
+        title="AI scoping prompt"
+        subtitle="The exact system + input prompt sent to the model to generate the prospect scope."
+        className="modal-lg"
+        footer={
+          <button className="btn btn-primary btn-sm" onClick={() => setPromptOpen(false)}>
+            Done
+          </button>
+        }
+      >
+        {promptLoading ? (
+          <div className="sum-empty">Loading prompt…</div>
+        ) : promptErr ? (
+          <div className="sum-empty">{promptErr}</div>
+        ) : prompt ? (
+          <>
+            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+              <span className="badge badge-info">model · {prompt.model.join(" → ")}</span>
+              <span className="badge badge-neutral">purpose · {prompt.purpose}</span>
+              <span className="badge badge-neutral">{prompt.prompt_version}</span>
+            </div>
+            <div className="prompt-cols">
+              {/* LEFT — System prompt: editable + Save (adjust for testing; saved per client). */}
+              <div className="prompt-col">
+                <div className="prompt-col-head">
+                  <label>
+                    System prompt{" "}
+                    <span className={"badge badge-" + (isCustom ? "warn" : "neutral")}>
+                      {isCustom ? "custom" : "default"}
+                    </span>
+                  </label>
+                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                    {saveMsg && <span className="ph-sub">{saveMsg}</span>}
+                    <button
+                      type="button"
+                      className="btn btn-accent btn-xs"
+                      disabled={savingPrompt || systemDraft === prompt.system}
+                      onClick={saveSystemPrompt}
+                    >
+                      {savingPrompt ? "Saving…" : "Save"}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  className="prompt-edit"
+                  value={systemDraft}
+                  spellCheck={false}
+                  onChange={(e) => setSystemDraft(e.target.value)}
+                />
+              </div>
+              {/* RIGHT — Input prompt: read-only, always the client brief + ICPs. */}
+              <div className="prompt-col">
+                <div className="prompt-col-head">
+                  <label>Input prompt</label>
+                  <span className="ph-sub">read-only · from client brief</span>
+                </div>
+                <pre className="prompt-pre">{prompt.user}</pre>
+              </div>
+            </div>
+            <div className="ph-sub prompt-hint">
+              Edits are saved for this client and used on the next Generate Scope. Save the default
+              text to reset.
+            </div>
+          </>
+        ) : null}
+      </Modal>
+    </>
   );
 }
 
@@ -1025,55 +1213,55 @@ export default function Workspace() {
     key: "customers" | "deals" | "doNotContact",
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-      const file = e.target.files?.[0];
-      e.target.value = ""; // allow re-uploading the same file
-      if (!file) return;
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-uploading the same file
+    if (!file) return;
 
-      const textKey = EXCL_TEXT_KEY[key];
-      if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
-        toast("Please upload a .csv file", "warn");
-        return;
-      }
-      if (file.size > MAX_CSV_BYTES) {
-        toast("CSV is too large (max 1 MB)", "warn");
-        return;
-      }
-      let text: string;
-      try {
-        text = await file.text();
-      } catch {
-        toast("Could not read the file", "warn");
-        return;
-      }
+    const textKey = EXCL_TEXT_KEY[key];
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
+      toast("Please upload a .csv file", "warn");
+      return;
+    }
+    if (file.size > MAX_CSV_BYTES) {
+      toast("CSV is too large (max 1 MB)", "warn");
+      return;
+    }
+    let text: string;
+    try {
+      text = await file.text();
+    } catch {
+      toast("Could not read the file", "warn");
+      return;
+    }
 
-      const { valid, errors, total } = parseExclusionCsv(text);
-      if (total > MAX_CSV_ROWS) {
-        toast(`CSV has too many rows (max ${MAX_CSV_ROWS.toLocaleString()})`, "warn");
-        return;
-      }
-      if (valid.length === 0 && errors.length === 0) {
-        toast("No rows found in the CSV", "warn");
-        return;
-      }
+    const { valid, errors, total } = parseExclusionCsv(text);
+    if (total > MAX_CSV_ROWS) {
+      toast(`CSV has too many rows (max ${MAX_CSV_ROWS.toLocaleString()})`, "warn");
+      return;
+    }
+    if (valid.length === 0 && errors.length === 0) {
+      toast("No rows found in the CSV", "warn");
+      return;
+    }
 
-      setCsvNames((s) => ({ ...s, [key]: file.name }));
-      setCsvErrors((s) => ({ ...s, [key]: errors }));
+    setCsvNames((s) => ({ ...s, [key]: file.name }));
+    setCsvErrors((s) => ({ ...s, [key]: errors }));
 
-      if (valid.length === 0) {
-        toast("No valid rows — see the issues below", "warn");
-        return;
-      }
+    if (valid.length === 0) {
+      toast("No valid rows — see the issues below", "warn");
+      return;
+    }
 
-      const { text: merged, added, duplicates } = mergeExclusionText(brief[textKey], valid);
-      const next = { ...brief, [textKey]: merged };
-      setBrief(next);
+    const { text: merged, added, duplicates } = mergeExclusionText(brief[textKey], valid);
+    const next = { ...brief, [textKey]: merged };
+    setBrief(next);
 
-      const parts = [`Imported ${added}`];
-      if (duplicates) parts.push(`${duplicates} duplicate${duplicates > 1 ? "s" : ""} skipped`);
-      if (errors.length) parts.push(`${errors.length} invalid skipped`);
-      toast(parts.join(" · "));
-      void persist(next); // save to DB immediately (state updates are async — pass the snapshot)
-    };
+    const parts = [`Imported ${added}`];
+    if (duplicates) parts.push(`${duplicates} duplicate${duplicates > 1 ? "s" : ""} skipped`);
+    if (errors.length) parts.push(`${errors.length} invalid skipped`);
+    toast(parts.join(" · "));
+    void persist(next); // save to DB immediately (state updates are async — pass the snapshot)
+  };
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
   // "Nothing to exclude" attestation: ticking it clears (and locks) the matching
@@ -1364,7 +1552,6 @@ export default function Workspace() {
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
   const [prospects, setProspects] = useState<ProspectApi[]>([]);
   const [prospectsLoading, setProspectsLoading] = useState(false);
-  const [accepting, setAccepting] = useState(false);
   // Tracks the live client so an async reload/handler that resolves *after* a client switch can
   // bail before writing the previous client's data into the new client's view.
   const clientRef = useRef(client);
@@ -1374,7 +1561,6 @@ export default function Workspace() {
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
   const [newBatchName, setNewBatchName] = useState("");
   const [importing, setImporting] = useState(false);
-  const [sourcing, setSourcing] = useState(false);
   const [seedLimit, setSeedLimit] = useState(10); // candidates the AI loop anchors on per round
 
   // Sourcing settings (per-client seed limit + versioned prompt + rubric), edited in a modal.
@@ -1384,6 +1570,45 @@ export default function Workspace() {
   const [rubricDraft, setRubricDraft] = useState("");
   const [savingDoc, setSavingDoc] = useState<"sourcing_prompt" | "fit_rubric" | null>(null);
   const [savingSeed, setSavingSeed] = useState(false);
+
+  // Two-stage prospecting (company-first): step 1 finds companies, step 2 finds people at the
+  // selected ones. `listStage` is the sub-view; companies + their selection live here.
+  const [listStage, setListStage] = useState<"companies" | "people">("companies");
+  const [companies, setCompanies] = useState<CompanyApi[]>([]);
+  const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
+  const [coSearch, setCoSearch] = useState("");
+  const [coFit, setCoFit] = useState("");
+  const [importingCo, setImportingCo] = useState(false);
+  const [enriching, setEnriching] = useState(false);
+  // Manual-add modals (same schema as imported rows; source=manual).
+  const blankCo = {
+    domain: "",
+    name: "",
+    website: "",
+    industry: "",
+    size: "",
+    country: "",
+    linkedin_url: "",
+  };
+  const [addCoOpen, setAddCoOpen] = useState(false);
+  const [coForm, setCoForm] = useState({ ...blankCo });
+  const [savingCo, setSavingCo] = useState(false);
+  const blankPerson = {
+    full_name: "",
+    company: "",
+    domain: "",
+    linkedin_url: "",
+    email: "",
+    title: "",
+    seniority: "",
+  };
+  const [addPersonOpen, setAddPersonOpen] = useState(false);
+  const [personForm, setPersonForm] = useState({ ...blankPerson });
+  const [savingPerson, setSavingPerson] = useState(false);
+  // After a confirm-enrich, the export list the operator runs through Clay's Work Email waterfall.
+  const [enrichExport, setEnrichExport] = useState<
+    { identity_key: string; full_name: string; company: string; domain: string }[] | null
+  >(null);
 
   const icpNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1409,7 +1634,19 @@ export default function Workspace() {
     }
   }
 
-  // Hydrate the prospect list and sourcing docs for this client. Selection and
+  async function reloadCompanies() {
+    try {
+      const cs = await listCompanies(client);
+      if (clientRef.current !== client) return;
+      setCompanies(cs);
+    } catch (e) {
+      if (clientRef.current === client) {
+        toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
+      }
+    }
+  }
+
+  // Hydrate companies, the prospect list, and sourcing docs for this client. Selection and
   // filters are reset here — they reference the *previous* client's prospect/ICP ids and would
   // otherwise leak across a switch (a stale fIcp silently hides the new client's rows; stale
   // checked ids feed accept/createBatch). Load errors surface as a toast and never blank the
@@ -1418,15 +1655,23 @@ export default function Workspace() {
     if (!client) return;
     clientRef.current = client;
     setChecked(new Set());
+    setCompanyChecked(new Set());
     setSearch("");
+    setCoSearch("");
     setFIcp("");
     setFFit("");
+    setCoFit("");
     let alive = true;
     (async () => {
       try {
-        const [ps, dl] = await Promise.all([listProspects(client), getSourcingDocs(client)]);
+        const [ps, cs, dl] = await Promise.all([
+          listProspects(client),
+          listCompanies(client),
+          getSourcingDocs(client),
+        ]);
         if (!alive) return;
         setProspects(ps);
+        setCompanies(cs);
         setDocs(dl);
         setPromptDraft(dl?.sourcing_prompt?.body ?? "");
         setRubricDraft(dl?.fit_rubric?.body ?? "");
@@ -1454,6 +1699,18 @@ export default function Workspace() {
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
   const allChecked = visible.length > 0 && selCount === visible.length;
+  // Step-2 dock: enrich and batch are mutually exclusive — find before enrich, enrich before
+  // batch. Computed over the WHOLE selection (not the filtered view) so a filter change can't
+  // drop checked rows. `confirmEnrich`/`createBatch` re-derive from the same rule.
+  const selectedProspects = useMemo(
+    () => prospects.filter((p) => checked.has(p.id)),
+    [prospects, checked]
+  );
+  const toEnrich = selectedProspects.filter((p) => NEEDS_ENRICH.has(p.status));
+  const enrichedSel = selectedProspects.filter((p) => p.status === ENRICHED_STATUS);
+  const canEnrich = toEnrich.length > 0;
+  const canBatch = selectedProspects.length > 0 && toEnrich.length === 0;
+  const enrichCost = toEnrich.length * ENRICH_COST_USD;
   // Group the visible rows by company so prospects from the same company sit together (the
   // company cell is then merged via rowSpan). First-seen order is preserved across groups.
   const companyGroups = useMemo(() => {
@@ -1484,20 +1741,141 @@ export default function Workspace() {
     });
   }
 
-  // Run one AI sourcing round (C5) for the selected ICP filter (or any). Lands candidates as
-  // `ai_loop · pending_review` for accept/reject; reloads the list + scoreboard.
-  async function runRound() {
-    setSourcing(true);
+  // ---- Stage 1: companies ----
+  const coVisible = useMemo(
+    () =>
+      companies.filter((c) => {
+        const text = `${c.name} ${c.domain} ${c.industry}`.toLowerCase();
+        return (
+          (!coSearch || text.includes(coSearch.toLowerCase())) && (!coFit || c.fit_tier === coFit)
+        );
+      }),
+    [companies, coSearch, coFit]
+  );
+  const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
+  const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
+  const selectedCompanies = useMemo(
+    () => companies.filter((c) => companyChecked.has(c.id)),
+    [companies, companyChecked]
+  );
+
+  function toggleCo(id: string) {
+    setCompanyChecked((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+  function toggleAllCo(on: boolean) {
+    const ids = coVisible.map((c) => c.id);
+    setCompanyChecked((s) => {
+      const n = new Set(s);
+      for (const id of ids) on ? n.add(id) : n.delete(id);
+      return n;
+    });
+  }
+
+  // Import a Clay Find-Companies CSV (stage 1): dedupe by domain → suppress → company-fit score.
+  async function importCompaniesCsvFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
+      return toast("Please upload a .csv file", "warn");
+    }
+    if (file.size > MAX_IMPORT_CSV_BYTES) {
+      return toast("CSV is too large (max 5 MB) — split the export and import in batches", "warn");
+    }
+    setImportingCo(true);
     try {
-      const res = await runSourcingRound(client, fIcp || null, seedLimit);
+      const text = await file.text();
+      const res = await importCompaniesCsv(client, text);
+      const tiers = Object.entries(res.by_tier)
+        .map(([t, n]) => `${n} ${t}`)
+        .join(" · ");
       toast(
-        `Round done · ${res.pending_review} candidate${res.pending_review === 1 ? "" : "s"} pending review`
+        `Imported ${res.stored} companies · scored ${res.scored}${res.suppressed ? ` · ${res.suppressed} suppressed` : ""}${tiers ? ` · ${tiers}` : ""}`
       );
+      await reloadCompanies();
+    } catch (err) {
+      toast(err instanceof Error ? err.message : "Import failed", "warn");
+    } finally {
+      setImportingCo(false);
+    }
+  }
+
+  async function submitAddCompany() {
+    if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
+    setSavingCo(true);
+    try {
+      await addCompany(client, { ...coForm, icp_id: fIcp || null });
+      toast(`Added ${coForm.name || coForm.domain}`);
+      setAddCoOpen(false);
+      setCoForm({ ...blankCo });
+      await reloadCompanies();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Add failed", "warn");
+    } finally {
+      setSavingCo(false);
+    }
+  }
+
+  // Copy the selected companies' domains (Find People seeds) so the operator can paste them into
+  // Clay's "start from table of companies". Selection is the bridge between stage 1 and stage 2.
+  async function copySeedList() {
+    if (!selectedCompanies.length) return toast("Select companies first", "warn");
+    const seeds = selectedCompanies
+      .map((c) => c.linkedin_url || c.domain)
+      .filter(Boolean)
+      .join("\n");
+    try {
+      await navigator.clipboard.writeText(seeds);
+      toast(`Copied ${selectedCompanies.length} seeds — run Find People in Clay, then import here`);
+    } catch {
+      toast("Couldn’t copy — select the companies and copy their domains manually", "warn");
+    }
+    setListStage("people");
+  }
+
+  // ---- Stage 2: people ----
+  async function submitAddPerson() {
+    if (
+      !personForm.full_name.trim() &&
+      !personForm.email.trim() &&
+      !personForm.linkedin_url.trim()
+    ) {
+      return toast("Add a name + company domain, a LinkedIn URL, or an email", "warn");
+    }
+    setSavingPerson(true);
+    try {
+      await addProspect(client, { ...personForm, icp_id: fIcp || null });
+      toast(`Added ${personForm.full_name || personForm.email}`);
+      setAddPersonOpen(false);
+      setPersonForm({ ...blankPerson });
+      await Promise.all([reloadProspects(), reloadCompanies()]);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Add failed", "warn");
+    } finally {
+      setSavingPerson(false);
+    }
+  }
+
+  // The enrich gate — confirm the selected scored people; the API returns the export list the
+  // operator runs through Clay's Work Email waterfall (~$0.03/head; sourcing was free).
+  async function confirmEnrich() {
+    if (enriching) return;
+    const keys = toEnrich.map((p) => p.identity_key);
+    if (!keys.length) return toast("Select found people to confirm for enrichment", "warn");
+    setEnriching(true);
+    try {
+      const res = await enrichProspects(client, keys);
+      setEnrichExport(res.export);
+      toast(`Confirmed ${res.confirmed} for enrichment — run the Clay waterfall, then re-import`);
       await reloadProspects();
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Sourcing round failed", "warn");
+      toast(e instanceof Error ? e.message : "Confirm failed", "warn");
     } finally {
-      setSourcing(false);
+      setEnriching(false);
     }
   }
 
@@ -1554,7 +1932,9 @@ export default function Workspace() {
       await saveSourcingDoc(client, kind, body);
       const dl = await getSourcingDocs(client);
       setDocs(dl);
-      toast(`Saved ${kind === "sourcing_prompt" ? "sourcing prompt" : "fit rubric"} v${kind === "sourcing_prompt" ? dl.sourcing_prompt?.version : dl.fit_rubric?.version}`);
+      toast(
+        `Saved ${kind === "sourcing_prompt" ? "sourcing prompt" : "fit rubric"} v${kind === "sourcing_prompt" ? dl.sourcing_prompt?.version : dl.fit_rubric?.version}`
+      );
     } catch (e) {
       toast(e instanceof Error ? e.message : "Save failed", "warn");
     } finally {
@@ -1562,32 +1942,14 @@ export default function Workspace() {
     }
   }
 
-  // Accept selected AI candidates (pending_review) → push through the same suppression path.
-  async function acceptSelected() {
-    if (accepting) return; // guard against a double-click firing two accept POSTs
-    // Act on the whole selection, not just the filtered view — a filter change must not silently
-    // drop rows the operator already checked.
-    const keys = prospects
-      .filter((p) => checked.has(p.id) && p.status === "pending_review")
-      .map((p) => p.identity_key);
-    if (!keys.length) return toast("Select pending-review AI candidates to accept", "warn");
-    setAccepting(true);
-    try {
-      const res = await acceptCandidates(client, keys);
-      toast(`Accepted ${res.pushed} · ${res.suppressed} suppressed`);
-      await reloadProspects();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Accept failed", "warn");
-    } finally {
-      setAccepting(false);
-    }
-  }
-
   function createBatch() {
     const name = newBatchName.trim() || "Batch " + (batches.length + 1);
-    // Whole selection, not just the filtered view (a filter change must not drop checked rows).
-    const picked = prospects.filter((p) => checked.has(p.id));
-    if (!picked.length) return toast("Select at least one prospect first", "warn");
+    // Only enriched people can be batched — enforce enrich-before-batch (the dock already gates
+    // the button; re-check here so a stale click can't slip unenriched rows through).
+    const picked = enrichedSel;
+    if (!picked.length) {
+      return toast("Select enriched people — enrich the Found ones first", "warn");
+    }
     const icpSet = new Set(picked.map((p) => (p.icp_id ? icpNameById.get(p.icp_id) : null) || "—"));
     setBatches((s) => [
       ...s,
@@ -1722,8 +2084,7 @@ export default function Workspace() {
         return {
           name: "Prospect " + (idx + 1),
           role: STAFF_ROLES[idx % STAFF_ROLES.length],
-          status:
-            idx < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
+          status: idx < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
         };
       });
       groups.push({
@@ -1743,11 +2104,7 @@ export default function Workspace() {
   const tabBar = (
     <div className="tabs ws-tabs" role="tablist">
       {TABS.map(([k, label]) => (
-        <button
-          key={k}
-          className={clsx("tab", tab === k && "active")}
-          onClick={() => activate(k)}
-        >
+        <button key={k} className={clsx("tab", tab === k && "active")} onClick={() => activate(k)}>
           {label}
           {k === "batches" && <span className="cnt">{batches.length}</span>}
           {k === "campaign" && <span className="cnt">{campaigns.length}</span>}
@@ -2311,7 +2668,11 @@ export default function Workspace() {
                       <input
                         type="checkbox"
                         checked={brief.noExcludeCustomers}
-                        onChange={setNoExclude("noExcludeCustomers", "excludeCustomers", "customers")}
+                        onChange={setNoExclude(
+                          "noExcludeCustomers",
+                          "excludeCustomers",
+                          "customers"
+                        )}
                       />
                       We have no existing customers to exclude.
                     </label>
@@ -2606,6 +2967,7 @@ export default function Workspace() {
             </Section>
 
             <SpecReview
+              client={client}
               spec={spec}
               structuring={structuring}
               saving={saving}
@@ -2620,179 +2982,378 @@ export default function Workspace() {
       {/* PROSPECT LIST */}
       <section className={clsx("tabpane list-pane", tab === "list" && "active")}>
         <div className="panel">
-          <div className="batch-row">
-            <span className="br-label">Create Batch for Approval</span>
-            <div className="batch-controls">
-              <input
-                className="input"
-                type="text"
-                placeholder="Name by ICP or campaign · e.g. Enterprise CTOs · Q3 outreach"
-                value={newBatchName}
-                onChange={(e) => setNewBatchName(e.target.value)}
-              />
-              <span className="sel-pill">{selCount} selected</span>
-              <button className="btn btn-primary btn-sm" onClick={createBatch}>
-                Create batch
-              </button>
-            </div>
-          </div>
           <div className="panel-head">
-            <div>
-              <h3>Prospect Selection</h3>
-            </div>
-            <div className="row">
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
-                ⚙ Sourcing settings
-              </button>
-              <label className={clsx("btn btn-ghost btn-sm", importing && "disabled")}>
-                {importing ? "Importing…" : "Import Clay CSV"}
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  style={{ display: "none" }}
-                  disabled={importing}
-                  onChange={importCsv}
-                />
-              </label>
+            <div className="tabs">
               <button
-                className="btn btn-accent btn-sm"
-                onClick={acceptSelected}
-                disabled={prospectsLoading || accepting}
+                className={clsx("tab", listStage === "companies" && "active")}
+                onClick={() => setListStage("companies")}
               >
-                {accepting ? "Accepting…" : "Accept selected (AI)"}
+                <span className="tab-num">Step 1</span> Companies{" "}
+                <span className="tab-ct">({companies.length})</span>
               </button>
-              <button className="btn btn-accent btn-sm" onClick={runRound} disabled={sourcing}>
-                {sourcing ? "Sourcing…" : "Run sourcing round"}
+              <span className="tab-chev" aria-hidden="true">
+                →
+              </span>
+              <button
+                className={clsx("tab", listStage === "people" && "active")}
+                onClick={() => setListStage("people")}
+              >
+                <span className="tab-num">Step 2</span> People{" "}
+                <span className="tab-ct">({prospects.length})</span>
               </button>
             </div>
+            <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
+              ⚙ Sourcing settings
+            </button>
           </div>
-          <div className="filter-row" style={{ borderBottom: "1px solid var(--line)" }}>
-            <div className="search">
-              <span className="si">⌕</span>
-              <input
-                className="input"
-                type="text"
-                placeholder="Search name or company"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
-            </div>
-            <select className="select" value={fIcp} onChange={(e) => setFIcp(e.target.value)}>
-              <option value="">All ICPs</option>
-              {icps
-                .filter((p) => p.id)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.short}
-                  </option>
-                ))}
-            </select>
-            <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
-              <option value="">Any fit</option>
-              <option value="Strong">Strong fit</option>
-              <option value="Good">Good fit</option>
-              <option value="Moderate">Moderate fit</option>
-              <option value="Below">Below</option>
-            </select>
-            <span className="fcount">
-              <b>{visible.length}</b> shown · <b>{selCount}</b> selected
-            </span>
-          </div>
-          <div className="list-scroll">
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th style={{ width: 34 }}>
-                    <input
-                      type="checkbox"
-                      className="tbl-check"
-                      checked={allChecked}
-                      onChange={(e) => toggleAll(e.target.checked)}
-                    />
-                  </th>
-                  <th>Company</th>
-                  <th>Prospect</th>
-                  <th>Title</th>
-                  <th>Source ICP</th>
-                  <th>Source</th>
-                  <th>Fit</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              {visible.length > 0 && (
-                <tbody>
-                  {companyGroups.map((g) =>
-                    g.rows.map((p, ri) => (
-                      <tr key={p.id}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            className="tbl-check"
-                            checked={checked.has(p.id)}
-                            onChange={() => toggleRow(p.id)}
-                          />
-                        </td>
-                        {ri === 0 && (
-                          <td className="vtop" rowSpan={g.rows.length}>
-                            {g.company}
-                          </td>
-                        )}
-                        <td>
-                          <div className="who-cell">
-                            <div className="av-sm">
-                              {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
-                            </div>
-                            <div>
-                              <div className="nm">{p.full_name || "—"}</div>
-                              <div className="sub">{p.email || "no email yet"}</div>
-                            </div>
-                          </div>
-                        </td>
-                        <td className="muted">{p.title || "—"}</td>
-                        <td className="muted">
-                          {(p.icp_id && icpNameById.get(p.icp_id)) || "—"}
-                        </td>
-                        <td>
-                          <span className={clsx("badge", SOURCE_CLS[p.source] ?? "badge-neutral")}>
-                            <span className="bdot" />
-                            {SOURCE_LABEL[p.source] ?? p.source}
-                          </span>
-                        </td>
-                        <td>
-                          {p.fit_tier ? (
-                            <span title={p.fit_reason || undefined}>
-                              <span
-                                className={clsx("badge", FIT_CLS[p.fit_tier] ?? "badge-neutral")}
-                              >
-                                <span className="bdot" />
-                                {p.fit_tier}
-                              </span>
-                              {p.fit_reason ? <div className="sub">{p.fit_reason}</div> : null}
-                            </span>
-                          ) : (
-                            <span className="muted">—</span>
-                          )}
-                        </td>
-                        <td>
-                          <span className={clsx("badge", STATUS_CLS[p.status] ?? "badge-neutral")}>
-                            <span className="bdot" />
-                            {STATUS_LABEL[p.status] ?? p.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              )}
-            </table>
-            {visible.length === 0 && (
-              <div className="list-empty muted">
-                {prospectsLoading
-                  ? "Loading prospects…"
-                  : "No prospects yet — import a Clay CSV or run a sourcing round."}
+
+          {listStage === "companies" ? (
+            <>
+              <div className="list-band">
+                <h3>Find companies likely to buy</h3>
+                <span className="band-sub">
+                  Sourcing never costs credits — only enrichment in Step 2 does.
+                </span>
               </div>
-            )}
-          </div>
+              <div className="filter-row list-toolbar">
+                <div className="search">
+                  <span className="si">⌕</span>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Search company or domain"
+                    value={coSearch}
+                    onChange={(e) => setCoSearch(e.target.value)}
+                  />
+                </div>
+                <select className="select" value={coFit} onChange={(e) => setCoFit(e.target.value)}>
+                  <option value="">Any fit</option>
+                  <option value="Strong">Strong fit</option>
+                  <option value="Good">Good fit</option>
+                  <option value="Moderate">Moderate fit</option>
+                  <option value="Below">Below</option>
+                </select>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
+                  + Add company
+                </button>
+                <label className={clsx("btn btn-primary btn-sm", importingCo && "disabled")}>
+                  {importingCo ? "Importing…" : "Trigger Find Companies"}
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    style={{ display: "none" }}
+                    disabled={importingCo}
+                    onChange={importCompaniesCsvFile}
+                  />
+                </label>
+              </div>
+              <div className="countrow">
+                <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
+              </div>
+              <div className="list-scroll">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 34 }}>
+                        <input
+                          type="checkbox"
+                          className="tbl-check"
+                          checked={coAllChecked}
+                          onChange={(e) => toggleAllCo(e.target.checked)}
+                        />
+                      </th>
+                      <th>Company</th>
+                      <th>Domain</th>
+                      <th>Website</th>
+                      <th>Industry</th>
+                      <th>Size</th>
+                      <th>Source</th>
+                      <th>AI Score</th>
+                    </tr>
+                  </thead>
+                  {coVisible.length > 0 && (
+                    <tbody>
+                      {coVisible.map((c) => (
+                        <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              className="tbl-check"
+                              checked={companyChecked.has(c.id)}
+                              onChange={() => toggleCo(c.id)}
+                            />
+                          </td>
+                          <td>
+                            <div className="who-cell">
+                              <div className="av-sm">
+                                {(c.name || c.domain || "?").slice(0, 2).toUpperCase()}
+                              </div>
+                              <div>
+                                <div className="nm">{c.name || c.domain}</div>
+                                {c.country ? <div className="sub">{c.country}</div> : null}
+                              </div>
+                            </div>
+                          </td>
+                          <td>
+                            <span className="domain">{c.domain}</span>
+                          </td>
+                          <td>
+                            <WebLink website={c.website} domain={c.domain} />
+                          </td>
+                          <td className="muted">{c.industry || "—"}</td>
+                          <td className="muted">{c.size || "—"}</td>
+                          <td>
+                            <span
+                              className={clsx("badge", SOURCE_CLS[c.source] ?? "badge-neutral")}
+                            >
+                              <span className="bdot" />
+                              {SOURCE_LABEL[c.source] ?? c.source}
+                            </span>
+                          </td>
+                          <td>
+                            <FitScore
+                              tier={c.fit_tier}
+                              score={c.fit_score}
+                              reason={c.fit_reason}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  )}
+                </table>
+                {coVisible.length === 0 && (
+                  <div className="list-empty muted">
+                    No companies yet — import a Clay Find-Companies CSV or add one manually.
+                    Sourcing in Clay is free; only enrichment in Step 2 spends credits.
+                  </div>
+                )}
+              </div>
+              <div className="list-dock">
+                <span className={clsx("dock-count", !coSelCount && "empty")}>
+                  {coSelCount ? (
+                    <>
+                      <b>{coSelCount}</b> companies selected
+                    </>
+                  ) : (
+                    "Select companies to find people"
+                  )}
+                </span>
+                {coSelCount ? (
+                  <button className="dock-clear" onClick={() => setCompanyChecked(new Set())}>
+                    Clear
+                  </button>
+                ) : null}
+                <span className="dock-spacer" />
+                <button className="btn btn-primary" onClick={copySeedList} disabled={!coSelCount}>
+                  Find people for {coSelCount} →
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="list-band">
+                <h3>Find the right person</h3>
+                <span className="band-sub">
+                  Sourcing is free · verified emails cost ~${ENRICH_COST_USD.toFixed(2)} each, only
+                  when you confirm.
+                </span>
+              </div>
+              <div className="filter-row list-toolbar">
+                <div className="search">
+                  <span className="si">⌕</span>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Search name or company"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                  />
+                </div>
+                <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
+                  <option value="">Any fit</option>
+                  <option value="Strong">Strong fit</option>
+                  <option value="Good">Good fit</option>
+                  <option value="Moderate">Moderate fit</option>
+                  <option value="Below">Below</option>
+                </select>
+                <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
+                  + Add person
+                </button>
+                <label className={clsx("btn btn-primary btn-sm", importing && "disabled")}>
+                  {importing ? "Importing…" : "Trigger Find People"}
+                  <input
+                    type="file"
+                    accept=".csv,text/csv"
+                    style={{ display: "none" }}
+                    disabled={importing}
+                    onChange={importCsv}
+                  />
+                </label>
+              </div>
+              <div className="countrow">
+                <b>{visible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{selCount}</b>&nbsp;selected
+              </div>
+              <div className="list-scroll">
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 34 }}>
+                        <input
+                          type="checkbox"
+                          className="tbl-check"
+                          checked={allChecked}
+                          onChange={(e) => toggleAll(e.target.checked)}
+                        />
+                      </th>
+                      <th>Company</th>
+                      <th>Prospect</th>
+                      <th>LinkedIn</th>
+                      <th>Title</th>
+                      <th>AI Score</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  {visible.length > 0 && (
+                    <tbody>
+                      {companyGroups.map((g) =>
+                        g.rows.map((p, ri) => {
+                          const enriched = p.status === ENRICHED_STATUS;
+                          const stClass = enriched
+                            ? "st--enriched"
+                            : p.status === "score_error"
+                              ? "st--error"
+                              : "st--found";
+                          const stMeta = enriched
+                            ? "email verified"
+                            : p.status === "confirmed"
+                              ? "awaiting enrichment"
+                              : p.status === "score_error"
+                                ? "scoring failed"
+                                : "no email yet";
+                          return (
+                            <tr key={p.id} className={clsx(checked.has(p.id) && "row-sel")}>
+                              <td>
+                                <input
+                                  type="checkbox"
+                                  className="tbl-check"
+                                  checked={checked.has(p.id)}
+                                  onChange={() => toggleRow(p.id)}
+                                />
+                              </td>
+                              {ri === 0 && (
+                                <td className="vtop" rowSpan={g.rows.length}>
+                                  {g.company}
+                                </td>
+                              )}
+                              <td>
+                                <div className="who-cell">
+                                  <div className="av-sm">
+                                    {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div className="nm">{p.full_name || "—"}</div>
+                                    <div className="sub">{p.email || "no email yet"}</div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <LinkedInLink url={p.linkedin_url} />
+                              </td>
+                              <td className="muted">{p.title || "—"}</td>
+                              <td>
+                                <FitScore
+                                  tier={p.fit_tier}
+                                  score={p.fit_score}
+                                  reason={p.fit_reason}
+                                />
+                              </td>
+                              <td>
+                                <div className="st2">
+                                  <span className={clsx("st", stClass)}>
+                                    <span className="st-dot" />
+                                    {STATUS_LABEL[p.status] ?? p.status}
+                                  </span>
+                                  <span className="st-meta">{stMeta}</span>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  )}
+                </table>
+                {visible.length === 0 && (
+                  <div className="list-empty muted">
+                    {prospectsLoading
+                      ? "Loading prospects…"
+                      : "No people yet — select companies in Step 1, run Find People in Clay, then import the CSV here (or add a person manually)."}
+                  </div>
+                )}
+              </div>
+              <div className="list-dock">
+                <span className={clsx("dock-count", !selectedProspects.length && "empty")}>
+                  {selectedProspects.length ? (
+                    <>
+                      <b>{selectedProspects.length}</b> selected
+                      {toEnrich.length && enrichedSel.length ? (
+                        <span className="sub"> · {toEnrich.length} need enrichment first</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    "Select people to enrich or batch"
+                  )}
+                </span>
+                {selectedProspects.length ? (
+                  <button className="dock-clear" onClick={() => setChecked(new Set())}>
+                    Clear
+                  </button>
+                ) : null}
+                <span className="dock-spacer" />
+                <div className={clsx("dock-act", canEnrich ? "on" : "off")}>
+                  {canEnrich ? (
+                    <span className="dock-cost">
+                      {toEnrich.length} to enrich · <b>${enrichCost.toFixed(2)}</b>
+                    </span>
+                  ) : null}
+                  <button
+                    className="btn btn-accent"
+                    onClick={confirmEnrich}
+                    disabled={!canEnrich || enriching}
+                    title={canEnrich ? "" : "Select people marked Found to enrich them."}
+                  >
+                    {enriching ? "Confirming…" : "Confirm enrich →"}
+                  </button>
+                </div>
+                <span className="dock-or">or</span>
+                <div className={clsx("dock-act", canBatch ? "on" : "off")}>
+                  <input
+                    className="input dock-name"
+                    type="text"
+                    placeholder="Name this batch"
+                    value={newBatchName}
+                    onChange={(e) => setNewBatchName(e.target.value)}
+                    disabled={!canBatch}
+                  />
+                  <button
+                    className="btn btn-primary"
+                    onClick={createBatch}
+                    disabled={!canBatch}
+                    title={
+                      canBatch
+                        ? ""
+                        : toEnrich.length
+                          ? "Enrich the Found people first — only enriched people can be batched."
+                          : "Select enriched people to batch them."
+                    }
+                  >
+                    Create batch →
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* SOURCING SETTINGS MODAL — per-client seed limit + versioned prompt + rubric */}
@@ -2869,6 +3430,224 @@ export default function Workspace() {
                 onChange={(e) => setRubricDraft(e.target.value)}
               />
             </div>
+          </div>
+        </Modal>
+
+        {/* ADD COMPANY (manual, stage 1) — same schema as an imported row, source=manual */}
+        <Modal
+          open={addCoOpen}
+          onClose={() => setAddCoOpen(false)}
+          title="Add company"
+          footer={
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={submitAddCompany}
+                disabled={savingCo || !coForm.domain.trim()}
+              >
+                {savingCo ? "Scoring…" : "Add + score"}
+              </button>
+            </>
+          }
+        >
+          <div className="field">
+            <label>Company domain *</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="acme.com"
+              value={coForm.domain}
+              onChange={(e) => setCoForm({ ...coForm, domain: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>Name</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="Acme Robotics"
+              value={coForm.name}
+              onChange={(e) => setCoForm({ ...coForm, name: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>Website</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="https://acme.com"
+              value={coForm.website}
+              onChange={(e) => setCoForm({ ...coForm, website: e.target.value })}
+            />
+          </div>
+          <div className="sourcing-cols">
+            <div className="field">
+              <label>Industry</label>
+              <input
+                className="input"
+                type="text"
+                value={coForm.industry}
+                onChange={(e) => setCoForm({ ...coForm, industry: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>Size</label>
+              <input
+                className="input"
+                type="text"
+                placeholder="201-500"
+                value={coForm.size}
+                onChange={(e) => setCoForm({ ...coForm, size: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="sourcing-cols">
+            <div className="field">
+              <label>Country</label>
+              <input
+                className="input"
+                type="text"
+                value={coForm.country}
+                onChange={(e) => setCoForm({ ...coForm, country: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>Company LinkedIn</label>
+              <input
+                className="input"
+                type="text"
+                placeholder="linkedin.com/company/…"
+                value={coForm.linkedin_url}
+                onChange={(e) => setCoForm({ ...coForm, linkedin_url: e.target.value })}
+              />
+            </div>
+          </div>
+        </Modal>
+
+        {/* ADD PERSON (manual, stage 2) — same schema as an imported row, source=manual */}
+        <Modal
+          open={addPersonOpen}
+          onClose={() => setAddPersonOpen(false)}
+          title="Add person"
+          footer={
+            <>
+              <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(false)}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={submitAddPerson}
+                disabled={savingPerson}
+              >
+                {savingPerson ? "Scoring…" : "Add + score"}
+              </button>
+            </>
+          }
+        >
+          <p className="ph-sub" style={{ marginTop: 0 }}>
+            Provide a LinkedIn URL, or a name + company domain, or an email — enough to identify the
+            person.
+          </p>
+          <div className="sourcing-cols">
+            <div className="field">
+              <label>Full name</label>
+              <input
+                className="input"
+                type="text"
+                value={personForm.full_name}
+                onChange={(e) => setPersonForm({ ...personForm, full_name: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>Title</label>
+              <input
+                className="input"
+                type="text"
+                placeholder="VP Engineering"
+                value={personForm.title}
+                onChange={(e) => setPersonForm({ ...personForm, title: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="sourcing-cols">
+            <div className="field">
+              <label>Company</label>
+              <input
+                className="input"
+                type="text"
+                value={personForm.company}
+                onChange={(e) => setPersonForm({ ...personForm, company: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>Company domain</label>
+              <input
+                className="input"
+                type="text"
+                placeholder="acme.com"
+                value={personForm.domain}
+                onChange={(e) => setPersonForm({ ...personForm, domain: e.target.value })}
+              />
+            </div>
+          </div>
+          <div className="field">
+            <label>LinkedIn URL</label>
+            <input
+              className="input"
+              type="text"
+              placeholder="linkedin.com/in/…"
+              value={personForm.linkedin_url}
+              onChange={(e) => setPersonForm({ ...personForm, linkedin_url: e.target.value })}
+            />
+          </div>
+          <div className="field">
+            <label>Email (optional — leave blank to enrich later)</label>
+            <input
+              className="input"
+              type="text"
+              value={personForm.email}
+              onChange={(e) => setPersonForm({ ...personForm, email: e.target.value })}
+            />
+          </div>
+        </Modal>
+
+        {/* ENRICH EXPORT — the confirmed rows the operator runs through Clay's Work Email waterfall */}
+        <Modal
+          open={enrichExport !== null}
+          onClose={() => setEnrichExport(null)}
+          title={`Confirmed for enrichment · ${enrichExport?.length ?? 0}`}
+          footer={
+            <button className="btn btn-primary btn-sm" onClick={() => setEnrichExport(null)}>
+              Done
+            </button>
+          }
+        >
+          <p className="ph-sub" style={{ marginTop: 0 }}>
+            Run these through Clay’s Work Email waterfall (~$0.03/head), then re-import the enriched
+            CSV here — each row flips from “To enrich” to “Enriched”.
+          </p>
+          <div className="list-scroll" style={{ maxHeight: 320 }}>
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th>Name</th>
+                  <th>Company</th>
+                  <th>Domain</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(enrichExport ?? []).map((r) => (
+                  <tr key={r.identity_key}>
+                    <td>{r.full_name || "—"}</td>
+                    <td className="muted">{r.company || "—"}</td>
+                    <td className="muted">{r.domain || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </Modal>
       </section>
@@ -2980,9 +3759,7 @@ export default function Workspace() {
                 >
                   <div className="sob-ico">B{i + 1}</div>
                   <div className="sob-main">
-                    <div className="sob-name">
-                      {b.name}
-                    </div>
+                    <div className="sob-name">{b.name}</div>
                     <div className="sob-meta">
                       <b style={{ color: "var(--ink)" }}>{b.approved}</b> approved ·{" "}
                       <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced
@@ -3173,9 +3950,7 @@ export default function Workspace() {
                 <div className="reply-head">
                   <div className="av-sm">R{i + 1}</div>
                   <div className="meta">
-                    <div className="nm">
-                      {r.n}
-                    </div>
+                    <div className="nm">{r.n}</div>
                     <div className="ro">{r.role}</div>
                     <div className="tagline">
                       <span className="ttag">{r.campaign}</span>
@@ -3275,9 +4050,7 @@ export default function Workspace() {
           <div className="panel-head">
             <div>
               <h3>Billing Ledger</h3>
-              <div className="ph-sub">
-                Only completed, qualified meetings are billable
-              </div>
+              <div className="ph-sub">Only completed, qualified meetings are billable</div>
             </div>
             <button className="btn btn-ghost btn-sm" onClick={exportLedgerCsv}>
               Export CSV

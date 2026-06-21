@@ -1,17 +1,19 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status (2026-06-20):** Phases **A (S0)** + **B (S1)** + **C (S2)** all **built, reviewed & live on
-> `dev`** — backend on the `dev` API (Lambda **v11**, alias `live`), Workspace web on Amplify `dev`.
-> Phase C (Clay seed + AI sourcing loop) ships the `prospects` API domain end to end: suppression gate →
-> Clay push → CSV ingest + fit scoring → usage scoreboard → AI sourcing loop + Workspace wiring. Migration
-> `0005` applied to `dev` Aurora (head `0005_phase_c`; prospect/research_run/sourcing_doc + seed v1 docs
-> verified). 37 backend tests green; web typecheck + ruff clean. **One gate left to tick S2:** a real
-> founder end-to-end round on Clay (operational, no code — see *Operational sign-off* under Phase C).
+> **Status (2026-06-21):** Phases **A (S0)** + **B (S1)** **built, reviewed & live on `dev`** — backend on
+> the `dev` API (alias `live`), Workspace web on Amplify `dev`. **Phase C (S2) is being rebuilt
+> Apollo-only.** The Clay-based Phase C (seed push → CSV ingest + fit scoring → AI sourcing loop) was built
+> and ran on `dev`, but **Clay has no programmatic Find Company / Find People API on any tier** —
+> discovery stayed operator-run in Clay's UI with a CSV bridge. **Apollo.io is a headless REST search +
+> enrichment API** (company search, people search, `people/match`, static key), so Phase C moves to
+> **Apollo only**: Apollo does discovery *and* enrichment; the LLM only (a) scopes the Apollo filter and
+> (b) scores rows. No Clay, no webhooks, no CSV. See **Phase C** for the rebuild plan; schema deltas in
+> [`data-schema.md`](data-schema.md). **The Apollo find/enrich loop is the one gate left to tick S2.**
 
 **The first build:** make HoldSlot's own product real enough to run our own outbound on it and land our
 first signups. Scoped cut of the full spec in `backend-development-plan.md`.
 
-> 📐 **Data schema — single source of truth:** every table (Clay + internal DB, Phases A–C, built or
+> 📐 **Data schema — single source of truth:** every table (Apollo + internal DB, Phases A–C, built or
 > planned) is defined in **[`data-schema.md`](data-schema.md)**. That doc governs all column/table
 > definitions for the whole HoldSlot product. Any schema shown inline in this plan is **illustrative
 > context only** — when the two differ, `data-schema.md` wins. Update `data-schema.md` first when the
@@ -51,7 +53,7 @@ tenants, memberships → Aurora.
 |---|---|
 | Auth (JWT, 2 founders) · multi-tenant + role-aware schema (seed 1 tenant) · deploy | **BUILD** |
 | Brief → ICP → ResearchSpec (LLM via OpenRouter) | **BUILD** |
-| Prospect storage + filter/select · **Clay connection** (push spec → enrich → ingest) | **BUILD** |
+| Prospect storage + filter/select · **Apollo connection** (design filter → search → score → enrich) | **BUILD** |
 | Batch + internal approve · **Smartlead** (campaign, A/B/C, send, reply-to-thread) | **BUILD** |
 | **Meeting** (booking → Calendar/Meet event + invites; capture held + duration via Meet REST) | **BUILD** |
 | Sending domains + warm-up | operate (manual, start now) |
@@ -62,8 +64,8 @@ tenants, memberships → Aurora.
 | # | Phase | Must-build | Depends on | Pri | DoD |
 |---|---|---|---|---|---|
 | **A** | Foundation (S0) | Founder login; seed tenant #0; multi-tenant + role-aware schema; Aurora + deploy; console on live data | — | P0 | Both founders log in (full access); schema admits a 2nd tenant/non-owner role w/o migration |
-| **B** | Targeting (S1) | Brief → OpenRouter `ResearchSpec`; ICP record | A | P0 | ResearchSpec saved, Clay-ready |
-| **C** | Prospects + Clay (S2) | Spec → Clay → ingest fit-scored `Prospect` rows; filter/select | B · Clay | P0 | Enriched prospects flow in automatically |
+| **B** | Targeting (S1) | Brief → OpenRouter `ResearchSpec`; ICP record | A | P0 | ResearchSpec saved, search-ready |
+| **C** | Prospects + Apollo (S2) | design filter → Apollo search → fit-scored `Company`/`Prospect` rows; select → enrich | B · Apollo | P0 | Find→score→select→enrich runs in-app (no CSV) |
 | **D** | Batch (S3 min) | Batch from selected prospects, mark approved internally | C | P1 | Approved batch ready to send |
 | **E** | Outreach + Smartlead (S4/S5) | Batch → campaign; A/B/C; send controls; webhook sync; cross-campaign Reply Queue; reply-to-thread | D · warm domains · Smartlead | P0 | Live sending; replies triaged in one queue |
 | **F** | Book + meeting (S6 min) | Booking link → Calendar/Meet event + invites; capture held + duration | E · Google | P0 | Prospect self-books; held/duration recorded |
@@ -112,22 +114,22 @@ auth/clients API → A5 cut UI to live auth → A6 acceptance gate. **A3 is the 
 ## Phase B — Targeting (S1) ✅ COMPLETE (dev, Lambda v8)
 
 Turns a client's free-text **Business Brief** into a research-ready, versioned **`ResearchSpec`** (the
-bridge into Clay) + curated **ICP** profiles. **First use of the LLM** (OpenRouter).
+bridge into the prospecting search) + curated **ICP** profiles. **First use of the LLM** (OpenRouter).
 
 **DoD:** founder fills the Brief in the live Workspace → completeness ring reflects saved data →
 "Generate Scope" produces a saved versioned `ResearchSpec` + gap prompts → one or more ICPs exist.
-Clay-ready; nothing sent to Clay yet (that's C).
+Search-ready; nothing sourced yet (that's C).
 
 ### The seam — one LLM job: the translator
 
-The Brief is free text in the client's language; Clay needs machine-actionable search params. That
+The Brief is free text in the client's language; the prospecting API (Apollo) needs machine-actionable search params. That
 translation is otherwise per-client operator labour. So the LLM sits at **one seam only: Brief (+ICPs) →
 `ResearchSpec` + gap prompts.** It does *not* score fit (C), draft email (E), or converse.
 
-**Value loop:** low-friction intake → versioned spec → Clay (C) → outreach (E) → meetings (F); each
+**Value loop:** low-friction intake → versioned spec → Apollo search (C) → outreach (E) → meetings (F); each
 completion returns **gap prompts** (what's too vague) to sharpen the Brief *before* credits are spent;
 outcomes feed the next revision → spec vN+1 > vN. Versions are append-only = the loop's memory. Gap
-prompts protect the two costliest resources (Clay credits, warmed inboxes) for a few cents of LLM.
+prompts protect the two costliest resources (Apollo enrich credits, warmed inboxes) for a few cents of LLM.
 
 ### Design rule: the form churns — the backend must not care
 
@@ -136,47 +138,81 @@ prompts protect the two costliest resources (Clay credits, warmed inboxes) for a
   the required-fields list. **Zero migrations, zero API churn.**
 - **Promote-on-demand:** promote a field to a validated column only when it becomes load-bearing for
   backend logic (e.g. exclusion lists in C).
-- **Two stability profiles:** the form documents churn freely; the **`ResearchSpec` is a locked v1
-  contract** (the interface to Clay). The LLM absorbs the difference. Spec versions are append-only JSONB.
+- **Two stability profiles:** the form documents churn freely; the **`ResearchSpec` is a versioned
+  contract** (the interface to the prospecting search — now Apollo, at **v2**). A provider/contract change
+  is a deliberate version bump (v1→v2), not silent drift. Spec versions are append-only JSONB.
 
-### The `ResearchSpec` v1 format (Clay-aligned — locked 2026-06-12)
+### The `ResearchSpec` v2 format (v1 locked 2026-06-12; **revised to v2 for Apollo, 2026-06-21**)
 
-**Clay reality (verified):** Clay has **no API to create tables/searches** — those are in-app only. The
-programmable surface is **webhook sources** (POST rows in; 50k-lifetime cap/webhook) + the **HTTP API
-column** (POST enriched rows back). So the spec has two halves:
-- **`company_search`** → operator transcribes once into a cloned Clay *Find Companies* search (~10 min).
-- **`people_search` + `exclusions`** → fully programmatic via the webhook.
-- Enriched rows come back via HTTP API column → `POST /clay/results` (C), gated on `email_valid`.
+**Why v2 (deep-researched against Apollo's live API, 2026-06-21):** v1 was authored Clay-aligned. The
+Apollo parameter audit (both REST calls, see Phase C → *Apollo parameter contract*) showed (a) several v1
+fields have **no Apollo request filter** and must move DB-side, and (b) Apollo exposes **high-value
+targeting the brief already implies but v1 dropped on the floor** — most importantly **funding signals**
+and **active-job-posting (hiring) signals**, which are exactly the brief's *buying signals* made
+machine-actionable. v2 captures them so the brief's intent reaches Apollo. The spec is append-only and
+`spec` is JSONB, so v2 is **a prompt + schema revision, zero migration** (`research_spec.version` simply
+inserts the next row; the panel renders whatever `spec_version` it loads).
+
+`apollo_map` (C3, pure + fixture-tested) is the only thing that consumes the spec; it maps each field to a
+concrete Apollo param or to a DB-side post-filter. Under Apollo there is **no operator transcription and no
+callback** — both searches are programmatic; only `people/match` (the human-selected set) spends enrich
+credits. **⚠️ Company search itself may consume Apollo plan credits** (Apollo's current docs list it as
+credit-consuming — confirm at C0; this corrects v1's "0-credit search" assumption).
 
 ```jsonc
 {
-  "spec_version": 1,
-  "company_search": {                       // → operator → Clay "Find Companies" (in-app)
-    "industries_include": [], "industries_exclude": [],
-    "description_keywords_include": [], "description_keywords_exclude": [],
-    "semantic_description": "",                                  // Clay AI filter — one sentence
-    "employee_count": { "min": null, "max": null },
-    "revenue_usd":    { "min": null, "max": null },
-    "company_types": [], "founded": { "after": null, "before": null },
-    "locations_include": { "countries": [], "states": [], "cities": [] },
-    "locations_exclude": { "countries": [], "states": [], "cities": [] },
-    "technographics": { "enabled": false, "vendors": [] },       // default OFF — 3 credits/company
+  "spec_version": 2,
+  "company_search": {                          // → apollo_map → POST mixed_companies/search
+    "industry_keywords_include": [],           // → q_organization_keyword_tags (FREE TEXT; Apollo org search has NO free-text industry filter — keyword tags are the documented path)
+    "industry_keywords_exclude": [],           // ⊘ DB-side post-filter (no Apollo keyword/industry exclude)
+    "description_keywords_include": [],         // → merged into q_organization_keyword_tags
+    "semantic_description": "",                 // prose intent → distilled to keyword tags
+    "employee_count": { "min": null, "max": null },   // → organization_num_employees_ranges: ["min,max"]
+    "revenue_usd":    { "min": null, "max": null },    // → revenue_range[min]/[max]
+    "founded":       { "after": null, "before": null },// ⊘ DB-side post-filter (no Apollo founded-year request filter)
+    "company_types": [],                               // ⊘ DB-side post-filter (no Apollo public/private filter)
+    "locations_include": [],                           // → organization_locations (flat free-text: "City, ST, Country")
+    "locations_exclude": [],                           // → organization_not_locations
+    "funding": {                                       // NEW — Apollo-native funding filters
+      "latest_amount_usd": { "min": null, "max": null },   // → latest_funding_amount_range[min]/[max]
+      "total_usd":         { "min": null, "max": null },   // → total_funding_range[min]/[max]
+      "latest_round_after": null                           // "YYYY-MM-DD" → latest_funding_date_range[min]
+    },
+    "hiring_signals": {                                // NEW — timing signal from active job postings
+      "job_titles": [],                                 // → q_organization_job_titles
+      "min_open_roles": null,                           // → organization_num_jobs_range[min]
+      "posted_after": null                              // "YYYY-MM-DD" → organization_job_posted_at_range[min]
+    },
+    "technographics": { "enabled": false, "vendors": [] }, // → currently_using_any_of_technology_uids (FIXED Apollo tech UIDs)
     "max_results": 500
   },
-  "people_search": [{                       // one per ICP → per-row via webhook (programmatic)
-    "icp_id": "", "job_title_keywords": [],                      // titles are the PRIMARY field
-    "job_title_match_mode": "is_similar", "job_title_exclude": [],
-    "seniority": [], "departments": [], "max_per_company": 2, "max_total": 800
+  "people_search": [{                          // one per ICP → scoped to SELECTED orgs at Flow B
+    "icp_id": "",
+    "job_title_keywords": [],                  // → person_titles (FREE TEXT, fuzzy)
+    "include_similar_titles": true,            // → include_similar_titles (replaces v1 job_title_match_mode)
+    "job_title_exclude": [],                   // ⊘ DB-side post-filter (no Apollo title-exclude)
+    "seniority": [],                           // → person_seniorities — FIXED enum: owner|founder|c_suite|partner|vp|head|director|manager|senior|entry|intern
+    "departments": [],                         // ⊘ DB-side post-filter on returned departments[] (Apollo search has NO dept/function param — UI-only)
+    "person_locations": [],                    // → person_locations (free text)
+    "max_per_company": 2,                      // ⊘ DB-side cap (no Apollo per-company param)
+    "max_total": 800
   }],
-  "exclusions": { "domains": [], "company_linkedin_urls": [], "emails": [] },
-  "gaps": [{ "field": "", "why": "", "ask": "" }]                // the value-loop prompts
+  "exclusions": { "domains": [], "company_linkedin_urls": [], "emails": [] },  // ⊘ DB-side suppression (never Apollo params)
+  "gaps": [{ "field": "", "why": "", "ask": "" }]                              // the value-loop prompts
 }
 ```
 
+**Legend:** `→` = mapped to an Apollo request param · `⊘` = DB-side (post-filter or suppression; Apollo
+has no request param). **Industry note:** Apollo org search has no free-text industry filter — v2 routes
+industry intent through `q_organization_keyword_tags` (free text). A curated `industry → Apollo
+industry_tag_id` map is a later precision lever (the tag-ID list is not API-published).
+
 **Division of labour:** the LLM emits **targeting only** (`company_search`, `people_search`,
-`exclusions`, `gaps`). The **credit policy** (waterfall order, "only run if" gates, test-batch size,
-caps) is **deterministic server config merged in at save time** — never LLM-inferred. Suppression is
-applied HoldSlot-side *before* any push. These knobs become real in C; the spec carries them from v1.
+`exclusions`, `gaps`) — now including funding + hiring signals distilled from the brief's *signals*/
+*maturity* prose. The **credit policy** (email-status gate, phone off, caps) is **deterministic server
+config merged at save time** — never LLM-inferred. v2 `credit_policy` adds `email_status_filter`
+(default `["verified"]` → people/match deliverability gate). Suppression is applied HoldSlot-side
+*before* any Apollo call.
 
 ### LLM observability (built into the one seam)
 
@@ -201,9 +237,20 @@ ICP-card `.icp-grid` grammar (exclusions as `.icp-chip.warn`), gap prompts in a 
 ### Tasks (as built)
 
 - **B0 (gates cleared)** — real strict-`json_schema` completion through OpenRouter from HK:
-  `default_model = google/gemini-2.5-flash-lite`, `models` fallback `[gemini-2.5-flash-lite, gpt-5-mini]`,
-  `provider.require_parameters = true` (~$0.0009/call). `verify_keys --strict openrouter` green. Required-fields
-  rubric frozen from the UI Required/Optional tags.
+  `default_model = deepseek/deepseek-v4-flash`, `models` fallback `[deepseek-v4-flash, llama-3.3-70b-instruct]`,
+  `provider.require_parameters = true` (~$0.00015/call, ~18s). `verify_keys --strict openrouter` green.
+  Required-fields rubric frozen from the UI Required/Optional tags.
+  - ⚠️ **Region constraint (fixed 2026-06-21):** the OpenAI / Anthropic / Google providers return HTTP 403
+    "violation of provider Terms Of Service" for this account's jurisdiction (Hong Kong — the same restriction
+    that drove the Bedrock→OpenRouter override). It is account-wide, not content-driven (a bare "hi" 403s), and
+    not a credits/key issue. **All model routing must use non-US providers** (DeepSeek / Qwen / Llama / Mistral).
+    The original gemini/gpt-5 defaults caused `brief/structure` to 502; swapped to DeepSeek V4 Flash + Llama.
+  - **Model choice (scoping):** DeepSeek V4 Flash is the best-value reasoning model that fits the 30s sync
+    Lambda budget (~18s). The flagship `deepseek-v4-pro` reasons for 55–76s → would time out behind API Gateway.
+  - **Model routing override:** `HOLDSLOT_OPENROUTER_MODELS` (comma-separated) env var beats the secret's
+    `models` — lets ops repoint models via a Lambda env var (or local dev) without a Secrets Manager write.
+  - **Prompt-preview:** `GET /{client}/brief/structure/preview` returns the exact system + input prompt
+    (same `build_messages`) with no LLM spend; the workspace "View prompt" popup renders it.
 - **B1–B2** — tables `brief`/`icp`/`research_spec`/`llm_call` (Alembic `0003_phase_b`, up/down clean), all
   tenant-scoped; Brief+ICP JSONB document endpoints (`GET/PUT /clients/{c}/brief`, CRUD `/icps`); server-side
   completeness scorer + `missing[]`.
@@ -216,314 +263,251 @@ ICP-card `.icp-grid` grammar (exclusions as `.icp-chip.warn`), gap prompts in a 
   attestation checkbox** on each required exclusion list, gap callout); **Generate Scope** gated on all 6
   sections complete.
 - **Quality:** 31 backend tests pass; ruff/black clean; 2-reviewer issues all fixed.
+- **B6 — ResearchSpec v2 (Apollo enrichment of the brief; 2026-06-21).** No migration (JSONB, append-only).
+  Three sub-edits, all in `domains/briefs`:
+  1. `research_spec.py` strict `json_schema` + Pydantic validator → the **v2 shape** above (flat
+     `locations_*`; add `funding`, `hiring_signals`, `include_similar_titles`; `industries_*` →
+     `industry_keywords_*`; keep `founded`/`company_types`/`departments`/`job_title_exclude` as carried
+     fields the mapper routes DB-side). Bump `SPEC_VERSION = 2`, `PROMPT_VERSION = "brief-structure-v3"`.
+  2. `DEFAULT_SYSTEM_PROMPT` → **de-Clay + Apollo-aware**: drop "Clay parameters / LinkedIn industry
+     labels"; instruct the model to (a) emit industry intent as free-text **keyword tags**, (b) translate
+     the brief's *buying signals* into `funding` + `hiring_signals`, (c) constrain `seniority` to Apollo's
+     fixed enum, (d) express `maturity` as employee/revenue/funding ranges (no standalone Apollo filter).
+  3. `CREDIT_POLICY` → add `email_status_filter: ["verified"]`; keep `phone: false`.
+  - **DoD:** Generate Scope produces a v2 spec; the *Prospect Scope* panel renders the new sections (no
+    new CSS — reuse the `.icp-grid` grammar); old v1 rows still load. Re-run = `version+1`.
 - **Open item (doesn't block C):** founder end-to-end acceptance test on dev. Tick **S1** once run.
 
-**Critical path:** B0 → B1 → B2 → {B3 → B4} → B5. After B, a Brief/ICP form change costs a frontend edit
-+ a rubric entry — no migration. **Cost:** ~$5–20/mo LLM; **no Clay credits in B.**
+**Critical path:** B0 → B1 → B2 → {B3 → B4} → B5 → **B6**. After B, a Brief/ICP form change costs a
+frontend edit + a rubric entry — no migration. **Cost:** ~$5–20/mo LLM; **no enrichment credits in B.**
 
 ---
 
-## Phase C — Prospects: Clay seed + AI sourcing loop (S2) ✅ BUILT (dev) · ⏳ 1 operational gate
+## Phase C — Prospects: Apollo find + enrich (S2) ⏳ REBUILD (Apollo-only · supersedes the Clay build)
 
-Turns the saved **`ResearchSpec`** + an **AI sourcing loop** into enriched, fit-scored **`Prospect`**
-rows. Design finalized 2026-06-19 after Clay architecture research (see
-[`research/clay-architecture.md`](research/clay-architecture.md); all tables in
-[`data-schema.md`](data-schema.md)). **No code until C0's gates lock.**
+> **Direction change (locked 2026-06-21):** the Clay-based Phase C (seed push + CSV ingest + AI sourcing
+> loop) was built and ran on `dev`, but **Clay has no programmatic Find Company / Find People API on any
+> tier** — discovery stayed operator-run in Clay's UI with a CSV bridge. **Apollo.io is a true headless
+> REST search + enrichment API** (company search, people search, `people/match`, one static key), so
+> Phase C is rebuilt **Apollo-only**: Apollo does discovery **and** enrichment; the LLM only (a) scopes the
+> Apollo filter and (b) scores rows. No Clay, no webhooks, no CSV import/export, no AI row-generation. All
+> tables in [`data-schema.md`](data-schema.md). **No code until C0's gate clears (the plan upgrade).**
 
 ### The one idea that drives everything
 
-> **Clay is stateless enrichment *compute*, not a database. The HoldSlot DB is the only system of record.**
+> **Apollo is headless discovery + enrichment compute. The HoldSlot DB is the only system of record.**
 
-Rows flow *through* Clay (**push → enrich → pull → clear**); Clay holds no durable state we depend on.
-Tenant ownership, dedup, suppression, fit scoring, lineage, and outreach status all live in Postgres.
-This one boundary resolves every hard question (multi-tenant, the 50k caps, shared prospects, industry).
-Backed by how Clay is run at scale: agencies run **80+ clients from one table**, and Clay's own guidance
-is "one master table, slice with filters/views" — never a table per client/industry.
+Apollo returns rows on a REST call; tenant ownership, dedup, suppression, fit scoring, lineage, and
+outreach status all live in Postgres — exactly as before. The only thing that changes is the *source*: a
+programmatic Apollo call replaces the operator's Clay UI + CSV round-trip. The suppression gate, the
+`fit.py` scoring door, `identity_key` dedupe, and the one central tenant guard are **reused unchanged**.
 
-**Strict division of labour:** the **AI sourcing loop discovers + qualifies** (cheap, fresh, unlimited);
-**Clay only enriches** — verifying contact data, the one step that costs real money, and only for
-candidates that already passed fit. An email exists only if a waterfall provider returned it and
-validation passed (no hallucinated contacts). **Human-in-the-loop:** the founder owns the sourcing prompt
-+ fit rubric (locked at C0, in `docs/prompts/`), reviews each round, edits between rounds (versioned).
-Auto self-improvement (replies/meetings → sourcing) closes in **E** with zero redesign, because C1's
-schema captures source lineage + outcome labels from day one.
+### Why Apollo replaces Clay
+- **Clay:** no Find API on any tier → discovery was operator labour in the UI, bridged by manual CSV import.
+- **Apollo:** `mixed_companies/search` + `mixed_people/api_search` are **programmatic REST** with one static
+  key (`X-Api-Key`) — the whole find → score → select → enrich loop becomes in-app, no CSV, no operator.
+- **⚠️ Credit model (corrected 2026-06-21, deep research):** **People search (`mixed_people/api_search`) is
+  0-credit** and returns no email/phone. **Company search (`mixed_companies/search`) is listed as
+  credit-consuming in Apollo's current docs** (the old "search is free" model is retired) — *confirm the
+  exact cost against the live plan's credit page at C0.* `people/match` is the heavy paid step (1
+  credit/email · 8/phone, phone async via webhook).
+- **Cost:** Apollo Professional (master key) replaces Clay Launch; net MVP cost still drops vs Clay (see
+  *MVP running cost*), but **company-search credits are a real line item** — budget + monitor.
 
-**DoD (MVP):** founder builds **one** generic Clay enrichment table (once, ever) → HoldSlot
-**programmatically pushes** suppressed, identity-keyed rows into its webhook → Clay enriches → operator
-**exports CSV** (one click) → HoldSlot **ingests** → suppress → dedupe → fit-score into the tenant-scoped
-`prospect` table; both sources visible / filterable / selectable in the Workspace *Prospect list* with a
-Source column. Nothing sent to a client yet (that's D).
-
-### Clay tier strategy — Free → Launch → Growth (decided 2026-06-19)
-
-Free tier (200 rows / 100 credits) is **proof-only** — it validated the pipeline (C0.1 ✅) and nothing
-more. **Build + test C1–C6 on the free tier** (small sample batches fit the 200-row cap), then
-**subscribe Launch for the first real-volume round**; **Growth** is the automation/scale target.
-
-| Tier | $/mo | Role | Ingest | **Move to it when** |
-|---|---|---|---|---|
-| **Free** | $0 | pipeline proof (done) | CSV | — (already outgrown) |
-| **Launch** | ~$185 | **MVP dogfood run (real volume)** | manual CSV | **the first real-volume sourcing round** — a single run blows free's 200-row / 100-credit cap. |
-| **Growth** | ~$446–495 | scale / automation | **HTTP API auto-callback** + BYOK | (a) manual CSV export becomes a bottleneck (frequent rounds / multi-client), **or** (b) Launch's 2,500 credits/mo run out and **BYOK** (own provider keys = 0 Clay credits) would save money, **or** (c) hands-off multi-client volume. |
-
-- CSV ingest is **byte-identical across tiers**, so subscribing Launch at the first real round rebuilds nothing.
-- **Growth changes only the ingest *transport*** (CSV → auto-callback) **+ 0-credit BYOK** — suppression,
-  dedupe, scoring, schema, and UI are unchanged (that's the C3 `[SCALE]` swap + C0.6 gates).
-
-### Best & simplest way to handle the Clay table (locked decisions)
-
+### Locked decisions (founder, 2026-06-21)
 | Decision | Choice | Why |
 |---|---|---|
-| How many tables | **Exactly one**, reused for all clients/industries/runs | No table-creation API on any tier; per-table = manual cloning + structure-sync hell |
-| What it stores | **Nothing durable** — a passthrough buffer; rows cleared after ingest | Rows are transient compute; our DB is the truth |
-| Knows tenants? | **No.** Correlation columns = `run_id` + `identity_key` only | Makes "enrich once, reuse across N tenants" free; tenant fan-out is DB logic |
-| Who discovers | **HoldSlot** (AI loop + spec); Clay only enriches | Avoids per-client in-app search config (which has no API) |
-| Avoid double-charge | **Dedup before push** vs our identity cache + Clay **auto-dedupe (keep-oldest)** backstop (per-row "only run if empty" gates are OFF — enrichment always runs) | Credits charged per row; dedup, not gating, is the safeguard |
-| Tenant & industry | **Columns/attributes, never table boundaries** | More tables = the anti-pattern; both are enrichment data / DB scope |
-| Results out | **Free/Launch = manual CSV; Growth = HTTP API column auto-POST; Enterprise = + passthrough** | Automated out is Growth-gated (confirmed) |
-| Only recurring manual op | **Webhook rotation** (~every 50k pushes: add a new webhook to the same table, update one config value) | 50k cap is per-webhook lifetime, non-resettable; multiple webhooks/table OK |
+| Discovery + enrichment engine | **Apollo only** (replaces Clay entirely) | Clay has no Find API; Apollo is headless REST |
+| Plan | **Professional + master API key**, upgraded *once this plan is ready to execute* | Search/Match are paid-plan-gated (free key 403s) |
+| AI sourcing loop | **Killed.** The LLM never generates rows | Apollo generates rows; LLM only scopes the filter + scores |
+| LLM scoring | **Lighter batched scorer** — 50–100 rows/call → `[{id, ai_score, reason}]`, **auto-run** on each arriving batch | Find returns 100s of rows; per-row scoring is too slow/costly. Drops the 12-line rubric components for the list view |
+| Real `batches` table | **Deferred to Phase D**; B.4 sets selection/status only | Avoid overlapping the next phase |
+| Selection | Reuse existing `company.status` / `prospect.status` (no new `selected` columns) | Same meaning, fewer columns |
+| Phone enrichment | **`PHONE_ENABLED=false`** default (8× email cost) | Off at dogfood |
 
-**Onboarding a new client touches Clay zero times — it is a DB `INSERT`.**
+### Endpoints map to the existing tenant — no new `campaigns` table
+HoldSlot already has the "campaign": `Brief.data` + `Icp` + `ResearchSpec.spec` + the brief-derived
+`ExclusionSet`. All Flow A/B endpoints stay **per-client (tenant)** and read the latest of those — exactly
+as the old `import_companies` did. No new tenancy, no campaign table.
 
-### Schema (full detail in [`data-schema.md`](data-schema.md))
+### Division of labor
+| Actor | Job | Cost |
+|---|---|---|
+| **Apollo** (REST, headless) | company search (credit-consuming — confirm at C0) + people search (**0 cr**); `people/match` enriches the selected set | company search: plan credits · people search $0 · enrich 1 cr/email (8/phone) |
+| **`apollo_map`** (pure, fixture-tested) | `ResearchSpec` v2 → Apollo request params (deterministic — no LLM); routes the `⊘` fields DB-side | — |
+| **LLM** (OpenRouter, built) | **only** batched `score_rows` (company/person fit). *(All Brief→targeting judgment now lives in the B LLM that wrote the v2 spec — no second `design_filter` LLM pass; see below.)* | OpenRouter $ (small) |
+| **HoldSlot DB** (Aurora) | system of record: dedupe, suppression, DB-side post-filters, scores, lineage, status | — |
 
-- **Clay table** — `run_id` + `identity_key` (correlation, no tenant), inputs (name/company/domain/
-  linkedin, + titles/seniority when pushing companies), enrichment outputs (email/phone/title/company_*
-  incl. `company_industry`), `email_valid` gate.
-- **DB MVP** — `prospect` (per-(identity × tenant); `identity_key` + `last_enriched_at` are the seam),
-  `research_run`, `sourcing_doc`.
-- **DB SCALE (additive, when 2nd tenant lands — no rewrite)** — `person` (tenant-agnostic enrichment
-  cache keyed by `identity_key`) + `enrichment_request` (fan-out + dedup-before-push). A prospect wanted
-  by 5 clients is **enriched once, paid once**, and exists as 5 fit-scored `prospect` rows.
+> **Architecture refinement (2026-06-21):** v1's plan had a second LLM (`design_filter`, purpose
+> `apollo_filter`) re-distilling the brief into Apollo params at C3. With **ResearchSpec v2** carrying
+> Apollo-aligned targeting (keyword tags, ranges, funding/hiring signals, enum seniority), that mapping is
+> now **deterministic** — `apollo_map` (pure, fixture-tested) replaces the LLM. This removes a drift
+> surface (two LLMs distilling the same brief could disagree), an LLM cost, and makes the whole Flow A/B
+> request build unit-testable. The `apollo_filter` purpose is **dropped**; fit scoring is the only Phase-C LLM.
 
-### Model usage — FINAL (every call through the B3 adapter)
+### End-to-end flow (two gates · no CSV · no operator)
+```
+FLOW A — Find Company
+  apollo_map.map_company_filter(spec.company_search) ─▶ Apollo mixed_companies/search (paginate; plan credits)
+        └─ DB-side post-filter (founded/company_types/kw-exclude) + exclusion/existing-customer drop
+        └─ upsert company on apollo_org_id (discovered) ─▶ auto batched score_rows("company") ─▶ fit_score + reason
+  GATE 1: review + PATCH companies/select  (status=selected) — scopes Flow B
+FLOW B — Find People
+  apollo_map.map_people_filter(spec.people_search, org_ids=selected apollo_org_ids)
+        ─▶ Apollo mixed_people/api_search (0 cr, NO email/phone)
+        └─ DB-side post-filter (title-exclude/departments/max_per_company) + exclusion drop
+        └─ upsert prospect on apollo_person_id, link company_id directly (found, unenriched)
+        └─ auto batched score_rows("people")
+  GATE 2 (enrich gate): review scores + select ─▶ POST prospects/enrich
+        └─ Apollo people/match on selected ONLY (1 cr/email — the ONLY enrich spend; phone off) ─▶
+           email / email_valid / phone / provider, status=scored
+  CREATE BATCH (B.4) ─▶ selection/status only ─▶ Phase D approval (the real batches table is Phase D)
+```
+**Cost rules (enforced in code):** people search is 0 credits; **company search consumes plan credits**
+(confirm cost at C0) — paginate only to `max_results`; never `people/match` before gate 2;
+exclusion/existing-customer/post-filter is DB-side (no extra API calls); scoring batched + cached; enrich
+only user-selected rows; phone off by default (8× + async webhook).
 
-| `llm_call.purpose` | Where | Model (OpenRouter slug) | Config | Volume | Cost |
-|---|---|---|---|---|---|
-| `prospect_fit` | C3 scoring | **`qwen/qwen3.5-flash`** | `temperature=0`, `enable_thinking=false`, strict schema | 100–1,000/mo | <$1/mo |
-| `sourcing_round` | C5 discovery | **`deepseek/deepseek-v4-pro` + OpenRouter web-search plugin** | reasoning effort **Think High** (NOT Think Max); verify tool-calling loop | 2–8/client/mo | ~$0.05–0.20/round |
-| `candidate_validate` | C5 validation | deterministic (DNS/HTTP liveness) **first**, then **`qwen/qwen3.5-flash`** on survivors | `temperature=0`, `enable_thinking=false`, strict schema | per candidate | <$1/mo |
-| *dedupe* | C2/C3 | **none — deterministic** | exact-key identity logic | — | $0 |
+### Model usage — ONE LLM service in Phase C (`llm_call.purpose`)
+The Brief→targeting LLM ran in **B** (writing the v2 spec); **`apollo_map` is deterministic (no LLM)**. So
+Phase C's only LLM is the fit scorer:
+| `llm_call.purpose` | Where | Function | Model | Notes |
+|---|---|---|---|---|
+| `company_fit` / `prospect_fit` | C3 `score_rows` | batched 50–100 rows → `[{id, ai_score, reason}]` | `qwen/qwen3.5-flash-02-23` (fallback `meta-llama/llama-3.3-70b-instruct`), `temp=0`, thinking off | **auto-run per arriving batch**; cached, re-score on ICP edit |
 
-**Why each:** `prospect_fit` is a bounded rubric (not open reasoning) → cheapest schema-reliable flash
-(Qwen3.5 ≈ $0.065/M in, $0.26/M out). `sourcing_round` is the **only call site where model quality carries
-the outcome** (mistakes burn enrichment credits) → DeepSeek V4 Pro's strong agentic reasoning + live web
-research at low cost (≈ $0.435/M in, $0.87/M out, MIT-licensed). `candidate_validate` runs the mechanical
-liveness gate first and only spends an LLM call on survivors — narrow, lowest-risk.
+> **Region rule (see B0):** OpenAI / Anthropic / Google providers are geo-blocked (403 ToS) for this HK account — every purpose routes to non-US providers only (Qwen / Llama / DeepSeek / Mistral).
 
-**Risks to validate before rollout:** (1) calibrate `prospect_fit` on a **50-prospect sample vs
-`deepseek-v4-pro`** — anchor the rubric with in-prompt examples, request score + brief justification for
-drift audit; (2) `sourcing_round`'s primary risk is **web-plugin / tool-calling reliability**, not
-reasoning — test the agent loop and confirm the plugin returns sufficient context.
+The killed AI-loop purposes (`sourcing_round`, `candidate_validate`) **and the planned `apollo_filter`
+purpose** are removed. Filter-building + dedupe are deterministic (no LLM).
 
-**Deploy-time checks (all rows):**
-- Confirm exact current slugs + live prices on the OpenRouter model pages (Qwen versions are dated; labs
-  reprice ~monthly).
-- Account for OpenRouter's flat **5.5% credit-purchase fee**.
-- Enable **prompt caching** for reused system prompts/templates (can cut repeated-context cost 60–80%).
-- **`enable_thinking` MUST be `false` on both Qwen rows** — Qwen bills thinking tokens at 3–10× the output
-  rate and would silently blow the scoring budget.
+### Apollo parameter contract (deep-researched 2026-06-21 — the `apollo_map` spec)
+The authoritative request-param mapping. `apollo_map` (C3, pure) builds exactly these from `ResearchSpec`
+v2; everything marked **DB-side** is a post-filter because Apollo has no request param for it. **Confirm
+exact keys + the company-search credit cost against a live master-key call at C0** before hard-coding.
 
-Web research = OpenRouter's web-search plugin attached to DeepSeek V4 Pro through the same B3 adapter — no
-new provider, no new secret at MVP; search is metered by OpenRouter under the existing $50 cap. Per-purpose
-routing (`models_by_purpose` config) lands with C5. Dedupe = deterministic, no LLM.
+**Flow A — `POST mixed_companies/search`** (auth `X-Api-Key`; **credit-consuming — confirm at C0**)
+| Apollo request param | Type / vocabulary | ← ResearchSpec v2 source |
+|---|---|---|
+| `q_organization_keyword_tags[]` | free-text keywords | `industry_keywords_include` + `description_keywords_include` + distilled `semantic_description` |
+| `organization_num_employees_ranges[]` | array of `"min,max"` strings (arbitrary bounds) | `employee_count {min,max}` |
+| `revenue_range[min]` / `[max]` | int (plan-gated) | `revenue_usd {min,max}` |
+| `organization_locations[]` | free text ("City, ST, Country") | `locations_include[]` |
+| `organization_not_locations[]` | free text | `locations_exclude[]` |
+| `latest_funding_amount_range[min]/[max]` · `total_funding_range[min]/[max]` · `latest_funding_date_range[min]` | int · int · `YYYY-MM-DD` | `funding.*` |
+| `q_organization_job_titles[]` · `organization_num_jobs_range[min]` · `organization_job_posted_at_range[min]` | free text · int · date | `hiring_signals.*` |
+| `currently_using_any_of_technology_uids[]` | **fixed Apollo tech UIDs** | `technographics.vendors` (when `enabled`) |
+| `page` · `per_page` | int · **≤100** | paginate to `max_results` (Apollo hard cap: 500 pages = 50k rows) |
+| **DB-side post-filter (no Apollo param):** | | `industry_keywords_exclude`, `founded`, `company_types` |
+| `q_organization_keyword_tags` notes | no exclude variant; no free-text industry filter | (industry → keyword tags; tag-IDs are a later precision lever) |
 
-### Founder-edited prompt documents (versioned data, UI = existing classes)
+**Flow B — `POST mixed_people/api_search`** (auth `X-Api-Key`, **master key**; **0 credits**, no email/phone)
+| Apollo request param | Type / vocabulary | ← ResearchSpec v2 source |
+|---|---|---|
+| `organization_ids[]` | Apollo org ids | **selected** `company.apollo_org_id` (the Flow A→B scope link — required) |
+| `person_titles[]` | free text, fuzzy | `job_title_keywords` |
+| `include_similar_titles` | bool | `include_similar_titles` |
+| `person_seniorities[]` | **fixed enum:** owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern | `seniority` (B emits enum values) |
+| `person_locations[]` | free text | `person_locations` |
+| `contact_email_status[]` | enum: verified·unverified·likely to engage·unavailable | `credit_policy.email_status_filter` |
+| `page` · `per_page` | int · **≤100** | paginate to `max_total` (cap: 500 pages = 50k) |
+| **DB-side post-filter (no Apollo param):** | | `job_title_exclude`, `departments` (filter on returned `departments[]`), `max_per_company` (group by `organization_id`, cap) |
 
-Both v1 **authored & locked**: sourcing prompt+skill ([`prompts/sourcing-prompt-v1.md`](prompts/sourcing-prompt-v1.md))
-+ fit rubric ([`prompts/fit-scoring-rubric-v1.md`](prompts/fit-scoring-rubric-v1.md)). Stored append-only
-in `sourcing_doc`. UI = one "Sourcing controls" `.panel` in the Prospect list: version chips + two
-`.textarea` editors ("Save as vN+1") + "Run sourcing round" + a round-history `.tbl` (Round · Prompt v ·
-Candidates · Passed fit · Accepted · $/accepted · Date).
+**Enrich — `POST people/match`** (the only enrich spend): `id`=`apollo_person_id`, `reveal_personal_emails=true`
+(1 cr), `reveal_phone_number=PHONE_ENABLED` (8 cr, **async → requires `webhook_url`**, off at MVP). Returns
+`email`, `email_status`, `phone_numbers[]`, provider.
+
+### Tasks (by dependency; all `[MVP]`)
+
+**C0 — Validation gate (no code; blocks everything).**
+1. **👤 Founder: upgrade Apollo to Professional + master key** in `holdslot/prod/apollo` (`{"key": …}`).
+   Until done, every Search/Match call 403s on the free key — only `organizations/enrich` works.
+2. **Smoke-test the 3 endpoints** (`mixed_companies/search`, `mixed_people/api_search`, `people/match`) at
+   `per_page:1`; read 200 / 403 / 401 / 429. **Stop the build if people-search ≠ 200.** Save each JSON to
+   `apps/api/tests/fixtures/apollo/` — adapters are built + unit-tested against these (no field guessing).
+3. **Confirm the company-search credit cost** against the live plan's *About Credits* page + a real call
+   (the param contract assumes it consumes credits). Capture the per-call cost → feeds *MVP running cost*.
+4. **Verify the ambiguous keys against the live response** (research flagged these): the funding-**stage**
+   filter key + its code values; `street_address`/`postal_code` vs `raw_address`; that live `people[]` rows
+   carry `last_name`/`linkedin_url`/`departments[]` (the docs stub obfuscates them). Lock `apollo_map` to
+   what the fixtures actually return.
+
+**C1 — Data model (migration `0009`).** `add company.apollo_org_id` (nullable, unique per tenant — feeds
+Find People's `organization_ids`) · `add prospect.apollo_person_id` (nullable — the `people/match` key) ·
+`drop tenant.seed_limit` (was AI-loop seed anchoring). **DoD:** models gain the two ids; `0008 → 0009`
+head; up/down clean on dev.
+
+**C2 — Apollo transport + adapters.**
+- `integrations/apollo/client.py` (lazy secret, SnapStart-safe, mirrors the B3 discipline; header
+  `X-Api-Key`, 429 backoff + pagination, `per_page` ≤100, 500-page hard cap): `search_companies`
+  (`mixed_companies/search`, **credit-consuming**) · `search_people` (`mixed_people/api_search`, 0 cr, no
+  email/phone, **master key**; **never** legacy `mixed_people/search` → 422) · `match_person`
+  (`people/match`, the enrich spend; `reveal_phone_number` ← `PHONE_ENABLED` → requires `webhook_url`).
+- `domains/prospects/apollo_map.py` (pure, fixture-tested): `map_company_filter(company_search)`,
+  `map_people_filter(people_search_item, org_ids)`, `parse_company`, `parse_person` — **exactly the
+  *Apollo parameter contract* tables above**, incl. the deterministic transforms (employee→ranges,
+  enum-seniority, locations-flatten) and the DB-side `⊘` post-filter set. **DoD:** builders + parsers
+  unit-tested against the C0 fixtures, no network.
+
+**C3 — Deterministic filter build + LLM fit scoring.**
+- **No `design_filter.py`, no `apollo_filter` LLM.** Filter building is `apollo_map` (C2, pure) consuming
+  the v2 spec — the brief→targeting judgment already ran in B6. The DB-side post-filters (`⊘` rows) live
+  next to `suppression.py` and run on each search's results before upsert.
+- `fit.py` — add the batched `score_rows(rows, inputs, mode) → [{id, ai_score, reason}]` scorer
+  (50–100/call, cached), auto-invoked per arriving batch. Keep the `fit_rubric` `sourcing_doc`; drop `sourcing_prompt`.
+
+**C4 — Flow A (Find Company).** `POST /{client}/companies/find-company` (A.1):
+`search_companies(map_company_filter(spec.company_search))` (paginate, cap at `max_results`) → DB-side
+post-filter + exclusion / existing-customer drop → upsert on `apollo_org_id` (`discovered`) → auto
+`score_rows("company")` → return rows + a `research_run` (`source="apollo"`). `PATCH
+/{client}/companies/select` (A.3): `status=selected`. **DoD:** companies land scored; selection scopes
+Flow B; `GET /companies` feeds the table.
+
+**C5 — Flow B (Find People + enrich).** `POST /{client}/people/find-people` (B.1):
+`search_people(map_people_filter(spec.people_search[i], org_ids=selected apollo_org_ids))` (0 cr, no email)
+→ DB-side post-filter + exclusion drop → upsert on `apollo_person_id`, link `company_id` directly,
+`status=found` → auto `score_rows("people")`. (Empty selected-org set → `400 "select companies first"`.)
+`POST /{client}/prospects/enrich` (B.3, reworked): Apollo `people/match` on the **selected** rows only →
+write `email` / `email_valid` / `phone` / `provider`, `status=scored` (the only credit spend, human-gated).
+B.4 sets selection/status; no `batches` table (Phase D). **DoD:** find → score → select → enrich runs end
+to end on live Apollo; only selected people cost credits.
+
+**C6 — Frontend wiring + Clay/AI-loop teardown.**
+- `lib/api.ts`: add `findCompanies`, `selectCompanies`, `findPeople`, reworked `enrichProspects`; **drop**
+  `importProspectsCsv`, `importCompaniesCsv`, `runSourcingRound`, `acceptCandidates`, `saveSourcingSettings`.
+- Workspace `#list`: **"Trigger Find Companies" / "Trigger Find People"** go from CSV file-inputs to plain
+  buttons → API fetch → table populates (layout/columns unchanged — the **AI Score** column already
+  exists). Delete the **"copy seeds"** clipboard bridge (selection scopes Find People server-side) and the
+  **enrich-export modal** (enrich is a real Apollo call now). Create-batch stays mock until Phase D.
+- **Delete (dead under Apollo-only):** backend `clay.py`, `sourcing.py`; endpoints
+  `POST /icps/{id}/research`, `/prospects/import`, `/companies/import`, `/sourcing-rounds`,
+  `/prospects/accept`, `PUT /sourcing-settings`; `SourcingDoc` kind `sourcing_prompt`; `Tenant.seed_limit`
+  + the Sourcing-settings modal; schemas `SourcingRound*` / `AcceptIn` / `*ImportResult` / `EnrichExportRow`
+  / `SourcingSettings*`. Founder retires the `holdslot/prod/clay` secret.
+
+**Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6. **C1/C2/C3 can be built in parallel against the C0
+fixtures** before the live key is integration-ready; only C0's smoke test + C4/C5 end-to-end need the
+upgraded plan. **Depends on B6** (the v2 spec `apollo_map` consumes). **MVP cost:** Apollo Professional
+(master key — see *MVP running cost*) + LLM <$10/mo; **people search is 0 credits**, but **company search
+consumes plan credits** (confirm at C0) and the gate-2 enriched set spends 1 cr/email.
 
 ### Cross-phase
-- **From A:** the guard scopes every new table; `/clay/results` (SCALE) is a route on the `$default`
-  proxy; **MVP adds ZERO AWS resources;** SES production access not needed in C.
-- **From B:** `ResearchSpec` v1 is the targeting source; exclusion lists + attestations promote to the
-  suppression path; the B3 adapter + `llm_call` + `prompt_version` are the loop's engine (C adds
-  purposes, not plumbing). **ICP validation:** B emits `icp_suggestions`; C makes it data-driven once
-  enriched (paying-customer centroid vs stated ICP).
-- **To D:** `fit_reason` is **client-facing copy** on the approval page; `prospect` stays clear-text (masking is D).
-- **To E:** `outreach_outcome` (schema in C1, written by E) closes the self-improve loop; the fit bar is
-  a deliverability control. **Start domain warm-up during C** (already running).
-- **To F/billing:** C4's $3/prospect overage writes the first `LedgerEntry` rows (SCALE).
-
-### Tasks (`[MVP]` builds/tests on **Clay free**, runs real volume on **Launch**; `[SCALE]` at Growth — see tier strategy above)
-
-**C0 — Gates (no code).**
-1. ✅ **[MVP] 👤 Founder: ONE generic enrichment table — BUILT & VERIFIED 2026-06-19.** Table
-   `holdslot-enrichment` (workspace 1216451): webhook source + Work Email waterfall (Findymail-validated)
-   + Enrich person + Enrich Company; **enrichment runs unconditionally** (the "only run if empty" gates
-   were turned OFF — credit conservation is dedup-based, see [`data-schema.md`](data-schema.md)); **auto-dedupe
-   on `identity_key`, keep-oldest**. Secret `holdslot/prod/clay` holds `inbound_webhook_url`, `table_id`,
-   `webhook_authentication_token` (push auth = header `x-clay-webhook-auth`; the old `api_key` is stale).
-   Live test confirmed: push 200, dedupe to 1 row, email/title/industry/size enriched. CSV column contract
-   locked in [`data-schema.md`](data-schema.md): `email_valid` ← the `Validate Findymail` column (unhide to
-   export), `seniority` ← input `target_seniority`. **C0.1 fully complete.**
-2. ✅ **[MVP] Fit-scoring rubric v1 — DONE & locked** ([`prompts/fit-scoring-rubric-v1.md`](prompts/fit-scoring-rubric-v1.md)):
-   gates → 4 dims (Company 40 / Persona 30 / Timing 20 / Data 10) → tiers (Strong ≥75 / Good 55–74 /
-   Moderate 40–54 / Below <40). `fit_reason` client-readable.
-3. ✅ **[MVP] Sourcing prompt + skill v1 — DONE & locked** ([`prompts/sourcing-prompt-v1.md`](prompts/sourcing-prompt-v1.md)):
-   mirror of the rubric; cites evidence; never emits contact data.
-4. ✅ **[MVP] Promote the exclusion fields (incl. `doNotContact`)** from Brief JSONB to the validated
-   suppression path — **BUILT** (`prospects/suppression.py::extract_exclusions`: parses
-   `excludeCustomers`/`excludeDeals`/`competitors`/`doNotContact` text + spec `exclusions` →
-   normalized domain/email/linkedin-slug sets). Keep `technographics.enabled:false` at dogfood.
-5. **[MVP] Discovery decision (locked):** HoldSlot discovers (AI loop + spec); **Clay enriches only** —
-   no per-client in-app search config. *(Optional one-time Clay Find Companies for the dogfood seed.)*
-6. **[SCALE] Launch → Growth gates** (only at the Growth move-trigger — see tier strategy): verify the
-   HTTP API output column in-app, size + re-cost the plan, choose **BYOK** providers + capture keys,
-   `verify_keys --strict clay`.
-
-**C1 — [MVP] Schema + migration ✅ BUILT (dev).** Migration `0005_phase_c` + ORM in
-`apps/api/app/models.py`: `prospect` (with **`identity_key` + `last_enriched_at`** — the future
-`person` seam; unique `(tenant_id, identity_key)` makes re-import idempotent), `research_run`,
-`sourcing_doc` (**seeds v1 of both prompt files** for tenant #0 in the migration). All carry
-`tenant_id`; A4 scopes them. `person`/`enrichment_request` documented as the additive SCALE step, not
-built. **DoD:** revision chain verified (`0004 → 0005` head); up/down + idempotent re-import to verify
-against `dev` Aurora when the migration runs.
-
-**C2 — [MVP] Suppression gate + programmatic push to Clay ✅ BUILT (dev).** Suppression =
-`prospects/suppression.py::suppress` (a **pure function**: exclusions + `doNotContact` + dedupe on
-`identity_key` + already-enriched `seen_keys`; each drop carries an audit reason). `POST
-/{client}/icps/{id}/research` → assemble rows → **suppress before any push** → `prospects/clay.py`
-pushes survivors to the one webhook tagged `run_id`+`identity_key` (**no tenant**; throttled under
-≤10 rows/s; header `x-clay-webhook-auth`). **DoD met:** gate unit-tested independently of transport
-(`test_prospects.py`); suppressed/duplicate never pushed. *(A live push to Clay still to run.)*
-
-**C3 — [MVP] CSV ingest + fit scoring ⭐ ✅ BUILT (dev).** `POST /{client}/prospects/import` (base64 or
-raw CSV) → `prospects/clay.py::parse_export_csv` parses **by header name** (order-independent) against
-the locked column contract + coalesces gate/output → match/upsert on `(tenant, identity_key)` → C2
-exclusion re-check → `prospects/fit.py::score` runs **`prospect_fit` via the B3 adapter**
-(`qwen/qwen3.5-flash`, `temperature=0`, thinking disabled, strict json_schema, per-purpose routing); the
-LLM returns the rubric line-items, **total + tier collapsed deterministically server-side** (thresholds
-are policy) → write `fit_score`/`fit_tier`/`fit_components`. No-email rows gate out without an LLM call.
-Synchronous; no SQS. **DoD met:** CSV parse + deterministic collapse unit-tested; re-import idempotent
-(unique key); each score writes `llm_call` with the rubric version. **[SCALE]** swap *output transport
-only*: HTTP API column → `POST /clay/results` (+SQS+S3) feeding the **same** suppression + scoring code.
-
-**C4 — [MVP] Usage tracking + per-source cost scoreboard ✅ BUILT (dev).** `GET
-/{client}/research-runs` returns the round history with **derived `cost_per_accepted`** from
-`research_run` (rows_pushed/accepted, cost) — observational at free volume, no separate table (the rollup
-is the post-MVP consolidation task). **[SCALE]** enforce `enrichment_cap` before dispatch; meter
-$3/prospect overage (`LedgerEntry`); EventBridge monthly reset.
-
-**C5 — [MVP] AI sourcing loop v1 (human-in-the-loop) ⭐ ✅ BUILT (dev).**
-`POST /{client}/sourcing-rounds` → `prospects/sourcing.py::run_round` makes one `sourcing_round` call
-(**DeepSeek V4 Pro at reasoning High + OpenRouter web-search plugin** via B3, per-purpose routing) with
-Brief + ResearchSpec + a seed sample (existing Strong/Good prospects) + the current sourcing prompt + an
-exclusion summary → candidates **with evidence URLs** → `validate_candidates` (deterministic liveness:
-domain + person + ≥1 cited URL) → **C2 suppression** → land as `ai_loop · pending_review`. `POST
-/{client}/prospects/accept` pushes accepted ones **through the same C2 path**; they return scored via the
-C3 import. `GET`/`POST /{client}/sourcing-docs` = the versioned prompt/rubric editor (append-only
-vN+1). **DoD met:** a round yields deduped, evidence-gated candidates traceable to prompt+rubric versions
-(validate/map unit-tested). **Simplification (logged):** the `qwen3.5-flash` evidence re-check on
-survivors is deferred — the deterministic liveness gate covers the gross cases; it's the next increment.
-**[SCALE]** the round-trip becomes hands-off via the HTTP API callback.
-
-**C6 — [MVP] Wire the Workspace Prospect list + acceptance ✅ BUILT (dev).** `apps/web` Prospect List
-tab is now live (`lib/api.ts` Phase C client + `workspace/page.tsx`): live table (search + ICP / source /
-fit-tier / status filters, **Source ICP** column, **Source chip Clay/AI**, **fit tier + reason**,
-select → create batch, **Accept selected (AI)**) + **Import Clay CSV** control + the **Sourcing
-controls** panel (prompt/rubric version chips + two `.textarea` editors saving vN+1 + **Run sourcing
-round** + the round-history `.tbl` scoreboard) — existing classes, no new CSS. Build + typecheck + lint
-green. **DoD:** both sources render with fit context and survive reload; founder runs the full loop end
-to end once the migration is on `dev` → tick **S2**.
-
-**Critical path:** C0 → C1 → C2 → C3 → {C4} → C5 → C6. C5 **reuses** C2/C3 (one suppression gate, one
-scoring door). **The MVP risk is operational** (the one Clay table + a clean CSV contract), not code — the
-spine (adapter, telemetry, tenant guard, proxy) already exists. **MVP cost:** Clay **Launch ~$185/mo**
-(free tier was proof-only) + LLM <$10/mo. **The MVP→Growth seam is the ingest transport only**
-(CSV → callback) + BYOK, with suppression / dedupe / scoring / schema / UI identical across the swap.
-
-### Post-build review — finalized (2026-06-19 → 2026-06-20) ✅
-
-Two multi-angle review passes (correctness + simplify) over the C0.4→C6 diff hardened a credit-leak /
-data-integrity cluster around the push/accept/import paths and turned the dead C4 KPI into a live one.
-All findings are fixed and deployed; 37 backend tests green (7 DB-skipped), web typecheck + ruff clean.
-Grouped by theme (the decisions, not the round they surfaced in):
-
-**Credit safety — never pay Clay twice, never strand a row.**
-- A C2 push **records each pushed identity as a `prospect` row immediately** (`status=pushed`). The DB is
-  the system of record, so a paid push is visible to `_seen_keys` *before* the CSV round-trips back —
-  closing the window where a re-push or an interleaved AI round paid Clay twice. Import upserts on
-  `(tenant, identity_key)`.
-- **Partial-push safe.** `clay.push_rows` returns the rows Clay *accepted* and raises `ClayPushError`
-  carrying what landed before a mid-batch transport failure; a shared `_push_to_clay` helper commits
-  exactly those identities before surfacing the 502. `run_research` and `accept` share this one path, so
-  a retry never re-pays and an un-landed row is never stranded.
-- **`accept` is push-before-persist.** It dedupes against already-pushed identities
-  (`_seen_keys(include_pending=False)`, so the rows being accepted aren't read as dups of themselves),
-  pushes to Clay **first**, then marks only landed survivors `accepted`; a push failure leaves the rest
-  `pending_review` (re-acceptable), never `accepted`-but-never-enriched. Suppressed-on-accept rows become
-  `suppressed`, not stranded.
-
-**Accounting & the C4 scoreboard — a live `cost_per_accepted`.**
-- Per-call `cost_usd` flows `StructuredResult → fit.score / sourcing → research_run.cost_usd`, so
-  `cost_per_accepted` is a real number. A prospect is **owned by the run that first landed it**
-  (`prospect.run_id` set once, never reassigned on re-import), and each run's `rows_accepted` is
-  recomputed from the source of truth — its owned, currently-`scored` prospects — not a per-import delta.
-  A re-import (same run or new `run_id`) converges instead of tallying one identity under two runs.
-- `rows_accepted` counts **scored rows only** (gated/errored no longer inflate it); gated no-email rows
-  get their own **`Gated`** tier bucket. A sourcing round records `rows_pushed = 0` (it pushes nothing —
-  that's accept) with `rows_accepted` = candidates-surfaced for the `$/surfaced` denominator.
-- **All costs rounded to 6 dp at the source** (the B3 OpenRouter adapter), so every downstream sink —
-  `llm_call`, `research_run.cost_usd`, `cost_per_accepted` — inherits one consistent micro-dollar
-  precision; the raw cost stays in the `llm_call.raw` audit payload.
-
-**Idempotency & identity.**
-- Import is **atomic** — one commit per import (was ≈1/row) and one `run_id.in_(…)` attribution update
-  (was an N-query loop); a mid-loop crash rolls back cleanly.
-- The re-score guard compares the **whole `enrichment`** (was `email`-only), so a richer re-enrichment
-  (new title/size/industry) re-scores while an unchanged row skips the paid LLM call.
-- `identity_key`'s `dlf:` form requires **both** first and last name (a bare `dlf:dom|last|` over-merged
-  same-surname people) → falls through to email.
-
-**Access & frontend.**
-- Spend/config endpoints (research, import, sourcing-round, accept, sourcing-docs) are **owner-gated**;
-  reads stay any-member. The dogfood operator signs up as owner, so no lockout.
-- Frontend: a client-switch generation guard (`clientRef`) drops stale async reloads onto the wrong
-  client and **resets selection + filters** on switch (stale `fIcp`/`checked` leaked across clients);
-  load failures **surface a toast** instead of silently blanking the list; `Accept` has an in-flight
-  guard; `accept` / `create batch` act on the **full selection**, not the filtered view; 5 MB import-CSV
-  guard. The AI-loop **seed-limit** is a frontend control (default 10).
-
-**Simplification.** One `_latest_spec`/`_latest_brief` pair replaces four hand-rolled "latest version"
-queries (import fetches brief+spec once); a shared `Candidate.to_enrichment` / `from_enrichment` mapper
-replaces four drifting enrichment-dict copies (and fixed an asymmetry where accept read back fields
-sourcing never wrote).
-
-**Removed.** `credits_used` — Clay exposes no API for per-run enrichment-credit cost (UI dashboard only;
-an API is an open community request), so the field was dropped from the model, schema, router, migration
-`0005`, and frontend rather than left permanently null. The operator reconciles Clay spend by hand from
-the dashboard; `cost_usd` (LLM spend) stays live.
-
-**Deferred (low-risk at MVP scale).** SAVEPOINT-per-insert against the unique constraint — single-operator
-concurrency ≈ nil; would need verifying Data-API SAVEPOINT support.
-
-**Verified false positives (kept as-is).** The `identity_key` "flip" on re-enrichment — it's our stamped
-correlation column that Clay echoes back, not recomputed on ingest, so no duplicate row. The `_decode_csv`
-raw-vs-base64 heuristic — base64 has no comma/newline, so a real CSV always fails `validate=True` and is
-returned raw; misdetection isn't constructible.
+- **From A:** the central guard scopes every table; **MVP adds ZERO AWS resources** (`find-company` /
+  `find-people` / `enrich` are routes on the existing `$default` proxy).
+- **From B:** `ResearchSpec` **v2** (`company_search` / `people_search` / `exclusions`, now carrying
+  funding + hiring signals + enum seniority) is the `apollo_map` input — consumed **deterministically**
+  into Apollo params (no second LLM). Exclusion lists + the B3 adapter + `llm_call` + `prompt_version` are
+  reused as-is for fit scoring.
+- **To D:** `fit_reason` + score are client-facing on the approval page; create-batch hands the selected
+  enriched set to Phase D, which builds the real `batches` table.
+- **To E:** `outreach_outcome` (schema present, written by E) closes the self-improve loop; the fit bar is
+  a deliverability control. **Domain warm-up runs in parallel** (already started — see *Sending infrastructure*).
 
 ### Operational sign-off — what's left to tick S2 (not code)
-
-The Phase C *code* is built, reviewed, and green. Ticking S2 needs two operational steps, tracked here
-in the Phase B style (✅ done / ⏳ pending):
-
-- ✅ **Migration `0005` applied to `dev` Aurora — 2026-06-20.** Run over the RDS Data API
-  (`alembic upgrade head`); DB at head `0005_phase_c`. Verified: `prospect`, `research_run`,
-  `sourcing_doc` tables present; `research_run` carries **no** `credits_used` column (per the *Removed*
-  note above); seed `sourcing_prompt` v1 + `fit_rubric` v1 rows present.
-- ⏳ **Founder end-to-end round on Clay (free tier) — PENDING (operator action, no code).**
-  **DoD:** from the live Workspace, founder runs the full loop once on real data —
-  **push** suppressed identity-keyed rows to the Clay webhook → Clay **enriches** → operator **exports**
-  the CSV (one click) → HoldSlot **imports** → suppress → dedupe → **fit-scores** into `prospect` →
-  both Clay + AI-loop rows render in the Prospect list with Source + fit context and survive reload, and
-  the C4 scoreboard shows real `cost_usd` / `cost_per_accepted`. Clay credit spend reconciled by hand
-  from the Clay dashboard (no API). Free tier (200 rows / 100 credits) is enough to prove the loop.
-  *Operator pre-reqs:* unhide the Clay "Validate Findymail" column on the table; delete the `verify-c01`
-  test row before the real round. **This is the last gate before S2 is ticked done.**
+- ⏳ **Apollo plan upgrade (founder action).** Professional + master key in `holdslot/prod/apollo`; until
+  then C0.2's smoke test and the C4/C5 end-to-end runs are blocked.
+- ⏳ **Founder end-to-end round on Apollo.** From the live Workspace: Trigger Find Companies → review/score
+  → select → Trigger Find People → review/score → confirm-enrich (Apollo `people/match`) → create batch —
+  all in-app, no CSV; the scoreboard shows real `cost_usd`. **The last gate before S2 is ticked done.**
 
 ---
 
@@ -725,18 +709,16 @@ fields show `PEND`, not `FAIL`; use `--strict` at the phase that needs them).
 | Secret | Status | Verifier confirms |
 |---|---|---|
 | `holdslot/prod/app` | ✅ | JWT signing+refresh present, ≥32 chars, distinct |
-| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap; `default_model` set in B0 |
-| `holdslot/prod/clay` | ◑ | `api_key` stored (= the **webhook auth token**, not a REST key); table/webhook fields → C0 |
+| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK; set to `[deepseek/deepseek-v4-flash, meta-llama/llama-3.3-70b-instruct]` 2026-06-21 |
+| `holdslot/prod/apollo` | ◑ | `key` stored but **free-tier** (Search/Match 403) — upgrade to Professional + master key → C0. (`holdslot/prod/clay` retired) |
 | `holdslot/prod/smartlead` | ◑ | `api_key` valid; sending accounts + `webhook_signing_secret` → E |
 | `holdslot/prod/google` | ✅ | SA + domain-wide delegation + Calendar + Meet REST all 200, one seat (`info@tryholdslot.com`) |
 
-**Remaining secret fields (added at their phase):** Clay — build the free workbook + add
-`table_id`/`inbound_webhook_url`/auth token (C0); BYOK keys at Growth · Web research — covered by the
-OpenRouter web-search tool (DeepSeek V4 Pro) at MVP, no new secret · Smartlead — `webhook_signing_secret` + `sending_account_ids` (E) · Google — optional re-wrap of
-the SA JSON.
+**Remaining secret fields (added at their phase):** Apollo — upgrade to Professional + master key (C0) ·
+Smartlead — `webhook_signing_secret` + `sending_account_ids` (E) · Google — optional re-wrap of the SA JSON.
 
-**Account/plan decisions still open:** OpenRouter HK model access (B0 — the one true gate, done) · Clay
-free vs Growth (C0) · Smartlead plan tier (E) · Workspace seat count + Meet recording tier (F) · AWS budget
+**Account/plan decisions still open:** OpenRouter HK model access (B0 — the one true gate, done) · Apollo
+plan tier (C0 — Professional + master key) · Smartlead plan tier (E) · Workspace seat count + Meet recording tier (F) · AWS budget
 alarm (set). *(Stripe — not this phase.)* DNS access — **have it** (`tryholdslot.com` in Route 53; SES
 DKIM+DMARC published 2026-06-11).
 
@@ -781,7 +763,7 @@ model in `backend-development-plan.md` Tables 2/4 remains authoritative for Grow
 
 | Item | Plan | $/mo |
 |---|---|---|
-| **Clay** | Launch | 185.00 |
+| **Apollo** | Professional (master key; confirm live price) | ~99.00 |
 | **Smartlead** | Basic (warm-up free, both inboxes fit) | 32.00 |
 | **Google Workspace** | 2 × Business Starter @ $7.20 | 14.40 |
 | **OpenRouter** | pay-per-use (Brief→spec, fit, drafts) | ~5–30 |
@@ -789,14 +771,16 @@ model in `backend-development-plan.md` Tables 2/4 remains authoritative for Grow
 | **Aurora Serverless v2** | min ACU (near-$0 idle, ~0.5 ACU under use) | ~5–30 |
 | Lambda · API GW · SES · S3 · SSM · SQS · EventBridge · CloudWatch · R53 · Amplify | | ~3–10 |
 
-**Total: ~$280/mo typical** (low ~$246, high ~$320) · ≈ 2,180 HKD/mo at 7.8.
+**Total: ~$195/mo typical** (low ~$160, high ~$235) · ≈ 1,520 HKD/mo at 7.8.
 
 **Cost levers:**
-- **Clay (~66% of total) is the one lever.** The real constraint is **credits** (per prospect enriched,
-  not per meeting). **Free tier was proof-only (C0.1 done); the dogfood runs on Launch (~$185/mo).** At
-  scale, **Growth + BYOK** (own provider keys = 0 Clay credits) is the next lever — see the Phase C tier
-  strategy for move-triggers.
+- **Apollo (~50% of total) is the lever.** **People search is 0 credits; company search consumes plan
+  credits** (Apollo's current docs — confirm the per-call cost + included monthly credits at C0), and the
+  heavy spend is **enrich credits** at `people/match` (1 credit/email, per person enriched, not per
+  meeting), spent only on the human-selected set. Cap company search with `max_results` and reuse cached
+  rows to contain search-credit burn. **Phone is 8× email + async webhook — off by default
+  (`PHONE_ENABLED=false`).**
 - **Smartlead $32 covers the whole MVP**; **Workspace Starter ($7.20) suffices** (bump to Standard only for
   native Meet recording); **Stripe = $0** until a signup pays (G).
-- **Honest floor before Clay Launch** (warm-up phase, no live sourcing yet): Smartlead $32 + Workspace
-  ~$15 + AWS/LLM/domain ~$10 ≈ **$55–65/mo.** Once dogfood sourcing starts (Clay Launch on): **~$280/mo.**
+- **Honest floor before Apollo Professional** (warm-up phase, no live sourcing yet): Smartlead $32 +
+  Workspace ~$15 + AWS/LLM/domain ~$10 ≈ **$55–65/mo.** Once dogfood sourcing starts (Apollo on): **~$195/mo.**

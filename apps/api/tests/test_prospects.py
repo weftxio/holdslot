@@ -143,6 +143,76 @@ def test_parse_export_csv_skips_rows_without_correlation_keys():
     assert rows == []
 
 
+def test_parse_export_csv_derives_key_for_operator_sourced_people():
+    # Operator-sourced Find-People rows have neither run_id nor our identity_key column; the key
+    # is derived from the row (LinkedIn → domain+name → email), and run_id stays empty (optional).
+    header = "full_name,first_name,last_name,domain,linkedin_url,Title,Work Email"
+    rows = clay.parse_export_csv(
+        header + "\nJane Doe,Jane,Doe,acme.com,linkedin.com/in/jane-doe,VP Eng,jane@acme.com\n"
+    )
+    assert len(rows) == 1
+    er = rows[0]
+    assert er.run_id == "" and er.identity_key == "li:jane-doe"
+    assert er.email == "jane@acme.com" and er.title == "VP Eng"
+
+
+# ------------------------------------------------------- Find-Companies CSV (stage 1, two-stage)
+
+
+def test_parse_company_csv_matches_aliases_and_keys_by_domain():
+    # Header uses Clay's alternate column names (Website / Company LinkedIn / Employee Count).
+    header = (
+        "run_id,Company,Website,Company LinkedIn,Industry,Employee Count,Country,Annual Revenue"
+    )
+    row = (
+        "run9,Acme Robotics,https://www.acme.com/about,"
+        "https://linkedin.com/company/acme,Robotics,201-500,US,10M"
+    )
+    rows = clay.parse_company_csv(header + "\n" + row + "\n")
+    assert len(rows) == 1
+    cr = rows[0]
+    assert cr.domain == "acme.com" and cr.name == "Acme Robotics"
+    # `website` keeps the raw URL (subdomain/path intact); `domain` is the registrable dedupe key.
+    assert cr.website == "https://www.acme.com/about"
+    assert cr.linkedin_url == "https://linkedin.com/company/acme"
+    assert cr.industry == "Robotics" and cr.size == "201-500" and cr.country == "US"
+    assert cr.run_id == "run9"
+    assert cr.evidence.get("Annual Revenue") == "10M"
+
+
+def test_parse_company_csv_skips_rows_without_a_domain():
+    header = "Company,Website,Industry"
+    rows = clay.parse_company_csv(header + "\nNo Domain Co,,Software\n")
+    assert rows == []
+
+
+# --------------------------------------------------------------- company fit collapse (stage 1)
+
+
+def test_collapse_company_omits_persona_and_normalizes_to_100():
+    # Full company+timing+data (persona is out of scope at stage 1) → 70/70 → 100 → Strong.
+    components = {
+        "company": {"industry": 99, "size": 12, "maturity": 8, "tech": 4},  # clamps to 40
+        "timing": {"primary_trigger": 12, "secondary_signal": 6, "engagement": 2},  # 20
+        "data": {"email_deliverability": 6, "profile_completeness": 4},  # 10
+    }
+    score, tier, normalized = fit.collapse_company(components)
+    assert score == 100 and tier == "Strong"
+    assert normalized["company"]["industry"] == 16  # clamped to its max
+    assert "persona" not in normalized  # persona omitted at company stage
+
+    # Company-only (40/70) normalizes to 57 → Good.
+    company_only = {"company": {"industry": 16, "size": 12, "maturity": 8, "tech": 4}}
+    score2, tier2, _ = fit.collapse_company(company_only)
+    assert score2 == 57 and tier2 == "Good"
+
+
+def test_company_fit_schema_is_strict_and_company_scoped():
+    schema = fit.COMPANY_FIT_JSON_SCHEMA["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["properties"]["components"]["properties"]) == {"company", "timing", "data"}
+
+
 # --------------------------------------------------------------------------- fit collapse (C3)
 
 

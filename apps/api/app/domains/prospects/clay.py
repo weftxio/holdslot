@@ -23,6 +23,9 @@ from functools import lru_cache
 
 import boto3
 
+from app.domains.prospects.identity import (
+    identity_key as compute_identity_key,
+)
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.suppression import Candidate
 
@@ -159,6 +162,76 @@ def _coalesce(*values: str) -> str:
     return ""
 
 
+@dataclass
+class CompanyRow:
+    """One parsed Find-Companies CSV row — stage-1 firmographics, keyed by domain."""
+
+    domain: str
+    run_id: str = ""
+    name: str = ""
+    website: str = ""
+    linkedin_url: str = ""
+    industry: str = ""
+    size: str = ""
+    country: str = ""
+    evidence: dict = field(default_factory=dict)
+
+
+# Find-Companies export columns → our field, matched by header name (order-independent,
+# case-insensitive). Each field lists accepted header aliases (Clay's column naming varies by
+# source/template); the first non-empty alias wins.
+_COMPANY_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("name", "company", "company name", "organization", "org"),
+    "domain": ("domain", "company_domain", "website", "company website", "url"),
+    # The raw URL, kept verbatim for the click-through (domain stays the normalized dedupe key).
+    "website": ("website", "company website", "url", "site", "homepage"),
+    "linkedin_url": ("linkedin_url", "linkedin", "company linkedin", "linkedin url"),
+    "industry": ("industry", "company_industry", "vertical"),
+    "size": ("size", "employee count", "employees", "headcount", "company size"),
+    "country": ("country", "locality", "location", "hq", "headquarters"),
+}
+# Folded into `evidence` (kept for the "why a fit" context, not promoted to a column).
+_COMPANY_EVIDENCE_COLS = ("Annual Revenue", "Employee Count", "Locality", "Founded", "Funding")
+
+
+def _pick(row: dict, aliases: tuple[str, ...]) -> str:
+    """First non-empty value among the aliases, matched case-insensitively by header name."""
+    for key, value in row.items():
+        if value and value.strip() and key.strip().lower() in aliases:
+            return value.strip()
+    return ""
+
+
+def parse_company_csv(text: str) -> list[CompanyRow]:
+    """Parse a Clay Find-Companies CSV into CompanyRows, matched by header name.
+
+    The bare registrable `domain` is the dedupe key (`unique(tenant, domain)`); rows without a
+    resolvable domain are skipped — they cannot be deduped or seed Find People. `run_id` is
+    optional (a sourcing round may not stamp it on a company export)."""
+    reader = csv.DictReader(io.StringIO(text))
+    out: list[CompanyRow] = []
+    for raw in reader:
+        r = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
+        domain = normalize_domain(_pick(r, _COMPANY_ALIASES["domain"]))
+        if not domain or "." not in domain:
+            continue
+        evidence = {col: r[col] for col in _COMPANY_EVIDENCE_COLS if r.get(col)}
+        out.append(
+            CompanyRow(
+                domain=domain,
+                run_id=r.get("run_id", ""),
+                name=_pick(r, _COMPANY_ALIASES["name"]),
+                website=_pick(r, _COMPANY_ALIASES["website"]),
+                linkedin_url=_pick(r, _COMPANY_ALIASES["linkedin_url"]),
+                industry=_pick(r, _COMPANY_ALIASES["industry"]),
+                size=_pick(r, _COMPANY_ALIASES["size"]),
+                country=_pick(r, _COMPANY_ALIASES["country"]),
+                evidence=evidence,
+            )
+        )
+    return out
+
+
 def parse_export_csv(text: str) -> list[EnrichedRow]:
     """Parse a Clay CSV export into EnrichedRows, matched by header name (order-independent).
 
@@ -171,21 +244,32 @@ def parse_export_csv(text: str) -> list[EnrichedRow]:
     for raw in reader:
         # csv.DictReader keys can carry stray whitespace from the export header.
         r = {(k or "").strip(): (v or "").strip() for k, v in raw.items()}
-        run_id, identity_key = r.get("run_id", ""), r.get("identity_key", "")
-        if not run_id or not identity_key:
-            continue
+        run_id = r.get("run_id", "")
         domain = normalize_domain(r.get("domain", ""))
+        full_name = r.get("full_name", "")
+        email = normalize_email(_coalesce(r.get("email", ""), r.get("Work Email", "")))
+        # Single-stage push rows carry our `identity_key`; operator-sourced Find-People rows do
+        # not (Clay generated those people), so derive the key from the row. `run_id` is optional
+        # lineage — the import attributes keyless rows to its run. Skip only the truly unkeyable.
+        key = r.get("identity_key", "") or compute_identity_key(
+            linkedin_url=r.get("linkedin_url", ""),
+            domain=domain,
+            full_name=full_name,
+            email=email,
+        )
+        if not key:
+            continue
         extras = {col: r[col] for col in _EXTRA_COLS if r.get(col)}
         out.append(
             EnrichedRow(
                 run_id=run_id,
-                identity_key=identity_key,
-                full_name=r.get("full_name", ""),
+                identity_key=key,
+                full_name=full_name,
                 company=r.get("company", ""),
                 domain=domain,
                 company_domain=domain,  # input domain, not enriched Website (can be a subdomain)
                 linkedin_url=r.get("linkedin_url", ""),
-                email=normalize_email(_coalesce(r.get("email", ""), r.get("Work Email", ""))),
+                email=email,
                 provider=r.get("Work Email Data Provider", ""),
                 email_valid=r.get("Validate Findymail", "").strip().lower() in _TRUTHY,
                 title=r.get("Title", ""),

@@ -18,9 +18,13 @@ from __future__ import annotations
 from app.integrations.openrouter.client import LlmError, structured_completion
 
 PURPOSE = "prospect_fit"
+COMPANY_PURPOSE = "company_fit"
 RUBRIC_VERSION = "fit-rubric-v1"
-# Per-purpose routing. Confirm the live slug at deploy (labs reprice/rename ~monthly).
-FIT_MODELS = ["qwen/qwen3.5-flash"]
+# Per-purpose routing: Qwen 3.5 Flash for cheap deterministic scoring, with Llama 3.3 70B as a
+# schema-native fallback. Both serve from non-US providers — the Gemini/OpenAI fallback was
+# dropped 2026-06-21 because those providers are geo-blocked (403 ToS) for this account
+# (see openrouter/client.py module docstring).
+FIT_MODELS = ["qwen/qwen3.5-flash-02-23", "meta-llama/llama-3.3-70b-instruct"]
 # `temperature=0` for determinism; `reasoning.enabled=false` disables Qwen thinking tokens.
 FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 
@@ -33,6 +37,14 @@ DIMENSIONS: dict[str, dict[str, int]] = {
     "data": {"email_deliverability": 6, "profile_completeness": 4},
 }
 DIMENSION_MAX = {dim: sum(subs.values()) for dim, subs in DIMENSIONS.items()}  # 40/30/20/10
+
+# Stage-1 company scoring (LLM usage B) reuses the SAME rubric, persona omitted — no person is
+# sourced yet. Company / timing / data dimensions only (70 max); the total is normalized to /100
+# so the one tier policy below applies to companies and people identically.
+COMPANY_DIMENSIONS: dict[str, dict[str, int]] = {
+    k: DIMENSIONS[k] for k in ("company", "timing", "data")
+}
+COMPANY_MAX = sum(sum(subs.values()) for subs in COMPANY_DIMENSIONS.values())  # 70
 
 # Tiers — policy thresholds (rubric §4); tuned as outcome data accumulates, never by the LLM.
 _TIERS = (("Strong", 75), ("Good", 55), ("Moderate", 40))
@@ -54,29 +66,6 @@ def _ints(props: dict[str, int]) -> dict:
     }
 
 
-def _fit_schema() -> dict:
-    return {
-        "name": "ProspectFit",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "components": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "properties": {d: _ints(subs) for d, subs in DIMENSIONS.items()},
-                    "required": list(DIMENSIONS),
-                },
-                "reasons": _strs(list(DIMENSIONS)),
-                "reason_tags": {"type": "array", "items": {"type": "string"}},
-                "fit_reason": {"type": "string"},
-            },
-            "required": ["components", "reasons", "reason_tags", "fit_reason"],
-        },
-    }
-
-
 def _strs(keys: list[str]) -> dict:
     return {
         "type": "object",
@@ -86,7 +75,32 @@ def _strs(keys: list[str]) -> dict:
     }
 
 
-FIT_JSON_SCHEMA = _fit_schema()
+def _fit_schema(name: str, dims: dict[str, dict[str, int]]) -> dict:
+    """A strict fit schema over an arbitrary dimension set (full rubric or company-only)."""
+    return {
+        "name": name,
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "components": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {d: _ints(subs) for d, subs in dims.items()},
+                    "required": list(dims),
+                },
+                "reasons": _strs(list(dims)),
+                "reason_tags": {"type": "array", "items": {"type": "string"}},
+                "fit_reason": {"type": "string"},
+            },
+            "required": ["components", "reasons", "reason_tags", "fit_reason"],
+        },
+    }
+
+
+FIT_JSON_SCHEMA = _fit_schema("ProspectFit", DIMENSIONS)
+COMPANY_FIT_JSON_SCHEMA = _fit_schema("CompanyFit", COMPANY_DIMENSIONS)
 
 
 def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[dict]:
@@ -120,21 +134,34 @@ def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[
     ]
 
 
+def _collapse(components: dict, dims: dict[str, dict[str, int]]) -> tuple[int, dict]:
+    """Clamp each sub-score to max, cap each dimension, sum → (total, normalized) over `dims`."""
+    normalized: dict[str, dict[str, int]] = {}
+    total = 0
+    for dim, subs in dims.items():
+        got = components.get(dim, {}) or {}
+        clamped = {sub: max(0, min(int(got.get(sub, 0) or 0), mx)) for sub, mx in subs.items()}
+        normalized[dim] = clamped
+        total += min(sum(clamped.values()), sum(subs.values()))
+    return total, normalized
+
+
 def collapse(components: dict) -> tuple[int, str, dict]:
     """Clamp each sub-score to its max, cap each dimension, sum → (score, tier, normalized).
 
     Pure + deterministic, so the same components always yield the same tier (testable without
     the LLM). Returns the normalized components too, so what we store equals what we scored.
     """
-    normalized: dict[str, dict[str, int]] = {}
-    total = 0
-    for dim, subs in DIMENSIONS.items():
-        got = components.get(dim, {}) or {}
-        clamped = {sub: max(0, min(int(got.get(sub, 0) or 0), mx)) for sub, mx in subs.items()}
-        dim_score = min(sum(clamped.values()), DIMENSION_MAX[dim])
-        normalized[dim] = clamped
-        total += dim_score
+    total, normalized = _collapse(components, DIMENSIONS)
     return total, tier_for(total), normalized
+
+
+def collapse_company(components: dict) -> tuple[int, str, dict]:
+    """Company-only collapse (persona omitted): sum company/timing/data (≤70), normalize to /100
+    so the one tier policy applies to companies and people on the same 0–100 scale."""
+    total, normalized = _collapse(components, COMPANY_DIMENSIONS)
+    score = round(total / COMPANY_MAX * 100) if COMPANY_MAX else 0
+    return score, tier_for(score), normalized
 
 
 def score(
@@ -177,12 +204,80 @@ def score(
     }
 
 
+def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> list[dict]:
+    """Stage-1 company prompt: the founder's rubric verbatim, scored at the COMPANY level only.
+
+    No person exists yet, so persona criteria are out of scope — the model scores company,
+    timing, and data (deliverability → unknown policy) dimensions against the same rubric text.
+    """
+    import json
+
+    system = (
+        "You are HoldSlot's COMPANY fit scorer (stage 1 of two: company first, person later). "
+        "Score ONE company against the fixed rubric below, criterion by criterion, for the "
+        "company / timing / data dimensions ONLY — there is no person yet, so SKIP all persona "
+        "criteria. For each in-scope sub-criterion award the rubric's full / partial / zero "
+        "points, never more than its max. A field still unknown scores per the rubric's Unknown "
+        "policy (firmographic match → 0; tech → partial; engagement → 0; email "
+        "deliverability → 3, person not yet sourced). Return integer points per sub-criterion, a "
+        "one-line justification per dimension, short client-facing match tags, and one "
+        "client-facing `fit_reason` sentence (why this COMPANY is a fit; no person, no score). "
+        "Emit ONLY the schema; do not compute totals or tiers — the system does that.\n\n"
+        "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
+    )
+    user = (
+        "TARGETING CONTEXT (brief / ICP / spec slice):\n"
+        + json.dumps(targeting, ensure_ascii=False)
+        + "\n\nCOMPANY:\n"
+        + json.dumps(company, ensure_ascii=False)
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict) -> dict:
+    """Score one company (LLM usage B, stage 1). Same return shape as `score`; persona omitted,
+    total normalized to /100. Raises `LlmError` on a non-ok call (telemetry already persisted)."""
+    result = structured_completion(
+        tenant_id=tenant_id,
+        purpose=COMPANY_PURPOSE,
+        messages=build_company_messages(rubric_body, company, targeting),
+        schema=COMPANY_FIT_JSON_SCHEMA,
+        prompt_version=RUBRIC_VERSION,
+        models=FIT_MODELS,
+        extra_body=FIT_EXTRA_BODY,
+    )
+    fit_score, fit_tier, normalized = collapse_company(result.data.get("components", {}))
+    fit_components = {
+        "points": normalized,
+        "reasons": result.data.get("reasons", {}),
+        "reason_tags": result.data.get("reason_tags", []),
+        "fit_reason": result.data.get("fit_reason", ""),
+        "rubric_version": RUBRIC_VERSION,
+    }
+    return {
+        "fit_score": fit_score,
+        "fit_tier": fit_tier,
+        "fit_components": fit_components,
+        "fit_reason": result.data.get("fit_reason", ""),
+        "llm_call_id": result.llm_call_id,
+        "model": result.model,
+        "cost_usd": result.cost_usd,
+    }
+
+
 __all__ = [
     "score",
+    "score_company",
     "collapse",
+    "collapse_company",
     "tier_for",
     "FIT_JSON_SCHEMA",
+    "COMPANY_FIT_JSON_SCHEMA",
     "PURPOSE",
+    "COMPANY_PURPOSE",
     "RUBRIC_VERSION",
     "LlmError",
 ]

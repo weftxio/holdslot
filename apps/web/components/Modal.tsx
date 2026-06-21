@@ -26,11 +26,16 @@ export function Modal({
   className?: string;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
+  // Keep the latest onClose without putting it in the effect deps — callers pass a fresh arrow
+  // each render, so depending on it would re-run the effect (and steal focus to the ✕ button)
+  // on every keystroke inside the modal, closing it when a space/Enter "clicks" that button.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -40,7 +45,7 @@ export function Modal({
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
 

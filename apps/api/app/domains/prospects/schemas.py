@@ -46,16 +46,104 @@ class ResearchResult(BaseModel):
     drops: list[DropSummary] = []
 
 
+class CompanyOut(BaseModel):
+    """One stage-1 Company-list row — firmographics + company-level fit, scoped to the client."""
+
+    id: str
+    icp_id: str | None = None
+    run_id: str | None = None
+    domain: str = ""
+    website: str = ""
+    linkedin_url: str = ""
+    name: str = ""
+    industry: str = ""
+    size: str = ""
+    country: str = ""
+    fit_score: int | None = None
+    fit_tier: str | None = None
+    fit_reason: str = ""
+    reason_tags: list[str] = []
+    source: str = ""
+    status: str = ""
+    created_at: str | None = None
+
+
+class CompanyManualIn(BaseModel):
+    """Manually add one company (stage-1 gate) — same schema as an imported row, `source=manual`."""
+
+    domain: str
+    name: str = ""
+    website: str = ""
+    linkedin_url: str = ""
+    industry: str = ""
+    size: str = ""
+    country: str = ""
+    icp_id: str | None = None
+
+
+class CompanyImportResult(BaseModel):
+    """Find-Companies CSV → what it became after dedupe → suppress → company-fit score."""
+
+    run_id: str | None = None
+    parsed: int
+    stored: int
+    suppressed: int
+    scored: int
+    score_errors: int = 0
+    by_tier: dict[str, int] = {}
+
+
+class ProspectManualIn(BaseModel):
+    """Manually add one person (stage-2 gate) — same schema as an imported row, `source=manual`."""
+
+    full_name: str = ""
+    company: str = ""
+    domain: str = ""
+    linkedin_url: str = ""
+    email: str = ""
+    title: str = ""
+    seniority: str = ""
+    company_industry: str = ""
+    company_size: str = ""
+    icp_id: str | None = None
+
+
+class EnrichIn(BaseModel):
+    """Confirm which scored people to enrich (the enrich gate) by identity key."""
+
+    identity_keys: list[str] = Field(default_factory=list)
+
+
+class EnrichExportRow(BaseModel):
+    """One confirmed row the operator runs through Clay's Work Email waterfall."""
+
+    identity_key: str
+    full_name: str = ""
+    company: str = ""
+    domain: str = ""
+    linkedin_url: str = ""
+    email: str = ""
+
+
+class EnrichResult(BaseModel):
+    """Enrich-gate result — how many were confirmed + the export list for the Clay enrich run."""
+
+    confirmed: int
+    export: list[EnrichExportRow] = []
+
+
 class ProspectOut(BaseModel):
     """One Prospect-list row (C6) — fit context + source, scoped to the caller's client."""
 
     id: str
     identity_key: str
     icp_id: str | None = None
+    company_id: str | None = None
     run_id: str | None = None
     full_name: str = ""
     company: str = ""
     domain: str = ""
+    linkedin_url: str = ""
     email: str = ""
     email_valid: bool = False
     title: str = ""
@@ -104,7 +192,7 @@ class SourcingDocOut(BaseModel):
 
 
 class SourcingDocList(BaseModel):
-    """Latest + version list per kind, plus the scalar seed_limit, for the Sourcing-settings modal."""
+    """Latest + version list per kind, plus the scalar seed_limit, for the Sourcing-settings UI."""
 
     sourcing_prompt: SourcingDocOut | None = None
     fit_rubric: SourcingDocOut | None = None

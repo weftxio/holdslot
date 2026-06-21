@@ -311,6 +311,53 @@ class ResearchSpec(Base):
 # ---------------------------------------------------------------------------
 
 
+class Company(Base):
+    """Stage-1 discovery row — one per (domain × tenant), fit-scored before any person is sourced.
+
+    The company-first two-stage flow's system of record: Clay **Find Companies** (free sourcing)
+    lands these as `discovered`; the user selects (`selected`); Find People then sources people
+    *from the selected set* and links each `prospect.company_id` back by domain. Re-import of the
+    same `domain` for a tenant is idempotent (the unique constraint makes it an upsert), mirroring
+    `prospect`'s `identity_key` dedupe. `fit_*` reuses the one scoring door (`fit.py`), persona
+    lines omitted (company-level rubric).
+    """
+
+    __tablename__ = "company"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "domain", name="uq_company_tenant_domain"),
+        Index("ix_company_tenant_id", "tenant_id"),
+        Index("ix_company_domain", "domain"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
+    )
+    run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    # The raw company URL as sourced (may differ from `domain`, e.g. a subdomain/path); `domain`
+    # stays the registrable dedupe key, `website` is the click-through shown in the list.
+    website: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    linkedin_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    size: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fit_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    fit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    fit_components: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    evidence: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | manual | ai_loop
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="discovered")
+    created_at: Mapped[datetime] = _created_at()
+
+
 class Prospect(Base):
     """One targeting record per (identity × tenant) — enriched, fit-scored, lineage-tracked.
 
@@ -332,6 +379,10 @@ class Prospect(Base):
     icp_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
     )
+    # The stage-1 company this person belongs to (two-stage link; resolved by domain on import).
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("company.id", ondelete="SET NULL"), nullable=True
+    )
     spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     identity_key: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -344,7 +395,7 @@ class Prospect(Base):
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop | manual
     source_lineage: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

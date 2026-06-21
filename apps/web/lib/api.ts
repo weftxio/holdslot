@@ -254,16 +254,53 @@ export async function getResearchSpec(client: string): Promise<ResearchSpecList>
   return r.json();
 }
 
+// The exact LLM prompt `structureBrief` would send — for the prompt-preview popup. No LLM spend.
+// `system` is the effective prompt (operator override if saved, else default); `user` is always
+// read-only (the client brief + ICPs).
+export type ScopingPrompt = {
+  system: string;
+  user: string;
+  system_is_custom: boolean;
+  model: string[];
+  purpose: string;
+  prompt_version: string;
+};
+
+export async function getScopingPrompt(client: string): Promise<ScopingPrompt> {
+  const r = await authFetch(`/${client}/brief/structure/preview`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Save an operator-edited scoping system prompt for this client (versioned, used by the next
+// Generate Scope). Saving the default text verbatim resets to default (is_custom=false).
+export type SavedSystemPrompt = { system: string; version: number; is_custom: boolean };
+
+export async function saveScopingSystemPrompt(
+  client: string,
+  system: string
+): Promise<SavedSystemPrompt> {
+  const r = await authFetch(`/${client}/brief/structure/system-prompt`, {
+    method: "PUT",
+    json: true,
+    body: JSON.stringify({ system }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 // --- Phase C (S2) — Prospects: Clay seed + AI sourcing loop ------------------
 
 export type ProspectApi = {
   id: string;
   identity_key: string;
   icp_id: string | null;
+  company_id: string | null;
   run_id: string | null;
   full_name: string;
   company: string;
   domain: string;
+  linkedin_url: string;
   email: string;
   email_valid: boolean;
   title: string;
@@ -273,9 +310,40 @@ export type ProspectApi = {
   fit_tier: string | null;
   fit_reason: string;
   reason_tags: string[];
-  source: string; // "clay" | "ai_loop"
-  status: string;
+  source: string; // "clay" | "ai_loop" | "manual"
+  status: string; // "found" | "confirmed" | "scored" | "score_error" | ...
   created_at: string | null;
+};
+// Stage-1 company row (company-first two-stage flow).
+export type CompanyApi = {
+  id: string;
+  icp_id: string | null;
+  run_id: string | null;
+  domain: string;
+  website: string;
+  linkedin_url: string;
+  name: string;
+  industry: string;
+  size: string;
+  country: string;
+  fit_score: number | null;
+  fit_tier: string | null;
+  fit_reason: string;
+  reason_tags: string[];
+  source: string; // "clay" | "manual"
+  status: string; // "discovered" | "people_found" | ...
+  created_at: string | null;
+};
+export type EnrichResult = {
+  confirmed: number;
+  export: {
+    identity_key: string;
+    full_name: string;
+    company: string;
+    domain: string;
+    linkedin_url: string;
+    email: string;
+  }[];
 };
 export type ImportResult = {
   run_id: string | null;
@@ -404,6 +472,86 @@ export async function acceptCandidates(
   identityKeys: string[]
 ): Promise<{ run_id: string; pushed: number; suppressed: number }> {
   const r = await authFetch(`/${client}/prospects/accept`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ identity_keys: identityKeys }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// --- Phase C stage 1 — Companies (find → review → select) --------------------
+
+export async function listCompanies(client: string): Promise<CompanyApi[]> {
+  const r = await authFetch(`/${client}/companies`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Find-Companies CSV → dedupe by domain → suppress → company-fit score (sourcing is free).
+export async function importCompaniesCsv(client: string, csvText: string): Promise<ImportResult> {
+  const b64 = btoa(unescape(encodeURIComponent(csvText)));
+  const r = await authFetch(`/${client}/companies/import`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ csv: b64 }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export type CompanyManual = {
+  domain: string;
+  name?: string;
+  website?: string;
+  linkedin_url?: string;
+  industry?: string;
+  size?: string;
+  country?: string;
+  icp_id?: string | null;
+};
+
+export async function addCompany(client: string, body: CompanyManual): Promise<CompanyApi> {
+  const r = await authFetch(`/${client}/companies`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// --- Phase C stage 2 — People (find → review → confirm-enrich) ---------------
+
+export type ProspectManual = {
+  full_name?: string;
+  company?: string;
+  domain?: string;
+  linkedin_url?: string;
+  email?: string;
+  title?: string;
+  seniority?: string;
+  company_industry?: string;
+  company_size?: string;
+  icp_id?: string | null;
+};
+
+export async function addProspect(client: string, body: ProspectManual): Promise<ProspectApi> {
+  const r = await authFetch(`/${client}/prospects`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// The enrich gate — confirm which scored people to enrich; returns the operator's export list.
+export async function enrichProspects(
+  client: string,
+  identityKeys: string[]
+): Promise<EnrichResult> {
+  const r = await authFetch(`/${client}/prospects/enrich`, {
     method: "POST",
     json: true,
     body: JSON.stringify({ identity_keys: identityKeys }),

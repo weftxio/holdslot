@@ -35,3 +35,34 @@ class ResearchSpecList(BaseModel):
 
     latest: ResearchSpecOut | None = None
     versions: list[int] = []
+
+
+class ScopingPromptOut(BaseModel):
+    """The exact LLM prompt that `POST /brief/structure` would send — for operator inspection.
+
+    Built from the same `build_messages(brief, icps)` the live call uses (single source of
+    truth), but without making (or billing) the completion. The prompt-preview popup renders it.
+    `system` is the effective system prompt (operator override if saved, else the default);
+    `system_is_custom` says which. `user` is read-only — it is always the client brief + ICPs.
+    """
+
+    system: str
+    user: str
+    system_is_custom: bool = False
+    model: list[str]
+    purpose: str
+    prompt_version: str
+
+
+class SystemPromptIn(BaseModel):
+    """An operator-edited system prompt for the scoping call, saved per client (versioned)."""
+
+    system: str
+
+
+class SystemPromptOut(BaseModel):
+    """The saved system prompt + its version after a save (or the effective one on read)."""
+
+    system: str
+    version: int
+    is_custom: bool

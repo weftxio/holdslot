@@ -4,8 +4,12 @@ Design invariants:
   * **Lazy / SnapStart-safe** — no network, no Secrets Manager, no RNG at import. The key +
     model config load on first use and are cached.
   * **Strict structured output** — sends `response_format: json_schema` (`strict:true`), the
-    `models` fallback array (gemini-2.5-flash-lite → gpt-5-mini), and
+    `models` fallback array (deepseek-v4-flash → llama-3.3-70b), and
     `provider.require_parameters:true` so only schema-honoring hosts serve the request.
+  * **Region-safe providers only** — the OpenAI / Anthropic / Google providers return HTTP 403
+    "violation of provider Terms Of Service" for this account's jurisdiction (Hong Kong — the
+    same restriction that drove the Bedrock→OpenRouter override). Every model default here MUST
+    route to a non-US provider (Qwen / Llama / DeepSeek / Mistral). See `phase-b-openrouter-...`.
   * **Observability built in** — every call persists an append-only `LlmCall` row (served
     model, tokens, cost, latency, status, retries, raw completion) in its OWN transaction, so
     telemetry is durable even when the caller's request later fails. The row id is returned so
@@ -35,10 +39,14 @@ log = logging.getLogger("holdslot.openrouter")
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_TIMEOUT = 25  # seconds; under the 30s Lambda timeout
 
-# Locked model decision (2026-06-12). Used as the fallback when the secret omits them, so the
-# adapter works even before the secret carries `default_model`/`models` (B0 secret write).
-DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
-FALLBACK_MODELS = ["google/gemini-2.5-flash-lite", "openai/gpt-5-mini"]
+# Region-safe model defaults (2026-06-21). Used when the secret omits `default_model`/`models`.
+# Primary = DeepSeek V4 Flash: best-value reasoning model (v4 generation, ~$0.00015/call) that
+# still returns inside the 30s sync Lambda budget (~18s; the flagship v4-pro reasons for 55-76s
+# and would time out). Fallback = Llama 3.3 70B (different provider, fast). Both honor strict
+# json_schema and serve from non-US providers — the gemini/gpt defaults are geo-blocked (403 ToS)
+# for this account; see the module docstring.
+DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
+FALLBACK_MODELS = ["deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct"]
 
 
 class LlmError(RuntimeError):
@@ -58,18 +66,35 @@ class OpenRouterConfig:
 
 @lru_cache(maxsize=1)
 def _config() -> OpenRouterConfig:
-    """Read `{prefix}/openrouter` once. Falls back to the locked model list if absent."""
+    """Read `{prefix}/openrouter` once. Model routing resolves as: `HOLDSLOT_OPENROUTER_MODELS`
+    env (comma-separated) → secret `models`/`default_model` → the locked code fallback. The env
+    override lets ops repoint the model list (e.g. away from a geo-blocked provider) via a Lambda
+    env var or local dev, without a Secrets Manager write."""
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
     prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
     sm = boto3.client("secretsmanager", region_name=region)
     raw = sm.get_secret_value(SecretId=f"{prefix}/openrouter")["SecretString"]
     sec = json.loads(raw)
-    models = sec.get("models") or ([sec["default_model"]] if sec.get("default_model") else None)
+    env_models = os.environ.get("HOLDSLOT_OPENROUTER_MODELS")
+    if env_models:
+        models: list[str] | None = [m.strip() for m in env_models.split(",") if m.strip()]
+    else:
+        models = sec.get("models") or ([sec["default_model"]] if sec.get("default_model") else None)
     return OpenRouterConfig(api_key=sec["api_key"], models=models or list(FALLBACK_MODELS))
 
 
 def reset_config() -> None:
     _config.cache_clear()
+
+
+def configured_models() -> list[str]:
+    """The model fallback list a default (no-override) completion would route through. Used by
+    the prompt-preview endpoint to show which model produces the scope. Falls back to the locked
+    list if the secret can't be read, so a preview never errors on config."""
+    try:
+        return list(_config().models)
+    except Exception:
+        return list(FALLBACK_MODELS)
 
 
 @dataclass
@@ -120,6 +145,15 @@ def _post(body: dict, *, timeout: int) -> dict:
         return json.loads(r.read().decode())
 
 
+def _ensure_json_mention(messages: list[dict]) -> list[dict]:
+    """Some providers (e.g. Alibaba/Qwen) reject a `response_format` request unless the literal
+    word "json" appears somewhere in the messages. Guarantee it once here so every purpose stays
+    provider-portable — schema-native providers (Gemini/OpenAI) are unaffected by the extra line."""
+    if any("json" in (m.get("content") or "").lower() for m in messages):
+        return messages
+    return [*messages, {"role": "system", "content": "Respond with a single JSON object."}]
+
+
 def _build_body(
     messages: list[dict], schema: dict, models: list[str], extra_body: dict | None = None
 ) -> dict:
@@ -127,7 +161,7 @@ def _build_body(
         "models": models,
         "provider": {"require_parameters": True},
         "response_format": {"type": "json_schema", "json_schema": schema},
-        "messages": messages,
+        "messages": _ensure_json_mention(messages),
         "usage": {"include": True},
     }
     # Per-purpose knobs the caller pins (Phase C): `temperature`, provider-specific

@@ -19,11 +19,19 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
 from app.domains.prospects import clay, fit, sourcing
+from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
     AcceptIn,
     CandidateIn,
+    CompanyImportResult,
+    CompanyManualIn,
+    CompanyOut,
     DropSummary,
+    EnrichExportRow,
+    EnrichIn,
+    EnrichResult,
     ImportResult,
+    ProspectManualIn,
     ProspectOut,
     ResearchRequestIn,
     ResearchResult,
@@ -39,11 +47,22 @@ from app.domains.prospects.schemas import (
 )
 from app.domains.prospects.suppression import Candidate, extract_exclusions, suppress
 from app.integrations.openrouter.client import LlmError
-from app.models import Brief, MembershipRole, Prospect, ResearchRun, ResearchSpec, SourcingDoc
+from app.models import (
+    Brief,
+    Company,
+    MembershipRole,
+    Prospect,
+    ResearchRun,
+    ResearchSpec,
+    SourcingDoc,
+)
 
 router = APIRouter(tags=["prospects"])
 
 _VALID_DOC_KINDS = ("sourcing_prompt", "fit_rubric")
+# Prospect states that count as "landed" (sourced + scored) on the run scoreboard and are kept
+# idempotent on re-import: `found` (unenriched), `confirmed` (chosen to enrich), `scored` (done).
+_LANDED_STATES = ("found", "confirmed", "scored")
 
 
 # --------------------------------------------------------------------------- helpers
@@ -142,10 +161,12 @@ def _prospect_out(p: Prospect) -> ProspectOut:
         id=str(p.id),
         identity_key=p.identity_key,
         icp_id=str(p.icp_id) if p.icp_id else None,
+        company_id=str(p.company_id) if p.company_id else None,
         run_id=p.run_id,
         full_name=(p.enrichment or {}).get("full_name", ""),
         company=(p.enrichment or {}).get("company", ""),
         domain=(p.enrichment or {}).get("domain", ""),
+        linkedin_url=(p.enrichment or {}).get("linkedin_url", ""),
         email=(p.enrichment or {}).get("email", ""),
         email_valid=p.email_valid,
         title=(p.enrichment or {}).get("title", ""),
@@ -175,6 +196,215 @@ def list_prospects(
         .order_by(Prospect.fit_score.desc().nullslast(), Prospect.created_at.desc())
     ).scalars()
     return [_prospect_out(p) for p in rows]
+
+
+# ----------------------------------------------------------- Stage 1: companies (find → review)
+
+
+def _company_out(c: Company) -> CompanyOut:
+    comps = c.fit_components or {}
+    return CompanyOut(
+        id=str(c.id),
+        icp_id=str(c.icp_id) if c.icp_id else None,
+        run_id=c.run_id,
+        domain=c.domain,
+        website=c.website or "",
+        linkedin_url=c.linkedin_url or "",
+        name=c.name or "",
+        industry=c.industry or "",
+        size=c.size or "",
+        country=c.country or "",
+        fit_score=c.fit_score,
+        fit_tier=c.fit_tier,
+        fit_reason=c.fit_reason or comps.get("fit_reason", ""),
+        reason_tags=comps.get("reason_tags", []),
+        source=c.source,
+        status=c.status,
+        created_at=c.created_at.isoformat() if c.created_at else None,
+    )
+
+
+def _company_payload(c: Company) -> dict:
+    """The company facts the rubric scores against (stage-1 firmographics + evidence)."""
+    return {
+        "name": c.name,
+        "domain": c.domain,
+        "industry": c.industry,
+        "size": c.size,
+        "country": c.country,
+        "linkedin_url": c.linkedin_url,
+        **(c.evidence or {}),
+    }
+
+
+def _company_signature(c: Company) -> tuple:
+    """The firmographics that drive the company score — re-score only when these change."""
+    return (c.name, c.industry, c.size, c.country)
+
+
+def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) -> float:
+    """Score one company in place (LLM usage B). Returns the call's cost_usd. Raises LlmError."""
+    scored = fit.score_company(
+        tenant_id=tenant_id,
+        rubric_body=rubric_body,
+        company=_company_payload(c),
+        targeting=targeting,
+    )
+    c.fit_score = scored["fit_score"]
+    c.fit_tier = scored["fit_tier"]
+    c.fit_components = scored["fit_components"]
+    c.fit_reason = scored["fit_reason"]
+    return float(scored.get("cost_usd") or 0.0)
+
+
+@router.get("/{client}/companies", response_model=list[CompanyOut])
+def list_companies(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> list[CompanyOut]:
+    """Stage-1 review feed — companies for this client, best fit first."""
+    rows = db.execute(
+        select(Company)
+        .where(Company.tenant_id == ctx.tenant.id)
+        .order_by(Company.fit_score.desc().nullslast(), Company.created_at.desc())
+    ).scalars()
+    return [_company_out(c) for c in rows]
+
+
+@router.post("/{client}/companies/import", response_model=CompanyImportResult)
+def import_companies(
+    body: dict,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> CompanyImportResult:
+    """Stage 1 — Find-Companies CSV → parse by header → suppress (excluded domains) → upsert by
+    domain → company-fit score. Re-import of the same domain is idempotent; an unchanged row keeps
+    its score without a second paid LLM call (sourcing in Clay is free; only scoring costs $)."""
+    raw = body.get("csv") or body.get("file") or ""
+    if not raw:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing csv payload")
+    rows = clay.parse_company_csv(_decode_csv(raw))
+    if not rows:
+        return CompanyImportResult(parsed=0, stored=0, suppressed=0, scored=0)
+
+    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
+    exclusions = _build_exclusions(brief, spec)
+    targeting = _build_targeting(brief, spec)
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
+    rubric_body = rubric.body if rubric else ""
+
+    run_id = _new_run_id()
+    run = ResearchRun(
+        tenant_id=ctx.tenant.id,
+        run_id=run_id,
+        spec_version=spec.version if spec else None,
+        source="clay",
+        rubric_version=f"fit-rubric-v{rubric.version}" if rubric else None,
+    )
+    db.add(run)
+
+    stored = suppressed = scored = score_errors = 0
+    by_tier: Counter = Counter()
+    cost = 0.0
+    for cr in rows:
+        if exclusions.blocks(Candidate(domain=cr.domain)):
+            suppressed += 1
+            continue
+        company = db.execute(
+            select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == cr.domain)
+        ).scalar_one_or_none()
+        new = company is None
+        if new:
+            company = Company(
+                tenant_id=ctx.tenant.id, domain=cr.domain, source="clay", run_id=run_id
+            )
+            db.add(company)
+        prior_sig = _company_signature(company)
+        already_scored = company.fit_score is not None
+        # Coalesce: a re-import keeps prior firmographics when the new row omits a field.
+        company.name = cr.name or company.name or ""
+        company.website = cr.website or company.website
+        company.linkedin_url = cr.linkedin_url or company.linkedin_url
+        company.industry = cr.industry or company.industry
+        company.size = cr.size or company.size
+        company.country = cr.country or company.country
+        if cr.evidence:
+            company.evidence = {**(company.evidence or {}), **cr.evidence}
+        stored += 1
+
+        if already_scored and prior_sig == _company_signature(company):
+            scored += 1
+            by_tier[company.fit_tier or "Below"] += 1
+            continue
+        try:
+            cost += _score_company(
+                company, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
+            )
+        except LlmError:
+            score_errors += 1
+            continue
+        scored += 1
+        by_tier[company.fit_tier or "Below"] += 1
+
+    run.rows_accepted = scored
+    run.cost_usd = round(cost, 6) if cost else None
+    db.commit()
+    return CompanyImportResult(
+        run_id=run_id,
+        parsed=len(rows),
+        stored=stored,
+        suppressed=suppressed,
+        scored=scored,
+        score_errors=score_errors,
+        by_tier=dict(by_tier),
+    )
+
+
+@router.post("/{client}/companies", response_model=CompanyOut, status_code=201)
+def add_company(
+    body: CompanyManualIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> CompanyOut:
+    """Stage-1 manual add — one company, `source=manual`, same schema + scoring as imported rows.
+
+    Upserts on (tenant, domain) so a manual add of an existing company updates it in place.
+    """
+    domain = normalize_domain(body.domain)
+    if not domain or "." not in domain:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "a valid company domain is required")
+    if exclusions := _exclusions(db, ctx.tenant.id):
+        if exclusions.blocks(Candidate(domain=domain)):
+            raise HTTPException(status.HTTP_409_CONFLICT, "company is on the exclusion list")
+
+    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
+    targeting = _build_targeting(brief, spec)
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
+    rubric_body = rubric.body if rubric else ""
+
+    company = db.execute(
+        select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == domain)
+    ).scalar_one_or_none()
+    if company is None:
+        company = Company(tenant_id=ctx.tenant.id, domain=domain, source="manual")
+        db.add(company)
+    company.name = body.name or company.name or ""
+    company.website = body.website or company.website
+    company.linkedin_url = body.linkedin_url or company.linkedin_url
+    company.industry = body.industry or company.industry
+    company.size = body.size or company.size
+    company.country = body.country or company.country
+    if body.icp_id:
+        company.icp_id = uuid.UUID(body.icp_id)
+    try:
+        _score_company(
+            company, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
+        )
+    except LlmError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"scoring failed: {e}") from e
+    db.commit()
+    db.refresh(company)
+    return _company_out(company)
 
 
 # --------------------------------------------------------------------------- C2 push
@@ -287,6 +517,17 @@ def import_prospects(
     touched: Counter = Counter()  # accepted prospects per owning-run → runs to recompute
     run_cost: dict[str, float] = {}  # new fit-scoring LLM cost per owning-run → cost_usd (C4)
 
+    # Two-stage link: resolve each person's company by domain (the stage-1 dedupe key). Built once
+    # so a many-row import is one query, not N. A linked company is marked `people_found`.
+    company_by_domain = {
+        c.domain: c
+        for c in db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id)).scalars()
+    }
+    # Operator-sourced Find-People rows carry no `run_id` (they never went through our push); the
+    # first such row lazily opens one import run so company-first prospects still get lineage + the
+    # cost/accepted scoreboard. Single-stage push rows keep their own run_id and never touch this.
+    import_run: ResearchRun | None = None
+
     for er in rows:
         cand = Candidate(
             full_name=er.full_name, company=er.company, domain=er.domain, email=er.email
@@ -320,30 +561,41 @@ def import_prospects(
             )
             db.add(prospect)
         # Capture the prior fit state *before* overwriting enrichment — a re-import of an
-        # unchanged row must not re-pay the LLM (idempotent on (tenant, identity_key)).
+        # unchanged row must not re-pay the LLM (idempotent on (tenant, identity_key)). The
+        # "landed" states (found = sourced+scored, unenriched; confirmed = chosen for enrich;
+        # scored = enriched+scored) all keep their score on an unchanged re-import.
         prior_enrichment = prospect.enrichment or {}
-        already_scored = prospect.status == "scored" and prospect.fit_score is not None
+        already_scored = prospect.fit_score is not None and prospect.status in _LANDED_STATES
         # Bind to the first run that landed this identity; never reassign it on a re-import.
         if not prospect.run_id:
-            prospect.run_id = er.run_id
+            if not er.run_id and import_run is None:
+                import_run = ResearchRun(
+                    tenant_id=ctx.tenant.id,
+                    run_id=_new_run_id(),
+                    spec_version=spec.version if spec else None,
+                    source="clay",
+                    rubric_version=f"fit-rubric-v{rubric.version}" if rubric else None,
+                )
+                db.add(import_run)
+            prospect.run_id = er.run_id or import_run.run_id
         owning_run = prospect.run_id
         prospect.enrichment = enrichment
         prospect.email_valid = er.email_valid
         prospect.last_enriched_at = func.now()
         stored += 1
 
-        # Rubric gate (§1): no contact path at all → gate out without spending an LLM call. A gated
-        # row is NOT an accepted row, so it never counts toward rows_accepted or a fit tier.
-        if not er.email:
-            prospect.fit_score, prospect.fit_tier = None, "Below"
-            prospect.fit_components = {"gated": "no_email"}
-            prospect.status = "gated"
-            by_tier["Gated"] += 1
-            continue
+        # Two-stage link: bind to the stage-1 company by domain, and mark that company as having
+        # people sourced. Find People is free, so unlike the old single-stage flow we always score
+        # (even before enrichment) — the user picks who to enrich from the scores (the enrich gate).
+        comp = company_by_domain.get(normalize_domain(er.company_domain or er.domain))
+        if comp is not None:
+            prospect.company_id = comp.id
+            if comp.status in ("discovered", "selected"):
+                comp.status = "people_found"
 
         # Re-import guard: an already-scored row whose enrichment is byte-for-byte unchanged keeps
         # its score without a second paid LLM call. Comparing the whole enrichment (not just email)
-        # means a richer re-enrichment — new title/size/industry — correctly re-scores below.
+        # means a richer re-enrichment — new email/title/size — correctly re-scores below.
         if already_scored and prior_enrichment == enrichment:
             scored += 1
             by_tier[prospect.fit_tier or "Below"] += 1
@@ -364,7 +616,9 @@ def import_prospects(
         prospect.fit_score = scored_row["fit_score"]
         prospect.fit_tier = scored_row["fit_tier"]
         prospect.fit_components = scored_row["fit_components"]
-        prospect.status = "scored"
+        # `found` = scored but unenriched (no work email yet); `scored` = enriched + scored. The
+        # enrich gate lists `found` rows; a re-import after the Clay enrich run flips it to scored.
+        prospect.status = "scored" if er.email else "found"
         scored += 1
         by_tier[scored_row["fit_tier"]] += 1
         touched[owning_run] += 1
@@ -389,7 +643,7 @@ def import_prospects(
                 .where(
                     Prospect.tenant_id == ctx.tenant.id,
                     Prospect.run_id == run.run_id,
-                    Prospect.status == "scored",
+                    Prospect.status.in_(_LANDED_STATES),
                 )
             ).scalar_one()
             if run_cost.get(run.run_id):
@@ -700,3 +954,127 @@ def accept_candidates(
         suppressed=len(result.dropped),
         drops=_drops(result.dropped),
     )
+
+
+# ------------------------------------------------------- Stage 2: people (manual add + enrich gate)
+
+
+@router.post("/{client}/prospects", response_model=ProspectOut, status_code=201)
+def add_prospect(
+    body: ProspectManualIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ProspectOut:
+    """Stage-2 manual add — one person, `source=manual`, same suppression + scoring as imported
+    rows. `company_id` is resolved by domain; upserts on (tenant, identity_key)."""
+    cand = Candidate(
+        full_name=body.full_name,
+        company=body.company,
+        domain=body.domain,
+        linkedin_url=body.linkedin_url,
+        email=body.email,
+        company_industry=body.company_industry,
+        target_titles=body.title,
+        target_seniority=body.seniority,
+    )
+    key = cand.identity_key
+    if not key:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "need a LinkedIn URL, company domain + name, or email"
+        )
+    exclusions = _exclusions(db, ctx.tenant.id)
+    if reason := exclusions.blocks(cand):
+        raise HTTPException(status.HTTP_409_CONFLICT, f"person is excluded ({reason})")
+
+    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
+    targeting = _build_targeting(brief, spec)
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
+    rubric_body = rubric.body if rubric else ""
+
+    domain = normalize_domain(body.domain)
+    enrichment = {
+        "full_name": body.full_name,
+        "company": body.company,
+        "domain": domain,
+        "company_domain": domain,
+        "linkedin_url": body.linkedin_url,
+        "email": normalize_email(body.email),
+        "title": body.title,
+        "seniority": body.seniority,
+        "company_size": body.company_size,
+        "company_industry": body.company_industry,
+    }
+    prospect = db.execute(
+        select(Prospect).where(Prospect.tenant_id == ctx.tenant.id, Prospect.identity_key == key)
+    ).scalar_one_or_none()
+    if prospect is None:
+        prospect = Prospect(tenant_id=ctx.tenant.id, identity_key=key, source="manual")
+        db.add(prospect)
+    prospect.enrichment = enrichment
+    prospect.email_valid = False
+    prospect.last_enriched_at = func.now()
+    if body.icp_id:
+        prospect.icp_id = uuid.UUID(body.icp_id)
+    comp = db.execute(
+        select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == domain)
+    ).scalar_one_or_none()
+    if comp is not None:
+        prospect.company_id = comp.id
+        if comp.status in ("discovered", "selected"):
+            comp.status = "people_found"
+    try:
+        scored_row = fit.score(
+            tenant_id=ctx.tenant.id,
+            rubric_body=rubric_body,
+            enrichment=enrichment,
+            targeting=targeting,
+        )
+    except LlmError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"scoring failed: {e}") from e
+    prospect.fit_score = scored_row["fit_score"]
+    prospect.fit_tier = scored_row["fit_tier"]
+    prospect.fit_components = scored_row["fit_components"]
+    prospect.status = "scored" if enrichment["email"] else "found"
+    db.commit()
+    db.refresh(prospect)
+    return _prospect_out(prospect)
+
+
+@router.post("/{client}/prospects/enrich", response_model=EnrichResult)
+def confirm_enrich(
+    body: EnrichIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> EnrichResult:
+    """The enrich gate — the user confirms which scored people to enrich. Marks them `confirmed`
+    and returns the export list the operator runs through Clay's Work Email waterfall (~$0.03/head;
+    sourcing was free). Re-importing the enriched CSV later flips each row to `scored`."""
+    if not body.identity_keys:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
+    rows = (
+        db.execute(
+            select(Prospect).where(
+                Prospect.tenant_id == ctx.tenant.id,
+                Prospect.identity_key.in_(body.identity_keys),
+                Prospect.status.in_(("found", "scored", "confirmed")),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    export: list[EnrichExportRow] = []
+    for p in rows:
+        p.status = "confirmed"
+        e = p.enrichment or {}
+        export.append(
+            EnrichExportRow(
+                identity_key=p.identity_key,
+                full_name=e.get("full_name", ""),
+                company=e.get("company", ""),
+                domain=e.get("domain", ""),
+                linkedin_url=e.get("linkedin_url", ""),
+                email=e.get("email", ""),
+            )
+        )
+    db.commit()
+    return EnrichResult(confirmed=len(export), export=export)
