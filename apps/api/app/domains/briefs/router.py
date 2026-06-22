@@ -37,7 +37,8 @@ from app.domains.briefs.structuring import (
     latest_job,
     latest_system_prompt,
 )
-from app.models import Brief, Icp, Prompt, ResearchJob, ResearchSpec
+from app.domains.icps import icp_docs
+from app.models import Brief, Prompt, ResearchJob, ResearchSpec
 
 router = APIRouter(tags=["briefs"])
 
@@ -102,13 +103,11 @@ def preview_structure_prompt(
     popup always mirrors what actually reaches the model.
     """
     brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
-    icps = db.execute(
-        select(Icp).where(Icp.tenant_id == ctx.tenant.id).order_by(Icp.created_at)
-    ).scalars()
-    icp_docs = [{**i.data, "id": str(i.id), "name": i.name, "tag": i.tag} for i in icps]
     saved = latest_system_prompt(db, ctx.tenant.id)
     messages = build_messages(
-        brief.data if brief else {}, icp_docs, system_override=saved.body if saved else None
+        brief.data if brief else {},
+        icp_docs(db, ctx.tenant.id),
+        system_override=saved.body if saved else None,
     )
     by_role = {m["role"]: m["content"] for m in messages}
     # "Custom" = the stored prompt diverges from the seeded code default (the seed itself reads as

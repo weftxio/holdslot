@@ -25,6 +25,8 @@ import {
   createIcp as apiCreateIcp,
   deleteIcp as apiDeleteIcp,
   enrichProspects,
+  findCompanies,
+  findPeople,
   getBrief,
   getResearchSpec,
   getStructureStatus,
@@ -35,6 +37,7 @@ import {
   listIcps,
   listProspects,
   putBrief,
+  selectCompanies,
   saveSourcingDoc,
   structureBrief,
   updateIcp as apiUpdateIcp,
@@ -146,6 +149,7 @@ const STATUS_LABEL: Record<string, string> = {
   gated: "Gated",
   suppressed: "Suppressed",
   score_error: "Score error",
+  enrich_failed: "No match",
 };
 // Origin chip (not transport): where the row came from. (clay/ai_loop are legacy values still
 // shown on pre-Apollo rows in dev; new rows are apollo | manual.)
@@ -1819,6 +1823,8 @@ export default function Workspace() {
   const [coSearch, setCoSearch] = useState("");
   const [coFit, setCoFit] = useState("");
   const [enriching, setEnriching] = useState(false);
+  const [findingCo, setFindingCo] = useState(false);
+  const [findingPpl, setFindingPpl] = useState(false);
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
     domain: "",
@@ -2019,6 +2025,46 @@ export default function Workspace() {
     }
   }
 
+  // Flow A — Apollo company search from the saved ResearchSpec. Needs a generated scope.
+  async function runFindCompanies() {
+    setFindingCo(true);
+    try {
+      const res = await findCompanies(client, { icp_id: fIcp || null });
+      await reloadCompanies();
+      toast(
+        res.found
+          ? `Found ${res.found} ${res.found === 1 ? "company" : "companies"}`
+          : "No new companies — try widening the brief or scope"
+      );
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Find companies failed", "warn");
+    } finally {
+      setFindingCo(false);
+    }
+  }
+
+  // Flow B — find people across the checked companies. Sync the selection to the server (it scopes
+  // the search), then run find-people. Sourcing is free; only enrichment in Step 2 spends credits.
+  async function runFindPeople() {
+    const ids = [...companyChecked];
+    if (!ids.length) return toast("Select companies first", "warn");
+    setFindingPpl(true);
+    try {
+      await selectCompanies(client, ids, true);
+      const res = await findPeople(client, { icp_id: fIcp || null });
+      await Promise.all([reloadProspects(), reloadCompanies()]);
+      toast(
+        res.found
+          ? `Found ${res.found} ${res.found === 1 ? "person" : "people"}`
+          : "No new people for the selected companies"
+      );
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Find people failed", "warn");
+    } finally {
+      setFindingPpl(false);
+    }
+  }
+
   // ---- Stage 2: people ----
   async function submitAddPerson() {
     if (
@@ -2051,7 +2097,11 @@ export default function Workspace() {
     setEnriching(true);
     try {
       const res = await enrichProspects(client, keys);
-      toast(`Confirmed ${res.confirmed} for enrichment`);
+      toast(
+        res.enriched
+          ? `Enriched ${res.enriched} · ${res.credits_spent} credit${res.credits_spent === 1 ? "" : "s"} spent`
+          : `Confirmed ${res.confirmed}`
+      );
       await reloadProspects();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Confirm failed", "warn");
@@ -3172,11 +3222,12 @@ export default function Workspace() {
                   + Add company
                 </button>
                 <button
-                  className="btn btn-primary btn-sm disabled"
-                  disabled
-                  title="Apollo company search lands in Phase C"
+                  className="btn btn-primary btn-sm"
+                  onClick={runFindCompanies}
+                  disabled={findingCo}
+                  title="Search Apollo from the saved research scope"
                 >
-                  Find Companies
+                  {findingCo ? "Finding…" : "Find Companies"}
                 </button>
               </div>
               <div className="countrow">
@@ -3256,8 +3307,9 @@ export default function Workspace() {
                 </table>
                 {coVisible.length === 0 && (
                   <div className="list-empty muted">
-                    No companies yet — import a Clay Find-Companies CSV or add one manually.
-                    Sourcing in Clay is free; only enrichment in Step 2 spends credits.
+                    No companies yet — click Find Companies to search Apollo from your saved
+                    research scope, or add one manually. Finding is free; only enrichment in Step 2
+                    spends credits.
                   </div>
                 )}
               </div>
@@ -3317,11 +3369,12 @@ export default function Workspace() {
                   + Add person
                 </button>
                 <button
-                  className="btn btn-primary btn-sm disabled"
-                  disabled
-                  title="Apollo people search lands in Phase C"
+                  className="btn btn-primary btn-sm"
+                  onClick={runFindPeople}
+                  disabled={findingPpl || !coSelCount}
+                  title="Find people across the selected companies (free; enrich spends credits)"
                 >
-                  Find People
+                  {findingPpl ? "Finding…" : "Find People"}
                 </button>
               </div>
               <div className="countrow">
@@ -3354,7 +3407,7 @@ export default function Workspace() {
                           const enriched = p.status === ENRICHED_STATUS;
                           const stClass = enriched
                             ? "st--enriched"
-                            : p.status === "score_error"
+                            : p.status === "score_error" || p.status === "enrich_failed"
                               ? "st--error"
                               : "st--found";
                           const stMeta = enriched
@@ -3363,7 +3416,9 @@ export default function Workspace() {
                               ? "awaiting enrichment"
                               : p.status === "score_error"
                                 ? "scoring failed"
-                                : "no email yet";
+                                : p.status === "enrich_failed"
+                                  ? "no Apollo match"
+                                  : "no email yet";
                           return (
                             <tr key={p.id} className={clsx(checked.has(p.id) && "row-sel")}>
                               <td>
@@ -3421,7 +3476,7 @@ export default function Workspace() {
                   <div className="list-empty muted">
                     {prospectsLoading
                       ? "Loading prospects…"
-                      : "No people yet — select companies in Step 1, run Find People in Clay, then import the CSV here (or add a person manually)."}
+                      : "No people yet — select companies in Step 1, then click Find People to search Apollo across them (or add a person manually)."}
                   </div>
                 )}
               </div>

@@ -19,13 +19,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
-from app.domains.prospects import fit
+from app.domains.icps import icp_docs
+from app.domains.prospects import apollo_map, find, fit
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
+    CompanyFindIn,
     CompanyManualIn,
     CompanyOut,
+    CompanySelectIn,
     EnrichIn,
     EnrichResult,
+    FindResult,
+    PeopleFindIn,
     ProspectManualIn,
     ProspectOut,
     ResearchRunOut,
@@ -34,6 +39,7 @@ from app.domains.prospects.schemas import (
     SourcingDocOut,
 )
 from app.domains.prospects.suppression import Candidate, extract_exclusions
+from app.integrations.apollo import client as apollo
 from app.integrations.openrouter.client import LlmError
 from app.models import (
     Brief,
@@ -48,6 +54,14 @@ from app.models import (
 router = APIRouter(tags=["prospects"])
 
 _VALID_STAGES = ("fit_scoring",)
+
+# Sync-budget caps. Find/enrich run synchronously behind the 30s API-Gateway HTTP-API cap, and each
+# scored row is one blocking LLM call — so a single request must bound how many it does. Larger sets
+# are drained over repeated calls (find_people advances each processed org to `people_found`; the
+# operator re-clicks to continue). Keep the product (calls × ~1-2s) comfortably under 30s.
+MAX_COMPANIES_PER_FIND = 15  # company-search rows scored per find-company request
+MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apollo call each)
+MAX_PEOPLE_PER_FIND = 15  # people scored per find-people request
 
 
 # --------------------------------------------------------------------------- helpers
@@ -78,8 +92,21 @@ def _exclusions(db: Session, tenant_id):
     return _build_exclusions(_latest_brief(db, tenant_id), _latest_spec(db, tenant_id))
 
 
-def _build_targeting(brief: Brief | None, spec: ResearchSpec | None) -> dict:
-    return {"brief": brief.data if brief else {}, "spec": spec.spec if spec else {}}
+def _build_targeting(
+    brief: Brief | None, spec: ResearchSpec | None, icps: list[dict] | None = None
+) -> dict:
+    """The fit scorer's targeting context — the SAME client documents brief scoping (B) consumes.
+
+    `icps` carries the persona profiles the rubric grades maturity/department/tech/economic-buyer
+    against (docs/prompts/fit-scoring-rubric-v1.md §2/§3). Without them those sub-criteria score 0
+    by the rubric's Unknown policy, so the ICP docs are not optional context — they unlock points
+    that are otherwise structurally unreachable.
+    """
+    return {
+        "brief": brief.data if brief else {},
+        "spec": spec.spec if spec else {},
+        "icps": icps or [],
+    }
 
 
 def _latest_doc(db: Session, tenant_id, stage: str) -> Prompt | None:
@@ -223,8 +250,9 @@ def add_company(
         if exclusions.blocks(Candidate(domain=domain)):
             raise HTTPException(status.HTTP_409_CONFLICT, "company is on the exclusion list")
 
+    icp = uuid.UUID(body.icp_id) if body.icp_id else None
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    targeting = _build_targeting(brief, spec)
+    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
     rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
     rubric_body = rubric.body if rubric else ""
 
@@ -240,8 +268,8 @@ def add_company(
     company.industry = body.industry or company.industry
     company.size = body.size or company.size
     company.country = body.country or company.country
-    if body.icp_id:
-        company.icp_id = uuid.UUID(body.icp_id)
+    if icp:
+        company.icp_id = icp
     try:
         _score_company(
             company, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
@@ -251,6 +279,164 @@ def add_company(
     db.commit()
     db.refresh(company)
     return _company_out(company)
+
+
+# --------------------------------------------------------------- Stage 1: Apollo Flow A (find)
+
+
+def _apollo_run_id() -> str:
+    return f"apollo-{uuid.uuid4().hex[:12]}"
+
+
+def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
+    """Find-or-create a company by `apollo_org_id` (else `domain`); update identity fields in place.
+
+    Industry/size/country stay whatever we had — Apollo *search* doesn't return them (C0), so we
+    never overwrite a real value with a null. `apollo_org_id` is always (re)stamped.
+    """
+    org_id, domain = parsed.get("apollo_org_id"), parsed["domain"]
+    company = None
+    if org_id:
+        company = db.execute(
+            select(Company).where(
+                Company.tenant_id == tenant_id, Company.apollo_org_id == org_id
+            )
+        ).scalar_one_or_none()
+    if company is None:
+        company = db.execute(
+            select(Company).where(Company.tenant_id == tenant_id, Company.domain == domain)
+        ).scalar_one_or_none()
+    if company is None:
+        company = Company(tenant_id=tenant_id, domain=domain, source="apollo")
+        db.add(company)
+    company.apollo_org_id = org_id or company.apollo_org_id
+    company.name = parsed.get("name") or company.name or ""
+    company.website = parsed.get("website") or company.website
+    company.linkedin_url = parsed.get("linkedin_url") or company.linkedin_url
+    company.industry = company.industry or parsed.get("industry")
+    company.size = company.size or parsed.get("size")
+    company.country = company.country or parsed.get("country")
+    if parsed.get("evidence"):
+        company.evidence = {**(company.evidence or {}), **parsed["evidence"]}
+    if company.status not in ("selected", "people_found"):
+        company.status = "discovered"
+    return company
+
+
+@router.post("/{client}/companies/find-company", response_model=FindResult)
+def find_company(
+    body: CompanyFindIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> FindResult:
+    """Flow A — Apollo company search from the latest ResearchSpec → suppress → upsert → score.
+
+    The search params are the v3 `company_search_params` + `intent_filters` (already Apollo-shaped);
+    existing-customer domains and same-batch dupes are dropped before any row is stored. Survivors
+    are upserted (a previously-known company is re-stamped with its `apollo_org_id`, not skipped),
+    company-fit scored *only if not already scored*. Capped at `MAX_COMPANIES_PER_FIND` per request.
+    Records one `research_run` (source=apollo).
+    """
+    spec = _latest_spec(db, ctx.tenant.id)
+    if spec is None or not (spec.spec or {}).get("company_search_params"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "generate a research scope before finding companies"
+        )
+    credit = spec.spec.get("credit_policy") or {}
+    hard_cap = min(MAX_COMPANIES_PER_FIND, credit.get("max_companies", 500))
+    limit = max(1, min(body.limit, hard_cap))
+    filter_body = apollo_map.map_company_filter(
+        spec.spec.get("company_search_params") or {}, spec.spec.get("intent_filters") or {}
+    )
+    try:
+        rows = apollo.search_companies(filter_body, max_results=limit)
+    except apollo.ApolloError as e:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, f"apollo company search failed: {e}"
+        ) from e
+
+    parsed = [apollo_map.parse_company(r) for r in rows]
+    # Dedupe within this batch only — an org that already exists in the tenant is upserted (so a
+    # manually-added or previously-unscored company gets its apollo_org_id stamped), not dropped.
+    survivors, dropped = find.filter_companies(parsed, _exclusions(db, ctx.tenant.id))
+
+    run_id, icp = _apollo_run_id(), (uuid.UUID(body.icp_id) if body.icp_id else None)
+    brief = _latest_brief(db, ctx.tenant.id)
+    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric_body = rubric.body if rubric else ""
+    cost = 0.0
+    companies: list[Company] = []
+    for p in survivors:
+        c = _upsert_company(db, ctx.tenant.id, p)
+        c.run_id, c.icp_id = run_id, icp or c.icp_id
+        if c.fit_score is None:  # score once; re-finds don't re-spend on already-scored rows
+            try:
+                cost += _score_company(
+                    c, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
+                )
+            except LlmError:
+                pass  # keep the discovered row even if scoring failed; a later find can re-score
+        companies.append(c)
+
+    db.add(
+        ResearchRun(
+            tenant_id=ctx.tenant.id,
+            run_id=run_id,
+            spec_version=spec.version,
+            icp_id=icp,
+            source="apollo",
+            prompt_version=(
+                f"spec-v{spec.spec['spec_version']}" if spec.spec.get("spec_version") else None
+            ),
+            rubric_version=fit.RUBRIC_VERSION,
+            rows_pushed=len(companies),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for c in companies:
+        db.refresh(c)
+    companies.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
+    return FindResult(
+        run_id=run_id,
+        found=len(companies),
+        dropped=len(dropped),
+        companies=[_company_out(c) for c in companies],
+    )
+
+
+@router.patch("/{client}/companies/select", response_model=list[CompanyOut])
+def select_companies(
+    body: CompanySelectIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> list[CompanyOut]:
+    """Queue stage-1 companies for Flow B by flipping `discovered` → `selected` (or back).
+
+    Only `discovered` rows are (de)moved — a company already advanced to `people_found` is left
+    alone, so re-selecting a checkbox set that includes processed companies does NOT re-queue them
+    for another people search (which would re-spend search calls and re-scope the run).
+    """
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    ids = [uuid.UUID(i) for i in body.ids]
+    rows = (
+        db.execute(
+            select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids))
+        )
+        .scalars()
+        .all()
+    )
+    for c in rows:
+        if body.selected and c.status == "discovered":
+            c.status = "selected"
+        elif not body.selected and c.status == "selected":
+            c.status = "discovered"
+    db.commit()
+    for c in rows:
+        db.refresh(c)
+    return [_company_out(c) for c in rows]
 
 
 # ----------------------------------------------------------------- research-run scoreboard
@@ -370,8 +556,9 @@ def add_prospect(
     if reason := exclusions.blocks(cand):
         raise HTTPException(status.HTTP_409_CONFLICT, f"person is excluded ({reason})")
 
+    icp = uuid.UUID(body.icp_id) if body.icp_id else None
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    targeting = _build_targeting(brief, spec)
+    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
     rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
     rubric_body = rubric.body if rubric else ""
 
@@ -397,8 +584,8 @@ def add_prospect(
     prospect.enrichment = enrichment
     prospect.email_valid = False
     prospect.last_enriched_at = func.now()
-    if body.icp_id:
-        prospect.icp_id = uuid.UUID(body.icp_id)
+    if icp:
+        prospect.icp_id = icp
     comp = db.execute(
         select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == domain)
     ).scalar_one_or_none()
@@ -424,16 +611,178 @@ def add_prospect(
     return _prospect_out(prospect)
 
 
+# --------------------------------------------------------------- Stage 2: Apollo Flow B (find)
+
+
+@router.post("/{client}/people/find-people", response_model=FindResult)
+def find_people(
+    body: PeopleFindIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> FindResult:
+    """Flow B — find people across the SELECTED companies (one api_search per org), 0 credits.
+
+    C0: search rows carry no `organization_id`, so we loop the selected orgs and pass one
+    `organization_ids` per call — each person's `company_id` is known from the loop. Rows land
+    `found` (no email yet), are fit-scored on what's known, and dedupe on `apollo_person_id`.
+    Enrichment (the credit spend) is a separate, human-gated step (`/prospects/enrich`).
+
+    Bounded per request (`MAX_ORGS_PER_FIND` orgs, `MAX_PEOPLE_PER_FIND` people) to stay under the
+    sync timeout. Every org actually searched advances to `people_found`, so it is not searched
+    again; the operator re-runs to drain the rest of a large selection.
+    """
+    spec = _latest_spec(db, ctx.tenant.id)
+    if spec is None or not (spec.spec or {}).get("people_search_params"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "generate a research scope before finding people"
+        )
+    selected = (
+        db.execute(
+            select(Company)
+            .where(
+                Company.tenant_id == ctx.tenant.id,
+                Company.status == "selected",
+                Company.apollo_org_id.is_not(None),
+            )
+            .order_by(Company.fit_score.desc().nullslast())
+            .limit(MAX_ORGS_PER_FIND)
+        )
+        .scalars()
+        .all()
+    )
+    if not selected:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
+
+    people_params = spec.spec.get("people_search_params") or {}
+    per_company = max(1, min(body.per_company, apollo.PER_PAGE_MAX))
+    seen_ids = set(
+        db.execute(
+            select(Prospect.apollo_person_id).where(
+                Prospect.tenant_id == ctx.tenant.id, Prospect.apollo_person_id.is_not(None)
+            )
+        ).scalars()
+    )
+    run_id, icp = _apollo_run_id(), (uuid.UUID(body.icp_id) if body.icp_id else None)
+    brief = _latest_brief(db, ctx.tenant.id)
+    docs = icp_docs(db, ctx.tenant.id, icp)
+    targeting = _build_targeting(brief, spec, docs)
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric_body = rubric.body if rubric else ""
+    # avoidTitles → hard pre-score drop (Apollo people search has no exclude-title field). Keyed per
+    # ICP so a title avoided in one profile is not dropped from another when the run spans ICPs.
+    avoid_by_icp = {d["id"]: [t for t in (d.get("avoidTitles") or []) if t] for d in docs}
+    new_rows: list[tuple[dict, Company]] = []
+    dropped_total = 0
+    for comp in selected:
+        # An org is searched at most once: advance it now, so a re-run skips it even on 0 results.
+        comp.status = "people_found"
+        if len(new_rows) >= MAX_PEOPLE_PER_FIND:
+            comp.status = "selected"  # not searched this round — leave it queued for the next run
+            continue
+        pbody = apollo_map.map_people_filter(people_params, org_id=comp.apollo_org_id)
+        try:
+            rows = apollo.search_people(pbody, max_results=per_company)
+        except apollo.ApolloError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, f"apollo people search failed: {e}"
+            ) from e
+        parsed = [apollo_map.parse_person(r) for r in rows]
+        applicable = str(icp) if icp else (str(comp.icp_id) if comp.icp_id else None)
+        survivors, dropped = find.filter_people(
+            parsed, seen_ids, avoid_titles=avoid_by_icp.get(applicable, [])
+        )
+        dropped_total += len(dropped)
+        for p in survivors:
+            if len(new_rows) >= MAX_PEOPLE_PER_FIND:
+                break
+            seen_ids.add(p["apollo_person_id"])
+            new_rows.append((p, comp))
+
+    cost = 0.0
+    prospects: list[Prospect] = []
+    for p, comp in new_rows:
+        key = f"apollo:{p['apollo_person_id']}"
+        prospect = db.execute(
+            select(Prospect).where(
+                Prospect.tenant_id == ctx.tenant.id, Prospect.identity_key == key
+            )
+        ).scalar_one_or_none()
+        if prospect is None:
+            prospect = Prospect(tenant_id=ctx.tenant.id, identity_key=key, source="apollo")
+            db.add(prospect)
+        enrichment = {
+            "full_name": p.get("first_name", ""),
+            "company": p.get("company") or comp.name,
+            "domain": comp.domain,
+            "company_domain": comp.domain,
+            "linkedin_url": "",
+            "email": "",
+            "title": p.get("title", ""),
+            "company_industry": comp.industry or "",
+        }
+        prospect.apollo_person_id = p["apollo_person_id"]
+        prospect.company_id = comp.id
+        prospect.icp_id = icp or comp.icp_id
+        prospect.run_id = run_id
+        prospect.spec_version = spec.version
+        prospect.enrichment = enrichment
+        prospect.email_valid = False
+        prospect.source_lineage = {"apollo_org_id": comp.apollo_org_id, "run_id": run_id}
+        try:
+            scored = fit.score(
+                tenant_id=ctx.tenant.id,
+                rubric_body=rubric_body,
+                enrichment=enrichment,
+                targeting=targeting,
+            )
+            prospect.fit_score = scored["fit_score"]
+            prospect.fit_tier = scored["fit_tier"]
+            prospect.fit_components = scored["fit_components"]
+            cost += float(scored.get("cost_usd") or 0.0)
+        except LlmError:
+            pass  # keep the found row even if scoring failed
+        prospect.status = "found"  # comp already advanced to people_found in the search loop
+        prospects.append(prospect)
+
+    db.add(
+        ResearchRun(
+            tenant_id=ctx.tenant.id,
+            run_id=run_id,
+            spec_version=spec.version,
+            icp_id=icp,
+            source="apollo",
+            rubric_version=fit.RUBRIC_VERSION,
+            rows_pushed=len(prospects),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for p in prospects:
+        db.refresh(p)
+    prospects.sort(key=lambda p: (p.fit_score is None, -(p.fit_score or 0)))
+    return FindResult(
+        run_id=run_id,
+        found=len(prospects),
+        dropped=dropped_total,
+        prospects=[_prospect_out(p) for p in prospects],
+    )
+
+
 @router.post("/{client}/prospects/enrich", response_model=EnrichResult)
 def confirm_enrich(
     body: EnrichIn,
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> EnrichResult:
-    """The enrich gate — the user confirms which scored people to enrich. Marks them `confirmed`.
+    """The enrich gate (C5) — Apollo `people/match` on the confirmed rows. The only credit spend.
 
-    Interim: this only flips status. The paid Apollo `people/match` enrichment (email/phone) is
-    wired in Phase C (C5), gated on this selection.
+    Human-gated and **idempotent**: each Apollo-sourced row that isn't already enriched spends 1
+    credit to reveal a verified email (phone off at MVP), is written back with email / last name /
+    linkedin / departments, and moves to `scored`. Rows already enriched (email on file) or with no
+    `apollo_person_id` (manual) are confirmed without a match call, so a re-submit never re-spends.
+
+    Each row is committed independently, so a mid-batch Apollo failure can't roll back — and lose
+    the DB record of — credits already charged for earlier rows.
     """
     if not body.identity_keys:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
@@ -442,13 +791,45 @@ def confirm_enrich(
             select(Prospect).where(
                 Prospect.tenant_id == ctx.tenant.id,
                 Prospect.identity_key.in_(body.identity_keys),
-                Prospect.status.in_(("found", "scored", "confirmed")),
+                Prospect.status.in_(("found", "scored", "confirmed", "enrich_failed")),
             )
         )
         .scalars()
         .all()
     )
+    enriched = credits = 0
     for p in rows:
-        p.status = "confirmed"
-    db.commit()
-    return EnrichResult(confirmed=len(rows))
+        already_enriched = bool(p.email_valid or (p.enrichment or {}).get("email"))
+        if not p.apollo_person_id or already_enriched:
+            # Manual row (nothing to match) or already enriched — confirm without spending.
+            if p.status == "found":
+                p.status = "confirmed"
+            db.commit()  # persist this row before moving on
+            continue
+        try:
+            person = apollo.match_person(p.apollo_person_id, reveal_email=True, reveal_phone=False)
+        except apollo.ApolloError as e:
+            # Earlier rows are already committed; surface the failure without losing their spend.
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, f"apollo enrich failed: {e}"
+            ) from e
+        matched = apollo_map.parse_match(person)
+        if not matched.get("apollo_person_id"):
+            p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
+            db.commit()
+            continue
+        credits += 1  # one reveal_personal_emails credit
+        e = dict(p.enrichment or {})
+        e.update(
+            full_name=matched.get("full_name") or e.get("full_name", ""),
+            email=matched.get("email", ""),
+            linkedin_url=matched.get("linkedin_url", ""),
+            departments=matched.get("departments", []),
+        )
+        p.enrichment = e
+        p.email_valid = bool(matched.get("email_valid"))
+        p.last_enriched_at = func.now()
+        p.status = "scored"
+        enriched += 1
+        db.commit()  # durable per row — bounds any Apollo spend to committed work
+    return EnrichResult(confirmed=len(rows), enriched=enriched, credits_spent=credits)

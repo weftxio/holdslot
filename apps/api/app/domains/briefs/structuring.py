@@ -40,8 +40,9 @@ from app.domains.briefs.research_spec import (
     assemble_spec,
     build_messages,
 )
+from app.domains.icps import icp_docs
 from app.integrations.openrouter.client import LlmError, structured_completion
-from app.models import Brief, Icp, Prompt, ResearchJob, ResearchSpec
+from app.models import Brief, Prompt, ResearchJob, ResearchSpec
 
 log = logging.getLogger("holdslot.structuring")
 
@@ -194,13 +195,9 @@ def run_structuring_job(tenant_id, job_id, session_factory=None) -> None:
             _fail(db, job, "fill in the brief before structuring")
             return
 
-        icps = db.execute(
-            select(Icp).where(Icp.tenant_id == tid).order_by(Icp.created_at)
-        ).scalars()
-        icp_docs = [{**i.data, "id": str(i.id), "name": i.name, "tag": i.tag} for i in icps]
         saved = latest_system_prompt(db, tid)
         messages = build_messages(
-            brief.data, icp_docs, system_override=saved.body if saved else None
+            brief.data, icp_docs(db, tid), system_override=saved.body if saved else None
         )
 
         try:

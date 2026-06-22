@@ -60,6 +60,29 @@ class ProspectManualIn(BaseModel):
     icp_id: str | None = None
 
 
+class CompanyFindIn(BaseModel):
+    """Trigger Apollo Flow A (find companies) from the latest ResearchSpec. `limit` is capped to
+    the spec's `credit_policy.max_companies` server-side."""
+
+    limit: int = 25
+    icp_id: str | None = None
+
+
+class PeopleFindIn(BaseModel):
+    """Trigger Apollo Flow B (find people) across the selected companies. `per_company` caps how
+    many people each selected org contributes (one api_search call per org)."""
+
+    per_company: int = 10
+    icp_id: str | None = None
+
+
+class CompanySelectIn(BaseModel):
+    """Select/deselect stage-1 companies (scopes Flow B). `selected=False` reverts to discovered."""
+
+    ids: list[str] = Field(default_factory=list)
+    selected: bool = True
+
+
 class EnrichIn(BaseModel):
     """Confirm which scored people to enrich (the enrich gate) by identity key."""
 
@@ -67,9 +90,11 @@ class EnrichIn(BaseModel):
 
 
 class EnrichResult(BaseModel):
-    """Enrich-gate result — how many rows were confirmed for enrichment."""
+    """Enrich-gate result — how many rows were enriched (Apollo people/match) + credits spent."""
 
     confirmed: int
+    enriched: int = 0
+    credits_spent: int = 0
 
 
 class ProspectOut(BaseModel):
@@ -96,6 +121,16 @@ class ProspectOut(BaseModel):
     source: str = ""
     status: str = ""
     created_at: str | None = None
+
+
+class FindResult(BaseModel):
+    """Result of a find run: the run id + counts + the rows that landed (best fit first)."""
+
+    run_id: str
+    found: int
+    dropped: int
+    companies: list[CompanyOut] = []
+    prospects: list[ProspectOut] = []
 
 
 class ResearchRunOut(BaseModel):

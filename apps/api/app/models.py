@@ -349,6 +349,7 @@ class Company(Base):
     __tablename__ = "company"
     __table_args__ = (
         UniqueConstraint("tenant_id", "domain", name="uq_company_tenant_domain"),
+        UniqueConstraint("tenant_id", "apollo_org_id", name="uq_company_tenant_apollo_org"),
         Index("ix_company_tenant_id", "tenant_id"),
         Index("ix_company_domain", "domain"),
     )
@@ -360,6 +361,10 @@ class Company(Base):
     )
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     domain: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Apollo organization id — the Flow A→B scope link (passed as `organization_ids` to find
+    # people). Nullable: a `manual` company has no Apollo id. Multiple NULLs are fine under the
+    # unique constraint (Postgres), so manual adds never collide.
+    apollo_org_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # The raw company URL as sourced (may differ from `domain`, e.g. a subdomain/path); `domain`
     # stays the registrable dedupe key, `website` is the click-through shown in the list.
     website: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -396,6 +401,7 @@ class Prospect(Base):
         UniqueConstraint("tenant_id", "identity_key", name="uq_prospect_tenant_identity"),
         Index("ix_prospect_tenant_id", "tenant_id"),
         Index("ix_prospect_identity_key", "identity_key"),
+        Index("ix_prospect_apollo_person_id", "tenant_id", "apollo_person_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -410,6 +416,10 @@ class Prospect(Base):
     spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     run_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     identity_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Apollo person id — the `people/match` enrich key. Nullable: a `manual` prospect has none.
+    # Apollo-found rows also set `identity_key = "apollo:<id>"` (search exposes no
+    # linkedin/email/domain pre-enrich, so this is the only stable dedupe key at find time).
+    apollo_person_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enrichment: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )

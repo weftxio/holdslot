@@ -17,40 +17,47 @@
 > [`data-schema.md`](data-schema.md). **The Apollo find/enrich loop is the one gate left to tick S2.**
 
 > ## ▶ NEXT SESSION — START HERE
-> **Goal of the next chat (in order):** (1) **build the Phase B → Phase C data linkage** — the seam that
-> turns the saved `ResearchSpec` **v3** into Apollo calls; then (2) **start the Apollo Phase C rebuild**
-> proper. **B6 (the v3 spec — the B→C contract) is done**; what remains of the linkage is C1 + C2 below.
-> Everything else is already designed; the next chat *implements* it. Read **Phase C** and
-> [`data-schema.md`](data-schema.md) Part 1 + Phase C before writing code.
+> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP (2026-06-22).** C0–C6 built; deployed and
+> proven end-to-end on the cloud stack. The four operational steps are done:
+> - ✅ **(1) Migration `0011` applied to dev Aurora** (DB at `0011 (head)`; `apollo_org_id`/`apollo_person_id`
+>   present, `seed_limit` dropped). **All 59 tests pass on Aurora** — the 9 previously-skipped DB-gated tests
+>   now run green (`test_migrations`, `test_prospects_apollo` full find→select→find→enrich, real-LLM briefs).
+> - ✅ **(2) Lambda deployed** — `holdslot-dev-api` **version 22**, `live` alias shifted, `/health` 200.
+> - ⚠️ **(3) Credit cost — determined as far as the API allows; one founder dashboard glance still wanted.**
+>   Apollo exposes **no credit-balance endpoint** (only `auth/health`); search responses carry only
+>   request-rate headers (50k/day), no credit field, and withhold firmographics — all consistent with
+>   **company search being request-metered, not credit-metered**. **Enrich = 1 credit/email is empirically
+>   confirmed** (the live smoke spent exactly 1). *Founder: glance at Apollo → Settings → Usage/Credits before
+>   vs. after a find run to confirm the monthly pool is untouched by search → lock into MVP running cost.*
+> - ✅ **(4) Live 1-row end-to-end smoke PASSED** on the deployed stack (ephemeral tenant, torn down):
+>   find-company (8 found, scored) → select → find-people (3 real people, `company_id` linked from the loop)
+>   → enrich (`people/match`, **1 credit**, returned a verified email `manmeet.saluja@saaslabs.co`,
+>   `email_valid=true`, status→`scored`). The full loop works on Lambda v22 + live Apollo + live LLM + Aurora.
 >
-> **✅ Clay/AI-loop teardown already executed (2026-06-22, pre-B→C cleanup).** The C6 *deletion* was
-> pulled forward so the repo is clean before the rebuild: deleted backend `clay.py` + `sourcing.py`, the
-> import/sourcing/accept endpoints (`/companies/import`, `/prospects/import`, `/icps/{id}/research`,
-> `/sourcing-rounds`, `/prospects/accept`, `PUT /sourcing-settings`), their schemas, the `sourcing_prompt`
-> doc kind, and the `Tenant.seed_limit` model field; on the web, the Clay CSV file-inputs, copy-seeds
-> bridge, enrich-export modal, sourcing-prompt + seed-limit UI, and dead `lib/api.ts` functions/types.
-> `confirm_enrich` now only marks rows `confirmed` (the real `people/match` enrichment is C5). The two
-> "Find Companies / Find People" buttons are **disabled stubs** until C4/C5 wire them to Apollo. Backend
-> 37 tests green (ruff/tsc clean); web build green. **Still to do in C1's migration `0011`: physically
-> `DROP COLUMN tenant.seed_limit`** (the model field is gone; the column remains in the dev DB).
+> **Next:** the loop is ready to run for real outreach (Phase E warm-up is the gating long pole). Optionally
+> revisit the *⚠️ Post-C review* deferred ICP inputs (`avoidTitles` first) now that the MVP is proven.
 >
-> **The B→C data linkage = two pieces left (B6 done; build these next, in order):**
-> 1. ✅ **B6 — `ResearchSpec` v3 (DONE).** The v3 spec *is* the B→C contract, and it's now Apollo-native:
->    `research_spec.py` emits **exact Apollo request fields** (`company_search_params`,
->    `people_search_params`, `intent_filters`, `icp_validation`, `icp_suggestions`, `gaps`) via strict
->    `json_schema`; `SPEC_VERSION=3`, `PROMPT_VERSION="brief-structure-v5"`. Runs **async** (`research_job`
->    `0009`) on DeepSeek V4 Pro. The per-client prompt store is the `prompt` table (`0010`).
-> 2. **C1 — migration `0011`** ([Phase C → C1](#)): `company.apollo_org_id` + `prospect.apollo_person_id`
->    (the two ids that physically link a found company → its people → enrichment), `drop tenant.seed_limit`.
-> 3. **C2 — `apollo_map.py`** ([Phase C → C2/C3](#)): the **pure, deterministic** forwarder that passes each
->    v3 Apollo-field param straight to its `mixed_companies/search` / `mixed_people/api_search` slot (plus
->    the DB-side `⊘` post-filters), exactly per the *Apollo parameter contract* tables. Because v3 already
->    speaks Apollo's field names, this is now mostly a pass-through (no vocabulary translation). It replaces
->    the killed `design_filter` LLM. Fixture-tested, no network. **The heart of the B→C linkage.**
+> **Built this session (all green: backend 50 pure tests + ruff, web tsc + build; 9 DB-gated tests pending
+> Aurora):**
+> - **C1 — migration `0011`** + models: `company.apollo_org_id` (unique/tenant), `prospect.apollo_person_id`,
+>   `DROP tenant.seed_limit`. Single alembic head; `test_migrations` guards it. *(up/down on Aurora pending.)*
+> - **C2 — `integrations/apollo/client.py`** (lazy `X-Api-Key`, 429 backoff, pagination, the 3 endpoints) +
+>   pure **`domains/prospects/apollo_map.py`** (request builders + parsers). Parsers tested against the live
+>   C0 fixtures; request builders **live-verified 200** (company w/ revenue+funding+hiring, people scoped).
+> - **C3** — folded in: the post-filter is the existing `suppression` (exclusion + existing-customer-domain
+>   drop) + per-row `fit.score`/`score_company`; **no new module** (simplest path, reuses tested code).
+> - **C4 — Flow A** `POST /{client}/companies/find-company` + `PATCH …/companies/select` (map→search→
+>   suppress→upsert on `apollo_org_id`→score→`research_run`).
+> - **C5 — Flow B** `POST /{client}/people/find-people` (**loops one `organization_ids` per selected org** —
+>   C0: search rows have no org id, so `company_id` comes from the loop) + reworked `POST …/prospects/enrich`
+>   (real `people/match`, the only credit spend, writes email/last-name/linkedin/departments, → `scored`).
+> - **C6 — frontend**: the two "Find Companies / Find People" stub buttons are now **live** (`findCompanies`,
+>   `selectCompanies`, `findPeople`, reworked `enrichProspects` in `lib/api.ts`); enrich toast shows credits.
+> - **B6 — `ResearchSpec` v3 (done earlier)** is the B→C contract that all of the above consumes.
 >
-> **Then the Apollo rebuild:** C0 (founder gate — Apollo plan upgrade + smoke-test fixtures) → C2 transport
-> client → C4 Flow A (find company) → C5 Flow B (find people + enrich) → C6 frontend wiring + Clay teardown.
-> **C1/C2/C3 can be built in parallel against the C0 fixtures** before the live key is integration-ready.
+> **Coverage note:** the B6→C study confirmed the fit+intent+exclusion spine forwards end-to-end; four ICP
+> inputs (`avoidTitles`, `departments`, `technologies`, `revenue_range`) are collected but not yet wired —
+> **deliberately deferred**, see *⚠️ Post-C review* at the end of Phase C.
 >
 > **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
 > - **OpenRouter HK geo-block.** OpenAI / Anthropic / Google providers return **403 ToS** for this account
@@ -59,16 +66,38 @@
 >   with **thinking + the web-search plugin** (pinned in `research_spec.SCOPING_*`). ⚠️ Pro reasons
 >   55–76s → **exceeds the 30s API Gateway sync cap**: viable only via a local backend or an async
 >   structuring path; behind the gateway it 504s. Fit scoring stays on fast Qwen. (B0.)
-> - **Apollo credit model (corrected — deep research).** **People search (`mixed_people/api_search`) = 0
->   credits** (no email/phone). **Company search (`mixed_companies/search`) consumes plan credits** (the old
->   "search is free" model is retired — confirm exact cost at C0). **`people/match` is the only heavy spend**
->   (1 cr/email, 8/phone async; `PHONE_ENABLED=false` at MVP), human-gated at Gate 2.
-> - **Apollo plan is the blocking gate.** `holdslot/prod/apollo` = `{"key":…}` is still **free-tier** →
->   every Search/Match call 403s. **Founder must upgrade to Professional + master key (C0.1)** before any
->   live find/enrich; until then build against the C0 fixtures only. Header is `X-Api-Key`.
-> - **Research-flagged unconfirmed Apollo keys** (verify against live fixtures at C0 before hard-coding):
->   funding-stage filter key + its codes; `street_address`/`postal_code` vs `raw_address`; that live
->   `people[]` rows carry `last_name`/`linkedin_url`/`departments[]` (the docs stub obfuscates them).
+> - **Apollo credit model (live-measured 2026-06-22).** **People search (`mixed_people/api_search`) = 0
+>   credits.** **`people/match` = the spend: 1 credit/email** — empirically confirmed (the live smoke spent
+>   exactly 1; 8 cr/phone async, `PHONE_ENABLED=false` at MVP), human-gated at Gate 2. **Company search**
+>   surfaces only request-rate headers (50k/day), no credit field, and withholds firmographics ⇒ it looks
+>   **request-metered, not credit-metered** (the API has no balance endpoint to prove it — one founder
+>   dashboard glance closes this). All three calls are governed by the 50k/day request quota.
+> - **Apollo plan gate — ✅ CLEARED (C0 smoke-tested 2026-06-22).** `holdslot/prod/apollo` is now
+>   **Professional + master key**; all three endpoints return **200** (`mixed_companies/search`,
+>   `mixed_people/api_search`, `people/match`). Live fixtures saved in `apps/api/tests/fixtures/apollo/`.
+>   Header is `X-Api-Key`. Build C2/C4/C5 against these fixtures.
+> - **C0 ambiguous keys — RESOLVED (fixtures overturned two research assumptions; `apollo_map` must follow
+>   the fixtures, not the old notes):**
+>   - **People SEARCH (`api_search`) is obfuscated by design — it does NOT carry `last_name`/`linkedin_url`/
+>     `departments`/`organization_id`.** A row returns only `id`, `first_name`, `title`,
+>     `last_name_obfuscated` (`"Sc***i"`), nested `organization.name`, and presence flags
+>     (`has_email`, `has_direct_phone`). **All of that is revealed only by `people/match`** (enrich returns
+>     `last_name`, `linkedin_url`, `departments:["master_sales"]`, real `organization.id`, `email`,
+>     `email_status`). ⇒ **two design corrections:** (a) the **`departments` DB-side post-filter cannot run
+>     pre-enrich** (field absent at search) — drop it or apply post-enrich; (b) **`max_per_company` / the
+>     `company_id` link can't use `organization_id` from search** (null there) — **Flow B must loop one
+>     `organization_ids:[<one>]` call per selected org** so the company is known from the loop.
+>   - **Company SEARCH returns identity only, NOT firmographics/address.** Present: `id`, `name`,
+>     `website_url`, `primary_domain`, `founded_year`, `organization_revenue`, `linkedin_url`, naics/sic,
+>     headcount-growth. **Absent: `estimated_num_employees`, `industry`, and every address field** — so the
+>     `street_address`/`postal_code` vs `raw_address` question is **moot for search** (address is enrich-only).
+>     The employee/revenue **filters still work** (they constrained results); the values just aren't returned.
+>   - **Still open (non-blocking):** the funding-**stage** filter key + codes (untested — needs a
+>     funding-scoped query); confirm at C2 when building the intent-filter mapping.
+>   - **Credits:** response headers are **request-rate quotas, not credit balances** (search 200/min · 6k/hr ·
+>     50k/day; match 1000/min). Search withholds firmographics for free ⇒ consistent with **search = 0
+>     credits, reveal/enrich = credits**; the smoke spent **1 enrich credit** (one `people/match`).
+>     **$-cost confirmation still needs the founder's Apollo dashboard credit counter** (read before/after).
 > - **Ops facts.** AWS access uses `AWS_PROFILE=holdslot`; founder writes ALL secrets (claude_code IAM is
 >   read-only on `holdslot/prod/*`). Deploy = `apps/api/scripts/build-and-deploy.sh`. **git push needs the
 >   `weftxio` gh account** (`gh auth switch --hostname github.com --user weftxio`, push, then switch back to
@@ -439,40 +468,44 @@ call at C0** before hard-coding.
 **Flow B — `POST mixed_people/api_search`** (auth `X-Api-Key`, **master key**; **0 credits**, no email/phone)
 | Apollo request param | Type / vocabulary | ← ResearchSpec v3 (brief concept it captures) |
 |---|---|---|
-| `organization_ids[]` | Apollo org ids | **selected** `company.apollo_org_id` (the Flow A→B scope link — required) |
+| `organization_ids[]` | Apollo org ids | **selected** `company.apollo_org_id` — **pass ONE per call, loop over selected orgs** (C0: search rows carry no `organization_id`, so this is the only way to know each person's company). The Flow A→B scope link — required. |
 | `person_titles[]` | free text, fuzzy | `job_title_keywords` |
 | `include_similar_titles` | bool | `include_similar_titles` |
 | `person_seniorities[]` | **fixed enum:** owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern | `seniority` (B emits enum values) |
 | `person_locations[]` | free text | `person_locations` |
 | `contact_email_status[]` | enum: verified·unverified·likely to engage·unavailable | `credit_policy.email_status_filter` |
 | `page` · `per_page` | int · **≤100** | paginate to `max_total` (cap: 500 pages = 50k) |
-| **DB-side post-filter (no Apollo param):** | | `job_title_exclude`, `departments` (filter on returned `departments[]`), `max_per_company` (group by `organization_id`, cap) |
+| **DB-side post-filter (no Apollo param):** | | `job_title_exclude` (on `title`); **`max_per_company` = per-call `per_page` cap** (one org per call). ⚠️ **`departments` is NOT in search output** (C0) — drop the pre-enrich departments filter, or apply it post-enrich. |
+| **C0 reality — search row is obfuscated** | only `id`·`first_name`·`title`·`last_name_obfuscated`·`organization.name`·presence flags (`has_email`) | `parse_person` (search) maps `apollo_person_id`←`id`, `first_name`, `title`; rank by `has_email` |
 
-**Enrich — `POST people/match`** (the only enrich spend): `id`=`apollo_person_id`, `reveal_personal_emails=true`
-(1 cr), `reveal_phone_number=PHONE_ENABLED` (8 cr, **async → requires `webhook_url`**, off at MVP). Returns
-`email`, `email_status`, `phone_numbers[]`, provider.
+**Enrich — `POST people/match`** (the only enrich spend; **reveals everything search hides**): `id`=`apollo_person_id`,
+`reveal_personal_emails=true` (1 cr), `reveal_phone_number=PHONE_ENABLED` (8 cr, **async → requires `webhook_url`**,
+off at MVP). Returns `email`, `email_status`, `last_name`, `linkedin_url`, `departments[]`, real
+`organization.id`, `phone_numbers[]`, provider — `parse_person` (enrich) maps the full contact + `company_id`.
 
 ### Tasks (by dependency; all `[MVP]`)
 
-**C0 — Validation gate (no code; blocks everything).**
-1. **👤 Founder: upgrade Apollo to Professional + master key** in `holdslot/prod/apollo` (`{"key": …}`).
-   Until done, every Search/Match call 403s on the free key — only `organizations/enrich` works.
-2. **Smoke-test the 3 endpoints** (`mixed_companies/search`, `mixed_people/api_search`, `people/match`) at
-   `per_page:1`; read 200 / 403 / 401 / 429. **Stop the build if people-search ≠ 200.** Save each JSON to
-   `apps/api/tests/fixtures/apollo/` — adapters are built + unit-tested against these (no field guessing).
-3. **Confirm the company-search credit cost** against the live plan's *About Credits* page + a real call
-   (the param contract assumes it consumes credits). Capture the per-call cost → feeds *MVP running cost*.
-4. **Verify the ambiguous keys against the live response** (research flagged these): the funding-**stage**
-   filter key + its code values; `street_address`/`postal_code` vs `raw_address`; that live `people[]` rows
-   carry `last_name`/`linkedin_url`/`departments[]` (the docs stub obfuscates them). Lock `apollo_map` to
-   what the fixtures actually return.
+**C0 — Validation gate (no code; blocks everything). ✅ DONE 2026-06-22.**
+1. ✅ **Founder upgraded Apollo to Professional + master key** in `holdslot/prod/apollo` (`{"key": …}`).
+2. ✅ **Smoke-tested the 3 endpoints** (`mixed_companies/search`, `mixed_people/api_search`, `people/match`)
+   at `per_page:1` — **all 200**; `people/match` revealed a verified email. Fixtures saved to
+   `apps/api/tests/fixtures/apollo/` (`companies_search.json`, `people_search.json`, `people_match.json`;
+   `_smoke_test*.sh` regenerate them — they read the secret at runtime, store none). Build proceeds.
+3. ⚠️ **Credit cost — partially confirmed.** Response headers are request-rate quotas only; search withholds
+   firmographics for free (⇒ likely **search = 0 cr, enrich = the spend**). **$-cost still needs the founder's
+   Apollo dashboard credit counter** read before/after → feeds *MVP running cost*.
+4. ✅ **Ambiguous keys locked to the fixtures — see the NEXT SESSION banner for the full resolution.** Net:
+   people SEARCH obfuscates `last_name`/`linkedin_url`/`departments`/`organization_id` (revealed only at
+   `people/match`); company SEARCH returns identity but no firmographics/address. Two design corrections fall
+   out: **drop the pre-enrich `departments` post-filter**, and **Flow B loops one `organization_ids:[<org>]`
+   call per selected company** (search rows carry no org id). Funding-**stage** key still open (verify at C2).
 
-**C1 — Data model (migration `0011`).** `add company.apollo_org_id` (nullable, unique per tenant — feeds
+**C1 — Data model (migration `0011`). ✅ BUILT.** `add company.apollo_org_id` (nullable, unique per tenant — feeds
 Find People's `organization_ids`) · `add prospect.apollo_person_id` (nullable — the `people/match` key) ·
 `drop tenant.seed_limit` (was AI-loop seed anchoring). **DoD:** models gain the two ids; `0010 → 0011`
 head; up/down clean on dev.
 
-**C2 — Apollo transport + adapters.**
+**C2 — Apollo transport + adapters. ✅ BUILT** (parsers tested vs C0 fixtures; bodies live-verified 200).
 - `integrations/apollo/client.py` (lazy secret, SnapStart-safe, mirrors the B3 discipline; header
   `X-Api-Key`, 429 backoff + pagination, `per_page` ≤100, 500-page hard cap): `search_companies`
   (`mixed_companies/search`, **credit-consuming**) · `search_people` (`mixed_people/api_search`, 0 cr, no
@@ -485,31 +518,35 @@ head; up/down clean on dev.
   **DoD:** builders + parsers
   unit-tested against the C0 fixtures, no network.
 
-**C3 — Deterministic filter build + LLM fit scoring.**
+**C3 — Deterministic filter build + LLM fit scoring. ✅ BUILT (simplified).**
 - **No `design_filter.py`, no `apollo_filter` LLM.** Filter building is `apollo_map` (C2, pure) consuming
-  the v3 spec — the brief→targeting judgment already ran in B6. The DB-side post-filters (`⊘` rows) live
-  next to `suppression.py` and run on each search's results before upsert.
-- `fit.py` — add the batched `score_rows(rows, inputs, mode) → [{id, ai_score, reason}]` scorer
-  (50–100/call, cached), auto-invoked per arriving batch. Keep the `fit_scoring` `prompt`; the retired
-  `sourcing` stage prompt is unused.
+  the v3 spec — the brief→targeting judgment already ran in B6.
+- **Simplification (vs the original plan):** no new batched `score_rows`. The post-filter is the existing
+  **`suppression`** (exclusion + existing-customer-domain drop, in `find.py`) and scoring reuses the
+  already-tested per-row **`fit.score`/`score_company`** in the Flow A/B loops. Pure `find.filter_companies`
+  / `filter_people` are unit-tested (`test_find`). The `departments` post-filter is **dropped** (C0: absent
+  at search). Keep the `fit_scoring` `prompt`; the retired `sourcing` stage prompt is unused.
 
-**C4 — Flow A (Find Company).** `POST /{client}/companies/find-company` (A.1):
+**C4 — Flow A (Find Company). ✅ BUILT.** `POST /{client}/companies/find-company` (A.1):
 `search_companies(map_company_filter(spec.company_search_params + intent_filters))` (paginate, cap at `max_results`) → DB-side
 post-filter + exclusion / existing-customer drop → upsert on `apollo_org_id` (`discovered`) → auto
 `score_rows("company")` → return rows + a `research_run` (`source="apollo"`). `PATCH
 /{client}/companies/select` (A.3): `status=selected`. **DoD:** companies land scored; selection scopes
 Flow B; `GET /companies` feeds the table.
 
-**C5 — Flow B (Find People + enrich).** `POST /{client}/people/find-people` (B.1):
-`search_people(map_people_filter(spec.people_search_params, org_ids=selected apollo_org_ids))` (0 cr, no email)
-→ DB-side post-filter + exclusion drop → upsert on `apollo_person_id`, link `company_id` directly,
-`status=found` → auto `score_rows("people")`. (Empty selected-org set → `400 "select companies first"`.)
+**C5 — Flow B (Find People + enrich). ✅ BUILT.** `POST /{client}/people/find-people` (B.1): **loop the selected orgs**,
+one `search_people(map_people_filter(spec.people_search_params, org_ids=[<one apollo_org_id>]))` call each
+(0 cr, no email) — C0: search rows carry no `organization_id`, so the per-org loop is how `company_id` is
+known and `max_per_company` = the per-call `per_page` cap → DB-side post-filter (`job_title_exclude` on
+`title`; **no `departments` filter here — absent at search**) + exclusion drop → upsert on `apollo_person_id`,
+link `company_id` from the loop, `status=found` → auto `score_rows("people")`. (Empty selected-org set →
+`400 "select companies first"`.)
 `POST /{client}/prospects/enrich` (B.3, reworked): Apollo `people/match` on the **selected** rows only →
 write `email` / `email_valid` / `phone` / `provider`, `status=scored` (the only credit spend, human-gated).
 B.4 sets selection/status; no `batches` table (Phase D). **DoD:** find → score → select → enrich runs end
 to end on live Apollo; only selected people cost credits.
 
-**C6 — Frontend wiring + Clay/AI-loop teardown.** *(The teardown half — all the **Delete** items below —
+**C6 — Frontend wiring + Clay/AI-loop teardown. ✅ BUILT** (wiring done; teardown done earlier). *(The teardown half — all the **Delete** items below —
 was executed 2026-06-22 ahead of the rebuild; see the NEXT SESSION banner. What remains for C6 is the
 **wiring** half: add the real Apollo client calls and turn the two disabled "Find" stub buttons into live
 fetches.)*
@@ -531,6 +568,40 @@ fixtures** before the live key is integration-ready; only C0's smoke test + C4/C
 upgraded plan. **Depends on B6** (the v3 spec `apollo_map` consumes — built). **MVP cost:** Apollo Professional
 (master key — see *MVP running cost*) + LLM <$10/mo; **people search is 0 credits**, but **company search
 consumes plan credits** (confirm at C0) and the gate-2 enriched set spends 1 cr/email.
+
+### Post-C review — B→C leverage gaps (re-studied + partly CLOSED 2026-06-22)
+The B6→C coverage study confirmed the **fit + intent + exclusion** spine forwards end-to-end. A deeper
+re-study found the real gap was NOT in the Apollo search params but in the **fit-scoring context**: the
+rubric grades `maturity`/`tech` (§2) and `department`/`economic-buyer` (§3) **directly off the ICP doc**, but
+`_build_targeting` passed only `{brief, spec}` — no ICP rows. By the rubric's own "Unknown policy" those 16
+points scored **0 on every prospect** (a structural tier ceiling), and `avoidTitles` had no consumer at all.
+
+**CLOSED (no migration, no prompt-version bump, no spec-schema change — pure context alignment):**
+- **GAP 0 — ICP docs → fit context.** One shared `icps.icp_docs(db, tenant, icp_id=None)` helper (the exact
+  construction B's scoping already used — de-duplicated from `briefs/structuring.py` + `briefs/router.py`) is
+  now threaded into `_build_targeting` at all four fit call sites (`add_company`, `find_company`,
+  `add_prospect`, `find_people`). ICP-scoped when the run carries `icp_id`, else the union of all profiles.
+  Recovers maturity/department/economic-buyer/tech scoring AND makes `technologies`/`departments` visible to
+  the scorer for ranking — so they no longer need a search-param to be leveraged.
+- **GAP 1 — `ICP.avoidTitles[]`.** Read straight from the ICP doc GAP 0 already loads and applied as a
+  case-insensitive `title` **pre-score drop** in `find.filter_people` (Apollo people search has no native
+  exclude-title field). Keyed per ICP so a run spanning ICPs never over-drops. No `job_title_exclude` spec
+  field, no prompt edit — the earlier plan over-built this. Activates when the find run is ICP-scoped (the
+  workspace already passes `icp_id`).
+
+**Still deferred (now correctly — each is leveraged for *scoring* via GAP 0, only the Apollo *query*-side is open):**
+- **`ICP.technologies[]` (search-side)** — `currently_using_any_of_technology_uids[]` needs Apollo's fixed
+  tech UIDs (a resolver we don't have). Scorer already sees the names. Post-MVP.
+- **`ICP.departments[]` (search-side)** — C0 proved search output carries no `departments` (revealed only at
+  `people/match`); native `person_department_or_subdepartments[]` is untested. Titles cover it. Post-MVP.
+- **`revenue_range`** — present in the spec but **no ICP form field feeds it** → LLM-guessed/null. Add a
+  revenue band to the ICP form, or accept null (employee bands already constrain size). Low priority.
+
+Also note (C0-derived, not a gap to close — just behavior to honor in C4/C5): company-search rows are
+**sparse** (`industry`/`size`/address null — fit scores on name/domain/revenue); people-search rows are
+**obfuscated** (full name/linkedin/email/departments appear only at `people/match`), so person-level
+`doNotContact` suppression can only run **post-enrich**, and Flow B must **loop one org per call** to know each
+person's `company_id`.
 
 ### Cross-phase
 - **From A:** the central guard scopes every table; **MVP adds ZERO AWS resources** (`find-company` /

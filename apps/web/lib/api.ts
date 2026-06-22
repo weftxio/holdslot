@@ -367,6 +367,16 @@ export type CompanyApi = {
 };
 export type EnrichResult = {
   confirmed: number;
+  enriched: number;
+  credits_spent: number;
+};
+// Result of an Apollo find run (Flow A companies or Flow B people).
+export type FindResult = {
+  run_id: string;
+  found: number;
+  dropped: number;
+  companies: CompanyApi[];
+  prospects: ProspectApi[];
 };
 export type SourcingDocApi = {
   stage: string;
@@ -434,6 +444,35 @@ export async function addCompany(client: string, body: CompanyManual): Promise<C
   return r.json();
 }
 
+// Flow A — Apollo company search from the latest ResearchSpec → suppress → upsert → score.
+export async function findCompanies(
+  client: string,
+  body: { limit?: number; icp_id?: string | null } = {}
+): Promise<FindResult> {
+  const r = await authFetch(`/${client}/companies/find-company`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Select/deselect stage-1 companies — the selected set scopes Flow B (find people).
+export async function selectCompanies(
+  client: string,
+  ids: string[],
+  selected = true
+): Promise<CompanyApi[]> {
+  const r = await authFetch(`/${client}/companies/select`, {
+    method: "PATCH",
+    json: true,
+    body: JSON.stringify({ ids, selected }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 // --- Phase C stage 2 — People (find → review → confirm-enrich) ---------------
 
 export type ProspectManual = {
@@ -459,8 +498,22 @@ export async function addProspect(client: string, body: ProspectManual): Promise
   return r.json();
 }
 
-// The enrich gate — confirm which scored people to enrich; returns the confirmed count. (The paid
-// Apollo people/match enrichment is wired server-side in Phase C; this flips status for now.)
+// Flow B — find people across the SELECTED companies (one Apollo api_search per org), 0 credits.
+export async function findPeople(
+  client: string,
+  body: { per_company?: number; icp_id?: string | null } = {}
+): Promise<FindResult> {
+  const r = await authFetch(`/${client}/people/find-people`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// The enrich gate — Apollo people/match on the confirmed rows (the only credit spend); returns the
+// confirmed/enriched counts + credits spent.
 export async function enrichProspects(
   client: string,
   identityKeys: string[]
