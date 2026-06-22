@@ -45,6 +45,11 @@ select = ["E", "F", "I", "UP", "B"]
 # B008: Depends()/Security() in defaults is the intended FastAPI idiom, not a bug.
 ignore = ["B008"]
 
+[tool.ruff.lint.per-file-ignores]
+# research_spec.py embeds the scoping system prompt verbatim as a triple-quoted string; its
+# author-formatted lines exceed 100 cols and must NOT be reflowed (exact text is the contract).
+"app/domains/briefs/research_spec.py" = ["E501"]
+
 [tool.black]
 target-version = ["py312"]
 line-length = 100

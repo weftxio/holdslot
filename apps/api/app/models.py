@@ -91,9 +91,6 @@ class Tenant(Base):
         nullable=False,
         server_default=TenantStatus.active.value,
     )
-    # AI sourcing knob: how many passed-fit prospects anchor each round. Per-client config,
-    # edited in the Sourcing-settings modal; a scalar (not a versioned SourcingDoc).
-    seed_limit: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("10"))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -267,12 +264,13 @@ class LlmCall(Base):
 
 
 class ResearchSpec(Base):
-    """Append-only, versioned LLM output — the locked v1 contract bridging Brief → Clay.
+    """Append-only, versioned LLM output — the **v3** Apollo-native Brief→targeting contract.
 
-    A re-run never overwrites: it inserts the next `version` for the tenant. `spec` is
-    the v1 targeting JSON (company_search/people_search/exclusions + server-merged credit
-    policy); `gaps` are the value-loop prompts. `llm_call_id` ties the spec to the exact
-    model/prompt/cost/raw output that produced it.
+    A re-run never overwrites: it inserts the next `version` for the tenant. `spec` is the v3
+    targeting JSON (company_search_params · people_search_params · intent_filters · icp_validation +
+    server-merged credit policy, all exact Apollo request fields); `gaps` + `icp_suggestions` are
+    the value-loop signals stored alongside (never inside `spec`). `llm_call_id` ties the spec to
+    the exact model/prompt/cost/raw output that produced it. `apollo_map` (Phase C) is the consumer.
     """
 
     __tablename__ = "research_spec"
@@ -299,27 +297,53 @@ class ResearchSpec(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class ResearchJob(Base):
+    """Async structuring job — runs the Brief→ResearchSpec LLM call off the 30s API Gateway path.
+
+    Scoping uses DeepSeek V4 Pro with thinking + web search (~55-76s), which exceeds the HTTP-API
+    hard 30s cap. So `POST /brief/structure` inserts a `queued` row and fires a background worker
+    (Lambda self async-invoke; a thread in local dev); the worker runs the LLM, inserts the next
+    `ResearchSpec` version, and flips this row to `done` (recording `spec_version`) or `error`. The
+    frontend polls `GET /brief/structure/status` until terminal — the sync POST returns fast (202).
+    """
+
+    __tablename__ = "research_job"
+    __table_args__ = (Index("ix_research_job_tenant_id", "tenant_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    spec_version: Mapped[int | None] = mapped_column(Integer, nullable=True)  # set on done
+    error: Mapped[str | None] = mapped_column(String, nullable=True)  # set on error
+    llm_call_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("llm_call.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
 # ---------------------------------------------------------------------------
-# Phase C (S2) — Prospects: Clay seed + AI sourcing loop.
+# Phase C (S2) — Prospects: Apollo find + enrich.
 #
 # The one boundary that drives everything (see docs/initial-build-plan.md → Phase C):
-# **Clay is stateless enrichment compute; this DB is the only system of record.** Rows flow
-# *through* Clay (push → enrich → pull → clear); tenant ownership, dedup, suppression, fit
-# scoring, and lineage all live here. The MVP ships these three tenant-scoped tables; the
+# **Apollo is headless discovery + enrichment compute; this DB is the only system of record.**
+# Rows arrive from an Apollo REST call; tenant ownership, dedup, suppression, fit scoring, and
+# lineage all live here. The MVP ships these three tenant-scoped tables; the
 # `person`/`enrichment_request` enrich-once cache is the additive SCALE step (2nd tenant), not
 # built. `identity_key` + `last_enriched_at` on `prospect` are that future `person` FK seam.
+# (The Clay seed/CSV/AI-sourcing loop these tables originally served was removed in the
+# Apollo-only teardown; `apollo_org_id`/`apollo_person_id` are added in C1's migration 0009.)
 # ---------------------------------------------------------------------------
 
 
 class Company(Base):
     """Stage-1 discovery row — one per (domain × tenant), fit-scored before any person is sourced.
 
-    The company-first two-stage flow's system of record: Clay **Find Companies** (free sourcing)
-    lands these as `discovered`; the user selects (`selected`); Find People then sources people
-    *from the selected set* and links each `prospect.company_id` back by domain. Re-import of the
-    same `domain` for a tenant is idempotent (the unique constraint makes it an upsert), mirroring
-    `prospect`'s `identity_key` dedupe. `fit_*` reuses the one scoring door (`fit.py`), persona
-    lines omitted (company-level rubric).
+    The company-first two-stage flow's system of record: Apollo **company search** lands these as
+    `discovered`; the user selects (`selected`); **people search** then sources people *from the
+    selected set* and links each `prospect.company_id` back by domain. Upsert of the same `domain`
+    for a tenant is idempotent (the unique constraint), mirroring `prospect`'s `identity_key`
+    dedupe. `fit_*` reuses the one scoring door (`fit.py`), persona lines omitted (company rubric).
     """
 
     __tablename__ = "company"
@@ -353,7 +377,7 @@ class Company(Base):
     evidence: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | manual | ai_loop
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # apollo | manual
     status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="discovered")
     created_at: Mapped[datetime] = _created_at()
 
@@ -395,7 +419,7 @@ class Prospect(Base):
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop | manual
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # apollo | manual
     source_lineage: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
@@ -408,13 +432,12 @@ class Prospect(Base):
 
 
 class ResearchRun(Base):
-    """One row per sourcing round or CSV import — the loop's scoreboard + Clay correlation handle.
+    """One row per research run — the scoreboard + run correlation handle (source="apollo").
 
-    `run_id` is the value stamped on every Clay row pushed for this round and matched back on
-    ingest. `rows_pushed`/`rows_accepted` + `cost_usd` (LLM spend) drive the per-source
-    $/accepted scoreboard (C4); `prompt_version`/`rubric_version` tie a round to the exact
-    `sourcing_doc` versions that produced it. Clay enrichment-credit cost is not recorded —
-    Clay exposes no API for it (UI dashboard only), so the operator reconciles it manually.
+    `run_id` correlates every row sourced in this round (stamped on each `company`/`prospect`).
+    `rows_pushed`/`rows_accepted` + `cost_usd` (LLM spend) drive the per-source $/accepted
+    scoreboard (C4); `prompt_version`/`rubric_version` tie a round to the exact `prompt` versions
+    that produced it. Apollo credit-spend is recorded separately at the enrich gate (C5), not here.
     """
 
     __tablename__ = "research_run"
@@ -430,7 +453,7 @@ class ResearchRun(Base):
     icp_id: Mapped[uuid.UUID | None] = mapped_column(
         PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
     )
-    source: Mapped[str] = mapped_column(String(32), nullable=False)  # clay | ai_loop
+    source: Mapped[str] = mapped_column(String(32), nullable=False)  # apollo | manual
     prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rubric_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
     rows_pushed: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
@@ -439,25 +462,28 @@ class ResearchRun(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
-class SourcingDoc(Base):
-    """Append-only founder-edited prompt/rubric — versioned data, never overwritten.
+class Prompt(Base):
+    """Append-only per-client prompt store — versioned text, never overwritten.
 
-    Two kinds (`sourcing_prompt` | `fit_rubric`), each independently versioned per tenant. Seed
-    v1 of both lands in the migration from `docs/prompts/*-v1.md`; the founder edits between
-    rounds → a new (kind, version). A round records which versions it ran via `research_run`.
+    One row per (tenant, `stage`, version); the latest version is active. `stage` is the
+    pipeline step the prompt drives: `briefing` (Brief→ResearchSpec scoping), `sourcing` (legacy
+    Clay loop, retired), `fit_scoring` (the fit rubric). Seed v1 of each lands in a migration from
+    `docs/prompts/*.md`; the founder edits it → a new (stage, version). `research_run` records
+    which `fit_scoring` version it scored against. (Renamed from `sourcing_doc`/`kind` once it grew
+    past sourcing into the single home for every client-editable prompt.)
     """
 
-    __tablename__ = "sourcing_doc"
+    __tablename__ = "prompt"
     __table_args__ = (
         UniqueConstraint(
-            "tenant_id", "kind", "version", name="uq_sourcing_doc_tenant_kind_version"
+            "tenant_id", "stage", "version", name="uq_prompt_tenant_stage_version"
         ),
-        Index("ix_sourcing_doc_tenant_id", "tenant_id"),
+        Index("ix_prompt_tenant_id", "tenant_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
-    kind: Mapped[str] = mapped_column(String(32), nullable=False)  # sourcing_prompt | fit_rubric
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)  # briefing·sourcing·fit_scoring
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = _created_at()

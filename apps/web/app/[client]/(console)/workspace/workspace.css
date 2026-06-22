@@ -990,39 +990,7 @@
   padding: 9px 12px; /* match btn-sm / search height */
   font-size: 13.5px;
 }
-.filter-row .fcount {
-  font-size: 13px;
-  color: var(--ink-faint);
-  margin-left: auto;
-  white-space: nowrap;
-}
-.filter-row .fcount b {
-  color: var(--ink);
-  font-weight: 700;
-}
-.batch-row {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 24px; /* align left edge with the panel-head inset */
-  border-bottom: 1px solid var(--line);
-  background: var(--cerulean-wash);
-  /* first child of the panel — round the top corners to nest inside its 14px
-     radius (less the 1px border), so the wash fill doesn't spill past them. */
-  border-radius: 13px 13px 0 0;
-}
-.batch-row .br-label {
-  font-size: 12.5px;
-  font-weight: 700;
-  color: var(--ink);
-}
-.batch-row .batch-controls {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  flex-wrap: wrap;
-}
-/* Sourcing-settings modal: prompt + rubric editors side-by-side (stack on narrow screens). */
+/* Manual add-company / add-person modals: two-column form layout (stack on narrow screens). */
 .sourcing-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1043,24 +1011,6 @@
     min-height: 220px;
   }
 }
-.batch-row input[type="text"] {
-  flex: 1;
-  min-width: 160px;
-  background: #fff;
-  padding: 9px 12px; /* match the Create-batch button height */
-  font-size: 13.5px;
-}
-.batch-row .sel-pill {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--cerulean-deep);
-  background: #fff;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  padding: 5px 11px;
-  white-space: nowrap;
-}
-
 /* ICP profile selector */
 .icp-tabs {
   display: flex;
@@ -1348,13 +1298,6 @@
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.cmp-top-lbl {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
 }
 .cmp-name-input {
   width: 180px;

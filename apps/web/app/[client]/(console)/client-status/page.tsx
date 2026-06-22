@@ -173,16 +173,28 @@ export default function ClientStatus() {
         `Here's a fresh suggested slot for your call with HoldSlot — confirm and it lands on both calendars.`,
     });
 
-  // deep-link support: pick up the #hash on first load
+  // Keep the active tab in sync with the URL hash in BOTH directions: on mount/deep-link and on
+  // Back/Forward (popstate). Next's client router doesn't fire hashchange, so without the listener
+  // the Back button desyncs the URL from the rendered tab.
   useEffect(() => {
-    const h = location.hash.slice(1) as StatusTabKey;
-    if (STATUS_TABS.some(([k]) => k === h)) setTab(h);
+    const sync = () => {
+      const h = location.hash.slice(1) as StatusTabKey;
+      if (STATUS_TABS.some(([k]) => k === h)) setTab(h);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    window.addEventListener("hashchange", sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("hashchange", sync);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function activate(name: StatusTabKey) {
     setTab(name);
-    history.replaceState(null, "", "#" + name);
+    // pushState (not replace) so each tab is a real history entry the Back button can return to.
+    if (location.hash.slice(1) !== name) history.pushState(null, "", "#" + name);
   }
 
   // editable sendout template

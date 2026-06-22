@@ -4,7 +4,7 @@ Design invariants:
   * **Lazy / SnapStart-safe** — no network, no Secrets Manager, no RNG at import. The key +
     model config load on first use and are cached.
   * **Strict structured output** — sends `response_format: json_schema` (`strict:true`), the
-    `models` fallback array (deepseek-v4-flash → llama-3.3-70b), and
+    `models` fallback array (default: DeepSeek V4 Pro), and
     `provider.require_parameters:true` so only schema-honoring hosts serve the request.
   * **Region-safe providers only** — the OpenAI / Anthropic / Google providers return HTTP 403
     "violation of provider Terms Of Service" for this account's jurisdiction (Hong Kong — the
@@ -39,14 +39,14 @@ log = logging.getLogger("holdslot.openrouter")
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_TIMEOUT = 25  # seconds; under the 30s Lambda timeout
 
-# Region-safe model defaults (2026-06-21). Used when the secret omits `default_model`/`models`.
-# Primary = DeepSeek V4 Flash: best-value reasoning model (v4 generation, ~$0.00015/call) that
-# still returns inside the 30s sync Lambda budget (~18s; the flagship v4-pro reasons for 55-76s
-# and would time out). Fallback = Llama 3.3 70B (different provider, fast). Both honor strict
-# json_schema and serve from non-US providers — the gemini/gpt defaults are geo-blocked (403 ToS)
-# for this account; see the module docstring.
-DEFAULT_MODEL = "deepseek/deepseek-v4-flash"
-FALLBACK_MODELS = ["deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct"]
+# Region-safe model defaults. Used when the secret omits `default_model`/`models`.
+# DeepSeek V4 Pro: the flagship v4 reasoning model, run with thinking + the web-search plugin for
+# scoping (see briefs/research_spec.py → SCOPING_*). It honors strict json_schema and serves from a
+# non-US provider — the gemini/gpt defaults are geo-blocked (403 ToS) for this account; see the
+# module docstring. ⚠️ Pro reasons slowly (~55-76s) — safe only off the 30s API Gateway sync path
+# (async or a local backend); callers behind the gateway must keep using a faster model.
+DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
+FALLBACK_MODELS = ["deepseek/deepseek-v4-pro"]
 
 
 class LlmError(RuntimeError):
@@ -88,9 +88,9 @@ def reset_config() -> None:
 
 
 def configured_models() -> list[str]:
-    """The model fallback list a default (no-override) completion would route through. Used by
-    the prompt-preview endpoint to show which model produces the scope. Falls back to the locked
-    list if the secret can't be read, so a preview never errors on config."""
+    """The model fallback list a default (no-override) completion would route through. Falls back
+    to the locked list if the secret can't be read, so a caller never errors on config. (The scoping
+    preview reports SCOPING_MODELS directly — pinned to V4 Pro regardless of this default.)"""
     try:
         return list(_config().models)
     except Exception:

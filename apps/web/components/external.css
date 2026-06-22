@@ -1,8 +1,5 @@
 /* Shared external-page panes + success block (imported once by ExternalShell).
    Previously duplicated in approve/book/feedback CSS. */
-.valid-pane.hide {
-  display: none;
-}
 .success-pane,
 .expired-pane {
   display: none;

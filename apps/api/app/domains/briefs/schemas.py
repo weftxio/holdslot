@@ -37,6 +37,19 @@ class ResearchSpecList(BaseModel):
     versions: list[int] = []
 
 
+class ResearchJobOut(BaseModel):
+    """Status of the async structuring job: the `POST /brief/structure` 202 body + the poll target.
+
+    `status` ∈ idle | queued | running | done | error. `idle` = none has ever run; `spec_version`
+    is set on `done` (the new ResearchSpec version to load); `error` carries a short cause on fail.
+    """
+
+    job_id: str | None = None
+    status: str
+    spec_version: int | None = None
+    error: str | None = None
+
+
 class ScopingPromptOut(BaseModel):
     """The exact LLM prompt that `POST /brief/structure` would send — for operator inspection.
 

@@ -1,14 +1,78 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status (2026-06-21):** Phases **A (S0)** + **B (S1)** **built, reviewed & live on `dev`** — backend on
-> the `dev` API (alias `live`), Workspace web on Amplify `dev`. **Phase C (S2) is being rebuilt
-> Apollo-only.** The Clay-based Phase C (seed push → CSV ingest + fit scoring → AI sourcing loop) was built
-> and ran on `dev`, but **Clay has no programmatic Find Company / Find People API on any tier** —
-> discovery stayed operator-run in Clay's UI with a CSV bridge. **Apollo.io is a headless REST search +
-> enrichment API** (company search, people search, `people/match`, static key), so Phase C moves to
-> **Apollo only**: Apollo does discovery *and* enrichment; the LLM only (a) scopes the Apollo filter and
-> (b) scores rows. No Clay, no webhooks, no CSV. See **Phase C** for the rebuild plan; schema deltas in
+> **Status (2026-06-22):** Phases **A (S0)** + **B (S1)** **built, reviewed & live on `dev`** — backend on
+> the `dev` API (alias `live`, **Lambda v21**), Workspace web on Amplify `dev`. **B6 is now built &
+> deployed**: async **ResearchSpec v3** (Apollo-native — the LLM emits exact Apollo request fields;
+> `SPEC_VERSION=3`, `PROMPT_VERSION="brief-structure-v5"`), the `research_job` async-structuring tracker
+> (migration `0009`), and the `sourcing_doc`→`prompt` table rename + `stage` column (migration `0010`,
+> seeds `briefing` v1). 37 backend tests green; ruff/tsc clean. Last *committed*: `023be68` on
+> `origin/dev`; the B6/v3 work is deployed to dev but **uncommitted** (this commit lands it). **Phase C
+> (S2) is being rebuilt Apollo-only.** The Clay-based Phase C (seed push → CSV
+> ingest + fit scoring → AI sourcing loop) was built and ran on `dev`, but **Clay has no programmatic Find
+> Company / Find People API on any tier** — discovery stayed operator-run in Clay's UI with a CSV bridge.
+> **Apollo.io is a headless REST search + enrichment API** (company search, people search, `people/match`,
+> static key), so Phase C moves to **Apollo only**: Apollo does discovery *and* enrichment; the LLM only
+> scores rows (the Brief→targeting LLM already ran in B; the B→C param mapping is **deterministic**, no
+> second LLM). No Clay, no webhooks, no CSV. See **Phase C** for the rebuild plan; schema deltas in
 > [`data-schema.md`](data-schema.md). **The Apollo find/enrich loop is the one gate left to tick S2.**
+
+> ## ▶ NEXT SESSION — START HERE
+> **Goal of the next chat (in order):** (1) **build the Phase B → Phase C data linkage** — the seam that
+> turns the saved `ResearchSpec` **v3** into Apollo calls; then (2) **start the Apollo Phase C rebuild**
+> proper. **B6 (the v3 spec — the B→C contract) is done**; what remains of the linkage is C1 + C2 below.
+> Everything else is already designed; the next chat *implements* it. Read **Phase C** and
+> [`data-schema.md`](data-schema.md) Part 1 + Phase C before writing code.
+>
+> **✅ Clay/AI-loop teardown already executed (2026-06-22, pre-B→C cleanup).** The C6 *deletion* was
+> pulled forward so the repo is clean before the rebuild: deleted backend `clay.py` + `sourcing.py`, the
+> import/sourcing/accept endpoints (`/companies/import`, `/prospects/import`, `/icps/{id}/research`,
+> `/sourcing-rounds`, `/prospects/accept`, `PUT /sourcing-settings`), their schemas, the `sourcing_prompt`
+> doc kind, and the `Tenant.seed_limit` model field; on the web, the Clay CSV file-inputs, copy-seeds
+> bridge, enrich-export modal, sourcing-prompt + seed-limit UI, and dead `lib/api.ts` functions/types.
+> `confirm_enrich` now only marks rows `confirmed` (the real `people/match` enrichment is C5). The two
+> "Find Companies / Find People" buttons are **disabled stubs** until C4/C5 wire them to Apollo. Backend
+> 37 tests green (ruff/tsc clean); web build green. **Still to do in C1's migration `0011`: physically
+> `DROP COLUMN tenant.seed_limit`** (the model field is gone; the column remains in the dev DB).
+>
+> **The B→C data linkage = two pieces left (B6 done; build these next, in order):**
+> 1. ✅ **B6 — `ResearchSpec` v3 (DONE).** The v3 spec *is* the B→C contract, and it's now Apollo-native:
+>    `research_spec.py` emits **exact Apollo request fields** (`company_search_params`,
+>    `people_search_params`, `intent_filters`, `icp_validation`, `icp_suggestions`, `gaps`) via strict
+>    `json_schema`; `SPEC_VERSION=3`, `PROMPT_VERSION="brief-structure-v5"`. Runs **async** (`research_job`
+>    `0009`) on DeepSeek V4 Pro. The per-client prompt store is the `prompt` table (`0010`).
+> 2. **C1 — migration `0011`** ([Phase C → C1](#)): `company.apollo_org_id` + `prospect.apollo_person_id`
+>    (the two ids that physically link a found company → its people → enrichment), `drop tenant.seed_limit`.
+> 3. **C2 — `apollo_map.py`** ([Phase C → C2/C3](#)): the **pure, deterministic** forwarder that passes each
+>    v3 Apollo-field param straight to its `mixed_companies/search` / `mixed_people/api_search` slot (plus
+>    the DB-side `⊘` post-filters), exactly per the *Apollo parameter contract* tables. Because v3 already
+>    speaks Apollo's field names, this is now mostly a pass-through (no vocabulary translation). It replaces
+>    the killed `design_filter` LLM. Fixture-tested, no network. **The heart of the B→C linkage.**
+>
+> **Then the Apollo rebuild:** C0 (founder gate — Apollo plan upgrade + smoke-test fixtures) → C2 transport
+> client → C4 Flow A (find company) → C5 Flow B (find people + enrich) → C6 frontend wiring + Clay teardown.
+> **C1/C2/C3 can be built in parallel against the C0 fixtures** before the live key is integration-ready.
+>
+> **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
+> - **OpenRouter HK geo-block.** OpenAI / Anthropic / Google providers return **403 ToS** for this account
+>   (Hong Kong) — account-wide, not content-driven. **Route every LLM call to non-US providers only**
+>   (DeepSeek / Qwen / Mistral — Llama dropped 2026-06-22). Scoping model = `deepseek/deepseek-v4-pro`
+>   with **thinking + the web-search plugin** (pinned in `research_spec.SCOPING_*`). ⚠️ Pro reasons
+>   55–76s → **exceeds the 30s API Gateway sync cap**: viable only via a local backend or an async
+>   structuring path; behind the gateway it 504s. Fit scoring stays on fast Qwen. (B0.)
+> - **Apollo credit model (corrected — deep research).** **People search (`mixed_people/api_search`) = 0
+>   credits** (no email/phone). **Company search (`mixed_companies/search`) consumes plan credits** (the old
+>   "search is free" model is retired — confirm exact cost at C0). **`people/match` is the only heavy spend**
+>   (1 cr/email, 8/phone async; `PHONE_ENABLED=false` at MVP), human-gated at Gate 2.
+> - **Apollo plan is the blocking gate.** `holdslot/prod/apollo` = `{"key":…}` is still **free-tier** →
+>   every Search/Match call 403s. **Founder must upgrade to Professional + master key (C0.1)** before any
+>   live find/enrich; until then build against the C0 fixtures only. Header is `X-Api-Key`.
+> - **Research-flagged unconfirmed Apollo keys** (verify against live fixtures at C0 before hard-coding):
+>   funding-stage filter key + its codes; `street_address`/`postal_code` vs `raw_address`; that live
+>   `people[]` rows carry `last_name`/`linkedin_url`/`departments[]` (the docs stub obfuscates them).
+> - **Ops facts.** AWS access uses `AWS_PROFILE=holdslot`; founder writes ALL secrets (claude_code IAM is
+>   read-only on `holdslot/prod/*`). Deploy = `apps/api/scripts/build-and-deploy.sh`. **git push needs the
+>   `weftxio` gh account** (`gh auth switch --hostname github.com --user weftxio`, push, then switch back to
+>   `checkafy`) — `checkafy` lacks write to `weftxio/holdslot`. Commit/push only when asked.
 
 **The first build:** make HoldSlot's own product real enough to run our own outbound on it and land our
 first signups. Scoped cut of the full spec in `backend-development-plan.md`.
@@ -139,80 +203,40 @@ prompts protect the two costliest resources (Apollo enrich credits, warmed inbox
 - **Promote-on-demand:** promote a field to a validated column only when it becomes load-bearing for
   backend logic (e.g. exclusion lists in C).
 - **Two stability profiles:** the form documents churn freely; the **`ResearchSpec` is a versioned
-  contract** (the interface to the prospecting search — now Apollo, at **v2**). A provider/contract change
-  is a deliberate version bump (v1→v2), not silent drift. Spec versions are append-only JSONB.
+  contract** (the interface to the prospecting search — now Apollo, at **v3**). A provider/contract change
+  is a deliberate version bump (v1→v2→v3), not silent drift. Spec versions are append-only JSONB.
 
-### The `ResearchSpec` v2 format (v1 locked 2026-06-12; **revised to v2 for Apollo, 2026-06-21**)
+### The `ResearchSpec` v3 format (v1 locked 2026-06-12 → v2 Apollo-mapped 2026-06-21 → **v3 Apollo-native 2026-06-22**)
 
-**Why v2 (deep-researched against Apollo's live API, 2026-06-21):** v1 was authored Clay-aligned. The
-Apollo parameter audit (both REST calls, see Phase C → *Apollo parameter contract*) showed (a) several v1
-fields have **no Apollo request filter** and must move DB-side, and (b) Apollo exposes **high-value
-targeting the brief already implies but v1 dropped on the floor** — most importantly **funding signals**
-and **active-job-posting (hiring) signals**, which are exactly the brief's *buying signals* made
-machine-actionable. v2 captures them so the brief's intent reaches Apollo. The spec is append-only and
-`spec` is JSONB, so v2 is **a prompt + schema revision, zero migration** (`research_spec.version` simply
-inserts the next row; the panel renders whatever `spec_version` it loads).
+**Why v3 (built 2026-06-22):** v2 still carried an intermediate vocabulary (`industry_keywords_*`,
+`locations_*`, `funding`, `hiring_signals`) that `apollo_map` had to translate into Apollo's real field
+names. v3 removes that layer — **the LLM emits the exact Apollo request fields by name**
+(`q_organization_keyword_tags`, `organization_num_employees_ranges` comma-strings like `"10,100"`,
+`person_seniorities` from Apollo's fixed enum, `latest_funding_date_range`, …), so `apollo_map` is a near
+pass-through and the prompt can't drift from Apollo's contract. The spec is append-only JSONB, so v3 is **a
+prompt + schema revision, zero migration** (`research_spec.version` inserts the next row; the *Prospect
+Scope* panel renders whatever `spec_version` it loads — old v1/v2 rows still open).
 
-`apollo_map` (C3, pure + fixture-tested) is the only thing that consumes the spec; it maps each field to a
-concrete Apollo param or to a DB-side post-filter. Under Apollo there is **no operator transcription and no
-callback** — both searches are programmatic; only `people/match` (the human-selected set) spends enrich
-credits. **⚠️ Company search itself may consume Apollo plan credits** (Apollo's current docs list it as
-credit-consuming — confirm at C0; this corrects v1's "0-credit search" assumption).
+**The full v3 field contract is documented once, authoritatively, in
+[`data-schema.md`](data-schema.md) → *`research_spec.spec` — the v3 JSON contract*** (company/people search
+params · intent filters · ICP validation · server-merged credit policy · `gaps` · `icp_suggestions`). It is
+deliberately **not** re-listed here, to avoid the two copies drifting. Three structural facts drive the rest
+of this plan:
 
-```jsonc
-{
-  "spec_version": 2,
-  "company_search": {                          // → apollo_map → POST mixed_companies/search
-    "industry_keywords_include": [],           // → q_organization_keyword_tags (FREE TEXT; Apollo org search has NO free-text industry filter — keyword tags are the documented path)
-    "industry_keywords_exclude": [],           // ⊘ DB-side post-filter (no Apollo keyword/industry exclude)
-    "description_keywords_include": [],         // → merged into q_organization_keyword_tags
-    "semantic_description": "",                 // prose intent → distilled to keyword tags
-    "employee_count": { "min": null, "max": null },   // → organization_num_employees_ranges: ["min,max"]
-    "revenue_usd":    { "min": null, "max": null },    // → revenue_range[min]/[max]
-    "founded":       { "after": null, "before": null },// ⊘ DB-side post-filter (no Apollo founded-year request filter)
-    "company_types": [],                               // ⊘ DB-side post-filter (no Apollo public/private filter)
-    "locations_include": [],                           // → organization_locations (flat free-text: "City, ST, Country")
-    "locations_exclude": [],                           // → organization_not_locations
-    "funding": {                                       // NEW — Apollo-native funding filters
-      "latest_amount_usd": { "min": null, "max": null },   // → latest_funding_amount_range[min]/[max]
-      "total_usd":         { "min": null, "max": null },   // → total_funding_range[min]/[max]
-      "latest_round_after": null                           // "YYYY-MM-DD" → latest_funding_date_range[min]
-    },
-    "hiring_signals": {                                // NEW — timing signal from active job postings
-      "job_titles": [],                                 // → q_organization_job_titles
-      "min_open_roles": null,                           // → organization_num_jobs_range[min]
-      "posted_after": null                              // "YYYY-MM-DD" → organization_job_posted_at_range[min]
-    },
-    "technographics": { "enabled": false, "vendors": [] }, // → currently_using_any_of_technology_uids (FIXED Apollo tech UIDs)
-    "max_results": 500
-  },
-  "people_search": [{                          // one per ICP → scoped to SELECTED orgs at Flow B
-    "icp_id": "",
-    "job_title_keywords": [],                  // → person_titles (FREE TEXT, fuzzy)
-    "include_similar_titles": true,            // → include_similar_titles (replaces v1 job_title_match_mode)
-    "job_title_exclude": [],                   // ⊘ DB-side post-filter (no Apollo title-exclude)
-    "seniority": [],                           // → person_seniorities — FIXED enum: owner|founder|c_suite|partner|vp|head|director|manager|senior|entry|intern
-    "departments": [],                         // ⊘ DB-side post-filter on returned departments[] (Apollo search has NO dept/function param — UI-only)
-    "person_locations": [],                    // → person_locations (free text)
-    "max_per_company": 2,                      // ⊘ DB-side cap (no Apollo per-company param)
-    "max_total": 800
-  }],
-  "exclusions": { "domains": [], "company_linkedin_urls": [], "emails": [] },  // ⊘ DB-side suppression (never Apollo params)
-  "gaps": [{ "field": "", "why": "", "ask": "" }]                              // the value-loop prompts
-}
-```
+- **Buying signals are native Apollo filters** in a separate `intent_filters` block — a closed-funding
+  window (`latest_funding_date_range`) + active-hiring roles/dates (`q_organization_job_titles` +
+  `organization_job_posted_at_range`), recency computed from an injected `today`. Fit **and** intent both apply.
+- **`icp_validation`** characterizes the real paying customers (from the brief's `excludeCustomers` list) so
+  the operator sees whether the stated ICPs match who actually buys; a material divergence surfaces **exactly
+  one** `icp_suggestions[]` entry carrying its own ready-to-run company/people params (operator accepts → ICP).
+- **Suppression feeds from the brief text, not the spec** — `excludeCustomers`/`excludeDeals`/`doNotContact`
+  are applied HoldSlot-side *before* any Apollo call; v3 emits **no `exclusions` block**.
 
-**Legend:** `→` = mapped to an Apollo request param · `⊘` = DB-side (post-filter or suppression; Apollo
-has no request param). **Industry note:** Apollo org search has no free-text industry filter — v2 routes
-industry intent through `q_organization_keyword_tags` (free text). A curated `industry → Apollo
-industry_tag_id` map is a later precision lever (the tag-ID list is not API-published).
-
-**Division of labour:** the LLM emits **targeting only** (`company_search`, `people_search`,
-`exclusions`, `gaps`) — now including funding + hiring signals distilled from the brief's *signals*/
-*maturity* prose. The **credit policy** (email-status gate, phone off, caps) is **deterministic server
-config merged at save time** — never LLM-inferred. v2 `credit_policy` adds `email_status_filter`
-(default `["verified"]` → people/match deliverability gate). Suppression is applied HoldSlot-side
-*before* any Apollo call.
+`apollo_map` (C2/C3, pure + fixture-tested) is the only consumer; it forwards each param to its Apollo slot
+(`mixed_companies/search` / `mixed_people/api_search`) or to a DB-side `⊘` post-filter. **⚠️ Company search
+itself may consume Apollo plan credits** (confirm at C0). **Division of labour:** the LLM emits targeting +
+ICP validation only; the **credit policy** (email-status gate, phone off, hard caps) is **deterministic
+server config merged at save time** — never LLM-inferred.
 
 ### LLM observability (built into the one seam)
 
@@ -245,8 +269,10 @@ ICP-card `.icp-grid` grammar (exclusions as `.icp-chip.warn`), gap prompts in a 
     that drove the Bedrock→OpenRouter override). It is account-wide, not content-driven (a bare "hi" 403s), and
     not a credits/key issue. **All model routing must use non-US providers** (DeepSeek / Qwen / Llama / Mistral).
     The original gemini/gpt-5 defaults caused `brief/structure` to 502; swapped to DeepSeek V4 Flash + Llama.
-  - **Model choice (scoping):** DeepSeek V4 Flash is the best-value reasoning model that fits the 30s sync
-    Lambda budget (~18s). The flagship `deepseek-v4-pro` reasons for 55–76s → would time out behind API Gateway.
+  - **Model choice (scoping):** B0 shipped on DeepSeek V4 Flash to fit the 30s sync Lambda budget (~18s).
+    **B6 then moved scoping to the flagship `deepseek/deepseek-v4-pro`** (deeper reasoning + the web-search
+    plugin, ~55–76s) by running it on the **async** `research_job` path — past the 30s API Gateway cap, so
+    Pro no longer times out. Fit scoring stays on fast Qwen (it runs batched, behind the sync path).
   - **Model routing override:** `HOLDSLOT_OPENROUTER_MODELS` (comma-separated) env var beats the secret's
     `models` — lets ops repoint models via a Lambda env var (or local dev) without a Secrets Manager write.
   - **Prompt-preview:** `GET /{client}/brief/structure/preview` returns the exact system + input prompt
@@ -263,19 +289,24 @@ ICP-card `.icp-grid` grammar (exclusions as `.icp-chip.warn`), gap prompts in a 
   attestation checkbox** on each required exclusion list, gap callout); **Generate Scope** gated on all 6
   sections complete.
 - **Quality:** 31 backend tests pass; ruff/black clean; 2-reviewer issues all fixed.
-- **B6 — ResearchSpec v2 (Apollo enrichment of the brief; 2026-06-21).** No migration (JSONB, append-only).
-  Three sub-edits, all in `domains/briefs`:
-  1. `research_spec.py` strict `json_schema` + Pydantic validator → the **v2 shape** above (flat
-     `locations_*`; add `funding`, `hiring_signals`, `include_similar_titles`; `industries_*` →
-     `industry_keywords_*`; keep `founded`/`company_types`/`departments`/`job_title_exclude` as carried
-     fields the mapper routes DB-side). Bump `SPEC_VERSION = 2`, `PROMPT_VERSION = "brief-structure-v3"`.
-  2. `DEFAULT_SYSTEM_PROMPT` → **de-Clay + Apollo-aware**: drop "Clay parameters / LinkedIn industry
-     labels"; instruct the model to (a) emit industry intent as free-text **keyword tags**, (b) translate
-     the brief's *buying signals* into `funding` + `hiring_signals`, (c) constrain `seniority` to Apollo's
-     fixed enum, (d) express `maturity` as employee/revenue/funding ranges (no standalone Apollo filter).
-  3. `CREDIT_POLICY` → add `email_status_filter: ["verified"]`; keep `phone: false`.
-  - **DoD:** Generate Scope produces a v2 spec; the *Prospect Scope* panel renders the new sections (no
-    new CSS — reuse the `.icp-grid` grammar); old v1 rows still load. Re-run = `version+1`.
+- **B6 — ResearchSpec v3 + async structuring (built 2026-06-22).** The B→C contract, now Apollo-native and
+  run off the request path. Three parts:
+  1. **v3 schema** (`research_spec.py`): strict `json_schema` + Pydantic validator → **exact Apollo request
+     fields** (`company_search_params`, `people_search_params`, `intent_filters`, `icp_validation`,
+     `icp_suggestions`, `gaps`). `SPEC_VERSION = 3`, `PROMPT_VERSION = "brief-structure-v5"`;
+     `DEFAULT_SYSTEM_PROMPT` is seeded from / kept in lockstep with `docs/prompts/brief-structure-v5.md`
+     (a drift test binds the constant to the seed file).
+  2. **Async path** (`research_job`, migration `0009`): `POST /brief/structure` inserts a `queued` row and
+     dispatches a background worker (Lambda **self async-invoke**; a daemon thread locally) on **DeepSeek V4
+     Pro** (thinking + web-search plugin, ~55–76s); the UI polls `GET /brief/structure/status` until
+     terminal. One in-flight job per tenant → a double-click can't double-spend.
+  3. **Prompt store** (migration `0010`): `sourcing_doc`→`prompt` with a `stage` column
+     (`briefing`/`sourcing`/`fit_scoring`); the `briefing` prompt is read **DB-first per client** (seeded
+     v1), code-constant fallback. `CREDIT_POLICY` stays server-merged (`email_status_filter:["verified"]`,
+     `phone:false`, caps) — never LLM-set.
+  - **DoD (met):** Generate Scope produces a v3 spec asynchronously; the *Prospect Scope* panel renders
+    every Apollo field for operator review; old v1/v2 spec rows still load. Re-run = `version+1`. 37 backend
+    tests green; ruff/tsc clean; deployed to dev as Lambda v21.
 - **Open item (doesn't block C):** founder end-to-end acceptance test on dev. Tick **S1** once run.
 
 **Critical path:** B0 → B1 → B2 → {B3 → B4} → B5 → **B6**. After B, a Brief/ICP form change costs a
@@ -334,13 +365,14 @@ as the old `import_companies` did. No new tenancy, no campaign table.
 | Actor | Job | Cost |
 |---|---|---|
 | **Apollo** (REST, headless) | company search (credit-consuming — confirm at C0) + people search (**0 cr**); `people/match` enriches the selected set | company search: plan credits · people search $0 · enrich 1 cr/email (8/phone) |
-| **`apollo_map`** (pure, fixture-tested) | `ResearchSpec` v2 → Apollo request params (deterministic — no LLM); routes the `⊘` fields DB-side | — |
-| **LLM** (OpenRouter, built) | **only** batched `score_rows` (company/person fit). *(All Brief→targeting judgment now lives in the B LLM that wrote the v2 spec — no second `design_filter` LLM pass; see below.)* | OpenRouter $ (small) |
+| **`apollo_map`** (pure, fixture-tested) | `ResearchSpec` v3 → Apollo request params (near pass-through — v3 already emits Apollo field names; no LLM); routes the `⊘` fields DB-side | — |
+| **LLM** (OpenRouter, built) | **only** batched `score_rows` (company/person fit). *(All Brief→targeting judgment now lives in the B LLM that wrote the v3 spec — no second `design_filter` LLM pass; see below.)* | OpenRouter $ (small) |
 | **HoldSlot DB** (Aurora) | system of record: dedupe, suppression, DB-side post-filters, scores, lineage, status | — |
 
 > **Architecture refinement (2026-06-21):** v1's plan had a second LLM (`design_filter`, purpose
-> `apollo_filter`) re-distilling the brief into Apollo params at C3. With **ResearchSpec v2** carrying
-> Apollo-aligned targeting (keyword tags, ranges, funding/hiring signals, enum seniority), that mapping is
+> `apollo_filter`) re-distilling the brief into Apollo params at C3. With **ResearchSpec v3** emitting the
+> exact Apollo request fields directly (keyword tags, comma-string ranges, funding/hiring signals, enum
+> seniority), that mapping is
 > now **deterministic** — `apollo_map` (pure, fixture-tested) replaces the LLM. This removes a drift
 > surface (two LLMs distilling the same brief could disagree), an LLM cost, and makes the whole Flow A/B
 > request build unit-testable. The `apollo_filter` purpose is **dropped**; fit scoring is the only Phase-C LLM.
@@ -348,12 +380,12 @@ as the old `import_companies` did. No new tenancy, no campaign table.
 ### End-to-end flow (two gates · no CSV · no operator)
 ```
 FLOW A — Find Company
-  apollo_map.map_company_filter(spec.company_search) ─▶ Apollo mixed_companies/search (paginate; plan credits)
+  apollo_map.map_company_filter(spec.company_search_params + intent_filters) ─▶ Apollo mixed_companies/search (paginate; plan credits)
         └─ DB-side post-filter (founded/company_types/kw-exclude) + exclusion/existing-customer drop
         └─ upsert company on apollo_org_id (discovered) ─▶ auto batched score_rows("company") ─▶ fit_score + reason
   GATE 1: review + PATCH companies/select  (status=selected) — scopes Flow B
 FLOW B — Find People
-  apollo_map.map_people_filter(spec.people_search, org_ids=selected apollo_org_ids)
+  apollo_map.map_people_filter(spec.people_search_params, org_ids=selected apollo_org_ids)
         ─▶ Apollo mixed_people/api_search (0 cr, NO email/phone)
         └─ DB-side post-filter (title-exclude/departments/max_per_company) + exclusion drop
         └─ upsert prospect on apollo_person_id, link company_id directly (found, unenriched)
@@ -369,11 +401,11 @@ exclusion/existing-customer/post-filter is DB-side (no extra API calls); scoring
 only user-selected rows; phone off by default (8× + async webhook).
 
 ### Model usage — ONE LLM service in Phase C (`llm_call.purpose`)
-The Brief→targeting LLM ran in **B** (writing the v2 spec); **`apollo_map` is deterministic (no LLM)**. So
+The Brief→targeting LLM ran in **B** (writing the v3 spec); **`apollo_map` is deterministic (no LLM)**. So
 Phase C's only LLM is the fit scorer:
 | `llm_call.purpose` | Where | Function | Model | Notes |
 |---|---|---|---|---|
-| `company_fit` / `prospect_fit` | C3 `score_rows` | batched 50–100 rows → `[{id, ai_score, reason}]` | `qwen/qwen3.5-flash-02-23` (fallback `meta-llama/llama-3.3-70b-instruct`), `temp=0`, thinking off | **auto-run per arriving batch**; cached, re-score on ICP edit |
+| `company_fit` / `prospect_fit` | C3 `score_rows` | batched 50–100 rows → `[{id, ai_score, reason}]` | `qwen/qwen3.5-flash-02-23` (`FIT_MODELS`; Llama fallback dropped 2026-06-22), `temp=0`, thinking off | **auto-run per arriving batch**; cached, re-score on ICP edit |
 
 > **Region rule (see B0):** OpenAI / Anthropic / Google providers are geo-blocked (403 ToS) for this HK account — every purpose routes to non-US providers only (Qwen / Llama / DeepSeek / Mistral).
 
@@ -381,12 +413,16 @@ The killed AI-loop purposes (`sourcing_round`, `candidate_validate`) **and the p
 purpose** are removed. Filter-building + dedupe are deterministic (no LLM).
 
 ### Apollo parameter contract (deep-researched 2026-06-21 — the `apollo_map` spec)
-The authoritative request-param mapping. `apollo_map` (C3, pure) builds exactly these from `ResearchSpec`
-v2; everything marked **DB-side** is a post-filter because Apollo has no request param for it. **Confirm
-exact keys + the company-search credit cost against a live master-key call at C0** before hard-coding.
+The authoritative request-param mapping. `apollo_map` (C2/C3, pure) builds exactly these from `ResearchSpec`
+**v3**. **Because v3 already emits Apollo's field names**, the *source* column is now a **near-identity
+forward** — `apollo_map` mostly copies each param straight across; the brief concept each field captures is
+named below for reference (these are the pre-v3 names; in v3 the spec key matches the Apollo key). The real
+work that remains is the comma-string/range packing and the `⊘` **DB-side** post-filters (Apollo has no
+request param for those). **Confirm exact keys + the company-search credit cost against a live master-key
+call at C0** before hard-coding.
 
 **Flow A — `POST mixed_companies/search`** (auth `X-Api-Key`; **credit-consuming — confirm at C0**)
-| Apollo request param | Type / vocabulary | ← ResearchSpec v2 source |
+| Apollo request param | Type / vocabulary | ← ResearchSpec v3 (brief concept it captures) |
 |---|---|---|
 | `q_organization_keyword_tags[]` | free-text keywords | `industry_keywords_include` + `description_keywords_include` + distilled `semantic_description` |
 | `organization_num_employees_ranges[]` | array of `"min,max"` strings (arbitrary bounds) | `employee_count {min,max}` |
@@ -401,7 +437,7 @@ exact keys + the company-search credit cost against a live master-key call at C0
 | `q_organization_keyword_tags` notes | no exclude variant; no free-text industry filter | (industry → keyword tags; tag-IDs are a later precision lever) |
 
 **Flow B — `POST mixed_people/api_search`** (auth `X-Api-Key`, **master key**; **0 credits**, no email/phone)
-| Apollo request param | Type / vocabulary | ← ResearchSpec v2 source |
+| Apollo request param | Type / vocabulary | ← ResearchSpec v3 (brief concept it captures) |
 |---|---|---|
 | `organization_ids[]` | Apollo org ids | **selected** `company.apollo_org_id` (the Flow A→B scope link — required) |
 | `person_titles[]` | free text, fuzzy | `job_title_keywords` |
@@ -431,9 +467,9 @@ exact keys + the company-search credit cost against a live master-key call at C0
    carry `last_name`/`linkedin_url`/`departments[]` (the docs stub obfuscates them). Lock `apollo_map` to
    what the fixtures actually return.
 
-**C1 — Data model (migration `0009`).** `add company.apollo_org_id` (nullable, unique per tenant — feeds
+**C1 — Data model (migration `0011`).** `add company.apollo_org_id` (nullable, unique per tenant — feeds
 Find People's `organization_ids`) · `add prospect.apollo_person_id` (nullable — the `people/match` key) ·
-`drop tenant.seed_limit` (was AI-loop seed anchoring). **DoD:** models gain the two ids; `0008 → 0009`
+`drop tenant.seed_limit` (was AI-loop seed anchoring). **DoD:** models gain the two ids; `0010 → 0011`
 head; up/down clean on dev.
 
 **C2 — Apollo transport + adapters.**
@@ -442,28 +478,30 @@ head; up/down clean on dev.
   (`mixed_companies/search`, **credit-consuming**) · `search_people` (`mixed_people/api_search`, 0 cr, no
   email/phone, **master key**; **never** legacy `mixed_people/search` → 422) · `match_person`
   (`people/match`, the enrich spend; `reveal_phone_number` ← `PHONE_ENABLED` → requires `webhook_url`).
-- `domains/prospects/apollo_map.py` (pure, fixture-tested): `map_company_filter(company_search)`,
-  `map_people_filter(people_search_item, org_ids)`, `parse_company`, `parse_person` — **exactly the
-  *Apollo parameter contract* tables above**, incl. the deterministic transforms (employee→ranges,
-  enum-seniority, locations-flatten) and the DB-side `⊘` post-filter set. **DoD:** builders + parsers
+- `domains/prospects/apollo_map.py` (pure, fixture-tested): `map_company_filter(company_search_params,
+  intent_filters)`, `map_people_filter(people_search_params, org_ids)`, `parse_company`, `parse_person` —
+  **exactly the *Apollo parameter contract* tables above**. Since v3 emits Apollo field names, this is
+  mostly a pass-through; the real transforms left are range-packing + the DB-side `⊘` post-filter set.
+  **DoD:** builders + parsers
   unit-tested against the C0 fixtures, no network.
 
 **C3 — Deterministic filter build + LLM fit scoring.**
 - **No `design_filter.py`, no `apollo_filter` LLM.** Filter building is `apollo_map` (C2, pure) consuming
-  the v2 spec — the brief→targeting judgment already ran in B6. The DB-side post-filters (`⊘` rows) live
+  the v3 spec — the brief→targeting judgment already ran in B6. The DB-side post-filters (`⊘` rows) live
   next to `suppression.py` and run on each search's results before upsert.
 - `fit.py` — add the batched `score_rows(rows, inputs, mode) → [{id, ai_score, reason}]` scorer
-  (50–100/call, cached), auto-invoked per arriving batch. Keep the `fit_rubric` `sourcing_doc`; drop `sourcing_prompt`.
+  (50–100/call, cached), auto-invoked per arriving batch. Keep the `fit_scoring` `prompt`; the retired
+  `sourcing` stage prompt is unused.
 
 **C4 — Flow A (Find Company).** `POST /{client}/companies/find-company` (A.1):
-`search_companies(map_company_filter(spec.company_search))` (paginate, cap at `max_results`) → DB-side
+`search_companies(map_company_filter(spec.company_search_params + intent_filters))` (paginate, cap at `max_results`) → DB-side
 post-filter + exclusion / existing-customer drop → upsert on `apollo_org_id` (`discovered`) → auto
 `score_rows("company")` → return rows + a `research_run` (`source="apollo"`). `PATCH
 /{client}/companies/select` (A.3): `status=selected`. **DoD:** companies land scored; selection scopes
 Flow B; `GET /companies` feeds the table.
 
 **C5 — Flow B (Find People + enrich).** `POST /{client}/people/find-people` (B.1):
-`search_people(map_people_filter(spec.people_search[i], org_ids=selected apollo_org_ids))` (0 cr, no email)
+`search_people(map_people_filter(spec.people_search_params, org_ids=selected apollo_org_ids))` (0 cr, no email)
 → DB-side post-filter + exclusion drop → upsert on `apollo_person_id`, link `company_id` directly,
 `status=found` → auto `score_rows("people")`. (Empty selected-org set → `400 "select companies first"`.)
 `POST /{client}/prospects/enrich` (B.3, reworked): Apollo `people/match` on the **selected** rows only →
@@ -471,9 +509,13 @@ write `email` / `email_valid` / `phone` / `provider`, `status=scored` (the only 
 B.4 sets selection/status; no `batches` table (Phase D). **DoD:** find → score → select → enrich runs end
 to end on live Apollo; only selected people cost credits.
 
-**C6 — Frontend wiring + Clay/AI-loop teardown.**
+**C6 — Frontend wiring + Clay/AI-loop teardown.** *(The teardown half — all the **Delete** items below —
+was executed 2026-06-22 ahead of the rebuild; see the NEXT SESSION banner. What remains for C6 is the
+**wiring** half: add the real Apollo client calls and turn the two disabled "Find" stub buttons into live
+fetches.)*
 - `lib/api.ts`: add `findCompanies`, `selectCompanies`, `findPeople`, reworked `enrichProspects`; **drop**
   `importProspectsCsv`, `importCompaniesCsv`, `runSourcingRound`, `acceptCandidates`, `saveSourcingSettings`.
+  *(the four `drop`s already done; `enrichProspects` already trimmed to `{confirmed}`.)*
 - Workspace `#list`: **"Trigger Find Companies" / "Trigger Find People"** go from CSV file-inputs to plain
   buttons → API fetch → table populates (layout/columns unchanged — the **AI Score** column already
   exists). Delete the **"copy seeds"** clipboard bridge (selection scopes Find People server-side) and the
@@ -486,17 +528,18 @@ to end on live Apollo; only selected people cost credits.
 
 **Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6. **C1/C2/C3 can be built in parallel against the C0
 fixtures** before the live key is integration-ready; only C0's smoke test + C4/C5 end-to-end need the
-upgraded plan. **Depends on B6** (the v2 spec `apollo_map` consumes). **MVP cost:** Apollo Professional
+upgraded plan. **Depends on B6** (the v3 spec `apollo_map` consumes — built). **MVP cost:** Apollo Professional
 (master key — see *MVP running cost*) + LLM <$10/mo; **people search is 0 credits**, but **company search
 consumes plan credits** (confirm at C0) and the gate-2 enriched set spends 1 cr/email.
 
 ### Cross-phase
 - **From A:** the central guard scopes every table; **MVP adds ZERO AWS resources** (`find-company` /
   `find-people` / `enrich` are routes on the existing `$default` proxy).
-- **From B:** `ResearchSpec` **v2** (`company_search` / `people_search` / `exclusions`, now carrying
-  funding + hiring signals + enum seniority) is the `apollo_map` input — consumed **deterministically**
-  into Apollo params (no second LLM). Exclusion lists + the B3 adapter + `llm_call` + `prompt_version` are
-  reused as-is for fit scoring.
+- **From B:** `ResearchSpec` **v3** (`company_search_params` / `people_search_params` / `intent_filters` /
+  `icp_validation`, in exact Apollo field names with funding + hiring signals + enum seniority) is the
+  `apollo_map` input — consumed **deterministically** into Apollo params (no second LLM). Suppression feeds
+  from the brief text (no `exclusions` block). The B3 adapter + `llm_call` + `prompt_version` are reused
+  as-is for fit scoring.
 - **To D:** `fit_reason` + score are client-facing on the approval page; create-batch hands the selected
   enriched set to Phase D, which builds the real `batches` table.
 - **To E:** `outreach_outcome` (schema present, written by E) closes the self-improve loop; the fit bar is
@@ -709,7 +752,7 @@ fields show `PEND`, not `FAIL`; use `--strict` at the phase that needs them).
 | Secret | Status | Verifier confirms |
 |---|---|---|
 | `holdslot/prod/app` | ✅ | JWT signing+refresh present, ≥32 chars, distinct |
-| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK; set to `[deepseek/deepseek-v4-flash, meta-llama/llama-3.3-70b-instruct]` 2026-06-21 |
+| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK. The secret `models` is only the default fallback now: each call site pins its own list in code — **scoping** = `SCOPING_MODELS` (`deepseek/deepseek-v4-pro`, async path), **fit** = `FIT_MODELS` (`qwen/qwen3.5-flash-02-23`); Llama dropped 2026-06-22 |
 | `holdslot/prod/apollo` | ◑ | `key` stored but **free-tier** (Search/Match 403) — upgrade to Professional + master key → C0. (`holdslot/prod/clay` retired) |
 | `holdslot/prod/smartlead` | ◑ | `api_key` valid; sending accounts + `webhook_signing_secret` → E |
 | `holdslot/prod/google` | ✅ | SA + domain-wide delegation + Calendar + Meet REST all 200, one seat (`info@tryholdslot.com`) |

@@ -1,49 +1,13 @@
-"""API I/O for the prospects domain (C2/C3/C4/C5/C6).
+"""API I/O for the prospects domain (Apollo find + enrich).
 
 Thin Pydantic shapes over the ORM rows; the business logic lives in the pure modules
-(`suppression`, `clay`, `fit`, `sourcing`). The round-history list doubles as the C4 cost
-scoreboard (`cost_per_accepted` is derived, not stored).
+(`suppression`, `fit`). The research-run list doubles as the cost scoreboard
+(`cost_per_accepted` is derived, not stored).
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
-
-
-class CandidateIn(BaseModel):
-    """A seed prospect to push to Clay (C2). Mirrors the Clay push-input contract."""
-
-    full_name: str = ""
-    first_name: str = ""
-    last_name: str = ""
-    company: str = ""
-    domain: str = ""
-    linkedin_url: str = ""
-    email: str = ""
-    company_industry: str = ""
-    target_titles: str = ""
-    target_seniority: str = ""
-
-
-class ResearchRequestIn(BaseModel):
-    """C2 — push a suppressed, deduped candidate set into the one Clay webhook for an ICP."""
-
-    candidates: list[CandidateIn] = Field(default_factory=list)
-
-
-class DropSummary(BaseModel):
-    reason: str
-    count: int
-
-
-class ResearchResult(BaseModel):
-    """C2 result — the suppression scoreboard + how many rows actually reached Clay."""
-
-    run_id: str
-    received: int
-    pushed: int
-    suppressed: int
-    drops: list[DropSummary] = []
 
 
 class CompanyOut(BaseModel):
@@ -69,7 +33,7 @@ class CompanyOut(BaseModel):
 
 
 class CompanyManualIn(BaseModel):
-    """Manually add one company (stage-1 gate) — same schema as an imported row, `source=manual`."""
+    """Manually add one company (stage-1 gate) — same schema as a sourced row, `source=manual`."""
 
     domain: str
     name: str = ""
@@ -81,20 +45,8 @@ class CompanyManualIn(BaseModel):
     icp_id: str | None = None
 
 
-class CompanyImportResult(BaseModel):
-    """Find-Companies CSV → what it became after dedupe → suppress → company-fit score."""
-
-    run_id: str | None = None
-    parsed: int
-    stored: int
-    suppressed: int
-    scored: int
-    score_errors: int = 0
-    by_tier: dict[str, int] = {}
-
-
 class ProspectManualIn(BaseModel):
-    """Manually add one person (stage-2 gate) — same schema as an imported row, `source=manual`."""
+    """Manually add one person (stage-2 gate) — same schema as a sourced row, `source=manual`."""
 
     full_name: str = ""
     company: str = ""
@@ -114,26 +66,14 @@ class EnrichIn(BaseModel):
     identity_keys: list[str] = Field(default_factory=list)
 
 
-class EnrichExportRow(BaseModel):
-    """One confirmed row the operator runs through Clay's Work Email waterfall."""
-
-    identity_key: str
-    full_name: str = ""
-    company: str = ""
-    domain: str = ""
-    linkedin_url: str = ""
-    email: str = ""
-
-
 class EnrichResult(BaseModel):
-    """Enrich-gate result — how many were confirmed + the export list for the Clay enrich run."""
+    """Enrich-gate result — how many rows were confirmed for enrichment."""
 
     confirmed: int
-    export: list[EnrichExportRow] = []
 
 
 class ProspectOut(BaseModel):
-    """One Prospect-list row (C6) — fit context + source, scoped to the caller's client."""
+    """One Prospect-list row — fit context + source, scoped to the caller's client."""
 
     id: str
     identity_key: str
@@ -158,20 +98,8 @@ class ProspectOut(BaseModel):
     created_at: str | None = None
 
 
-class ImportResult(BaseModel):
-    """C3 result — what an exported CSV became after suppress → store → score."""
-
-    run_id: str | None = None
-    parsed: int
-    stored: int
-    suppressed: int
-    scored: int
-    score_errors: int = 0
-    by_tier: dict[str, int] = {}
-
-
 class ResearchRunOut(BaseModel):
-    """C4 — one round in the history table; `cost_per_accepted` is the derived $/accepted."""
+    """One research run; `cost_per_accepted` is the derived $/accepted."""
 
     run_id: str
     source: str
@@ -185,65 +113,21 @@ class ResearchRunOut(BaseModel):
 
 
 class SourcingDocOut(BaseModel):
-    kind: str
+    stage: str
     version: int
     body: str
     created_at: str | None = None
 
 
 class SourcingDocList(BaseModel):
-    """Latest + version list per kind, plus the scalar seed_limit, for the Sourcing-settings UI."""
+    """Latest + version list for the fit rubric (the one editable scoring doc)."""
 
-    sourcing_prompt: SourcingDocOut | None = None
-    fit_rubric: SourcingDocOut | None = None
-    prompt_versions: list[int] = []
+    fit_scoring: SourcingDocOut | None = None
     rubric_versions: list[int] = []
-    seed_limit: int = 10
 
 
 class SourcingDocIn(BaseModel):
-    """Save the founder's edit as the next version of one kind."""
+    """Save the founder's edit as the next version of the fit-scoring rubric."""
 
-    kind: str  # sourcing_prompt | fit_rubric
+    stage: str  # fit_scoring
     body: str
-
-
-class SourcingSettingsIn(BaseModel):
-    """Per-client scalar sourcing config (not versioned). seed_limit ∈ [1, 50]."""
-
-    seed_limit: int = Field(ge=1, le=50)
-
-
-class SourcingSettingsOut(BaseModel):
-    seed_limit: int
-
-
-class SourcingRoundIn(BaseModel):
-    icp_id: str | None = None
-    seed_limit: int = 10  # how many existing passed-fit prospects to anchor on
-
-
-class SourcingCandidate(BaseModel):
-    """A pending-review AI candidate (the raw evidence object + its computed identity)."""
-
-    identity_key: str
-    full_name: str = ""
-    company: str = ""
-    domain: str = ""
-    preliminary_tier: str = ""
-    evidence: dict = {}
-
-
-class SourcingRoundResult(BaseModel):
-    run_id: str
-    returned: int
-    validated: int
-    suppressed: int
-    pending_review: int
-    candidates: list[SourcingCandidate] = []
-
-
-class AcceptIn(BaseModel):
-    """Accept pending AI candidates by identity key → push them through the C2 path."""
-
-    identity_keys: list[str] = Field(default_factory=list)

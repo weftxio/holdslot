@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, type ReactNode, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -16,6 +16,7 @@ import {
   type IcpApi,
   type IcpSuggestion,
   type ProspectApi,
+  type ResearchJob,
   type ResearchSpecResult,
   type ScopingPrompt,
   type SourcingDocList,
@@ -26,17 +27,15 @@ import {
   enrichProspects,
   getBrief,
   getResearchSpec,
+  getStructureStatus,
   getScopingPrompt,
   getSourcingDocs,
   saveScopingSystemPrompt,
-  importCompaniesCsv,
-  importProspectsCsv,
   listCompanies,
   listIcps,
   listProspects,
   putBrief,
   saveSourcingDoc,
-  saveSourcingSettings,
   structureBrief,
   updateIcp as apiUpdateIcp,
 } from "@/lib/api";
@@ -148,13 +147,20 @@ const STATUS_LABEL: Record<string, string> = {
   suppressed: "Suppressed",
   score_error: "Score error",
 };
-// Origin chip (not transport): where the row came from.
+// Origin chip (not transport): where the row came from. (clay/ai_loop are legacy values still
+// shown on pre-Apollo rows in dev; new rows are apollo | manual.)
 const SOURCE_CLS: Record<string, string> = {
+  apollo: "badge-info",
+  manual: "badge-warn",
   clay: "badge-neutral",
   ai_loop: "badge-info",
-  manual: "badge-warn",
 };
-const SOURCE_LABEL: Record<string, string> = { clay: "Clay", ai_loop: "AI", manual: "Manual" };
+const SOURCE_LABEL: Record<string, string> = {
+  apollo: "Apollo",
+  manual: "Manual",
+  clay: "Clay",
+  ai_loop: "AI",
+};
 // Clay Work-Email waterfall cost per head — the only spend in the two-stage flow (sourcing is
 // free). Drives the Step-2 dock cost preview; the real spend is reconciled in Clay (no API).
 const ENRICH_COST_USD = 0.03;
@@ -447,8 +453,13 @@ const apiToIcp = (a: IcpApi): Icp => {
 };
 
 // Read-only chips for a ResearchSpec value list (— when empty). Reuses the ICP card grammar.
+// Quiet em-dash for an empty value (NOT the hatched `.ph` sample marker — a data field that
+// the AI left blank is a normal state, so it reads as a muted dash, not a placeholder box).
+function Dash() {
+  return <span className="muted">—</span>;
+}
 function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
-  if (!items || !items.length) return <span className="ph">—</span>;
+  if (!items || !items.length) return <Dash />;
   return (
     <div className="icp-chips">
       {items.map((v, i) => (
@@ -458,6 +469,64 @@ function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
       ))}
     </div>
   );
+}
+
+// One labeled cell in the spec-review grid (reuses the .icp-cell grammar). Value is any JSX.
+function SpecCell({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="icp-cell">
+      <div className="k">{label}</div>
+      <div className="v">{children}</div>
+    </div>
+  );
+}
+// A section heading above each spec-review grid. Deliberately heavier/darker than the faint
+// `.icp-cell .k` field labels so the two tiers read as a clear hierarchy, with a hairline rule.
+function SpecHead({ children }: { children: ReactNode }) {
+  return (
+    <div
+      style={{
+        margin: "20px 0 8px",
+        fontSize: 12,
+        fontWeight: 700,
+        letterSpacing: "0.05em",
+        textTransform: "uppercase",
+        color: "var(--ink-soft)",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+type Range = { min?: number | null; max?: number | null } | undefined;
+// "50–500" / "50+" / "up to 500" / null, with an optional value formatter (e.g. USD).
+function rangeText(r: Range, fmt: (n: number) => string = (n) => `${n}`): string | null {
+  const lo = r?.min,
+    hi = r?.max;
+  if (lo != null && hi != null) return `${fmt(lo)}–${fmt(hi)}`;
+  if (lo != null) return `${fmt(lo)}+`;
+  if (hi != null) return `up to ${fmt(hi)}`;
+  return null;
+}
+const usd = (n: number) => "$" + n.toLocaleString("en-US");
+// Apollo employee ranges are comma-strings ("10,100"); show them as a readable band ("10–100").
+const empBand = (r: string) => {
+  const [lo, hi] = (r ?? "").split(",").map((x) => x.trim());
+  if (!lo) return "";
+  return hi ? `${lo}–${hi}` : `${lo}+`;
+};
+// A YYYY-MM-DD min/max window → "2025-12-22 → 2026-06-22" / "from …" / "until …" / null.
+function dateRange(r?: { min?: string | null; max?: string | null }): string | null {
+  const lo = r?.min,
+    hi = r?.max;
+  if (lo && hi) return `${lo} → ${hi}`;
+  if (lo) return `from ${lo}`;
+  if (hi) return `until ${hi}`;
+  return null;
+}
+// A plain text value, or the quiet muted dash when empty (0 and false are real values).
+function Val({ children }: { children: ReactNode }) {
+  return children == null || children === "" ? <Dash /> : <>{children}</>;
 }
 
 // AI Score cell — a clean fit chip (4 tier colors) + a hover/focus info tooltip carrying the
@@ -581,28 +650,60 @@ function SpecReview({
       setSavingPrompt(false);
     }
   }
+  // The full v3 ResearchSpec shape — exact Apollo request fields, rendered field-by-field so the
+  // operator can review every parameter the LLM produced before Phase C's Apollo search (see
+  // research_spec.py). `intent_filters` carries buying signals; `icp_validation` the paying-customer
+  // read; `credit_policy` is server-set, not AI.
   const s = (spec?.spec ?? {}) as {
-    company_search?: {
-      industries_include?: string[];
-      description_keywords_include?: string[];
-      employee_count?: { min?: number | null; max?: number | null };
-      locations_include?: { countries?: string[] };
-      max_results?: number;
+    company_search_params?: {
+      q_organization_keyword_tags?: string[];
+      organization_num_employees_ranges?: string[];
+      organization_locations?: string[];
+      revenue_range?: Range;
     };
-    people_search?: { job_title_keywords?: string[] }[];
-    exclusions?: { domains?: string[] };
+    people_search_params?: {
+      person_titles?: string[];
+      include_similar_titles?: boolean;
+      q_keywords?: string;
+      person_seniorities?: string[];
+      organization_locations?: string[];
+      organization_num_employees_ranges?: string[];
+    };
+    intent_filters?: {
+      company?: {
+        latest_funding_date_range?: { min?: string | null; max?: string | null };
+        q_organization_job_titles?: string[];
+        organization_job_posted_at_range?: { min?: string | null; max?: string | null };
+      };
+      recency_window?: { funding_since?: string | null; jobs_posted_since?: string | null };
+    };
+    icp_validation?: {
+      customer_profiles?: {
+        name?: string;
+        domain?: string;
+        industry?: string;
+        employee_band?: string;
+        hq_country?: string;
+        business_model?: string;
+        source?: string;
+        confidence?: string;
+      }[];
+      paying_customer_summary?: string;
+    };
+    credit_policy?: {
+      email_status_filter?: string[];
+      phone?: boolean;
+      max_companies?: number;
+      max_people?: number;
+    };
   };
-  const cs = s.company_search ?? {};
-  const titles = (s.people_search ?? []).flatMap((p) => p.job_title_keywords ?? []);
-  const ec = cs.employee_count;
-  const size =
-    ec?.min != null && ec?.max != null
-      ? `${ec.min}–${ec.max}`
-      : ec?.min != null
-        ? `${ec.min}+`
-        : ec?.max != null
-          ? `up to ${ec.max}`
-          : null;
+  const cs = s.company_search_params ?? {};
+  const ppl = s.people_search_params ?? {};
+  const intent = s.intent_filters?.company ?? {};
+  const recency = s.intent_filters?.recency_window ?? {};
+  const val = s.icp_validation ?? {};
+  const profiles = val.customer_profiles ?? [];
+  const cp = s.credit_policy ?? {};
   const blocked = structuring || saving || !ready;
   return (
     <>
@@ -615,81 +716,173 @@ function SpecReview({
             prospects.
           </div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            title="Show the exact system + input prompt sent to the AI to generate this scope."
-            onClick={openPrompt}
-          >
-            View prompt
-          </button>
-          {/* The span carries the tooltip; the disabled button gets pointer-events:none so the
-              hover falls through to the span and the title shows (disabled buttons swallow it). */}
-          <span
-            style={{ display: "inline-flex" }}
-            title={
-              !ready
-                ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
-                : "Summarize this brief with AI into a prospect scope."
-            }
-          >
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+          <div className="row" style={{ gap: 8 }}>
             <button
               type="button"
-              className="btn btn-accent btn-sm"
-              disabled={blocked}
-              style={blocked ? { pointerEvents: "none" } : undefined}
-              onClick={onStructure}
+              className="btn btn-ghost btn-sm"
+              title="Show the exact system + input prompt sent to the AI to generate this scope."
+              onClick={openPrompt}
             >
-              {structuring ? "Generating…" : spec ? "Regenerate Scope" : "Generate Scope"}
+              View prompt
             </button>
-          </span>
+            {/* The span carries the tooltip; the disabled button gets pointer-events:none so the
+                hover falls through to the span and the title shows (disabled buttons swallow it). */}
+            <span
+              style={{ display: "inline-flex" }}
+              title={
+                !ready
+                  ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
+                  : "Summarize this brief with AI into a prospect scope."
+              }
+            >
+              <button
+                type="button"
+                className="btn btn-accent btn-sm"
+                disabled={blocked}
+                style={blocked ? { pointerEvents: "none" } : undefined}
+                onClick={onStructure}
+              >
+                {structuring ? "Generating…" : spec ? "Regenerate Scope" : "Generate Scope"}
+              </button>
+            </span>
+          </div>
+          {/* Time-demand note: scoping runs DeepSeek V4 Pro (deep reasoning + web search) on a
+              background worker, so it takes ~1 min — but the user is never blocked while it runs.
+              Shown only while a run is in flight; hidden once it completes. */}
+          {structuring && (
+            <div
+              className="ph-sub"
+              style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
+            >
+              ⏱ Generating… ~1 min · runs in the background, keep working
+            </div>
+          )}
         </div>
       </div>
       {!spec ? (
         <div className="panel-pad">
           <div className="sum-empty">
-            Not generated yet · fill in the brief, then generate your Clay-ready scope.
+            Not generated yet · fill in the brief, then generate your Apollo-ready scope.
           </div>
         </div>
       ) : (
         <div className="panel-pad">
+          <SpecHead>Company search · firmographics</SpecHead>
           <div className="icp-grid">
-            <div className="icp-cell">
-              <div className="k">Industries</div>
-              <div className="v">
-                <SpecChips items={cs.industries_include} />
-              </div>
-            </div>
-            <div className="icp-cell">
-              <div className="k">Company size</div>
-              <div className="v">{size ?? <span className="ph">—</span>}</div>
-            </div>
-            <div className="icp-cell">
-              <div className="k">Geography</div>
-              <div className="v">
-                <SpecChips items={cs.locations_include?.countries} />
-              </div>
-            </div>
-            <div className="icp-cell">
-              <div className="k">Keywords</div>
-              <div className="v">
-                <SpecChips items={cs.description_keywords_include} />
-              </div>
-            </div>
-            <div className="icp-cell">
-              <div className="k">Target titles</div>
-              <div className="v">
-                <SpecChips items={titles} />
-              </div>
-            </div>
-            <div className="icp-cell">
-              <div className="k">Exclusions</div>
-              <div className="v">
-                <SpecChips items={s.exclusions?.domains} warn />
-              </div>
-            </div>
+            <SpecCell label="Industry keyword tags">
+              <SpecChips items={cs.q_organization_keyword_tags} />
+            </SpecCell>
+            <SpecCell label="Company size">
+              <SpecChips items={(cs.organization_num_employees_ranges ?? []).map(empBand)} />
+            </SpecCell>
+            <SpecCell label="Locations (HQ)">
+              <SpecChips items={cs.organization_locations} />
+            </SpecCell>
+            <SpecCell label="Revenue (USD)">
+              <Val>{rangeText(cs.revenue_range, usd)}</Val>
+            </SpecCell>
           </div>
+
+          <SpecHead>People search · personas</SpecHead>
+          <div className="icp-grid">
+            <SpecCell label="Target titles">
+              <SpecChips items={ppl.person_titles} />
+            </SpecCell>
+            <SpecCell label="Similar titles">
+              {ppl.person_titles?.length ? (
+                ppl.include_similar_titles ? (
+                  "Included"
+                ) : (
+                  "Exact only"
+                )
+              ) : (
+                <Dash />
+              )}
+            </SpecCell>
+            <SpecCell label="Industry keywords">
+              <Val>{ppl.q_keywords}</Val>
+            </SpecCell>
+            <SpecCell label="Seniority">
+              <SpecChips items={ppl.person_seniorities} />
+            </SpecCell>
+            <SpecCell label="Locations (HQ)">
+              <SpecChips items={ppl.organization_locations} />
+            </SpecCell>
+            <SpecCell label="Company size">
+              <SpecChips items={(ppl.organization_num_employees_ranges ?? []).map(empBand)} />
+            </SpecCell>
+          </div>
+
+          <SpecHead>Intent signals · funding &amp; hiring</SpecHead>
+          <div className="icp-grid">
+            <SpecCell label="Funding closed">
+              <Val>{dateRange(intent.latest_funding_date_range)}</Val>
+            </SpecCell>
+            <SpecCell label="Funding since">
+              <Val>{recency.funding_since}</Val>
+            </SpecCell>
+            <SpecCell label="Hiring for">
+              <SpecChips items={intent.q_organization_job_titles} />
+            </SpecCell>
+            <SpecCell label="Roles posted">
+              <Val>{dateRange(intent.organization_job_posted_at_range)}</Val>
+            </SpecCell>
+            <SpecCell label="Jobs posted since">
+              <Val>{recency.jobs_posted_since}</Val>
+            </SpecCell>
+          </div>
+
+          <SpecHead>ICP validation · who actually pays</SpecHead>
+          <div className="icp-grid">
+            <SpecCell label="Paying-customer summary">
+              <Val>{val.paying_customer_summary}</Val>
+            </SpecCell>
+          </div>
+          {profiles.map((c, i) => (
+            <div className="icp-grid" key={i} style={{ marginTop: 8 }}>
+              <SpecCell label="Customer">
+                <Val>{c.name || c.domain}</Val>
+              </SpecCell>
+              <SpecCell label="Industry">
+                <Val>{c.industry}</Val>
+              </SpecCell>
+              <SpecCell label="Size">
+                <Val>{c.employee_band}</Val>
+              </SpecCell>
+              <SpecCell label="HQ">
+                <Val>{c.hq_country}</Val>
+              </SpecCell>
+              <SpecCell label="Model">
+                <Val>{c.business_model}</Val>
+              </SpecCell>
+              <SpecCell label="Source">
+                {c.source ? (
+                  <span className={"badge badge-" + (c.source === "web" ? "info" : "neutral")}>
+                    {c.source}
+                    {c.confidence ? ` · ${c.confidence}` : ""}
+                  </span>
+                ) : (
+                  <Dash />
+                )}
+              </SpecCell>
+            </div>
+          ))}
+
+          <SpecHead>Credit policy · server-set (not AI)</SpecHead>
+          <div className="icp-grid">
+            <SpecCell label="Email status">
+              <SpecChips items={cp.email_status_filter} />
+            </SpecCell>
+            <SpecCell label="Phone enrich">{cp.phone ? "On" : "Off"}</SpecCell>
+            <SpecCell label="Max companies">
+              <Val>{cp.max_companies}</Val>
+            </SpecCell>
+            <SpecCell label="Max people">
+              <Val>{cp.max_people}</Val>
+            </SpecCell>
+          </div>
+
           {spec.gaps.length > 0 && (
             <div className="brief-callout" style={{ marginTop: 8 }}>
               <span className="ci">!</span>
@@ -726,22 +919,22 @@ function SpecReview({
                 </button>
               </div>
               <div className="is-why">{sug.rationale}</div>
-              {sug.evidence_companies.length > 0 && (
+              {(sug.evidencing_customers?.length ?? 0) > 0 && (
                 <div className="is-row">
                   <span className="k">Based on</span>
-                  <SpecChips items={sug.evidence_companies} />
+                  <SpecChips items={sug.evidencing_customers ?? []} />
                 </div>
               )}
-              {sug.suggested_industries.length > 0 && (
+              {(sug.company_search_params?.q_organization_keyword_tags?.length ?? 0) > 0 && (
                 <div className="is-row">
                   <span className="k">Industries</span>
-                  <SpecChips items={sug.suggested_industries} />
+                  <SpecChips items={sug.company_search_params?.q_organization_keyword_tags ?? []} />
                 </div>
               )}
-              {sug.suggested_titles.length > 0 && (
+              {(sug.people_search_params?.person_titles?.length ?? 0) > 0 && (
                 <div className="is-row">
                   <span className="k">Titles</span>
-                  <SpecChips items={sug.suggested_titles} />
+                  <SpecChips items={sug.people_search_params?.person_titles ?? []} />
                 </div>
               )}
             </div>
@@ -961,10 +1154,6 @@ const EXCL_TEXT_KEY: Record<
 };
 const MAX_CSV_BYTES = 1_000_000; // 1 MB
 const MAX_CSV_ROWS = 5000;
-// Clay enrichment exports carry ~30 columns/row, so allow more than the exclusion-list cap; the
-// payload is base64-wrapped (~+33%) and stays under the API Gateway 10 MB body limit.
-const MAX_IMPORT_CSV_BYTES = 5_000_000; // 5 MB
-
 // Skipped-row report shown under an exclusion field after an import.
 function CsvErrors({ errors, onDismiss }: { errors?: RowError[]; onDismiss: () => void }) {
   if (!errors || errors.length === 0) return null;
@@ -1125,13 +1314,26 @@ export default function Workspace() {
   const tabSlot = useContext(TopbarSlotCtx);
 
   const [tab, setTab] = useState<string>("brief");
+  // Keep the rendered tab in sync with the URL hash in BOTH directions: on mount/deep-link and
+  // whenever the hash changes via Back/Forward (popstate) — Next's client router doesn't fire
+  // hashchange on its own, so without the listener the Back button desyncs URL from view.
   useEffect(() => {
-    const h = location.hash.slice(1);
-    if (TABS.some(([k]) => k === h)) setTab(h);
+    const sync = () => {
+      const h = location.hash.slice(1);
+      if (TABS.some(([k]) => k === h)) setTab(h);
+    };
+    sync();
+    window.addEventListener("popstate", sync);
+    window.addEventListener("hashchange", sync);
+    return () => {
+      window.removeEventListener("popstate", sync);
+      window.removeEventListener("hashchange", sync);
+    };
   }, []);
   function activate(name: string) {
     setTab(name);
-    history.replaceState(null, "", "#" + name);
+    // pushState (not replace) so each tab is a real history entry the Back button can return to.
+    if (location.hash.slice(1) !== name) history.pushState(null, "", "#" + name);
   }
 
   // ICPs
@@ -1172,8 +1374,8 @@ export default function Workspace() {
           persona: "",
           fields: {
             ...blankFields(),
-            industries: sug.suggested_industries ?? [],
-            jobTitles: sug.suggested_titles ?? [],
+            industries: sug.company_search_params?.q_organization_keyword_tags ?? [],
+            jobTitles: sug.people_search_params?.person_titles ?? [],
           },
         },
       ];
@@ -1288,8 +1490,11 @@ export default function Workspace() {
     });
   const f = icps[icpSel].fields;
 
-  // accordion: one section open at a time (0 = all collapsed)
-  const [openSec, setOpenSec] = useState(1);
+  // accordion: one section open at a time (0 = all collapsed). Starts collapsed; an effect
+  // auto-opens the earliest still-incomplete section once the brief hydrates (see below).
+  const [openSec, setOpenSec] = useState(0);
+  // True once we've auto-opened a section for the current client load (so manual toggles stick).
+  const autoOpenedRef = useRef(false);
   // after a section opens, bring its title bar to the top (below the sticky bars)
   const scrollToSec = (n: number) =>
     setTimeout(
@@ -1323,6 +1528,7 @@ export default function Workspace() {
     if (!client) return;
     let alive = true;
     setLoading(true);
+    autoOpenedRef.current = false; // re-pick the earliest-incomplete section for this client
     (async () => {
       // Load independently so one failing endpoint doesn't blank the others.
       const b = await getBrief(client).catch(() => null);
@@ -1359,6 +1565,15 @@ export default function Workspace() {
         setSpec(rs.latest);
       }
       setLoading(false);
+      // Resume polling if a structuring job is still running from before this load (e.g. a refresh
+      // mid-generation) — the worker runs server-side, so reattach the spinner + pick up the result.
+      const job = await getStructureStatus(client).catch(() => null);
+      if (alive && job && (job.status === "queued" || job.status === "running")) {
+        setStructuring(true);
+        pollStructuring(job, client).finally(() => {
+          if (alive) setStructuring(false);
+        });
+      }
     })();
     return () => {
       alive = false;
@@ -1401,14 +1616,35 @@ export default function Workspace() {
     }
   }
 
-  // Save the brief + ICPs, then structure them into a new ResearchSpec version.
+  // Poll the async structuring worker (DeepSeek V4 Pro scoping runs ~1 min off the request path)
+  // to a terminal state, then load the produced spec. Shared by the Generate button + on-load
+  // resume (a job can still be running after a refresh). `startClient` pins the call to the client
+  // that launched it, so a mid-run client switch never writes another client's spec.
+  async function pollStructuring(job: ResearchJob, startClient: string) {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const deadline = Date.now() + 4 * 60 * 1000; // generous cap; worker keeps running server-side
+    while ((job.status === "queued" || job.status === "running") && Date.now() < deadline) {
+      await sleep(3000);
+      job = await getStructureStatus(startClient);
+    }
+    if (job.status === "done") {
+      const rs = await getResearchSpec(startClient);
+      setSpec(rs.latest);
+      toast("Prospect scope v" + (job.spec_version ?? rs.latest?.version ?? "") + " generated");
+    } else if (job.status === "error") {
+      toast(job.error || "Structuring failed", "warn");
+    } else {
+      toast("Still generating — this can take ~1 min; it'll appear when ready.", "warn");
+    }
+  }
+
+  // Save the brief + ICPs, then kick off async structuring and poll it to completion.
   async function runStructure() {
     setStructuring(true);
     try {
       await persist();
-      const rs = await structureBrief(client);
-      setSpec(rs);
-      toast("Research spec v" + rs.version + " generated");
+      const job = await structureBrief(client); // 202 — returns the job to poll
+      await pollStructuring(job, client);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Structuring failed", "warn");
     } finally {
@@ -1505,6 +1741,15 @@ export default function Workspace() {
   // Prospect-Scope gating stays section-based (every ICP ready, not just the current one), so the
   // field-based bar above can read 100% without unblocking before all sections are truly done.
   const allComplete = Object.values(secComplete).every(Boolean);
+  // The earliest section still missing required fields (0 = none — every section is complete).
+  const firstIncompleteSec = ([1, 2, 3, 4, 5, 6] as const).find((n) => !secComplete[n]) ?? 0;
+  // On load / client switch, open that section (or collapse all when nothing is left). Runs once
+  // per load — guarded by autoOpenedRef so a later edit completing a section won't yank it shut.
+  useEffect(() => {
+    if (loading || autoOpenedRef.current) return;
+    autoOpenedRef.current = true;
+    setOpenSec(firstIncompleteSec);
+  }, [loading, firstIncompleteSec]);
   const errCls = (ok: boolean, base = "input") => clsx(base, submitted && !ok && "err");
 
   // Batches / campaigns
@@ -1560,16 +1805,11 @@ export default function Workspace() {
   const [fFit, setFFit] = useState("");
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
   const [newBatchName, setNewBatchName] = useState("");
-  const [importing, setImporting] = useState(false);
-  const [seedLimit, setSeedLimit] = useState(10); // candidates the AI loop anchors on per round
-
-  // Sourcing settings (per-client seed limit + versioned prompt + rubric), edited in a modal.
+  // Fit-rubric settings (the versioned scoring rubric), edited in a modal.
   const [showSourcing, setShowSourcing] = useState(false);
   const [docs, setDocs] = useState<SourcingDocList | null>(null);
-  const [promptDraft, setPromptDraft] = useState("");
   const [rubricDraft, setRubricDraft] = useState("");
-  const [savingDoc, setSavingDoc] = useState<"sourcing_prompt" | "fit_rubric" | null>(null);
-  const [savingSeed, setSavingSeed] = useState(false);
+  const [savingDoc, setSavingDoc] = useState<"fit_scoring" | null>(null);
 
   // Two-stage prospecting (company-first): step 1 finds companies, step 2 finds people at the
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
@@ -1578,7 +1818,6 @@ export default function Workspace() {
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
   const [coFit, setCoFit] = useState("");
-  const [importingCo, setImportingCo] = useState(false);
   const [enriching, setEnriching] = useState(false);
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
@@ -1605,10 +1844,6 @@ export default function Workspace() {
   const [addPersonOpen, setAddPersonOpen] = useState(false);
   const [personForm, setPersonForm] = useState({ ...blankPerson });
   const [savingPerson, setSavingPerson] = useState(false);
-  // After a confirm-enrich, the export list the operator runs through Clay's Work Email waterfall.
-  const [enrichExport, setEnrichExport] = useState<
-    { identity_key: string; full_name: string; company: string; domain: string }[] | null
-  >(null);
 
   const icpNameById = useMemo(() => {
     const m = new Map<string, string>();
@@ -1673,9 +1908,7 @@ export default function Workspace() {
         setProspects(ps);
         setCompanies(cs);
         setDocs(dl);
-        setPromptDraft(dl?.sourcing_prompt?.body ?? "");
-        setRubricDraft(dl?.fit_rubric?.body ?? "");
-        setSeedLimit(dl?.seed_limit ?? 10);
+        setRubricDraft(dl?.fit_scoring?.body ?? "");
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       }
@@ -1754,11 +1987,6 @@ export default function Workspace() {
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
-  const selectedCompanies = useMemo(
-    () => companies.filter((c) => companyChecked.has(c.id)),
-    [companies, companyChecked]
-  );
-
   function toggleCo(id: string) {
     setCompanyChecked((s) => {
       const n = new Set(s);
@@ -1775,35 +2003,6 @@ export default function Workspace() {
     });
   }
 
-  // Import a Clay Find-Companies CSV (stage 1): dedupe by domain → suppress → company-fit score.
-  async function importCompaniesCsvFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
-      return toast("Please upload a .csv file", "warn");
-    }
-    if (file.size > MAX_IMPORT_CSV_BYTES) {
-      return toast("CSV is too large (max 5 MB) — split the export and import in batches", "warn");
-    }
-    setImportingCo(true);
-    try {
-      const text = await file.text();
-      const res = await importCompaniesCsv(client, text);
-      const tiers = Object.entries(res.by_tier)
-        .map(([t, n]) => `${n} ${t}`)
-        .join(" · ");
-      toast(
-        `Imported ${res.stored} companies · scored ${res.scored}${res.suppressed ? ` · ${res.suppressed} suppressed` : ""}${tiers ? ` · ${tiers}` : ""}`
-      );
-      await reloadCompanies();
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Import failed", "warn");
-    } finally {
-      setImportingCo(false);
-    }
-  }
-
   async function submitAddCompany() {
     if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
     setSavingCo(true);
@@ -1818,23 +2017,6 @@ export default function Workspace() {
     } finally {
       setSavingCo(false);
     }
-  }
-
-  // Copy the selected companies' domains (Find People seeds) so the operator can paste them into
-  // Clay's "start from table of companies". Selection is the bridge between stage 1 and stage 2.
-  async function copySeedList() {
-    if (!selectedCompanies.length) return toast("Select companies first", "warn");
-    const seeds = selectedCompanies
-      .map((c) => c.linkedin_url || c.domain)
-      .filter(Boolean)
-      .join("\n");
-    try {
-      await navigator.clipboard.writeText(seeds);
-      toast(`Copied ${selectedCompanies.length} seeds — run Find People in Clay, then import here`);
-    } catch {
-      toast("Couldn’t copy — select the companies and copy their domains manually", "warn");
-    }
-    setListStage("people");
   }
 
   // ---- Stage 2: people ----
@@ -1860,8 +2042,8 @@ export default function Workspace() {
     }
   }
 
-  // The enrich gate — confirm the selected scored people; the API returns the export list the
-  // operator runs through Clay's Work Email waterfall (~$0.03/head; sourcing was free).
+  // The enrich gate — confirm the selected scored people for enrichment. (The paid Apollo
+  // people/match enrichment is wired server-side in Phase C; this flips status for now.)
   async function confirmEnrich() {
     if (enriching) return;
     const keys = toEnrich.map((p) => p.identity_key);
@@ -1869,8 +2051,7 @@ export default function Workspace() {
     setEnriching(true);
     try {
       const res = await enrichProspects(client, keys);
-      setEnrichExport(res.export);
-      toast(`Confirmed ${res.confirmed} for enrichment — run the Clay waterfall, then re-import`);
+      toast(`Confirmed ${res.confirmed} for enrichment`);
       await reloadProspects();
     } catch (e) {
       toast(e instanceof Error ? e.message : "Confirm failed", "warn");
@@ -1879,62 +2060,16 @@ export default function Workspace() {
     }
   }
 
-  // Import a Clay CSV export (C3): coalesce → suppress → store → fit-score, then reload.
-  async function importCsv(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") {
-      return toast("Please upload a .csv file", "warn");
-    }
-    if (file.size > MAX_IMPORT_CSV_BYTES) {
-      return toast("CSV is too large (max 5 MB) — split the export and import in batches", "warn");
-    }
-    setImporting(true);
-    try {
-      const text = await file.text();
-      const res = await importProspectsCsv(client, text);
-      const tiers = Object.entries(res.by_tier)
-        .map(([t, n]) => `${n} ${t}`)
-        .join(" · ");
-      toast(
-        `Imported ${res.stored} · scored ${res.scored}${res.suppressed ? ` · ${res.suppressed} suppressed` : ""}${tiers ? ` · ${tiers}` : ""}`
-      );
-      await reloadProspects();
-    } catch (err) {
-      toast(err instanceof Error ? err.message : "Import failed", "warn");
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  // Persist the per-client seed limit (scalar config, not versioned).
-  async function saveSeed() {
-    setSavingSeed(true);
-    try {
-      const res = await saveSourcingSettings(client, seedLimit);
-      setSeedLimit(res.seed_limit);
-      setDocs((d) => (d ? { ...d, seed_limit: res.seed_limit } : d));
-      toast(`Seed limit saved · ${res.seed_limit}`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Save failed", "warn");
-    } finally {
-      setSavingSeed(false);
-    }
-  }
-
-  // Save the founder's edit as the next version of the prompt or rubric (append-only vN+1).
-  async function saveDoc(kind: "sourcing_prompt" | "fit_rubric") {
-    const body = (kind === "sourcing_prompt" ? promptDraft : rubricDraft).trim();
+  // Save the founder's edit as the next version of the fit rubric (append-only vN+1).
+  async function saveDoc(stage: "fit_scoring") {
+    const body = rubricDraft.trim();
     if (!body) return toast("Nothing to save", "warn");
-    setSavingDoc(kind);
+    setSavingDoc(stage);
     try {
-      await saveSourcingDoc(client, kind, body);
+      await saveSourcingDoc(client, stage, body);
       const dl = await getSourcingDocs(client);
       setDocs(dl);
-      toast(
-        `Saved ${kind === "sourcing_prompt" ? "sourcing prompt" : "fit rubric"} v${kind === "sourcing_prompt" ? dl.sourcing_prompt?.version : dl.fit_rubric?.version}`
-      );
+      toast(`Saved fit rubric v${dl.fit_scoring?.version}`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Save failed", "warn");
     } finally {
@@ -3003,7 +3138,7 @@ export default function Workspace() {
               </button>
             </div>
             <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
-              ⚙ Sourcing settings
+              ⚙ Fit rubric
             </button>
           </div>
 
@@ -3036,16 +3171,13 @@ export default function Workspace() {
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
                   + Add company
                 </button>
-                <label className={clsx("btn btn-primary btn-sm", importingCo && "disabled")}>
-                  {importingCo ? "Importing…" : "Trigger Find Companies"}
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    style={{ display: "none" }}
-                    disabled={importingCo}
-                    onChange={importCompaniesCsvFile}
-                  />
-                </label>
+                <button
+                  className="btn btn-primary btn-sm disabled"
+                  disabled
+                  title="Apollo company search lands in Phase C"
+                >
+                  Find Companies
+                </button>
               </div>
               <div className="countrow">
                 <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
@@ -3145,7 +3277,11 @@ export default function Workspace() {
                   </button>
                 ) : null}
                 <span className="dock-spacer" />
-                <button className="btn btn-primary" onClick={copySeedList} disabled={!coSelCount}>
+                <button
+                  className="btn btn-primary"
+                  onClick={() => setListStage("people")}
+                  disabled={!coSelCount}
+                >
                   Find people for {coSelCount} →
                 </button>
               </div>
@@ -3180,16 +3316,13 @@ export default function Workspace() {
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
                   + Add person
                 </button>
-                <label className={clsx("btn btn-primary btn-sm", importing && "disabled")}>
-                  {importing ? "Importing…" : "Trigger Find People"}
-                  <input
-                    type="file"
-                    accept=".csv,text/csv"
-                    style={{ display: "none" }}
-                    disabled={importing}
-                    onChange={importCsv}
-                  />
-                </label>
+                <button
+                  className="btn btn-primary btn-sm disabled"
+                  disabled
+                  title="Apollo people search lands in Phase C"
+                >
+                  Find People
+                </button>
               </div>
               <div className="countrow">
                 <b>{visible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{selCount}</b>&nbsp;selected
@@ -3356,11 +3489,11 @@ export default function Workspace() {
           )}
         </div>
 
-        {/* SOURCING SETTINGS MODAL — per-client seed limit + versioned prompt + rubric */}
+        {/* FIT RUBRIC MODAL — the versioned scoring rubric (append-only) */}
         <Modal
           open={showSourcing}
           onClose={() => setShowSourcing(false)}
-          title={`Sourcing settings · ${clientName}`}
+          title={`Fit rubric · ${clientName}`}
           className="modal-lg"
           footer={
             <button className="btn btn-primary btn-sm" onClick={() => setShowSourcing(false)}>
@@ -3369,67 +3502,21 @@ export default function Workspace() {
           }
         >
           <div className="field">
-            <label>Seed limit</label>
-            <div className="row" style={{ gap: 10, alignItems: "center" }}>
-              <input
-                className="input"
-                type="number"
-                min={1}
-                max={50}
-                value={seedLimit}
-                onChange={(e) =>
-                  setSeedLimit(Math.max(1, Math.min(50, Number(e.target.value) || 1)))
-                }
-                disabled={savingSeed}
-                style={{ width: "5rem", padding: "9px 12px", fontSize: 13.5 }}
-              />
-              <span className="ph-sub" style={{ flex: 1, whiteSpace: "nowrap" }}>
-                Passed-fit prospects the AI loop anchors on per round.
-              </span>
+            <div className="between">
+              <label>Fit rubric (v{docs?.fit_scoring?.version ?? "—"})</label>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={saveSeed}
-                disabled={savingSeed || seedLimit === docs?.seed_limit}
+                onClick={() => saveDoc("fit_scoring")}
+                disabled={savingDoc === "fit_scoring"}
               >
-                {savingSeed ? "Saving…" : "Save"}
+                {savingDoc === "fit_scoring" ? "Saving…" : "Save as new version"}
               </button>
             </div>
-          </div>
-          <div className="sourcing-cols">
-            <div className="field">
-              <div className="between">
-                <label>Sourcing prompt (v{docs?.sourcing_prompt?.version ?? "—"})</label>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => saveDoc("sourcing_prompt")}
-                  disabled={savingDoc === "sourcing_prompt"}
-                >
-                  {savingDoc === "sourcing_prompt" ? "Saving…" : "Save as new version"}
-                </button>
-              </div>
-              <textarea
-                className="textarea"
-                value={promptDraft}
-                onChange={(e) => setPromptDraft(e.target.value)}
-              />
-            </div>
-            <div className="field">
-              <div className="between">
-                <label>Fit rubric (v{docs?.fit_rubric?.version ?? "—"})</label>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => saveDoc("fit_rubric")}
-                  disabled={savingDoc === "fit_rubric"}
-                >
-                  {savingDoc === "fit_rubric" ? "Saving…" : "Save as new version"}
-                </button>
-              </div>
-              <textarea
-                className="textarea"
-                value={rubricDraft}
-                onChange={(e) => setRubricDraft(e.target.value)}
-              />
-            </div>
+            <textarea
+              className="textarea"
+              value={rubricDraft}
+              onChange={(e) => setRubricDraft(e.target.value)}
+            />
           </div>
         </Modal>
 
@@ -3614,42 +3701,6 @@ export default function Workspace() {
           </div>
         </Modal>
 
-        {/* ENRICH EXPORT — the confirmed rows the operator runs through Clay's Work Email waterfall */}
-        <Modal
-          open={enrichExport !== null}
-          onClose={() => setEnrichExport(null)}
-          title={`Confirmed for enrichment · ${enrichExport?.length ?? 0}`}
-          footer={
-            <button className="btn btn-primary btn-sm" onClick={() => setEnrichExport(null)}>
-              Done
-            </button>
-          }
-        >
-          <p className="ph-sub" style={{ marginTop: 0 }}>
-            Run these through Clay’s Work Email waterfall (~$0.03/head), then re-import the enriched
-            CSV here — each row flips from “To enrich” to “Enriched”.
-          </p>
-          <div className="list-scroll" style={{ maxHeight: 320 }}>
-            <table className="tbl">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Company</th>
-                  <th>Domain</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(enrichExport ?? []).map((r) => (
-                  <tr key={r.identity_key}>
-                    <td>{r.full_name || "—"}</td>
-                    <td className="muted">{r.company || "—"}</td>
-                    <td className="muted">{r.domain || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </Modal>
       </section>
 
       {/* SENDOUT BATCH */}

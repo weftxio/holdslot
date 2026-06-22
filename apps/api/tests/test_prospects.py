@@ -1,14 +1,13 @@
-"""Phase C unit tests — the pure suppression / identity / ingest / scoring logic (no DB, no net).
+"""Phase C unit tests — the pure suppression / identity / scoring logic (no DB, no net).
 
-These cover the parts the C2/C3 DoD says must be testable independently of transport: the
-suppression gate, identity-key dedupe, the Clay CSV contract, the deterministic fit collapse,
-and the sourcing liveness gate. The integration paths (push, score, round) are exercised by the
-gated DB tests like test_briefs_icps.
+These cover the parts that must be testable independently of transport: the suppression gate,
+identity-key dedupe, and the deterministic fit collapse. The integration paths (manual add,
+score) are exercised by the gated DB tests like test_briefs_icps.
 """
 
 from __future__ import annotations
 
-from app.domains.prospects import clay, fit, sourcing
+from app.domains.prospects import fit
 from app.domains.prospects.identity import identity_key, normalize_domain
 from app.domains.prospects.suppression import (
     Candidate,
@@ -100,92 +99,6 @@ def test_suppress_respects_already_seen_keys():
     assert res.survivors == [] and res.dropped[0][1] == "duplicate"
 
 
-# ----------------------------------------------------------------- Clay push + CSV (C2/C3)
-
-
-def test_assemble_push_row_includes_keys_and_drops_empties():
-    c = Candidate(
-        full_name="Jane Doe", company="Acme", domain="https://www.acme.com", target_seniority="VP"
-    )
-    row = clay.assemble_push_row(c, run_id="run123")
-    assert row["run_id"] == "run123"
-    assert row["identity_key"] == "dlf:acme.com|doe|jane"
-    assert row["domain"] == "acme.com"
-    assert "email" not in row and "company_industry" not in row  # empty optionals dropped
-
-
-def test_parse_export_csv_coalesces_per_contract():
-    header = (
-        "Webhook,run_id,identity_key,full_name,first_name,last_name,company,company_industry,"
-        "domain,linkedin_url,target_titles,target_seniority,email,Work Email Data Provider,"
-        "Work Email,Enrich person,Name,Title,Org,Enrich Company,Name (2),Website,Employee Count,"
-        "Industry,Size,Country,Locality,Annual Revenue,Validate Findymail"
-    )
-    # email gate blank → coalesce to Work Email; company_industry gate blank → coalesce Industry.
-    row = (
-        "grp,run123,dlf:acme.com|doe|jane,Jane Doe,Jane,Doe,Acme,,acme.com,,VP Eng,VP,,Findymail,"
-        "jane@acme.com,grp,Jane Doe,VP Engineering,Acme,grp,Acme,acme.com,250,Software,"
-        "201-500,US,SF,10M,valid"
-    )
-    rows = clay.parse_export_csv(header + "\n" + row + "\n")
-    assert len(rows) == 1
-    er = rows[0]
-    assert er.email == "jane@acme.com" and er.provider == "Findymail" and er.email_valid is True
-    assert er.title == "VP Engineering" and er.seniority == "VP"
-    assert er.company_industry == "Software" and er.company_size == "201-500"
-    assert er.domain == "acme.com" and er.company_domain == "acme.com"
-    assert er.enrichment.get("Country") == "US" and er.enrichment.get("Annual Revenue") == "10M"
-
-
-def test_parse_export_csv_skips_rows_without_correlation_keys():
-    header = "run_id,identity_key,full_name,domain,email,Validate Findymail"
-    rows = clay.parse_export_csv(header + "\n,,Nobody,acme.com,,\n")
-    assert rows == []
-
-
-def test_parse_export_csv_derives_key_for_operator_sourced_people():
-    # Operator-sourced Find-People rows have neither run_id nor our identity_key column; the key
-    # is derived from the row (LinkedIn → domain+name → email), and run_id stays empty (optional).
-    header = "full_name,first_name,last_name,domain,linkedin_url,Title,Work Email"
-    rows = clay.parse_export_csv(
-        header + "\nJane Doe,Jane,Doe,acme.com,linkedin.com/in/jane-doe,VP Eng,jane@acme.com\n"
-    )
-    assert len(rows) == 1
-    er = rows[0]
-    assert er.run_id == "" and er.identity_key == "li:jane-doe"
-    assert er.email == "jane@acme.com" and er.title == "VP Eng"
-
-
-# ------------------------------------------------------- Find-Companies CSV (stage 1, two-stage)
-
-
-def test_parse_company_csv_matches_aliases_and_keys_by_domain():
-    # Header uses Clay's alternate column names (Website / Company LinkedIn / Employee Count).
-    header = (
-        "run_id,Company,Website,Company LinkedIn,Industry,Employee Count,Country,Annual Revenue"
-    )
-    row = (
-        "run9,Acme Robotics,https://www.acme.com/about,"
-        "https://linkedin.com/company/acme,Robotics,201-500,US,10M"
-    )
-    rows = clay.parse_company_csv(header + "\n" + row + "\n")
-    assert len(rows) == 1
-    cr = rows[0]
-    assert cr.domain == "acme.com" and cr.name == "Acme Robotics"
-    # `website` keeps the raw URL (subdomain/path intact); `domain` is the registrable dedupe key.
-    assert cr.website == "https://www.acme.com/about"
-    assert cr.linkedin_url == "https://linkedin.com/company/acme"
-    assert cr.industry == "Robotics" and cr.size == "201-500" and cr.country == "US"
-    assert cr.run_id == "run9"
-    assert cr.evidence.get("Annual Revenue") == "10M"
-
-
-def test_parse_company_csv_skips_rows_without_a_domain():
-    header = "Company,Website,Industry"
-    rows = clay.parse_company_csv(header + "\nNo Domain Co,,Software\n")
-    assert rows == []
-
-
 # --------------------------------------------------------------- company fit collapse (stage 1)
 
 
@@ -242,35 +155,3 @@ def test_fit_schema_is_strict():
     schema = fit.FIT_JSON_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == {"components", "reasons", "reason_tags", "fit_reason"}
-
-
-# --------------------------------------------------------------------------- sourcing validate (C5)
-
-
-def test_validate_candidates_requires_domain_person_and_evidence():
-    good = {
-        "company": {"name": "Acme", "domain": "acme.com", "vertical_source_url": "https://x"},
-        "person": {"full_name": "Jane Doe", "profile_url": "https://li/in/jane"},
-        "timing": {"primary_trigger": {"source_url": "https://news"}},
-    }
-    no_domain = {"company": {"name": "X"}, "person": {"full_name": "Y"}}
-    no_person = {"company": {"domain": "b.com", "vertical_source_url": "u"}, "person": {}}
-    no_evidence = {"company": {"domain": "c.com"}, "person": {"full_name": "Z"}}
-    valid, rejected = sourcing.validate_candidates([good, no_domain, no_person, no_evidence])
-    assert valid == [good]
-    assert sorted(r for _x, r in rejected) == ["no_domain", "no_evidence", "no_person"]
-
-
-def test_to_candidate_maps_evidence_shape():
-    raw = {
-        "company": {"name": "Acme", "domain": "https://acme.com", "vertical": "SaaS"},
-        "person": {
-            "full_name": "Jane Doe",
-            "title": "VP Eng",
-            "seniority": "VP",
-            "profile_url": "https://www.linkedin.com/in/jane-doe",
-        },
-    }
-    c = sourcing.to_candidate(raw)
-    assert c.domain == "acme.com" and c.company_industry == "SaaS"
-    assert c.identity_key == "li:jane-doe"

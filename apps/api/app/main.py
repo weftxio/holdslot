@@ -44,5 +44,16 @@ app.include_router(briefs_router)
 app.include_router(icps_router)
 app.include_router(prospects_router)
 
-# AWS Lambda entrypoint: API Gateway (HTTP API) → Mangum → FastAPI.
-handler = Mangum(app)
+# AWS Lambda entrypoint. Two event shapes reach this one function:
+#   * API Gateway (HTTP API) requests → Mangum → FastAPI.
+#   * Background-job events (self async-invoke; `{"holdslot_job": ...}`) → the worker directly,
+#     OFF the 30s gateway path, so slow structuring (DeepSeek V4 Pro) can run to completion.
+_asgi_handler = Mangum(app)
+
+
+def handler(event, context):
+    from app.domains.briefs.structuring import JOB_EVENT_KEY, handle_job_event
+
+    if isinstance(event, dict) and event.get(JOB_EVENT_KEY):
+        return handle_job_event(event)
+    return _asgi_handler(event, context)

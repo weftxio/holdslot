@@ -9,8 +9,7 @@ can only ever reach their own client's brief.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
@@ -19,40 +18,26 @@ from app.domains.briefs.research_spec import (
     DEFAULT_SYSTEM_PROMPT,
     PROMPT_VERSION,
     PURPOSE,
-    RESEARCH_SPEC_JSON_SCHEMA,
-    ResearchSpecV1,
-    assemble_spec,
+    SCOPING_MODELS,
     build_messages,
 )
 from app.domains.briefs.schemas import (
     BriefIn,
     BriefOut,
+    ResearchJobOut,
     ResearchSpecList,
     ResearchSpecOut,
     ScopingPromptOut,
     SystemPromptIn,
     SystemPromptOut,
 )
-from app.integrations.openrouter.client import (
-    LlmError,
-    configured_models,
-    structured_completion,
+from app.domains.briefs.structuring import (
+    STAGE_BRIEFING,
+    enqueue_structuring,
+    latest_job,
+    latest_system_prompt,
 )
-from app.models import Brief, Icp, ResearchSpec, SourcingDoc
-
-# Operators can override the scoping system prompt per client; it is stored as a versioned
-# SourcingDoc of this kind (the user/input prompt is never editable — it is the client brief).
-SYSTEM_PROMPT_KIND = "brief_system_prompt"
-
-
-def _latest_system_prompt(db: Session, tenant_id) -> SourcingDoc | None:
-    return db.execute(
-        select(SourcingDoc)
-        .where(SourcingDoc.tenant_id == tenant_id, SourcingDoc.kind == SYSTEM_PROMPT_KIND)
-        .order_by(SourcingDoc.version.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-
+from app.models import Brief, Icp, Prompt, ResearchJob, ResearchSpec
 
 router = APIRouter(tags=["briefs"])
 
@@ -121,16 +106,22 @@ def preview_structure_prompt(
         select(Icp).where(Icp.tenant_id == ctx.tenant.id).order_by(Icp.created_at)
     ).scalars()
     icp_docs = [{**i.data, "id": str(i.id), "name": i.name, "tag": i.tag} for i in icps]
-    saved = _latest_system_prompt(db, ctx.tenant.id)
+    saved = latest_system_prompt(db, ctx.tenant.id)
     messages = build_messages(
         brief.data if brief else {}, icp_docs, system_override=saved.body if saved else None
     )
     by_role = {m["role"]: m["content"] for m in messages}
+    # "Custom" = the stored prompt diverges from the seeded code default (the seed itself reads as
+    # the default, not a custom edit), so the badge stays honest now that a v1 is always seeded.
+    is_custom = saved is not None and saved.body.strip() != DEFAULT_SYSTEM_PROMPT.strip()
     return ScopingPromptOut(
         system=by_role.get("system", ""),
         user=by_role.get("user", ""),
-        system_is_custom=saved is not None,
-        model=configured_models(),
+        system_is_custom=is_custom,
+        # The scoping call pins SCOPING_MODELS (DeepSeek V4 Pro) regardless of the secret's generic
+        # `models` list, so the preview badge reports THAT — not configured_models(), which still
+        # shows the stale flash→llama default the structuring run never uses.
+        model=list(SCOPING_MODELS),
         purpose=PURPOSE,
         prompt_version=PROMPT_VERSION,
     )
@@ -142,100 +133,65 @@ def save_system_prompt(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> SystemPromptOut:
-    """Save an operator-edited scoping system prompt for this client (a new versioned doc).
+    """Save the scoping system prompt for this client as the next `briefing` version (append-only).
 
-    Saving the default text verbatim is treated as 'reset': any custom override is cleared so the
-    code default stays the single source of truth (no stale copy drifting from the code)."""
+    The `prompt` table is the source of truth and never overwritten — every save (including 'reset
+    to default') appends a new version; the latest is active. An empty body resets to the code
+    default. `is_custom` reflects whether the saved text diverges from that default."""
     text_in = body.system.strip()
-    if not text_in or text_in == DEFAULT_SYSTEM_PROMPT.strip():
-        # Reset to default — drop all custom versions so structuring uses the code default.
-        for d in db.execute(
-            select(SourcingDoc).where(
-                SourcingDoc.tenant_id == ctx.tenant.id, SourcingDoc.kind == SYSTEM_PROMPT_KIND
-            )
-        ).scalars():
-            db.delete(d)
-        db.commit()
-        return SystemPromptOut(system=DEFAULT_SYSTEM_PROMPT, version=0, is_custom=False)
-
-    prev = _latest_system_prompt(db, ctx.tenant.id)
+    effective = DEFAULT_SYSTEM_PROMPT if not text_in else body.system
+    prev = latest_system_prompt(db, ctx.tenant.id)
     next_version = (prev.version + 1) if prev else 1
-    doc = SourcingDoc(
-        tenant_id=ctx.tenant.id, kind=SYSTEM_PROMPT_KIND, version=next_version, body=body.system
+    doc = Prompt(
+        tenant_id=ctx.tenant.id, stage=STAGE_BRIEFING, version=next_version, body=effective
     )
     db.add(doc)
     db.commit()
-    return SystemPromptOut(system=body.system, version=next_version, is_custom=True)
+    is_custom = effective.strip() != DEFAULT_SYSTEM_PROMPT.strip()
+    return SystemPromptOut(system=effective, version=next_version, is_custom=is_custom)
 
 
-@router.post("/{client}/brief/structure", response_model=ResearchSpecOut)
+def _job_out(job: ResearchJob | None) -> ResearchJobOut:
+    if job is None:
+        return ResearchJobOut(status="idle")
+    return ResearchJobOut(
+        job_id=str(job.id),
+        status=job.status,
+        spec_version=job.spec_version,
+        error=job.error,
+    )
+
+
+@router.post(
+    "/{client}/brief/structure",
+    response_model=ResearchJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 def structure_brief(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
-) -> ResearchSpecOut:
-    """Brief (+ICPs) → a new versioned ResearchSpec via the LLM. The bridge into Clay (B4)."""
+) -> ResearchJobOut:
+    """Kick off Brief (+ICPs) → ResearchSpec **asynchronously**; returns a job to poll (202).
+
+    Scoping runs DeepSeek V4 Pro with thinking + web search (~55-76s) — too slow for the 30s API
+    Gateway sync cap — so the LLM call runs on a background worker and the client polls
+    `GET /brief/structure/status` until `done`/`error`. A still-running job is returned as-is, so
+    a double-click never double-spends. (B6, async — see domains/briefs/structuring.py.)
+    """
     brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
     if brief is None or completeness(brief.data) == 0:
-        # Don't spend a (billed) LLM call structuring an empty brief.
+        # Don't enqueue a (billed) LLM call for an empty brief.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "fill in the brief before structuring")
+    return _job_out(enqueue_structuring(db, ctx.tenant.id))
 
-    icps = db.execute(
-        select(Icp).where(Icp.tenant_id == ctx.tenant.id).order_by(Icp.created_at)
-    ).scalars()
-    # Canonical id/name/tag must win over any same-named keys in the opaque ICP document.
-    icp_docs = [{**i.data, "id": str(i.id), "name": i.name, "tag": i.tag} for i in icps]
 
-    # Use the operator's saved system prompt if present, else the code default.
-    saved = _latest_system_prompt(db, ctx.tenant.id)
-    messages = build_messages(brief.data, icp_docs, system_override=saved.body if saved else None)
-    try:
-        result = structured_completion(
-            tenant_id=ctx.tenant.id,
-            purpose=PURPOSE,
-            messages=messages,
-            schema=RESEARCH_SPEC_JSON_SCHEMA,
-            prompt_version=PROMPT_VERSION,
-        )
-    except LlmError as e:
-        # Telemetry is already persisted (e.llm_call_id); surface the specific cause.
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
-
-    # Defensive server-side validation — never persist an off-contract spec.
-    try:
-        ResearchSpecV1(**result.data)
-    except Exception as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "LLM returned an off-contract spec") from e
-
-    spec, gaps, icp_suggestions = assemble_spec(result.data)
-    # Insert the next version, retrying on the unique (tenant, version) race so a concurrent
-    # structuring never discards this already-completed (and billed) LLM result with a 500.
-    for _ in range(5):
-        next_version = (
-            db.execute(
-                select(func.coalesce(func.max(ResearchSpec.version), 0)).where(
-                    ResearchSpec.tenant_id == ctx.tenant.id
-                )
-            ).scalar_one()
-            + 1
-        )
-        row = ResearchSpec(
-            tenant_id=ctx.tenant.id,
-            version=next_version,
-            spec=spec,
-            gaps=gaps,
-            icp_suggestions=icp_suggestions,
-            model=result.model,
-            llm_call_id=result.llm_call_id,
-        )
-        db.add(row)
-        try:
-            db.commit()
-        except IntegrityError:
-            db.rollback()
-            continue
-        db.refresh(row)
-        return _spec_out(row)
-    raise HTTPException(status.HTTP_409_CONFLICT, "could not allocate a spec version")
+@router.get("/{client}/brief/structure/status", response_model=ResearchJobOut)
+def structure_status(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> ResearchJobOut:
+    """The latest structuring job's status — polled until terminal. `idle` when none has run."""
+    return _job_out(latest_job(db, ctx.tenant.id))
 
 
 @router.get("/{client}/research-spec", response_model=ResearchSpecList)

@@ -20,11 +20,11 @@ from app.integrations.openrouter.client import LlmError, structured_completion
 PURPOSE = "prospect_fit"
 COMPANY_PURPOSE = "company_fit"
 RUBRIC_VERSION = "fit-rubric-v1"
-# Per-purpose routing: Qwen 3.5 Flash for cheap deterministic scoring, with Llama 3.3 70B as a
-# schema-native fallback. Both serve from non-US providers — the Gemini/OpenAI fallback was
-# dropped 2026-06-21 because those providers are geo-blocked (403 ToS) for this account
-# (see openrouter/client.py module docstring).
-FIT_MODELS = ["qwen/qwen3.5-flash-02-23", "meta-llama/llama-3.3-70b-instruct"]
+# Per-purpose routing: Qwen 3.5 Flash for cheap deterministic scoring — a non-US provider (the
+# Gemini/OpenAI fallback was dropped 2026-06-21 as geo-blocked, 403 ToS, for this account; see
+# openrouter/client.py module docstring). Fit scoring stays on the fast model, not DeepSeek V4 Pro:
+# it runs in batches behind the sync path and must not blow the latency budget.
+FIT_MODELS = ["qwen/qwen3.5-flash-02-23"]
 # `temperature=0` for determinism; `reasoning.enabled=false` disables Qwen thinking tokens.
 FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 

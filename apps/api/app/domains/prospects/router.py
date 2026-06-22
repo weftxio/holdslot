@@ -1,94 +1,56 @@
-"""Prospect routes — the Clay seed + AI sourcing loop made real (C2–C6 backend).
+"""Prospect routes — the manual-add + fit-scoring surface (Apollo find/enrich lands in Phase C).
 
-One suppression gate (C2) and one scoring door (C3) that the AI loop (C5) reuses, exactly as the
-plan's critical path requires. Tenant scope × role is enforced by the A4 central guard, so every
-query is scoped to the caller's client. The heavy lifting lives in the pure modules; this layer
-is orchestration + persistence.
+One suppression gate and one scoring door (`fit.py`). Tenant scope × role is enforced by the A4
+central guard, so every query is scoped to the caller's client. The heavy lifting lives in the
+pure modules; this layer is orchestration + persistence.
+
+The Clay seed/CSV-import/AI-sourcing loop was removed in the Apollo-only teardown; the programmatic
+Apollo find → score → select → enrich endpoints replace it in Phase C (see docs/initial-build-plan
+→ Phase C). `confirm_enrich` currently only marks the selected rows — the real `people/match`
+enrichment is wired in C5.
 """
 
 from __future__ import annotations
 
-import base64
-import binascii
 import uuid
-from collections import Counter
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
-from app.domains.prospects import clay, fit, sourcing
+from app.domains.prospects import fit
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
-    AcceptIn,
-    CandidateIn,
-    CompanyImportResult,
     CompanyManualIn,
     CompanyOut,
-    DropSummary,
-    EnrichExportRow,
     EnrichIn,
     EnrichResult,
-    ImportResult,
     ProspectManualIn,
     ProspectOut,
-    ResearchRequestIn,
-    ResearchResult,
     ResearchRunOut,
-    SourcingCandidate,
     SourcingDocIn,
     SourcingDocList,
     SourcingDocOut,
-    SourcingRoundIn,
-    SourcingRoundResult,
-    SourcingSettingsIn,
-    SourcingSettingsOut,
 )
-from app.domains.prospects.suppression import Candidate, extract_exclusions, suppress
+from app.domains.prospects.suppression import Candidate, extract_exclusions
 from app.integrations.openrouter.client import LlmError
 from app.models import (
     Brief,
     Company,
     MembershipRole,
+    Prompt,
     Prospect,
     ResearchRun,
     ResearchSpec,
-    SourcingDoc,
 )
 
 router = APIRouter(tags=["prospects"])
 
-_VALID_DOC_KINDS = ("sourcing_prompt", "fit_rubric")
-# Prospect states that count as "landed" (sourced + scored) on the run scoreboard and are kept
-# idempotent on re-import: `found` (unenriched), `confirmed` (chosen to enrich), `scored` (done).
-_LANDED_STATES = ("found", "confirmed", "scored")
+_VALID_STAGES = ("fit_scoring",)
 
 
 # --------------------------------------------------------------------------- helpers
-
-
-def _new_run_id() -> str:
-    return uuid.uuid4().hex
-
-
-def _candidate(c: CandidateIn) -> Candidate:
-    return Candidate(**c.model_dump())
-
-
-def _seen_keys(db: Session, tenant_id, *, include_pending: bool = True) -> set[str]:
-    """Identity keys already in the system of record for this tenant — a re-push pays twice (C2).
-
-    A pushed prospect exists as a row the moment it is sent to Clay (see `run_research`), so this
-    set reflects paid pushes even before the CSV round-trips back. `include_pending=False` excludes
-    `pending_review` AI candidates (never pushed) — used by accept, which must not treat the very
-    rows it is accepting as already-seen duplicates.
-    """
-    stmt = select(Prospect.identity_key).where(Prospect.tenant_id == tenant_id)
-    if not include_pending:
-        stmt = stmt.where(Prospect.status != "pending_review")
-    rows = db.execute(stmt).scalars()
-    return {k for k in rows if k}
 
 
 def _latest_brief(db: Session, tenant_id) -> Brief | None:
@@ -96,8 +58,7 @@ def _latest_brief(db: Session, tenant_id) -> Brief | None:
 
 
 def _latest_spec(db: Session, tenant_id) -> ResearchSpec | None:
-    """The newest ResearchSpec version for a tenant — the one query four call sites used to
-    hand-roll. Version-ordering / tenant-scope lives in exactly one place now."""
+    """The newest ResearchSpec version for a tenant. Version-ordering / tenant-scope lives here."""
     return (
         db.execute(
             select(ResearchSpec)
@@ -117,45 +78,24 @@ def _exclusions(db: Session, tenant_id):
     return _build_exclusions(_latest_brief(db, tenant_id), _latest_spec(db, tenant_id))
 
 
-def _push_to_clay(
-    survivors: list[Candidate], run_id: str
-) -> tuple[list[Candidate], Exception | None]:
-    """Push survivors to Clay; return (accepted_survivors, error) — never raises.
-
-    On a mid-batch transport failure, only the survivors Clay accepted *before* the failure are
-    returned, with the error. The caller commits those (so paid identities are recorded for the
-    `_seen_keys` dedupe → a retry never pays twice) and only then surfaces the error.
-    """
-    if not survivors:
-        return [], None
-    rows = [clay.assemble_push_row(c, run_id) for c in survivors]
-    try:
-        accepted_rows = clay.push_rows(rows)
-        err: Exception | None = None
-    except clay.ClayPushError as e:
-        accepted_rows, err = e.accepted, e
-    accepted_keys = {r["identity_key"] for r in accepted_rows}
-    return [c for c in survivors if c.identity_key in accepted_keys], err
+def _build_targeting(brief: Brief | None, spec: ResearchSpec | None) -> dict:
+    return {"brief": brief.data if brief else {}, "spec": spec.spec if spec else {}}
 
 
-def _latest_doc(db: Session, tenant_id, kind: str) -> SourcingDoc | None:
+def _latest_doc(db: Session, tenant_id, stage: str) -> Prompt | None:
     return (
         db.execute(
-            select(SourcingDoc)
-            .where(SourcingDoc.tenant_id == tenant_id, SourcingDoc.kind == kind)
-            .order_by(SourcingDoc.version.desc())
+            select(Prompt)
+            .where(Prompt.tenant_id == tenant_id, Prompt.stage == stage)
+            .order_by(Prompt.version.desc())
         )
         .scalars()
         .first()
     )
 
 
-def _drops(dropped) -> list[DropSummary]:
-    counts = Counter(reason for _c, reason in dropped)
-    return [DropSummary(reason=r, count=n) for r, n in counts.items()]
-
-
 def _prospect_out(p: Prospect) -> ProspectOut:
+    e = p.enrichment or {}
     comps = p.fit_components or {}
     return ProspectOut(
         id=str(p.id),
@@ -163,15 +103,15 @@ def _prospect_out(p: Prospect) -> ProspectOut:
         icp_id=str(p.icp_id) if p.icp_id else None,
         company_id=str(p.company_id) if p.company_id else None,
         run_id=p.run_id,
-        full_name=(p.enrichment or {}).get("full_name", ""),
-        company=(p.enrichment or {}).get("company", ""),
-        domain=(p.enrichment or {}).get("domain", ""),
-        linkedin_url=(p.enrichment or {}).get("linkedin_url", ""),
-        email=(p.enrichment or {}).get("email", ""),
+        full_name=e.get("full_name", ""),
+        company=e.get("company", ""),
+        domain=e.get("domain", ""),
+        linkedin_url=e.get("linkedin_url", ""),
+        email=e.get("email", ""),
         email_valid=p.email_valid,
-        title=(p.enrichment or {}).get("title", ""),
-        company_industry=(p.enrichment or {}).get("company_industry", ""),
-        company_size=(p.enrichment or {}).get("company_size", ""),
+        title=e.get("title", ""),
+        company_industry=e.get("company_industry", ""),
+        company_size=e.get("company_size", ""),
         fit_score=p.fit_score,
         fit_tier=p.fit_tier,
         fit_reason=comps.get("fit_reason", ""),
@@ -182,7 +122,7 @@ def _prospect_out(p: Prospect) -> ProspectOut:
     )
 
 
-# --------------------------------------------------------------------------- C6 list
+# --------------------------------------------------------------------------- prospects list
 
 
 @router.get("/{client}/prospects", response_model=list[ProspectOut])
@@ -237,13 +177,8 @@ def _company_payload(c: Company) -> dict:
     }
 
 
-def _company_signature(c: Company) -> tuple:
-    """The firmographics that drive the company score — re-score only when these change."""
-    return (c.name, c.industry, c.size, c.country)
-
-
 def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) -> float:
-    """Score one company in place (LLM usage B). Returns the call's cost_usd. Raises LlmError."""
+    """Score one company in place (LLM). Returns the call's cost_usd. Raises LlmError."""
     scored = fit.score_company(
         tenant_id=tenant_id,
         rubric_body=rubric_body,
@@ -271,102 +206,13 @@ def list_companies(
     return [_company_out(c) for c in rows]
 
 
-@router.post("/{client}/companies/import", response_model=CompanyImportResult)
-def import_companies(
-    body: dict,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> CompanyImportResult:
-    """Stage 1 — Find-Companies CSV → parse by header → suppress (excluded domains) → upsert by
-    domain → company-fit score. Re-import of the same domain is idempotent; an unchanged row keeps
-    its score without a second paid LLM call (sourcing in Clay is free; only scoring costs $)."""
-    raw = body.get("csv") or body.get("file") or ""
-    if not raw:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing csv payload")
-    rows = clay.parse_company_csv(_decode_csv(raw))
-    if not rows:
-        return CompanyImportResult(parsed=0, stored=0, suppressed=0, scored=0)
-
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    exclusions = _build_exclusions(brief, spec)
-    targeting = _build_targeting(brief, spec)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
-    rubric_body = rubric.body if rubric else ""
-
-    run_id = _new_run_id()
-    run = ResearchRun(
-        tenant_id=ctx.tenant.id,
-        run_id=run_id,
-        spec_version=spec.version if spec else None,
-        source="clay",
-        rubric_version=f"fit-rubric-v{rubric.version}" if rubric else None,
-    )
-    db.add(run)
-
-    stored = suppressed = scored = score_errors = 0
-    by_tier: Counter = Counter()
-    cost = 0.0
-    for cr in rows:
-        if exclusions.blocks(Candidate(domain=cr.domain)):
-            suppressed += 1
-            continue
-        company = db.execute(
-            select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == cr.domain)
-        ).scalar_one_or_none()
-        new = company is None
-        if new:
-            company = Company(
-                tenant_id=ctx.tenant.id, domain=cr.domain, source="clay", run_id=run_id
-            )
-            db.add(company)
-        prior_sig = _company_signature(company)
-        already_scored = company.fit_score is not None
-        # Coalesce: a re-import keeps prior firmographics when the new row omits a field.
-        company.name = cr.name or company.name or ""
-        company.website = cr.website or company.website
-        company.linkedin_url = cr.linkedin_url or company.linkedin_url
-        company.industry = cr.industry or company.industry
-        company.size = cr.size or company.size
-        company.country = cr.country or company.country
-        if cr.evidence:
-            company.evidence = {**(company.evidence or {}), **cr.evidence}
-        stored += 1
-
-        if already_scored and prior_sig == _company_signature(company):
-            scored += 1
-            by_tier[company.fit_tier or "Below"] += 1
-            continue
-        try:
-            cost += _score_company(
-                company, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
-            )
-        except LlmError:
-            score_errors += 1
-            continue
-        scored += 1
-        by_tier[company.fit_tier or "Below"] += 1
-
-    run.rows_accepted = scored
-    run.cost_usd = round(cost, 6) if cost else None
-    db.commit()
-    return CompanyImportResult(
-        run_id=run_id,
-        parsed=len(rows),
-        stored=stored,
-        suppressed=suppressed,
-        scored=scored,
-        score_errors=score_errors,
-        by_tier=dict(by_tier),
-    )
-
-
 @router.post("/{client}/companies", response_model=CompanyOut, status_code=201)
 def add_company(
     body: CompanyManualIn,
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> CompanyOut:
-    """Stage-1 manual add — one company, `source=manual`, same schema + scoring as imported rows.
+    """Stage-1 manual add — one company, `source=manual`, same schema + scoring as sourced rows.
 
     Upserts on (tenant, domain) so a manual add of an existing company updates it in place.
     """
@@ -379,7 +225,7 @@ def add_company(
 
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
     targeting = _build_targeting(brief, spec)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
     rubric_body = rubric.body if rubric else ""
 
     company = db.execute(
@@ -407,262 +253,7 @@ def add_company(
     return _company_out(company)
 
 
-# --------------------------------------------------------------------------- C2 push
-
-
-@router.post("/{client}/icps/{icp_id}/research", response_model=ResearchResult)
-def run_research(
-    icp_id: str,
-    body: ResearchRequestIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> ResearchResult:
-    """C2 — suppress a candidate set, then push survivors to the one Clay webhook (tagged
-    run_id + identity_key, no tenant). Suppressed/duplicate rows are never pushed (0 credits)."""
-    candidates = [_candidate(c) for c in body.candidates]
-    result = suppress(candidates, _exclusions(db, ctx.tenant.id), _seen_keys(db, ctx.tenant.id))
-
-    run_id = _new_run_id()
-    spec = _latest_spec(db, ctx.tenant.id)
-    icp_uuid = uuid.UUID(icp_id) if icp_id else None
-    run = ResearchRun(
-        tenant_id=ctx.tenant.id,
-        run_id=run_id,
-        icp_id=icp_uuid,
-        spec_version=spec.version if spec else None,
-        source="clay",
-    )
-    db.add(run)
-    db.commit()
-
-    # Push, then record each ACCEPTED identity as a Prospect (status=pushed). The DB is the sole
-    # system of record, so a paid push must be visible to `_seen_keys` *before* the CSV round-trips
-    # back — otherwise a re-push or AI round in that window pays Clay twice. On a partial transport
-    # failure we record exactly the rows Clay accepted, then surface the error: never double-pay,
-    # never strand a row that never reached Clay. Import later upserts on (tenant, identity_key).
-    accepted, err = _push_to_clay(result.survivors, run_id)
-    for c in accepted:
-        db.add(
-            Prospect(
-                tenant_id=ctx.tenant.id,
-                icp_id=icp_uuid,
-                spec_version=spec.version if spec else None,
-                run_id=run_id,
-                identity_key=c.identity_key,
-                enrichment=c.to_enrichment(),
-                source="clay",
-                status="pushed",
-            )
-        )
-    run.rows_pushed = len(accepted)
-    db.commit()
-    if err:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clay push failed: {err}") from err
-
-    return ResearchResult(
-        run_id=run_id,
-        received=len(candidates),
-        pushed=len(accepted),
-        suppressed=len(result.dropped),
-        drops=_drops(result.dropped),
-    )
-
-
-# --------------------------------------------------------------------------- C3 ingest+score
-
-
-def _decode_csv(payload: str) -> str:
-    """Accept a base64-wrapped CSV (the $default proxy path) or raw CSV text."""
-    if "," in payload[:64] and "run_id" in payload[:200]:
-        return payload  # looks like raw CSV already
-    try:
-        return base64.b64decode(payload, validate=True).decode("utf-8")
-    except (binascii.Error, ValueError, UnicodeDecodeError):
-        return payload
-
-
-def _build_targeting(brief: Brief | None, spec: ResearchSpec | None) -> dict:
-    return {"brief": brief.data if brief else {}, "spec": spec.spec if spec else {}}
-
-
-@router.post("/{client}/prospects/import", response_model=ImportResult)
-def import_prospects(
-    body: dict,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> ImportResult:
-    """C3 — operator's CSV export → parse by header → suppress → upsert prospect → fit-score.
-
-    Synchronous, no SQS (the [SCALE] swap is the signed `POST /clay/results` callback). Re-import
-    is idempotent on (tenant, identity_key); each score records its rubric version via llm_call.
-    """
-    raw = body.get("csv") or body.get("file") or ""
-    if not raw:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing csv payload")
-    rows = clay.parse_export_csv(_decode_csv(raw))
-    if not rows:
-        return ImportResult(parsed=0, stored=0, suppressed=0, scored=0)
-
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    exclusions = _build_exclusions(brief, spec)
-    targeting = _build_targeting(brief, spec)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
-    rubric_body = rubric.body if rubric else ""
-
-    stored = suppressed = scored = score_errors = 0
-    by_tier: Counter = Counter()
-    # A prospect is owned by the run that FIRST landed it (prospect.run_id, never reassigned). Both
-    # the accepted tally and the scoring cost roll up to that owning run, so a re-import under a new
-    # run_id can't double-count one identity across two runs' scoreboards.
-    touched: Counter = Counter()  # accepted prospects per owning-run → runs to recompute
-    run_cost: dict[str, float] = {}  # new fit-scoring LLM cost per owning-run → cost_usd (C4)
-
-    # Two-stage link: resolve each person's company by domain (the stage-1 dedupe key). Built once
-    # so a many-row import is one query, not N. A linked company is marked `people_found`.
-    company_by_domain = {
-        c.domain: c
-        for c in db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id)).scalars()
-    }
-    # Operator-sourced Find-People rows carry no `run_id` (they never went through our push); the
-    # first such row lazily opens one import run so company-first prospects still get lineage + the
-    # cost/accepted scoreboard. Single-stage push rows keep their own run_id and never touch this.
-    import_run: ResearchRun | None = None
-
-    for er in rows:
-        cand = Candidate(
-            full_name=er.full_name, company=er.company, domain=er.domain, email=er.email
-        )
-        if exclusions.blocks(cand):
-            suppressed += 1
-            continue
-
-        enrichment = {
-            "full_name": er.full_name,
-            "company": er.company,
-            "domain": er.domain,
-            "company_domain": er.company_domain,
-            "linkedin_url": er.linkedin_url,
-            "email": er.email,
-            "provider": er.provider,
-            "title": er.title,
-            "seniority": er.seniority,
-            "company_size": er.company_size,
-            "company_industry": er.company_industry,
-            **er.enrichment,
-        }
-        prospect = db.execute(
-            select(Prospect).where(
-                Prospect.tenant_id == ctx.tenant.id, Prospect.identity_key == er.identity_key
-            )
-        ).scalar_one_or_none()
-        if prospect is None:
-            prospect = Prospect(
-                tenant_id=ctx.tenant.id, identity_key=er.identity_key, source="clay"
-            )
-            db.add(prospect)
-        # Capture the prior fit state *before* overwriting enrichment — a re-import of an
-        # unchanged row must not re-pay the LLM (idempotent on (tenant, identity_key)). The
-        # "landed" states (found = sourced+scored, unenriched; confirmed = chosen for enrich;
-        # scored = enriched+scored) all keep their score on an unchanged re-import.
-        prior_enrichment = prospect.enrichment or {}
-        already_scored = prospect.fit_score is not None and prospect.status in _LANDED_STATES
-        # Bind to the first run that landed this identity; never reassign it on a re-import.
-        if not prospect.run_id:
-            if not er.run_id and import_run is None:
-                import_run = ResearchRun(
-                    tenant_id=ctx.tenant.id,
-                    run_id=_new_run_id(),
-                    spec_version=spec.version if spec else None,
-                    source="clay",
-                    rubric_version=f"fit-rubric-v{rubric.version}" if rubric else None,
-                )
-                db.add(import_run)
-            prospect.run_id = er.run_id or import_run.run_id
-        owning_run = prospect.run_id
-        prospect.enrichment = enrichment
-        prospect.email_valid = er.email_valid
-        prospect.last_enriched_at = func.now()
-        stored += 1
-
-        # Two-stage link: bind to the stage-1 company by domain, and mark that company as having
-        # people sourced. Find People is free, so unlike the old single-stage flow we always score
-        # (even before enrichment) — the user picks who to enrich from the scores (the enrich gate).
-        comp = company_by_domain.get(normalize_domain(er.company_domain or er.domain))
-        if comp is not None:
-            prospect.company_id = comp.id
-            if comp.status in ("discovered", "selected"):
-                comp.status = "people_found"
-
-        # Re-import guard: an already-scored row whose enrichment is byte-for-byte unchanged keeps
-        # its score without a second paid LLM call. Comparing the whole enrichment (not just email)
-        # means a richer re-enrichment — new email/title/size — correctly re-scores below.
-        if already_scored and prior_enrichment == enrichment:
-            scored += 1
-            by_tier[prospect.fit_tier or "Below"] += 1
-            touched[owning_run] += 1
-            continue
-
-        try:
-            scored_row = fit.score(
-                tenant_id=ctx.tenant.id,
-                rubric_body=rubric_body,
-                enrichment=enrichment,
-                targeting=targeting,
-            )
-        except LlmError:
-            prospect.status = "score_error"
-            score_errors += 1
-            continue
-        prospect.fit_score = scored_row["fit_score"]
-        prospect.fit_tier = scored_row["fit_tier"]
-        prospect.fit_components = scored_row["fit_components"]
-        # `found` = scored but unenriched (no work email yet); `scored` = enriched + scored. The
-        # enrich gate lists `found` rows; a re-import after the Clay enrich run flips it to scored.
-        prospect.status = "scored" if er.email else "found"
-        scored += 1
-        by_tier[scored_row["fit_tier"]] += 1
-        touched[owning_run] += 1
-        cost = scored_row.get("cost_usd")
-        if cost:
-            run_cost[owning_run] = run_cost.get(owning_run, 0.0) + float(cost)
-
-    # C4 — recompute each affected run's accepted tally from the source of truth (its owned,
-    # currently-scored prospects), not from a per-import delta, so a re-import — same run or under
-    # a new run_id — converges instead of double-counting one identity. cost_usd is accumulated
-    # (only a real LLM call adds cost; unchanged re-imports add none). One commit, rolls back clean.
-    if touched:
-        runs = db.execute(
-            select(ResearchRun).where(
-                ResearchRun.tenant_id == ctx.tenant.id, ResearchRun.run_id.in_(touched)
-            )
-        ).scalars()
-        for run in runs:
-            run.rows_accepted = db.execute(
-                select(func.count())
-                .select_from(Prospect)
-                .where(
-                    Prospect.tenant_id == ctx.tenant.id,
-                    Prospect.run_id == run.run_id,
-                    Prospect.status.in_(_LANDED_STATES),
-                )
-            ).scalar_one()
-            if run_cost.get(run.run_id):
-                run.cost_usd = round(float(run.cost_usd or 0) + run_cost[run.run_id], 6)
-    db.commit()
-
-    dominant = touched.most_common(1)[0][0] if touched else None
-    return ImportResult(
-        run_id=dominant,
-        parsed=len(rows),
-        stored=stored,
-        suppressed=suppressed,
-        scored=scored,
-        score_errors=score_errors,
-        by_tier=dict(by_tier),
-    )
-
-
-# --------------------------------------------------------------------------- C4 scoreboard
+# ----------------------------------------------------------------- research-run scoreboard
 
 
 @router.get("/{client}/research-runs", response_model=list[ResearchRunOut])
@@ -695,14 +286,14 @@ def list_research_runs(
     return out
 
 
-# --------------------------------------------------------------------------- C5/C6 sourcing docs
+# ----------------------------------------------------------------- sourcing docs (fit rubric)
 
 
-def _doc_out(d: SourcingDoc | None) -> SourcingDocOut | None:
+def _doc_out(d: Prompt | None) -> SourcingDocOut | None:
     if d is None:
         return None
     return SourcingDocOut(
-        kind=d.kind,
+        stage=d.stage,
         version=d.version,
         body=d.body,
         created_at=d.created_at.isoformat() if d.created_at else None,
@@ -714,35 +305,17 @@ def get_sourcing_docs(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> SourcingDocList:
-    versions = {"sourcing_prompt": [], "fit_rubric": []}
-    for kind in _VALID_DOC_KINDS:
-        versions[kind] = list(
-            db.execute(
-                select(SourcingDoc.version)
-                .where(SourcingDoc.tenant_id == ctx.tenant.id, SourcingDoc.kind == kind)
-                .order_by(SourcingDoc.version.desc())
-            ).scalars()
-        )
-    return SourcingDocList(
-        sourcing_prompt=_doc_out(_latest_doc(db, ctx.tenant.id, "sourcing_prompt")),
-        fit_rubric=_doc_out(_latest_doc(db, ctx.tenant.id, "fit_rubric")),
-        prompt_versions=versions["sourcing_prompt"],
-        rubric_versions=versions["fit_rubric"],
-        seed_limit=ctx.tenant.seed_limit,
+    versions = list(
+        db.execute(
+            select(Prompt.version)
+            .where(Prompt.tenant_id == ctx.tenant.id, Prompt.stage == "fit_scoring")
+            .order_by(Prompt.version.desc())
+        ).scalars()
     )
-
-
-@router.put("/{client}/sourcing-settings", response_model=SourcingSettingsOut)
-def save_sourcing_settings(
-    body: SourcingSettingsIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> SourcingSettingsOut:
-    """Persist the per-client seed_limit (scalar config, not a versioned doc)."""
-    ctx.tenant.seed_limit = body.seed_limit
-    db.add(ctx.tenant)
-    db.commit()
-    return SourcingSettingsOut(seed_limit=ctx.tenant.seed_limit)
+    return SourcingDocList(
+        fit_scoring=_doc_out(_latest_doc(db, ctx.tenant.id, "fit_scoring")),
+        rubric_versions=versions,
+    )
 
 
 @router.post("/{client}/sourcing-docs", response_model=SourcingDocOut, status_code=201)
@@ -751,13 +324,13 @@ def save_sourcing_doc(
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> SourcingDocOut:
-    """Append-only — save the founder's edit as the next version of one kind."""
-    if body.kind not in _VALID_DOC_KINDS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown sourcing_doc kind")
-    latest = _latest_doc(db, ctx.tenant.id, body.kind)
-    doc = SourcingDoc(
+    """Append-only — save the founder's fit-rubric edit as the next version."""
+    if body.stage not in _VALID_STAGES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown prompt stage")
+    latest = _latest_doc(db, ctx.tenant.id, body.stage)
+    doc = Prompt(
         tenant_id=ctx.tenant.id,
-        kind=body.kind,
+        stage=body.stage,
         version=(latest.version + 1) if latest else 1,
         body=body.body,
     )
@@ -765,195 +338,6 @@ def save_sourcing_doc(
     db.commit()
     db.refresh(doc)
     return _doc_out(doc)
-
-
-# --------------------------------------------------------------------------- C5 sourcing round
-
-
-@router.post("/{client}/sourcing-rounds", response_model=SourcingRoundResult)
-def run_sourcing_round(
-    body: SourcingRoundIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> SourcingRoundResult:
-    """C5 — one AI sourcing call (DeepSeek + web search) → validate → suppress → land candidates
-    as `ai_loop · pending_review` for founder accept/reject. Reuses the C2 suppression gate."""
-    prompt_doc = _latest_doc(db, ctx.tenant.id, "sourcing_prompt")
-    if prompt_doc is None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no sourcing prompt saved")
-    rubric_doc = _latest_doc(db, ctx.tenant.id, "fit_rubric")
-
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-
-    # Seed sample — existing passed-fit prospects as lookalike anchors.
-    seed_rows = db.execute(
-        select(Prospect)
-        .where(Prospect.tenant_id == ctx.tenant.id, Prospect.fit_tier.in_(("Strong", "Good")))
-        .order_by(Prospect.fit_score.desc().nullslast())
-        .limit(max(0, body.seed_limit))
-    ).scalars()
-    seed_sample = [
-        {
-            "company": (p.enrichment or {}).get("company", ""),
-            "domain": (p.enrichment or {}).get("domain", ""),
-            "title": (p.enrichment or {}).get("title", ""),
-        }
-        for p in seed_rows
-    ]
-    exclusions = _exclusions(db, ctx.tenant.id)
-    exclusion_summary = {
-        "domains": sorted(exclusions.domains),
-        "emails": sorted(exclusions.emails),
-        "linkedin_slugs": sorted(exclusions.linkedin_slugs),
-    }
-
-    prompt_version = f"sourcing-prompt-v{prompt_doc.version}"
-    try:
-        result = sourcing.run_round(
-            tenant_id=ctx.tenant.id,
-            prompt_body=prompt_doc.body,
-            prompt_version=prompt_version,
-            brief=brief.data if brief else {},
-            spec=spec.spec if spec else {},
-            seed_sample=seed_sample,
-            exclusion_summary=exclusion_summary,
-        )
-    except LlmError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
-
-    raws = result.data.get("candidates", [])
-    valid, _rejected = sourcing.validate_candidates(raws)
-    cand_objs = [(raw, sourcing.to_candidate(raw)) for raw in valid]
-    sup = suppress([c for _r, c in cand_objs], exclusions, _seen_keys(db, ctx.tenant.id))
-    survivor_keys = set(sup.survivor_keys)
-
-    run_id = _new_run_id()
-    icp_uuid = uuid.UUID(body.icp_id) if body.icp_id else None
-    run = ResearchRun(
-        tenant_id=ctx.tenant.id,
-        run_id=run_id,
-        icp_id=icp_uuid,
-        spec_version=spec.version if spec else None,
-        source="ai_loop",
-        prompt_version=prompt_version,
-        rubric_version=f"fit-rubric-v{rubric_doc.version}" if rubric_doc else None,
-        # The round's sourcing-LLM cost (DeepSeek + web search) recorded on the run so the C4
-        # scoreboard shows $/candidate-surfaced; the per-call detail still lives on `llm_call`.
-        cost_usd=result.cost_usd,
-    )
-    db.add(run)
-
-    pending: list[SourcingCandidate] = []
-    for raw, cand in cand_objs:
-        if cand.identity_key not in survivor_keys:
-            continue
-        survivor_keys.discard(cand.identity_key)  # collapse intra-batch dupes
-        prospect = Prospect(
-            tenant_id=ctx.tenant.id,
-            icp_id=icp_uuid,
-            run_id=run_id,
-            identity_key=cand.identity_key,
-            enrichment=cand.to_enrichment(),
-            source="ai_loop",
-            source_lineage={"prompt_version": prompt_version, "evidence": raw},
-            status="pending_review",
-            fit_tier=raw.get("preliminary_tier", ""),
-        )
-        db.add(prospect)
-        pending.append(
-            SourcingCandidate(
-                identity_key=cand.identity_key,
-                full_name=cand.full_name,
-                company=cand.company,
-                domain=cand.domain,
-                preliminary_tier=raw.get("preliminary_tier", ""),
-                evidence=raw,
-            )
-        )
-    # Nothing is pushed to Clay in a sourcing round (that happens on accept), so rows_pushed stays
-    # 0 — it means "identities sent to Clay" for both sources. rows_accepted = candidates surfaced
-    # for review, which pairs with this round's sourcing cost_usd → C4 reads $/candidate-surfaced.
-    run.rows_accepted = len(pending)
-    db.commit()
-
-    return SourcingRoundResult(
-        run_id=run_id,
-        returned=len(raws),
-        validated=len(valid),
-        suppressed=len(valid) - len(pending),
-        pending_review=len(pending),
-        candidates=pending,
-    )
-
-
-# --------------------------------------------------------------------------- C5 accept
-
-
-@router.post("/{client}/prospects/accept", response_model=ResearchResult)
-def accept_candidates(
-    body: AcceptIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> ResearchResult:
-    """C5 — accept pending AI candidates and push them through the SAME C2 path to Clay.
-
-    We push BEFORE persisting status: only the candidates Clay actually accepted are marked
-    `accepted`; ones excluded since sourcing are marked `suppressed`; a survivor whose push never
-    reached Clay (transport failure) is left `pending_review` so it stays re-acceptable rather than
-    stranded as a fake `accepted`. Dedup runs against already-pushed identities
-    (`include_pending=False`) so a candidate already enriched via C2 / a prior accept is not paid
-    for twice — while the very rows being accepted are not mistaken for duplicates of themselves.
-    """
-    if not body.identity_keys:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
-    rows = (
-        db.execute(
-            select(Prospect).where(
-                Prospect.tenant_id == ctx.tenant.id,
-                Prospect.identity_key.in_(body.identity_keys),
-                Prospect.status == "pending_review",
-            )
-        )
-        .scalars()
-        .all()
-    )
-
-    candidates = [Candidate.from_enrichment(p.enrichment) for p in rows]
-    result = suppress(
-        candidates,
-        _exclusions(db, ctx.tenant.id),
-        _seen_keys(db, ctx.tenant.id, include_pending=False),
-    )
-
-    run_id = _new_run_id()
-    run = ResearchRun(tenant_id=ctx.tenant.id, run_id=run_id, source="ai_loop")
-    db.add(run)
-
-    # Push first; record status from what Clay accepted. A 502 leaves un-pushed survivors as
-    # pending_review (re-acceptable) instead of committing them as accepted-but-never-enriched.
-    accepted, err = _push_to_clay(result.survivors, run_id)
-    accepted_keys = {c.identity_key for c in accepted}
-    survivor_keys = set(result.survivor_keys)
-    for p in rows:
-        if p.identity_key in accepted_keys:
-            p.status = "accepted"
-            p.run_id = run_id
-        elif p.identity_key not in survivor_keys:
-            # Excluded or already-enriched → not pushed; don't strand it as a fake "accepted".
-            p.status = "suppressed"
-        # else: survived suppression but its push didn't land → keep pending_review (re-acceptable).
-    run.rows_pushed = len(accepted)
-    db.commit()
-    if err:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"Clay push failed: {err}") from err
-
-    return ResearchResult(
-        run_id=run_id,
-        received=len(rows),
-        pushed=len(accepted),
-        suppressed=len(result.dropped),
-        drops=_drops(result.dropped),
-    )
 
 
 # ------------------------------------------------------- Stage 2: people (manual add + enrich gate)
@@ -965,7 +349,7 @@ def add_prospect(
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> ProspectOut:
-    """Stage-2 manual add — one person, `source=manual`, same suppression + scoring as imported
+    """Stage-2 manual add — one person, `source=manual`, same suppression + scoring as sourced
     rows. `company_id` is resolved by domain; upserts on (tenant, identity_key)."""
     cand = Candidate(
         full_name=body.full_name,
@@ -988,7 +372,7 @@ def add_prospect(
 
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
     targeting = _build_targeting(brief, spec)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_rubric")
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
     rubric_body = rubric.body if rubric else ""
 
     domain = normalize_domain(body.domain)
@@ -1046,9 +430,11 @@ def confirm_enrich(
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> EnrichResult:
-    """The enrich gate — the user confirms which scored people to enrich. Marks them `confirmed`
-    and returns the export list the operator runs through Clay's Work Email waterfall (~$0.03/head;
-    sourcing was free). Re-importing the enriched CSV later flips each row to `scored`."""
+    """The enrich gate — the user confirms which scored people to enrich. Marks them `confirmed`.
+
+    Interim: this only flips status. The paid Apollo `people/match` enrichment (email/phone) is
+    wired in Phase C (C5), gated on this selection.
+    """
     if not body.identity_keys:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
     rows = (
@@ -1062,19 +448,7 @@ def confirm_enrich(
         .scalars()
         .all()
     )
-    export: list[EnrichExportRow] = []
     for p in rows:
         p.status = "confirmed"
-        e = p.enrichment or {}
-        export.append(
-            EnrichExportRow(
-                identity_key=p.identity_key,
-                full_name=e.get("full_name", ""),
-                company=e.get("company", ""),
-                domain=e.get("domain", ""),
-                linkedin_url=e.get("linkedin_url", ""),
-                email=e.get("email", ""),
-            )
-        )
     db.commit()
-    return EnrichResult(confirmed=len(export), export=export)
+    return EnrichResult(confirmed=len(rows))

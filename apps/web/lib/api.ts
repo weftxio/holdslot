@@ -173,19 +173,34 @@ export type IcpApi = {
   data: Record<string, unknown>;
   updated_at: string | null;
 };
+// Apollo company-search params (a subset of mixed_companies/search), emitted verbatim by the LLM.
+export type ApolloCompanyParams = {
+  q_organization_keyword_tags: string[];
+  organization_num_employees_ranges: string[];
+  organization_locations: string[];
+  revenue_range: { min: number | null; max: number | null };
+};
+// Apollo people-search params (a subset of mixed_people/api_search).
+export type ApolloPeopleParams = {
+  person_titles: string[];
+  include_similar_titles: boolean;
+  q_keywords: string;
+  person_seniorities: string[];
+  organization_locations: string[];
+  organization_num_employees_ranges: string[];
+};
 export type IcpSuggestion = {
   name: string;
   rationale: string;
-  resembles_stated_icp: boolean;
-  evidence_companies: string[];
-  suggested_industries: string[];
-  suggested_titles: string[];
+  evidencing_customers: string[];
   confidence: "low" | "medium" | "high";
+  company_search_params: ApolloCompanyParams;
+  people_search_params: ApolloPeopleParams;
 };
 export type ResearchSpecResult = {
   version: number;
   spec: Record<string, unknown>;
-  gaps: { field: string; why: string; ask: string }[];
+  gaps: { field: string; why_it_matters: string; ask: string }[];
   icp_suggestions: IcpSuggestion[];
   model: string | null;
   llm_call_id: string | null;
@@ -242,8 +257,24 @@ export async function deleteIcp(client: string, id: string): Promise<void> {
   if (!r.ok && r.status !== 404) throw new Error(await detail(r));
 }
 
-export async function structureBrief(client: string): Promise<ResearchSpecResult> {
+// Structuring is ASYNC: scoping runs DeepSeek V4 Pro (thinking + web search, ~1 min) on a
+// background worker, off the 30s API Gateway cap. `structureBrief` kicks it off (202) and returns
+// the job; the UI polls `getStructureStatus` until `done`/`error`, then reloads the spec.
+export type ResearchJob = {
+  job_id: string | null;
+  status: "idle" | "queued" | "running" | "done" | "error";
+  spec_version: number | null;
+  error: string | null;
+};
+
+export async function structureBrief(client: string): Promise<ResearchJob> {
   const r = await authFetch(`/${client}/brief/structure`, { method: "POST", json: true });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export async function getStructureStatus(client: string): Promise<ResearchJob> {
+  const r = await authFetch(`/${client}/brief/structure/status`);
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
@@ -289,7 +320,7 @@ export async function saveScopingSystemPrompt(
   return r.json();
 }
 
-// --- Phase C (S2) — Prospects: Clay seed + AI sourcing loop ------------------
+// --- Phase C (S2) — Prospects: Apollo find + enrich --------------------------
 
 export type ProspectApi = {
   id: string;
@@ -310,7 +341,7 @@ export type ProspectApi = {
   fit_tier: string | null;
   fit_reason: string;
   reason_tags: string[];
-  source: string; // "clay" | "ai_loop" | "manual"
+  source: string; // "apollo" | "manual"
   status: string; // "found" | "confirmed" | "scored" | "score_error" | ...
   created_at: string | null;
 };
@@ -330,86 +361,26 @@ export type CompanyApi = {
   fit_tier: string | null;
   fit_reason: string;
   reason_tags: string[];
-  source: string; // "clay" | "manual"
+  source: string; // "apollo" | "manual"
   status: string; // "discovered" | "people_found" | ...
   created_at: string | null;
 };
 export type EnrichResult = {
   confirmed: number;
-  export: {
-    identity_key: string;
-    full_name: string;
-    company: string;
-    domain: string;
-    linkedin_url: string;
-    email: string;
-  }[];
-};
-export type ImportResult = {
-  run_id: string | null;
-  parsed: number;
-  stored: number;
-  suppressed: number;
-  scored: number;
-  score_errors: number;
-  by_tier: Record<string, number>;
-};
-export type ResearchRunApi = {
-  run_id: string;
-  source: string;
-  prompt_version: string | null;
-  rubric_version: string | null;
-  rows_pushed: number;
-  rows_accepted: number;
-  cost_usd: number | null;
-  cost_per_accepted: number | null;
-  created_at: string | null;
 };
 export type SourcingDocApi = {
-  kind: string;
+  stage: string;
   version: number;
   body: string;
   created_at: string | null;
 };
 export type SourcingDocList = {
-  sourcing_prompt: SourcingDocApi | null;
-  fit_rubric: SourcingDocApi | null;
-  prompt_versions: number[];
+  fit_scoring: SourcingDocApi | null;
   rubric_versions: number[];
-  seed_limit: number;
-};
-export type SourcingCandidate = {
-  identity_key: string;
-  full_name: string;
-  company: string;
-  domain: string;
-  preliminary_tier: string;
-  evidence: Record<string, unknown>;
-};
-export type SourcingRoundResult = {
-  run_id: string;
-  returned: number;
-  validated: number;
-  suppressed: number;
-  pending_review: number;
-  candidates: SourcingCandidate[];
 };
 
 export async function listProspects(client: string): Promise<ProspectApi[]> {
   const r = await authFetch(`/${client}/prospects`);
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-// Send the raw CSV text base64-wrapped (the $default proxy path); the API coalesces, suppresses,
-// stores, and fit-scores it synchronously.
-export async function importProspectsCsv(client: string, csvText: string): Promise<ImportResult> {
-  const b64 = btoa(unescape(encodeURIComponent(csvText)));
-  const r = await authFetch(`/${client}/prospects/import`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ csv: b64 }),
-  });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
@@ -422,59 +393,13 @@ export async function getSourcingDocs(client: string): Promise<SourcingDocList> 
 
 export async function saveSourcingDoc(
   client: string,
-  kind: "sourcing_prompt" | "fit_rubric",
+  stage: "fit_scoring",
   body: string
 ): Promise<SourcingDocApi> {
   const r = await authFetch(`/${client}/sourcing-docs`, {
     method: "POST",
     json: true,
-    body: JSON.stringify({ kind, body }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-export async function saveSourcingSettings(
-  client: string,
-  seedLimit: number
-): Promise<{ seed_limit: number }> {
-  const r = await authFetch(`/${client}/sourcing-settings`, {
-    method: "PUT",
-    json: true,
-    body: JSON.stringify({ seed_limit: seedLimit }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-export async function runSourcingRound(
-  client: string,
-  icpId: string | null,
-  seedLimit: number
-): Promise<SourcingRoundResult> {
-  const r = await authFetch(`/${client}/sourcing-rounds`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ icp_id: icpId, seed_limit: seedLimit }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-export async function listResearchRuns(client: string): Promise<ResearchRunApi[]> {
-  const r = await authFetch(`/${client}/research-runs`);
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-export async function acceptCandidates(
-  client: string,
-  identityKeys: string[]
-): Promise<{ run_id: string; pushed: number; suppressed: number }> {
-  const r = await authFetch(`/${client}/prospects/accept`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ identity_keys: identityKeys }),
+    body: JSON.stringify({ stage, body }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
@@ -484,18 +409,6 @@ export async function acceptCandidates(
 
 export async function listCompanies(client: string): Promise<CompanyApi[]> {
   const r = await authFetch(`/${client}/companies`);
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
-}
-
-// Find-Companies CSV → dedupe by domain → suppress → company-fit score (sourcing is free).
-export async function importCompaniesCsv(client: string, csvText: string): Promise<ImportResult> {
-  const b64 = btoa(unescape(encodeURIComponent(csvText)));
-  const r = await authFetch(`/${client}/companies/import`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ csv: b64 }),
-  });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
@@ -546,7 +459,8 @@ export async function addProspect(client: string, body: ProspectManual): Promise
   return r.json();
 }
 
-// The enrich gate — confirm which scored people to enrich; returns the operator's export list.
+// The enrich gate — confirm which scored people to enrich; returns the confirmed count. (The paid
+// Apollo people/match enrichment is wired server-side in Phase C; this flips status for now.)
 export async function enrichProspects(
   client: string,
   identityKeys: string[]

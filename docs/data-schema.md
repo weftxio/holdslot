@@ -51,34 +51,34 @@ Never call legacy `/api/v1/mixed_people/search` (returns 422). Pagination: `per_
 **Apollo hard cap 500 pages = 50k rows**, with 429 backoff. `PHONE_ENABLED=false` at dogfood →
 `reveal_phone_number=false` (phone is also **async → requires a `webhook_url`**, so it stays off at MVP).
 
-### Request-param contract (input side — `apollo_map` builds these from `ResearchSpec` v2)
-The exact request params each search accepts, mapped from the v2 spec. `⊘` = no Apollo request param →
-**DB-side post-filter** on the returned rows. Deterministic build, no LLM (see initial-build-plan → Phase C).
+### Request-param contract (input side — `apollo_map` forwards `ResearchSpec` v3 params)
+**v3 is Apollo-native:** the LLM emits the exact Apollo request fields by name, so `apollo_map` forwards
+them with no vocabulary translation — it only merges server config (`credit_policy`) + the Flow-A→B
+`organization_ids`. `⊘` = no Apollo request param → **DB-side post-filter** (see initial-build-plan → Phase C).
 
-**Find Company (`mixed_companies/search`) request params ← `spec.company_search`**
-| Apollo request param | Type / vocabulary | ← v2 field |
+**Find Company (`mixed_companies/search`) ← `spec.company_search_params` + `spec.intent_filters.company`**
+| Apollo request param | Type / vocabulary | source field |
 |---|---|---|
-| `q_organization_keyword_tags[]` | free-text keywords | `industry_keywords_include` + `description_keywords_include` + distilled `semantic_description` |
-| `organization_num_employees_ranges[]` | array of `"min,max"` strings (arbitrary bounds) | `employee_count {min,max}` |
-| `revenue_range[min]` / `[max]` | int (plan-gated) | `revenue_usd {min,max}` |
-| `organization_locations[]` / `organization_not_locations[]` | free text ("City, ST, Country") | `locations_include[]` / `locations_exclude[]` |
-| `latest_funding_amount_range[min/max]` · `total_funding_range[min/max]` · `latest_funding_date_range[min]` | int · int · `YYYY-MM-DD` | `funding.*` |
-| `q_organization_job_titles[]` · `organization_num_jobs_range[min]` · `organization_job_posted_at_range[min]` | free text · int · date | `hiring_signals.*` (timing signal) |
-| `currently_using_any_of_technology_uids[]` | **fixed Apollo tech UIDs** | `technographics.vendors` (when `enabled`) |
-| `page` / `per_page` (≤100) | int | paginate to `max_results` |
-| `⊘` DB-side post-filter | — | `industry_keywords_exclude`, `founded`, `company_types` (no Apollo request param) |
+| `q_organization_keyword_tags[]` | free-text keywords (industry/vertical — no industry-id field) | `company_search_params.q_organization_keyword_tags` |
+| `organization_num_employees_ranges[]` | array of `"min,max"` strings | `company_search_params.organization_num_employees_ranges` |
+| `organization_locations[]` | lowercase free text (country/US-state/city) | `company_search_params.organization_locations` |
+| `revenue_range[min]` / `[max]` | int (plan-gated) | `company_search_params.revenue_range {min,max}` |
+| `latest_funding_date_range[min]` / `[max]` | `YYYY-MM-DD` | `intent_filters.company.latest_funding_date_range` |
+| `q_organization_job_titles[]` · `organization_job_posted_at_range[min/max]` | free text · date | `intent_filters.company.*` (hiring signal) |
+| `page` / `per_page` (≤100) | int | paginate to `credit_policy.max_companies` |
 
-**Find People (`mixed_people/api_search`) request params ← `spec.people_search[i]` + selected orgs**
-| Apollo request param | Type / vocabulary | ← v2 field |
+**Find People (`mixed_people/api_search`) ← `spec.people_search_params` + selected orgs**
+| Apollo request param | Type / vocabulary | source field |
 |---|---|---|
 | `organization_ids[]` | Apollo org ids | **selected** `company.apollo_org_id` (Flow A→B scope link — required; empty ⇒ 400) |
-| `person_titles[]` | free text, fuzzy | `job_title_keywords` |
-| `include_similar_titles` | bool | `include_similar_titles` |
-| `person_seniorities[]` | **fixed enum:** owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern | `seniority` |
-| `person_locations[]` | free text | `person_locations` |
-| `contact_email_status[]` | enum: verified·unverified·likely to engage·unavailable | `credit_policy.email_status_filter` |
-| `page` / `per_page` (≤100) | int | paginate to `max_total` |
-| `⊘` DB-side post-filter | — | `job_title_exclude`, `departments` (filter returned `departments[]`), `max_per_company` (group by `organization_id`, cap) |
+| `person_titles[]` | free text, fuzzy | `people_search_params.person_titles` |
+| `include_similar_titles` | bool | `people_search_params.include_similar_titles` |
+| `q_keywords` | single string (industry/vertical for people) | `people_search_params.q_keywords` |
+| `person_seniorities[]` | **fixed enum:** owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern | `people_search_params.person_seniorities` |
+| `organization_locations[]` | free text (employer HQ) | `people_search_params.organization_locations` |
+| `organization_num_employees_ranges[]` | array of `"min,max"` | `people_search_params.organization_num_employees_ranges` |
+| `contact_email_status[]` | enum: verified·unverified·likely to engage·unavailable | `credit_policy.email_status_filter` (server-set) |
+| `page` / `per_page` (≤100) | int | paginate to `credit_policy.max_people` |
 
 > **⚠️ Phase C build — verify against live fixtures before hard-coding (research-flagged unconfirmed):**
 > (1) the funding-**stage** filter — likely key `organization_latest_funding_stage_cd[]`, but the exact key
@@ -194,7 +194,7 @@ via `membership`. Today `tenant` holds exactly HoldSlot (#0); a paying client la
 ## Phase B (S1) — Targeting: Brief & ICP → ResearchSpec ✅ BUILT
 Migrations `20260612_0003_phase_b_targeting` (+ `0004_icp_suggestions`). Form documents are **opaque
 JSONB** (a form change is a frontend edit, never a migration); `research_spec` is the versioned search
-contract (**v2**, Apollo-mapped), append-only, each linked to the `llm_call` that produced it.
+contract (**v3**, Apollo-native), append-only, each linked to the `llm_call` that produced it.
 
 ### `brief` — one per tenant
 | Column | Type | Notes |
@@ -231,37 +231,82 @@ recaps) writes through it.
 | `raw` | JSONB nullable | raw completion — top debugging signal; parse failures recorded before retry |
 | `created_at` | timestamptz | |
 
-### `research_spec` — append-only versioned **v2** search contract (Apollo-mapped)
+### `research_spec` — append-only versioned **v3** search contract (Apollo-native)
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | idx |
 | `version` | int | **unique(`tenant_id`,`version`)**; re-run inserts the next version |
-| `spec` | JSONB | **v2** targeting (company_search incl. funding/hiring signals · people_search · exclusions + server-merged credit policy) |
-| `gaps` | JSONB (default `[]`) | value-loop prompts |
+| `spec` | JSONB | **v3** targeting (company_search_params · people_search_params · intent_filters · icp_validation + server-merged credit policy) |
+| `gaps` | JSONB (default `[]`) | value-loop prompts (`{field, why_it_matters, ask}`) |
 | `icp_suggestions` | JSONB (default `[]`) | proposed ICPs from the existing-customer list (added `0004`) |
 | `model` | varchar(128) nullable | |
 | `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | traces spec → exact model/cost/raw output |
 | `created_at` | timestamptz | |
 
+**`research_spec.spec` — the v3 JSON contract** (`spec_version = 3`; what the LLM emits + what
+`apollo_map` forwards — fields are **exact Apollo request params**, full mapping in *Request-param
+contract* above). The strict `json_schema` lives in
+[`research_spec.py`](../apps/api/app/domains/briefs/research_spec.py); the workspace *Prospect Scope*
+panel renders every field below for operator review.
+
+- **`company_search_params`** — `q_organization_keyword_tags[]` · `organization_num_employees_ranges[]`
+  (comma-strings `"10,100"`) · `organization_locations[]` (lowercase HQ) · `revenue_range{min,max}` (int)
+- **`people_search_params`** — `person_titles[]` · `include_similar_titles` (bool) ·
+  `q_keywords` (single string — industry/vertical for people) · `person_seniorities[]` (**fixed enum:**
+  owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern) ·
+  `organization_locations[]` · `organization_num_employees_ranges[]`
+- **`intent_filters`** — `company{latest_funding_date_range{min,max} (YYYY-MM-DD),
+  q_organization_job_titles[], organization_job_posted_at_range{min,max}}` ·
+  `recency_window{funding_since, jobs_posted_since}` (echo of the lower bounds, computed from `today`)
+- **`icp_validation`** (analysis, NOT Apollo-bound — the paying-customer read from the brief's
+  `excludeCustomers` list) — `customer_profiles[]{name, domain, industry, employee_band, hq_country,
+  business_model, source:"knowledge"|"web", confidence}` · `paying_customer_summary`
+- **`credit_policy`** (deterministic **server config**, never LLM-set; merged at save time) —
+  `email_status_filter` (default `["verified"]` → `contact_email_status`) · `phone` (default `false`) ·
+  `max_companies` (500) · `max_people` (800)
+
+`gaps` + `icp_suggestions` are separate columns (above) — value-loop signals, never folded into `spec`.
+Each `icp_suggestions[]` entry is `{name, rationale, evidencing_customers[], confidence,
+company_search_params{…}, people_search_params{…}}` — a ready-to-run ICP the operator can accept.
+**Brief-side exclusions** (`excludeCustomers`/`excludeDeals`/`doNotContact`) feed suppression directly
+from the brief text (not the spec) — v3 emits no `exclusions` block.
+
+### `research_job` — async structuring job tracker (`0009`)
+Scoping runs **DeepSeek V4 Pro** (thinking + web-search plugin, ~55-76s) — past the API Gateway
+HTTP-API hard 30s cap. So `POST /brief/structure` inserts a `queued` row and fires a background
+worker (Lambda **self async-invoke**; a thread in local dev) that runs the LLM, inserts the next
+`research_spec` version, and flips this row terminal. The UI polls `GET /brief/structure/status`.
+One in-flight job per tenant (a queued/running job is returned as-is) so a double-click can't double-spend.
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx |
+| `status` | varchar(16) (default `queued`) | `queued`→`running`→`done`\|`error` (string, not enum) |
+| `spec_version` | int nullable | set on `done` — the `research_spec.version` produced |
+| `error` | text nullable | set on `error` — short human-facing cause |
+| `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | the call that produced the spec |
+| `created_at`, `updated_at` | timestamptz | |
+
 ## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ⏳ APOLLO REBUILD
 Follows the same conventions; all carry `tenant_id` (= `client_id`), scoped by the A4 guard. **Built today:
-`prospect` + `research_run` + `sourcing_doc` (`0005`), `company` + `prospect.company_id` (`0007`),
-`company.website` (`0008`). The Apollo rebuild adds `0009`: `company.apollo_org_id` +
-`prospect.apollo_person_id`, and **drops** `tenant.seed_limit` (`0006`, AI-loop seed anchoring — removed).
+`prospect` + `research_run` + `prompt` (created as `sourcing_doc` in `0005`, renamed `0010`), `company`
++ `prospect.company_id` (`0007`), `company.website` (`0008`), `research_job` async-structuring tracker
+(`0009`, Phase B). The Apollo rebuild adds `0011`: `company.apollo_org_id` + `prospect.apollo_person_id`, and **drops**
+`tenant.seed_limit` (`0006`, AI-loop seed anchoring — removed).
 The two SCALE tables (`person` / `enrichment_request`) are the additive multi-tenant step, not built.**
 
 ### Phase C end-to-end flow (Apollo, programmatic — two gates, no CSV)
 The objective is two gates: **(1) find companies likely to buy, (2) find the right person at each.**
-Division of labor — **`apollo_map`** (pure, deterministic) builds the Apollo request from the v2 spec; the
+Division of labor — **`apollo_map`** (pure, deterministic) forwards the Apollo request from the v3 spec; the
 **LLM** only fit-scores; **Apollo** searches + enriches; **DB** is the system of record. No operator, no CSV:
 
-1. **Find Company** — `apollo_map.map_company_filter(spec.company_search)` → Apollo
+1. **Find Company** — `apollo_map.map_company_filter(spec.company_search_params, spec.intent_filters)` → Apollo
    `mixed_companies/search` (**plan credits**) → DB-side post-filter + exclusion drop → upsert on
    `apollo_org_id` → batched **company fit-score** → `company` rows (`discovered`).
 2. **Gate 1** — user reviews/selects (`PATCH companies/select` → `selected`); may **manually add** a
    company (same schema, `source=manual`).
-3. **Find People** — `apollo_map.map_people_filter(spec.people_search[i], org_ids=selected)` → Apollo
+3. **Find People** — `apollo_map.map_people_filter(spec.people_search_params, org_ids=selected)` → Apollo
    `mixed_people/api_search` (0 cr, no email) → DB-side post-filter + exclusion drop → upsert on
    `apollo_person_id`, link `company_id` directly → batched **person fit-score** → `prospect` rows
    (`found`, unenriched).
@@ -282,7 +327,7 @@ apply DB-side on every search.
 | `tenant_id` | uuid FK (CASCADE) | idx |
 | `icp_id` | uuid FK → `icp` (SET NULL) nullable | which ICP sourced it |
 | `run_id` | uuid/str nullable | = `research_run.run_id` (the find run) |
-| `apollo_org_id` | varchar nullable | Apollo org id (`0009`); upsert key + feeds Find People's `organization_ids`; **unique per tenant** |
+| `apollo_org_id` | varchar nullable | Apollo org id (`0011`); upsert key + feeds Find People's `organization_ids`; **unique per tenant** |
 | `domain` | varchar **idx** | dedupe key; **unique(`tenant_id`,`domain`)** |
 | `website` | varchar nullable | raw company URL (`0008`); `domain` stays the normalized dedupe key |
 | `linkedin_url` | varchar nullable | company LinkedIn |
@@ -307,7 +352,7 @@ apply DB-side on every search.
 | `company_id` | uuid FK → `company` (SET NULL) nullable | the company this person belongs to (two-stage link; resolved by domain on import) |
 | `spec_version` | int nullable | `research_spec.version` used |
 | `run_id` | uuid/str | = `research_run.run_id` (the find run) |
-| `apollo_person_id` | varchar nullable | Apollo person id (`0009`); upsert key + the `people/match` handle |
+| `apollo_person_id` | varchar nullable | Apollo person id (`0011`); upsert key + the `people/match` handle |
 | `identity_key` | varchar **idx** | normalized LinkedIn / `domain\|last\|first` / email — **dedupe + future `person` FK seam** |
 | `enrichment` | JSONB | raw Apollo search/match row; no S3 at MVP volume |
 | `email_valid` | bool | |
@@ -336,15 +381,21 @@ apply DB-side on every search.
 | `cost_usd` | numeric nullable | LLM spend → per-run $/accepted (Apollo enrich-credit cost not stored — reconcile from the Apollo dashboard) |
 | `created_at` | timestamptz | |
 
-### `sourcing_doc` ⬜ MVP — append-only founder-edited fit rubric
+### `prompt` ⬜ MVP — append-only per-client prompt store (renamed from `sourcing_doc`, `0010`)
+The single home for every client-editable prompt, versioned per `(tenant, stage)`; the latest
+version is active. (Was `sourcing_doc` with a `kind` column — renamed once it grew past sourcing.)
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | idx |
-| `kind` | varchar | `fit_rubric` (the `sourcing_prompt` kind is retired with the AI loop) |
-| `version` | int | **unique(`tenant_id`,`kind`,`version`)**; append-only |
-| `body` | text | seed v1 from `docs/prompts/fit-scoring-rubric-v1.md` in the migration |
+| `stage` | varchar(32) | `briefing` (Brief→ResearchSpec scoping) · `sourcing` (legacy, retired) · `fit_scoring` (fit rubric) |
+| `version` | int | **unique(`tenant_id`,`stage`,`version`)**; append-only |
+| `body` | text | seed v1 from `docs/prompts/*.md` in the migration (`briefing`←`brief-structure-v5.md`, `fit_scoring`←`fit-scoring-rubric-v1.md`) |
 | `created_at` | timestamptz | |
+
+The briefing prompt is read DB-first by the scoping worker; if absent it falls back to the code
+default (`DEFAULT_SYSTEM_PROMPT`, the Lambda bundle has no `docs/`). Saving in the UI appends the
+next `briefing` version; an empty save resets to the default text.
 
 ### `person` ⬜ SCALE — tenant-AGNOSTIC enrichment cache (the enrich-once seam)
 Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched once (one Apollo
@@ -354,7 +405,7 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `identity_key` | varchar **PK** | the shared key |
 | `email`, `phone`, `title`, `seniority` | varchar nullable | person enrichment |
 | `company_domain`, `company_industry`, `company_size` | varchar nullable | company enrichment |
-| `providers` | JSONB | waterfall provenance |
+| `providers` | JSONB | enrich provenance (Apollo `people/match` source) |
 | `last_enriched_at` | timestamptz | re-enrich TTL |
 | `created_at`, `updated_at` | timestamptz | |
 | | | on SCALE, `prospect` gains FK `identity_key` → `person` and drops the embedded `enrichment` |
@@ -379,8 +430,10 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260612_0003_phase_b_targeting` | B | `brief`, `icp`, `llm_call`, `research_spec` |
 | `20260617_0004_icp_suggestions` | B | `research_spec.icp_suggestions` column |
 | `20260619_0005_phase_c_prospects` ✅ | C | `prospect`, `research_run`, `sourcing_doc` (MVP) + seed `sourcing_doc` v1 (sourcing prompt + fit rubric) for tenant #0 from `docs/prompts/*-v1.md` |
-| `20260620_0006_tenant_seed_limit` ✅ | C | `tenant.seed_limit` — **dropped in `0009`** (AI-loop seed anchoring, retired) |
+| `20260620_0006_tenant_seed_limit` ✅ | C | `tenant.seed_limit` — **dropped in `0011`** (AI-loop seed anchoring, retired) |
 | `20260620_0007_phase_c_companies` ✅ | C | `company` (stage-1 discovery) + `prospect.company_id` (applied to dev) |
 | `20260621_0008_company_website` ✅ | C | `company.website` (raw URL alongside the normalized `domain`) |
-| *(planned)* `0009_phase_c_apollo` | C | `company.apollo_org_id`, `prospect.apollo_person_id`; **drop** `tenant.seed_limit` |
+| `20260622_0009_research_job` | B | `research_job` (async Brief→ResearchSpec structuring tracker) |
+| `20260622_0010_prompt_table` | B | rename `sourcing_doc`→`prompt`, `kind`→`stage` (`sourcing_prompt`→`sourcing`, `fit_rubric`→`fit_scoring`); seed `briefing` v1 from `brief-structure-v5.md` |
+| *(planned)* `0011_phase_c_apollo` | C | `company.apollo_org_id`, `prospect.apollo_person_id`; **drop** `tenant.seed_limit` |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |

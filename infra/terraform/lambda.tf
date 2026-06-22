@@ -34,7 +34,10 @@ resource "aws_lambda_function" "api" {
   architectures = ["x86_64"]
   handler       = "app.main.handler"
   memory_size   = 512
-  timeout       = 30
+  # 180s lets the async structuring worker run DeepSeek V4 Pro (thinking + web search, ~55-76s,
+  # SCOPING_TIMEOUT=120) to completion. Synchronous API requests are unaffected — API Gateway
+  # still caps those at its own 30s; this only governs the off-gateway background invocation.
+  timeout = 180
 
   filename         = data.archive_file.placeholder.output_path
   source_code_hash = data.archive_file.placeholder.output_base64sha256
@@ -64,6 +67,16 @@ resource "aws_lambda_function" "api" {
     # CI owns the code artifact post-bootstrap.
     ignore_changes = [filename, source_code_hash]
   }
+}
+
+# Async-invocation policy for the background structuring worker (self async-invoke hits the
+# unqualified function = $LATEST). Zero retries: the worker records its own failures as a job
+# `error`, so an AWS-level retry would only risk re-spending a (billed) LLM call. Events older
+# than ~2 min are dropped rather than queued behind a slow run.
+resource "aws_lambda_function_event_invoke_config" "api_async" {
+  function_name                = aws_lambda_function.api.function_name
+  maximum_retry_attempts       = 0
+  maximum_event_age_in_seconds = 120
 }
 
 # Stable invoke target. API Gateway points at this alias; CI shifts it to each new

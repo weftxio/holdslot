@@ -68,6 +68,25 @@ resource "aws_iam_role_policy" "lambda_secrets" {
   })
 }
 
+# Self-invoke — the API offloads slow work (Brief→ResearchSpec scoping; DeepSeek V4 Pro runs
+# ~55-76s, past the 30s API Gateway cap) by async-invoking THIS same function off the request
+# path. Scoped to this function and its versions/aliases only.
+resource "aws_iam_role_policy" "lambda_self_invoke" {
+  name = "self-invoke"
+  role = aws_iam_role.lambda.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = ["lambda:InvokeFunction"]
+      Resource = [
+        aws_lambda_function.api.arn,
+        "${aws_lambda_function.api.arn}:*",
+      ]
+    }]
+  })
+}
+
 # SES — send transactional email from the verified domain only.
 resource "aws_iam_role_policy" "lambda_ses" {
   name = "ses-send"
