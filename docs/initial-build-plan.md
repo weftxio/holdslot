@@ -22,7 +22,10 @@
 > - ✅ **(1) Migration `0011` applied to dev Aurora** (DB at `0011 (head)`; `apollo_org_id`/`apollo_person_id`
 >   present, `seed_limit` dropped). **All 59 tests pass on Aurora** — the 9 previously-skipped DB-gated tests
 >   now run green (`test_migrations`, `test_prospects_apollo` full find→select→find→enrich, real-LLM briefs).
-> - ✅ **(2) Lambda deployed** — `holdslot-dev-api` **version 22**, `live` alias shifted, `/health` 200.
+> - ✅ **(2) Lambda deployed** — `holdslot-dev-api` **version 23**, `live` alias shifted, `/health` 200.
+>   v23 adds the 10 code-review fixes (credit-safety: per-row commit, idempotent enrich, `enrich_failed`;
+>   sync-budget caps) **and** the B→C linkage fixes (GAP 0 ICP-docs→fit context, GAP 1 `avoidTitles` drop).
+>   **All Phase C is committed to `dev` (`db1749c`)** — git, disk, and the live Lambda now agree.
 > - ⚠️ **(3) Credit cost — determined as far as the API allows; one founder dashboard glance still wanted.**
 >   Apollo exposes **no credit-balance endpoint** (only `auth/health`); search responses carry only
 >   request-rate headers (50k/day), no credit field, and withhold firmographics — all consistent with
