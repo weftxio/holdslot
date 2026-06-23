@@ -622,6 +622,32 @@ export async function peopleFacets(
   return r.json();
 }
 
+// Persisted Step-2 Find Settings (people scope) — stored server-side per tenant so a saved tuning
+// follows the operator across browsers/devices. `null` → none saved (Workspace shows the AI scope).
+export async function getPeopleScopeOverride(
+  client: string
+): Promise<Record<string, unknown> | null> {
+  const r = await authFetch(`/${client}/people/scope-override`);
+  if (!r.ok) throw new Error(await detail(r));
+  const j = (await r.json()) as { people_search_params: Record<string, unknown> | null };
+  return j.people_search_params;
+}
+export async function putPeopleScopeOverride(
+  client: string,
+  peopleSearchParams: Record<string, unknown>
+): Promise<void> {
+  const r = await authFetch(`/${client}/people/scope-override`, {
+    method: "PUT",
+    json: true,
+    body: JSON.stringify({ people_search_params: peopleSearchParams }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+}
+export async function deletePeopleScopeOverride(client: string): Promise<void> {
+  const r = await authFetch(`/${client}/people/scope-override`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await detail(r));
+}
+
 // Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (by identity
 // key) against the current rubric. Returns the re-scored rows (best fit first).
 export async function rescoreProspects(

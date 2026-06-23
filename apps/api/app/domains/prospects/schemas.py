@@ -150,6 +150,20 @@ class PeopleFacetsOut(BaseModel):
     departments: list[DepartmentFacet]
 
 
+class PeopleScopeOverrideIn(BaseModel):
+    """Save the Step-2 Find Settings as the tenant's persisted people-scope override. The payload is
+    the Apollo people block (seniority/department facets) the modal produced; an empty object clears
+    nothing — call DELETE to revert to the AI scope."""
+
+    people_search_params: dict = Field(default_factory=dict)
+
+
+class PeopleScopeOverrideOut(BaseModel):
+    """The persisted Step-2 override, or `null` params when none is saved (→ use the AI scope)."""
+
+    people_search_params: dict | None = None
+
+
 class CompanyLookalikeIn(BaseModel):
     """Find peers of the selected stage-1 rows (the 'Lookalike' button). The seeds are aggregated
     into an Apollo company-search filter HoldSlot-side (Apollo has no native lookalike API), then

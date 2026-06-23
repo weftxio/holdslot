@@ -12,7 +12,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from app.models import Company, Prospect, Tenant
+from app.models import Company, Prospect, ScopeOverride, Tenant
 
 _ALEMBIC = Path(__file__).resolve().parents[3] / "infra" / "alembic"
 
@@ -25,7 +25,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0011_apollo_ids"]
+    assert _script_dir().get_heads() == ["0012_scope_override"]
 
 
 def test_0011_columns_present_on_models():
@@ -35,3 +35,11 @@ def test_0011_columns_present_on_models():
     assert "seed_limit" not in Tenant.__table__.columns
     cons = {c.name for c in Company.__table__.constraints}
     assert "uq_company_tenant_apollo_org" in cons
+
+
+def test_0012_scope_override_model_matches_migration():
+    """The 0012 table the migration creates must match the ORM model (columns + unique key)."""
+    cols = set(ScopeOverride.__table__.columns.keys())
+    assert cols == {"id", "tenant_id", "kind", "params", "created_at", "updated_at"}
+    cons = {c.name for c in ScopeOverride.__table__.constraints}
+    assert "uq_scope_override_tenant_kind" in cons

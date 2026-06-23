@@ -497,3 +497,29 @@ class Prompt(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = _created_at()
+
+
+class ScopeOverride(Base):
+    """One live manual scope override per (tenant, `kind`) — the Find Settings modal saved to the
+    server so it persists across browsers/devices (replaces the old per-browser localStorage).
+
+    `kind` is the pipeline step the override tunes: `people` (Step-2 Find People facets) today;
+    `company` (Step-1 sourcing) can reuse this row shape later with no migration. `params` is the
+    opaque override payload merged over the AI `research_spec` at find time — deleting the row
+    reverts to the AI scope. Single-row UPSERT, not versioned: the `research_spec` is the audit
+    trail; this is just the current tuning the operator last saved."""
+
+    __tablename__ = "scope_override"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "kind", name="uq_scope_override_tenant_kind"),
+        Index("ix_scope_override_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)  # people · company
+    params: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()

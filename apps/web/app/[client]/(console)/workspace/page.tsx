@@ -35,6 +35,9 @@ import {
   updateCompanyFields,
   findPeople,
   peopleFacets,
+  getPeopleScopeOverride,
+  putPeopleScopeOverride,
+  deletePeopleScopeOverride,
   getBrief,
   getResearchSpec,
   getStructureStatus,
@@ -1635,25 +1638,28 @@ const SENIORITY_OPTIONS: { value: string; label: string }[] = [
   "entry",
   "intern",
 ].map((value) => ({ value, label: humanizeFacet(value) }));
-const PPL_SCOPE_KEY = (client: string) => `holdslot_pplscope_${client}`;
-function loadPeopleScopeOverride(client: string): PeopleScopeOverride | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const v = JSON.parse(localStorage.getItem(PPL_SCOPE_KEY(client)) || "null");
-    return v && typeof v === "object" ? (v as PeopleScopeOverride) : null;
-  } catch {
-    return null;
-  }
-}
-function savePeopleScopeOverride(client: string, v: PeopleScopeOverride | null) {
-  if (typeof window === "undefined") return;
-  try {
-    if (v) localStorage.setItem(PPL_SCOPE_KEY(client), JSON.stringify(v));
-    else localStorage.removeItem(PPL_SCOPE_KEY(client));
-  } catch {
-    /* ignore */
-  }
-}
+// The 14 master Department & Job Function values (Apollo's order). Static so the panel can render
+// the AI-scope departments before the live facet probe loads — the ~245-value subdepartment tree
+// (incl. counts + expandable subs) still comes from the probe once companies are ticked.
+const MASTER_DEPARTMENT_OPTIONS: { value: string; label: string }[] = [
+  "c_suite",
+  "product_management",
+  "master_engineering_technical",
+  "design",
+  "education",
+  "master_finance",
+  "master_human_resources",
+  "master_information_technology",
+  "master_legal",
+  "master_marketing",
+  "medical_health",
+  "master_operations",
+  "master_sales",
+  "consulting",
+].map((value) => ({ value, label: humanizeFacet(value) }));
+// The Step-2 people scope override is persisted SERVER-SIDE (per tenant), not in localStorage, so a
+// saved tuning follows the operator across browsers and a schema change can't leave a stale local
+// entry shadowing the AI scope. Load/save/reset go through the API (get/put/deletePeopleScopeOverride).
 function effectivePeopleScope(
   override: PeopleScopeOverride | null,
   spec: ResearchSpecResult | null
@@ -2319,22 +2325,24 @@ export default function Workspace() {
     setCoFit("");
     setCoStatus("");
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
-    setPeopleScopeOverride(loadPeopleScopeOverride(client));
+    setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
     let alive = true;
     setCompaniesLoading(true);
     setProspectsLoading(true);
     (async () => {
       try {
-        const [ps, cs, dl] = await Promise.all([
+        const [ps, cs, dl, pplOv] = await Promise.all([
           listProspects(client),
           listCompanies(client),
           getSourcingDocs(client),
+          getPeopleScopeOverride(client).catch(() => null), // non-fatal: fall back to AI scope
         ]);
         if (!alive) return;
         setProspects(ps);
         setCompanies(cs);
         setDocs(dl);
         setRubricDraft(dl?.fit_scoring?.body ?? "");
+        setPeopleScopeOverride(pplOv ? { people_search_params: pplOv } : null);
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       } finally {
@@ -2791,19 +2799,35 @@ export default function Workspace() {
       return { ...f, [key]: has ? f[key].filter((v) => v !== value) : [...f[key], value] };
     });
   }
-  function savePeopleScopeSettings() {
-    if (!peopleScopeForm) return;
+  const [savingPplScope, setSavingPplScope] = useState(false);
+  async function savePeopleScopeSettings() {
+    if (!peopleScopeForm || savingPplScope) return;
     const ov = formToPeopleOverride(peopleScopeForm);
-    setPeopleScopeOverride(ov);
-    savePeopleScopeOverride(client, ov);
-    setPeopleScopeOpen(false);
-    toast("Person filters saved · used on the next Find People");
+    setSavingPplScope(true);
+    try {
+      await putPeopleScopeOverride(client, ov.people_search_params);
+      setPeopleScopeOverride(ov); // persisted server-side — survives a reload / another browser
+      setPeopleScopeOpen(false);
+      toast("Person filters saved · used on the next Find People");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t save person filters", "warn");
+    } finally {
+      setSavingPplScope(false);
+    }
   }
-  function resetPeopleScopeSettings() {
-    setPeopleScopeOverride(null);
-    savePeopleScopeOverride(client, null);
-    setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
-    toast("Reverted to the AI-generated person scope");
+  async function resetPeopleScopeSettings() {
+    if (savingPplScope) return;
+    setSavingPplScope(true);
+    try {
+      await deletePeopleScopeOverride(client);
+      setPeopleScopeOverride(null);
+      setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
+      toast("Reverted to the AI-generated person scope");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t reset person filters", "warn");
+    } finally {
+      setSavingPplScope(false);
+    }
   }
 
   // ---- Stage 2: people ----
@@ -4730,6 +4754,7 @@ export default function Workspace() {
               <button
                 className="btn btn-ghost btn-sm"
                 onClick={resetPeopleScopeSettings}
+                disabled={savingPplScope}
                 title="Discard manual edits and use the AI-generated person scope"
               >
                 Reset to AI scope
@@ -4738,8 +4763,12 @@ export default function Workspace() {
               <button className="btn btn-ghost btn-sm" onClick={() => setPeopleScopeOpen(false)}>
                 Cancel
               </button>
-              <button className="btn btn-primary btn-sm" onClick={savePeopleScopeSettings}>
-                Save filters
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={savePeopleScopeSettings}
+                disabled={savingPplScope}
+              >
+                {savingPplScope ? "Saving…" : "Save filters"}
               </button>
             </>
           }
@@ -4840,11 +4869,33 @@ export default function Workspace() {
                   })}
                 </div>
               ) : (
-                <p className="ph-sub">
-                  {pplFacetsLoading
-                    ? "Loading departments…"
-                    : "Select companies above to load departments and their live counts."}
-                </p>
+                <>
+                  {/* No live probe yet (no companies ticked): still show the master departments so the
+                      AI-scope selection is visible + editable. Any scope-selected subdepartment not in
+                      the master list is appended so it isn't hidden until the probe loads. */}
+                  <div className="facet-grid">
+                    {[
+                      ...MASTER_DEPARTMENT_OPTIONS,
+                      ...peopleScopeForm.departments
+                        .filter((v) => !MASTER_DEPARTMENT_OPTIONS.some((o) => o.value === v))
+                        .map((value) => ({ value, label: humanizeFacet(value) })),
+                    ].map((o) => (
+                      <label key={o.value} className="facet-row">
+                        <input
+                          type="checkbox"
+                          checked={peopleScopeForm.departments.includes(o.value)}
+                          onChange={() => toggleFacet("departments", o.value)}
+                        />
+                        <span className="facet-label">{o.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <p className="ph-sub" style={{ marginTop: 8 }}>
+                    {pplFacetsLoading
+                      ? "Loading live counts…"
+                      : "Tick companies above for live counts and the full subdepartment list."}
+                  </p>
+                </>
               )}
             </>
           )}

@@ -49,6 +49,8 @@ from app.domains.prospects.schemas import (
     PeopleFacetsIn,
     PeopleFacetsOut,
     PeopleFindIn,
+    PeopleScopeOverrideIn,
+    PeopleScopeOverrideOut,
     ProspectManualIn,
     ProspectOut,
     ProspectRescoreIn,
@@ -68,6 +70,7 @@ from app.models import (
     Prospect,
     ResearchRun,
     ResearchSpec,
+    ScopeOverride,
 )
 
 router = APIRouter(tags=["prospects"])
@@ -103,6 +106,19 @@ def _latest_spec(db: Session, tenant_id) -> ResearchSpec | None:
         .scalars()
         .first()
     )
+
+
+SCOPE_KIND_PEOPLE = "people"  # ScopeOverride.kind for the Step-2 Find Settings facets
+
+
+def _people_scope_override(db: Session, tenant_id) -> ScopeOverride | None:
+    """The tenant's persisted Step-2 people-scope override (the Find Settings the operator saved),
+    or None → use the AI scope. Single row per (tenant, kind)."""
+    return db.execute(
+        select(ScopeOverride).where(
+            ScopeOverride.tenant_id == tenant_id, ScopeOverride.kind == SCOPE_KIND_PEOPLE
+        )
+    ).scalar_one_or_none()
 
 
 def _build_exclusions(brief: Brief | None, spec: ResearchSpec | None):
@@ -1196,14 +1212,20 @@ def find_people(
             status.HTTP_400_BAD_REQUEST, "the selected companies have no Apollo id to search"
         )
 
-    # Operator override (Step-2 Settings) wins over the AI spec for this call; `_clean` in
-    # apollo_map drops empty filters, so a cleared field widens the search. `organization_ids` is
-    # never taken from here: the per-org loop sets it (C0: search rows carry no org id).
-    people_params = (
-        body.people_search_params
-        if body.people_search_params is not None
-        else (spec.spec.get("people_search_params") or {})
-    )
+    # Precedence: a per-call override in the request → the tenant's saved Find-Settings override
+    # (persisted server-side, survives across browsers) → the AI spec. `_clean` in apollo_map drops
+    # empty filters, so a cleared field widens the search. `organization_ids` is never taken from
+    # here: the per-org loop sets it (C0: search rows carry no org id).
+    if body.people_search_params is not None:
+        people_params = body.people_search_params
+    else:
+        saved = _people_scope_override(db, ctx.tenant.id)
+        saved_params = (saved.params or {}).get("people_search_params") if saved else None
+        people_params = (
+            saved_params
+            if saved_params is not None
+            else (spec.spec.get("people_search_params") or {})
+        )
     per_company = max(1, min(body.per_company, apollo.PER_PAGE_MAX))
     seen_ids = set(
         db.execute(
@@ -1391,6 +1413,51 @@ def people_facets(
             for d in MASTER_DEPARTMENTS
         ],
     )
+
+
+@router.get("/{client}/people/scope-override", response_model=PeopleScopeOverrideOut)
+def get_people_scope_override(
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> PeopleScopeOverrideOut:
+    """The tenant's saved Step-2 Find Settings (people facets), or null params when none is saved
+    (→ the Workspace shows the AI scope). Persisted server-side so it follows the operator across
+    browsers/devices."""
+    row = _people_scope_override(db, ctx.tenant.id)
+    params = (row.params or {}).get("people_search_params") if row else None
+    return PeopleScopeOverrideOut(people_search_params=params)
+
+
+@router.put("/{client}/people/scope-override", response_model=PeopleScopeOverrideOut)
+def save_people_scope_override(
+    body: PeopleScopeOverrideIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> PeopleScopeOverrideOut:
+    """Save the Step-2 Find Settings as the tenant's people-scope override (single-row UPSERT). It
+    then wins over the AI spec on every Find People until reset. DELETE reverts to the AI scope."""
+    row = _people_scope_override(db, ctx.tenant.id)
+    payload = {"people_search_params": body.people_search_params}
+    if row is None:
+        row = ScopeOverride(tenant_id=ctx.tenant.id, kind=SCOPE_KIND_PEOPLE, params=payload)
+        db.add(row)
+    else:
+        row.params = payload
+    db.commit()
+    return PeopleScopeOverrideOut(people_search_params=body.people_search_params)
+
+
+@router.delete("/{client}/people/scope-override", status_code=status.HTTP_204_NO_CONTENT)
+def reset_people_scope_override(
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> None:
+    """Discard the saved Step-2 override → Find People reverts to the AI scope. Idempotent: a no-op
+    when nothing is saved."""
+    row = _people_scope_override(db, ctx.tenant.id)
+    if row is not None:
+        db.delete(row)
+        db.commit()
 
 
 @router.post("/{client}/prospects/rescore", response_model=list[ProspectOut])
