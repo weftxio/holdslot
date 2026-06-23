@@ -308,6 +308,13 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
     fit_score = max(0, min(int(result.data.get("fit_score") or 0), 100))
     fit_tier = tier_for(fit_score)  # tier is policy, derived from the model's score, never LLM-set
     fit_reason = result.data.get("fit_reason", "")
+    # Observability: the model's verdict only lands in the DB otherwise, so a low/0 score is hard to
+    # diagnose. One INFO line per company makes "why is this Below/0?" answerable from CloudWatch.
+    log.info(
+        "company_fit scored: score=%s tier=%s company=%s model=%s call=%s reason=%r",
+        fit_score, fit_tier, company.get("domain") or company.get("name") or "?",
+        result.model, result.llm_call_id, (fit_reason or "")[:160],
+    )
     return {
         "fit_score": fit_score,
         "fit_tier": fit_tier,
