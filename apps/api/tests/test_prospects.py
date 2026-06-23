@@ -102,28 +102,21 @@ def test_suppress_respects_already_seen_keys():
 # --------------------------------------------------------------- company fit collapse (stage 1)
 
 
-def test_collapse_company_omits_persona_and_normalizes_to_100():
-    # Full company+timing+data (persona is out of scope at stage 1) → 70/70 → 100 → Strong.
-    components = {
-        "company": {"industry": 99, "size": 12, "maturity": 8, "tech": 4},  # clamps to 40
-        "timing": {"primary_trigger": 12, "secondary_signal": 6, "engagement": 2},  # 20
-        "data": {"email_deliverability": 6, "profile_completeness": 4},  # 10
-    }
-    score, tier, normalized = fit.collapse_company(components)
-    assert score == 100 and tier == "Strong"
-    assert normalized["company"]["industry"] == 16  # clamped to its max
-    assert "persona" not in normalized  # persona omitted at company stage
-
-    # Company-only (40/70) normalizes to 57 → Good.
-    company_only = {"company": {"industry": 16, "size": 12, "maturity": 8, "tech": 4}}
-    score2, tier2, _ = fit.collapse_company(company_only)
-    assert score2 == 57 and tier2 == "Good"
-
-
-def test_company_fit_schema_is_strict_and_company_scoped():
+def test_company_fit_schema_is_two_fields_only():
+    # Company scoring is minimal: the model returns only the verdict (score + reason); the server
+    # derives the tier from the score. No line-item grid (a reasoning model fills it unreliably).
     schema = fit.COMPANY_FIT_JSON_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
-    assert set(schema["properties"]["components"]["properties"]) == {"company", "timing", "data"}
+    assert set(schema["required"]) == {"fit_score", "fit_reason"}
+    assert set(schema["properties"]) == {"fit_score", "fit_reason"}
+
+
+def test_company_tier_derives_from_score():
+    # The tier policy thresholds apply to the model's 0–100 company score directly.
+    assert fit.tier_for(80) == "Strong"
+    assert fit.tier_for(60) == "Good"
+    assert fit.tier_for(45) == "Moderate"
+    assert fit.tier_for(10) == "Below"
 
 
 # --------------------------------------------------------------------------- fit collapse (C3)

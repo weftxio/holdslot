@@ -1,12 +1,18 @@
 """Fit scoring — the one scoring door (C3 ⭐), driven by the founder-edited rubric.
 
-Shape (locked, see `docs/prompts/fit-scoring-rubric-v1.md`): the LLM classifies each rubric
-sub-criterion (full / partial / zero) against the **fixed rubric text** and returns the line-item
-points + a one-line justification per dimension + client-facing match tags. The total and the
-**tier are computed deterministically server-side** — thresholds are policy, never LLM-set — and
-each sub-score is clamped to its max so no single attribute can inflate the rest. Storing the
-components (not just the total) is the moat: one structure, three consumers (approval page,
-billing dispute, the learning loop).
+Two shapes, one rubric (the founder-edited `fit-scoring-rubric-v1.md`):
+
+* **Prospect fit** (stage 2, `score`): the LLM classifies each rubric sub-criterion (full /
+  partial / zero) and returns the line-item points; the total + **tier are computed
+  deterministically server-side** (thresholds are policy, never LLM-set), each sub-score clamped to
+  its max. Storing the components is the moat: one structure, three consumers (approval page,
+  billing dispute, learning loop).
+* **Company fit** (stage 1, `score_company`): deliberately minimal — the rubric is the model's
+  SILENT thinking framework and it returns only the verdict (`fit_score` 0–100 + a short
+  `fit_reason`); the server clamps the score and derives the tier from it (`tier_for`). We do NOT
+  ask a reasoning model to also emit the line-item grid: it fills that unreliably (decides in the
+  thinking trace, then zeroes the grid → every company collapsed to "Below · 0"). Two fields it
+  fills well; the tier stays policy.
 
 Routing (FINAL, see initial-build-plan §"Model usage"): `prospect_fit`/`company_fit` →
 **DeepSeek V4 Pro with reasoning ON** (`effort=medium`, `temperature=0`) for best-quality fit
@@ -42,14 +48,6 @@ DIMENSIONS: dict[str, dict[str, int]] = {
     "data": {"email_deliverability": 6, "profile_completeness": 4},
 }
 DIMENSION_MAX = {dim: sum(subs.values()) for dim, subs in DIMENSIONS.items()}  # 40/30/20/10
-
-# Stage-1 company scoring (LLM usage B) reuses the SAME rubric, persona omitted — no person is
-# sourced yet. Company / timing / data dimensions only (70 max); the total is normalized to /100
-# so the one tier policy below applies to companies and people identically.
-COMPANY_DIMENSIONS: dict[str, dict[str, int]] = {
-    k: DIMENSIONS[k] for k in ("company", "timing", "data")
-}
-COMPANY_MAX = sum(sum(subs.values()) for subs in COMPANY_DIMENSIONS.values())  # 70
 
 # Tiers — policy thresholds (rubric §4); tuned as outcome data accumulates, never by the LLM.
 _TIERS = (("Strong", 75), ("Good", 55), ("Moderate", 40))
@@ -121,7 +119,25 @@ def _fit_schema(name: str, dims: dict[str, dict[str, int]]) -> dict:
 
 
 FIT_JSON_SCHEMA = _fit_schema("ProspectFit", DIMENSIONS)
-COMPANY_FIT_JSON_SCHEMA = _fit_schema("CompanyFit", COMPANY_DIMENSIONS)
+
+# Stage-1 company scoring (LLM usage B) is intentionally minimal: the model reasons through the
+# rubric SILENTLY and returns only the verdict — a 0–100 `fit_score` and a short client-facing
+# `fit_reason`. The server derives the tier from the score (tier_for). We do NOT ask the model to
+# emit the per-sub-criterion grid: a reasoning model fills it unreliably (it decides in the thinking
+# trace, then zeroes the grid → every company collapsed to "Below · 0"). Two fields it fills well.
+COMPANY_FIT_JSON_SCHEMA = {
+    "name": "CompanyFit",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "fit_score": {"type": "integer"},
+            "fit_reason": {"type": "string"},
+        },
+        "required": ["fit_score", "fit_reason"],
+    },
+}
 
 
 def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[dict]:
@@ -182,14 +198,6 @@ def collapse(components: dict) -> tuple[int, str, dict]:
     return total, tier_for(total), normalized
 
 
-def collapse_company(components: dict) -> tuple[int, str, dict]:
-    """Company-only collapse (persona omitted): sum company/timing/data (≤70), normalize to /100
-    so the one tier policy applies to companies and people on the same 0–100 scale."""
-    total, normalized = _collapse(components, COMPANY_DIMENSIONS)
-    score = round(total / COMPANY_MAX * 100) if COMPANY_MAX else 0
-    return score, tier_for(score), normalized
-
-
 def _log_drift(purpose: str, computed_score: int, computed_tier: str, data: dict) -> None:
     """Warn if the model's self-committed tier/score (which `fit_reason` is anchored to) diverges
     from the authoritative server recomputation — i.e. the prose may not match the displayed chip.
@@ -244,32 +252,33 @@ def score(
 
 
 def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> list[dict]:
-    """Stage-1 company prompt: the founder's rubric verbatim, scored at the COMPANY level only.
+    """Stage-1 company prompt: the founder's rubric is the model's SILENT thinking framework; it
+    returns only the verdict (`fit_score` 0–100 + a short `fit_reason`).
 
-    No person exists yet, so persona criteria are out of scope — the model scores company,
-    timing, and data (deliverability → unknown policy) dimensions against the same rubric text.
-    """
+    No person exists yet, so persona criteria are out of scope. The model weighs company / timing /
+    data fit against the rubric in its head — we deliberately do NOT ask it to emit the line-item
+    grid (a reasoning model fills that unreliably; see COMPANY_FIT_JSON_SCHEMA)."""
     import json
 
     system = (
         "You are HoldSlot's COMPANY fit scorer (stage 1 of two: company first, person later). "
-        "Score ONE company against the fixed rubric below, criterion by criterion, for the "
-        "company / timing / data dimensions ONLY — there is no person yet, so SKIP all persona "
-        "criteria. For each in-scope sub-criterion award the rubric's full / partial / zero "
-        "points, never more than its max. A field still unknown scores per the rubric's Unknown "
-        "policy (firmographic match → 0; tech → partial; engagement → 0; email "
-        "deliverability → 3, person not yet sourced). Return integer points per sub-criterion, a "
-        "one-line justification per dimension, short client-facing match tags, one client-facing "
-        "`fit_reason` sentence about this COMPANY (no person), and the `fit_tier` + `fit_score` "
-        "you derive from your points. SCORING (apply it exactly — the server re-derives the "
-        "official verdict from your points the same way): sum the points you awarded across the "
-        "company, timing and data dimensions (max 70), then `fit_score` = round(that_sum ÷ 70 × "
-        "100). `fit_tier` = Strong if fit_score ≥ 75, Good if ≥ 55, Moderate if ≥ 40, otherwise "
-        "Below. `fit_reason` MUST match that tier — state what is confirmed and what is still "
-        "missing or unknown (e.g. firmographic size, timing triggers), and never call a company a "
-        "strong/great fit unless `fit_tier` is Strong. No internal jargon, no number in the prose. "
-        "Emit ONLY the schema.\n\n"
-        "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
+        "Decide how strongly ONE company matches the client's brief and shows buying intent, then "
+        "output ONLY two fields: an integer `fit_score` (0–100) and a short `fit_reason`.\n\n"
+        "THINK SILENTLY, then score — do NOT output your working. Reason through the rubric below "
+        "across the company / timing / data dimensions ONLY (there is no person yet, so SKIP all "
+        "persona criteria): company fit (industry, size, maturity, tech), timing (buying triggers, "
+        "recent signals, engagement) and data quality. For anything still unknown after "
+        "enrichment, apply the rubric's Unknown policy (a firmographic mismatch counts against the "
+        "company; tech / data unknowns are neutral). Weigh it against the targeting context.\n\n"
+        "OUTPUT:\n"
+        "• `fit_score` — 0–100, anchored to real evidence in the brief + enrichment, not optimism. "
+        "Scale: ≥ 75 strong match · ≥ 55 good · ≥ 40 moderate · below 40 weak.\n"
+        "• `fit_reason` — ONE short client-facing sentence (~12–20 words, no number, no internal "
+        "jargon) saying what makes this company fit or not. It is shown in a small hover box, so "
+        "keep it concise and make it match the score (never call a low-scoring company a strong "
+        "fit).\n"
+        "Emit ONLY the JSON object with those two fields.\n\n"
+        "=== FIT RUBRIC (your thinking framework) ===\n" + rubric_body
     )
     user = (
         "TARGETING CONTEXT (brief / ICP / spec slice):\n"
@@ -284,8 +293,9 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
 
 
 def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict) -> dict:
-    """Score one company (LLM usage B, stage 1). Same return shape as `score`; persona omitted,
-    total normalized to /100. Raises `LlmError` on a non-ok call (telemetry already persisted)."""
+    """Score one company (LLM usage B, stage 1). The model returns the verdict directly: a 0–100
+    `fit_score` + a short `fit_reason`; the server clamps the score and derives `fit_tier` from it
+    (tier_for). Raises `LlmError` on a non-ok call (telemetry already persisted)."""
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=COMPANY_PURPOSE,
@@ -295,20 +305,14 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
         models=FIT_MODELS,
         extra_body=FIT_EXTRA_BODY,
     )
-    fit_score, fit_tier, normalized = collapse_company(result.data.get("components", {}))
-    _log_drift(COMPANY_PURPOSE, fit_score, fit_tier, result.data)
-    fit_components = {
-        "points": normalized,
-        "reasons": result.data.get("reasons", {}),
-        "reason_tags": result.data.get("reason_tags", []),
-        "fit_reason": result.data.get("fit_reason", ""),
-        "rubric_version": RUBRIC_VERSION,
-    }
+    fit_score = max(0, min(int(result.data.get("fit_score") or 0), 100))
+    fit_tier = tier_for(fit_score)  # tier is policy, derived from the model's score, never LLM-set
+    fit_reason = result.data.get("fit_reason", "")
     return {
         "fit_score": fit_score,
         "fit_tier": fit_tier,
-        "fit_components": fit_components,
-        "fit_reason": result.data.get("fit_reason", ""),
+        "fit_components": {"fit_reason": fit_reason, "rubric_version": RUBRIC_VERSION},
+        "fit_reason": fit_reason,
         "llm_call_id": result.llm_call_id,
         "model": result.model,
         "cost_usd": result.cost_usd,
@@ -319,7 +323,6 @@ __all__ = [
     "score",
     "score_company",
     "collapse",
-    "collapse_company",
     "tier_for",
     "FIT_JSON_SCHEMA",
     "COMPANY_FIT_JSON_SCHEMA",
