@@ -17,7 +17,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
@@ -25,6 +25,8 @@ from app.domains.icps import icp_docs
 from app.domains.prospects import apollo_map, find, fit
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
+    CompanyEnrichIn,
+    CompanyEnrichment,
     CompanyFindIn,
     CompanyManualIn,
     CompanyOut,
@@ -172,6 +174,23 @@ def list_prospects(
 # ----------------------------------------------------------- Stage 1: companies (find → review)
 
 
+def _company_enrichment(ev: dict | None) -> CompanyEnrichment:
+    """Normalize the raw `evidence` blob into the 8 study fields (the Enrichment column)."""
+    ev = ev or {}
+    industries = [*(ev.get("industries") or []), *(ev.get("secondary_industries") or [])]
+    hq = ", ".join(p for p in (ev.get("city"), ev.get("state")) if p)
+    return CompanyEnrichment(
+        short_description=ev.get("short_description") or "",
+        industries=list(dict.fromkeys(industries)),  # dedupe, keep order
+        annual_revenue=ev.get("annual_revenue") or ev.get("organization_revenue") or None,
+        founded_year=ev.get("founded_year"),
+        headcount_growth_12mo=ev.get("organization_headcount_twelve_month_growth"),
+        technologies=ev.get("technology_names") or [],
+        keywords=ev.get("keywords") or [],
+        hq=hq,
+    )
+
+
 def _company_out(c: Company) -> CompanyOut:
     comps = c.fit_components or {}
     return CompanyOut(
@@ -189,6 +208,7 @@ def _company_out(c: Company) -> CompanyOut:
         fit_tier=c.fit_tier,
         fit_reason=c.fit_reason or comps.get("fit_reason", ""),
         reason_tags=comps.get("reason_tags", []),
+        enrichment=_company_enrichment(c.evidence),
         source=c.source,
         status=c.status,
         created_at=c.created_at.isoformat() if c.created_at else None,
@@ -357,13 +377,48 @@ def _enrich_survivors(survivors: list[dict]) -> None:
         p["evidence"] = {**(p.get("evidence") or {}), **(e.get("evidence") or {})}
 
 
+def _new_survivors(db: Session, tenant_id, survivors: list[dict]) -> list[dict]:
+    """The survivors NOT already stored for this tenant (by domain OR apollo_org_id). find-company
+    enriches only these — an org already in the list would re-enrich to the same firmographics and
+    waste an Apollo credit; the 'Update Field' button is the deliberate refresh path for existing
+    rows."""
+    domains = [p["domain"] for p in survivors if p.get("domain")]
+    org_ids = [p["apollo_org_id"] for p in survivors if p.get("apollo_org_id")]
+    if not domains and not org_ids:
+        return list(survivors)
+    rows = db.execute(
+        select(Company.domain, Company.apollo_org_id).where(
+            Company.tenant_id == tenant_id,
+            or_(Company.domain.in_(domains), Company.apollo_org_id.in_(org_ids)),
+        )
+    ).all()
+    ex_domains = {r[0] for r in rows}
+    ex_orgs = {r[1] for r in rows if r[1]}
+    return [
+        p
+        for p in survivors
+        if p.get("domain") not in ex_domains and p.get("apollo_org_id") not in ex_orgs
+    ]
+
+
+def _apply_enrichment(company: Company, e: dict) -> None:
+    """Write a parsed-enrich dict onto a stored Company (industry/size/country + merged evidence);
+    a null enrich value never clobbers an existing one. Used by the 'Update Field' refresh."""
+    company.industry = e.get("industry") or company.industry
+    company.size = e.get("size") or company.size
+    company.country = e.get("country") or company.country
+    company.website = company.website or e.get("website")
+    company.linkedin_url = company.linkedin_url or e.get("linkedin_url")
+    if e.get("evidence"):
+        company.evidence = {**(company.evidence or {}), **e["evidence"]}
+
+
 def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
     """Find-or-create a company by `apollo_org_id` (else `domain`); update identity fields in place.
 
-    Industry/size/country now come from `organizations/bulk_enrich` (merged into `parsed` before
-    this call), so a non-null enrich value REFRESHES the stored one — a re-find updates a stale or
-    previously-empty firmographic; a null never clobbers a real value. `apollo_org_id` is always
-    (re)stamped and `evidence` is merged (new keys win).
+    Industry/size/country come from `organizations/enrich` (merged into `parsed` before this call
+    for NEW rows only), so a non-null enrich value REFRESHES the stored one; a null never clobbers a
+    real value. `apollo_org_id` is always (re)stamped and `evidence` is merged (new keys win).
     """
     org_id, domain = parsed.get("apollo_org_id"), parsed["domain"]
     company = None
@@ -441,7 +496,9 @@ def find_company(
     # Dedupe within this batch only — an org that already exists in the tenant is upserted (so a
     # manually-added or previously-unscored company gets its apollo_org_id stamped), not dropped.
     survivors, dropped = find.filter_companies(parsed, _exclusions(db, ctx.tenant.id))
-    _enrich_survivors(survivors)
+    # Enrich ONLY companies new to this tenant — an existing row would re-enrich to the same
+    # firmographics and burn an Apollo credit. The 'Update Field' button refreshes existing rows.
+    _enrich_survivors(_new_survivors(db, ctx.tenant.id, survivors))
 
     run_id, icp = _apollo_run_id(), (uuid.UUID(body.icp_id) if body.icp_id else None)
     brief = _latest_brief(db, ctx.tenant.id)
@@ -613,6 +670,63 @@ def rescore_companies(
             rubric_version=fit.RUBRIC_VERSION,
             rows_pushed=len(rows),
             cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for c in rows:
+        db.refresh(c)
+    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
+    return [_company_out(c) for c in rows]
+
+
+@router.post("/{client}/companies/update-fields", response_model=list[CompanyOut])
+def update_company_fields(
+    body: CompanyEnrichIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> list[CompanyOut]:
+    """'Update Field' — re-enrich Apollo firmographics for an explicit set of selected companies
+    (industry/size/country + the evidence study fields). This is the deliberate, on-demand credit
+    spend; find-company only enriches NEW rows so an existing org is never re-enriched for free.
+
+    One `organizations/enrich` call per distinct domain (concurrent). Bounded by
+    `MAX_COMPANIES_PER_FIND` (the 30s sync cap) — a larger selection is rejected, not truncated.
+    """
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    if len(body.ids) > MAX_COMPANIES_PER_FIND:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"update at most {MAX_COMPANIES_PER_FIND} companies per request",
+        )
+    ids = [uuid.UUID(i) for i in body.ids]
+    rows = (
+        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
+
+    domains = [c.domain for c in rows if c.domain]
+    try:
+        enriched = apollo.enrich_organizations(domains)
+    except apollo.ApolloError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"apollo enrich failed: {e}") from e
+    by_domain = {
+        p["domain"]: p for o in enriched if (p := apollo_map.parse_enrich(o)).get("domain")
+    }
+    for c in rows:
+        e = by_domain.get(c.domain)
+        if e:
+            _apply_enrichment(c, e)
+    db.add(
+        ResearchRun(
+            tenant_id=ctx.tenant.id,
+            run_id=_apollo_run_id(),
+            source="enrich",
+            rows_pushed=len(rows),
+            cost_usd=0.0,
         )
     )
     db.commit()

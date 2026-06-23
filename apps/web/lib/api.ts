@@ -361,9 +361,22 @@ export type CompanyApi = {
   fit_tier: string | null;
   fit_reason: string;
   reason_tags: string[];
+  enrichment: CompanyEnrichment;
   source: string; // "apollo" | "manual"
   status: string; // "discovered" | "people_found" | ...
   created_at: string | null;
+};
+// The 8 Apollo-enrich fields surfaced in the workspace "Enrichment" column (normalized server-side
+// from Company.evidence). All optional — a manual / un-enriched row carries empty values.
+export type CompanyEnrichment = {
+  short_description: string;
+  industries: string[];
+  annual_revenue: number | null;
+  founded_year: number | null;
+  headcount_growth_12mo: number | null; // fraction: 0.04 = +4%
+  technologies: string[];
+  keywords: string[];
+  hq: string;
 };
 export type EnrichResult = {
   confirmed: number;
@@ -483,6 +496,18 @@ export async function selectCompanies(
 // Use after the rubric / scoring prompt changes. Returns the re-scored rows (best fit first).
 export async function rescoreCompanies(client: string, ids: string[]): Promise<CompanyApi[]> {
   const r = await authFetch(`/${client}/companies/rescore`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ ids }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// "Update Field" — re-enrich Apollo firmographics for the selected companies (the deliberate credit
+// spend; Find Companies enriches only new rows). Returns the updated rows (best fit first).
+export async function updateCompanyFields(client: string, ids: string[]): Promise<CompanyApi[]> {
+  const r = await authFetch(`/${client}/companies/update-fields`, {
     method: "POST",
     json: true,
     body: JSON.stringify({ ids }),

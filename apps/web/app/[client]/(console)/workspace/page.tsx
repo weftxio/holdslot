@@ -13,6 +13,7 @@ import { type ExclRow, type RowError, mergeExclusionText, parseExclusionCsv } fr
 import { slugToTitle } from "@/lib/client";
 import {
   type CompanyApi,
+  type CompanyEnrichment,
   type IcpApi,
   type IcpSuggestion,
   type ProspectApi,
@@ -27,6 +28,7 @@ import {
   enrichProspects,
   findCompanies,
   rescoreCompanies,
+  updateCompanyFields,
   findPeople,
   getBrief,
   getResearchSpec,
@@ -588,6 +590,63 @@ function FitScore({
         </span>
       ) : null}
     </span>
+  );
+}
+
+// Compact currency / growth formatters for the Enrichment cell.
+function fmtRevenue(n: number | null): string {
+  if (!n || n <= 0) return "";
+  if (n >= 1e9) return `$${(n / 1e9).toFixed(n >= 1e10 ? 0 : 1)}B`;
+  if (n >= 1e6) return `$${(n / 1e6).toFixed(n >= 1e7 ? 0 : 1)}M`;
+  if (n >= 1e3) return `$${Math.round(n / 1e3)}K`;
+  return `$${n}`;
+}
+function fmtGrowth(f: number | null): string {
+  if (f == null) return "";
+  const pct = f * 100;
+  return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+// Enrichment cell — the 8 Apollo-enrich study fields, compact. Long lists truncate to "+N" with the
+// full set in a title tooltip; every value renders as JSX text (never innerHTML).
+function CompanyStudy({ e }: { e: CompanyEnrichment }) {
+  const facts = [
+    e.founded_year ? `Est. ${e.founded_year}` : "",
+    fmtRevenue(e.annual_revenue),
+    e.headcount_growth_12mo != null ? `${fmtGrowth(e.headcount_growth_12mo)} 12mo` : "",
+  ].filter(Boolean);
+  const line = (label: string, items: string[], max: number) =>
+    items.length ? (
+      <div className="cstudy-line" title={items.join(", ")}>
+        <span className="cstudy-k">{label}</span> {items.slice(0, max).join(", ")}
+        {items.length > max ? ` +${items.length - max}` : ""}
+      </div>
+    ) : null;
+  const hasAny =
+    e.short_description ||
+    facts.length ||
+    e.industries.length ||
+    e.technologies.length ||
+    e.keywords.length ||
+    e.hq;
+  if (!hasAny) return <span className="muted">—</span>;
+  return (
+    <div className="cstudy">
+      {e.short_description ? (
+        <p className="cstudy-desc" title={e.short_description}>
+          {e.short_description}
+        </p>
+      ) : null}
+      {facts.length ? <div className="cstudy-facts">{facts.join(" · ")}</div> : null}
+      {line("Industries", e.industries, 2)}
+      {line("Tech", e.technologies, 4)}
+      {line("Keywords", e.keywords, 4)}
+      {e.hq ? (
+        <div className="cstudy-line">
+          <span className="cstudy-k">HQ</span> {e.hq}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2044,6 +2103,7 @@ export default function Workspace() {
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
   const [prospects, setProspects] = useState<ProspectApi[]>([]);
   const [prospectsLoading, setProspectsLoading] = useState(false);
+  const [companiesLoading, setCompaniesLoading] = useState(false);
   // Tracks the live client so an async reload/handler that resolves *after* a client switch can
   // bail before writing the previous client's data into the new client's view.
   const clientRef = useRef(client);
@@ -2068,6 +2128,7 @@ export default function Workspace() {
   const [enriching, setEnriching] = useState(false);
   const [findingCo, setFindingCo] = useState(false);
   const [rescoring, setRescoring] = useState(false);
+  const [updatingFields, setUpdatingFields] = useState(false);
   const [findingPpl, setFindingPpl] = useState(false);
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
@@ -2128,6 +2189,7 @@ export default function Workspace() {
   }
 
   async function reloadCompanies() {
+    setCompaniesLoading(true);
     try {
       const cs = await listCompanies(client);
       if (clientRef.current !== client) return;
@@ -2136,6 +2198,8 @@ export default function Workspace() {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
       }
+    } finally {
+      if (clientRef.current === client) setCompaniesLoading(false);
     }
   }
 
@@ -2157,6 +2221,8 @@ export default function Workspace() {
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(loadPeopleScopeOverride(client));
     let alive = true;
+    setCompaniesLoading(true);
+    setProspectsLoading(true);
     (async () => {
       try {
         const [ps, cs, dl] = await Promise.all([
@@ -2171,6 +2237,11 @@ export default function Workspace() {
         setRubricDraft(dl?.fit_scoring?.body ?? "");
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
+      } finally {
+        if (alive) {
+          setCompaniesLoading(false);
+          setProspectsLoading(false);
+        }
       }
     })();
     return () => {
@@ -2247,6 +2318,10 @@ export default function Workspace() {
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
+  // List is "fetching" during initial hydrate, an Apollo find, or a re-score — show the overlay
+  // spinner over the table for the whole period, whether or not rows already exist.
+  const coBusy = companiesLoading || findingCo || rescoring || updatingFields;
+  const pplBusy = prospectsLoading || findingPpl;
   // One-line read of the scope Find Companies will use right now (override or AI spec) — shown in
   // the empty state so a 0-result is explainable, not mysterious.
   const coScopeSummary = useMemo(
@@ -2334,6 +2409,23 @@ export default function Workspace() {
       toast(e instanceof Error ? e.message : "Re-score failed", "warn");
     } finally {
       setRescoring(false);
+    }
+  }
+
+  // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
+  // credits, so it is deliberate/manual (Find Companies enriches only new rows).
+  async function runUpdateFields() {
+    const ids = [...companyChecked];
+    if (!ids.length) return toast("Select companies to update", "warn");
+    setUpdatingFields(true);
+    try {
+      await updateCompanyFields(client, ids);
+      await reloadCompanies();
+      toast(`Updated ${ids.length} ${ids.length === 1 ? "company" : "companies"}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Update failed", "warn");
+    } finally {
+      setUpdatingFields(false);
     }
   }
 
@@ -3565,10 +3657,22 @@ export default function Workspace() {
                     ⚙ Settings{scopeOverride ? " (custom)" : ""}
                   </button>
                   <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={runUpdateFields}
+                    disabled={!coSelCount || updatingFields || findingCo}
+                    title="Re-enrich Apollo firmographics for the selected companies · spends Apollo credits"
+                  >
+                    {updatingFields
+                      ? "Updating…"
+                      : coSelCount
+                        ? `Update Field ${coSelCount}`
+                        : "Update Field"}
+                  </button>
+                  <button
                     className="btn btn-primary btn-sm"
                     onClick={runFindCompanies}
                     disabled={findingCo}
-                    title="Search Apollo from the current scope"
+                    title="Search Apollo from the current scope · enriches only new companies"
                   >
                     {findingCo ? "Finding…" : "Find Companies"}
                   </button>
@@ -3599,7 +3703,14 @@ export default function Workspace() {
               <div className="countrow">
                 <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
               </div>
-              <div className="list-scroll">
+              <div className="list-body">
+                {coBusy && (
+                  <div className="list-overlay" role="status" aria-live="polite">
+                    <span className="hs-spinner" aria-hidden="true" />
+                    <span>Fetching…</span>
+                  </div>
+                )}
+                <div className="list-scroll">
                 <table className="tbl">
                   <thead>
                     <tr>
@@ -3618,6 +3729,7 @@ export default function Workspace() {
                       <th>Size</th>
                       <th>Source</th>
                       <th>AI Score</th>
+                      <th>Enrichment</th>
                     </tr>
                   </thead>
                   {coVisible.length > 0 && (
@@ -3666,6 +3778,9 @@ export default function Workspace() {
                               reason={c.fit_reason}
                             />
                           </td>
+                          <td>
+                            <CompanyStudy e={c.enrichment} />
+                          </td>
                         </tr>
                       ))}
                     </tbody>
@@ -3686,6 +3801,7 @@ export default function Workspace() {
                     )}
                   </div>
                 )}
+                </div>
               </div>
               <div className="list-dock">
                 <span className={clsx("dock-count", !coSelCount && "empty")}>
@@ -3762,7 +3878,14 @@ export default function Workspace() {
               <div className="countrow">
                 <b>{visible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{selCount}</b>&nbsp;selected
               </div>
-              <div className="list-scroll">
+              <div className="list-body">
+                {pplBusy && (
+                  <div className="list-overlay" role="status" aria-live="polite">
+                    <span className="hs-spinner" aria-hidden="true" />
+                    <span>Fetching…</span>
+                  </div>
+                )}
+                <div className="list-scroll">
                 <table className="tbl">
                   <thead>
                     <tr>
@@ -3873,6 +3996,7 @@ export default function Workspace() {
                     )}
                   </div>
                 )}
+                </div>
               </div>
               <div className="list-dock">
                 <span className={clsx("dock-count", !selectedProspects.length && "empty")}>

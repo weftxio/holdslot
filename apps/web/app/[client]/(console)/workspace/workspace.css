@@ -24,6 +24,15 @@
   height: calc(100vh - 88px);
   min-height: 0;
 }
+/* Positioning context for the fetch overlay — flexes to fill the panel so .list-scroll
+   inside it keeps scrolling and the overlay (absolute inset:0) covers the visible table. */
+.list-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
 .list-scroll {
   flex: 1;
   display: flex;
@@ -33,6 +42,23 @@
   /* min-height:0 lets this flex child shrink below its content height so it
      actually scrolls instead of stretching the panel past the dock. */
   min-height: 0;
+}
+/* Loading veil over the table during any fetch (initial hydrate / Apollo find / re-score).
+   Sits above the rows so a refresh-in-place reads as busy, not as stale-but-idle data. */
+.list-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  /* Near-opaque so the rows/empty-state behind don't bleed through and clash with "Fetching…". */
+  background: rgba(255, 255, 255, 0.97);
+  backdrop-filter: blur(2px);
+  font-size: 12.5px;
+  color: var(--ink-faint);
 }
 .list-empty {
   flex: 1;
@@ -2150,6 +2176,43 @@
   --m-sel-edge: #e2e8f1;
   --m-tip: #14171c;
   --m-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* Enrichment column — the 8 Apollo-enrich study fields, stacked compact in one cell. Bounded
+   width + wrapping so the column doesn't blow out the table; long lists truncate with "+N". */
+.cstudy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 300px;
+  white-space: normal;
+  font-size: 11px;
+  line-height: 1.36;
+  color: var(--m-soft);
+}
+.cstudy-desc {
+  margin: 0;
+  color: #1c2430;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cstudy-facts {
+  font-weight: 600;
+  color: #1c2430;
+}
+.cstudy-line {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cstudy-k {
+  margin-right: 3px;
+  color: var(--m-faint);
+  font-weight: 600;
 }
 
 /* Row 1 — tabs. Match the mock: small uppercase "STEP n" prefix (blue when active), bold name,

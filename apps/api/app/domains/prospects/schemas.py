@@ -10,6 +10,20 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+class CompanyEnrichment(BaseModel):
+    """The 8 Apollo-enrich fields surfaced for user study (the "Enrichment" column), normalized
+    from `Company.evidence`. All optional — an un-enriched / manual row carries empty values."""
+
+    short_description: str = ""
+    industries: list[str] = []  # primary + secondary, deduped
+    annual_revenue: float | None = None  # USD, raw — the web formats it compact
+    founded_year: int | None = None
+    headcount_growth_12mo: float | None = None  # fraction (0.04 = +4%); web formats as %
+    technologies: list[str] = []
+    keywords: list[str] = []
+    hq: str = ""  # "City, State"
+
+
 class CompanyOut(BaseModel):
     """One stage-1 Company-list row — firmographics + company-level fit, scoped to the client."""
 
@@ -27,6 +41,7 @@ class CompanyOut(BaseModel):
     fit_tier: str | None = None
     fit_reason: str = ""
     reason_tags: list[str] = []
+    enrichment: CompanyEnrichment = Field(default_factory=CompanyEnrichment)
     source: str = ""
     status: str = ""
     created_at: str | None = None
@@ -100,6 +115,14 @@ class CompanyRescoreIn(BaseModel):
     """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
     selection). Unlike find-company, this ignores the `fit_score is None` gate — it re-scores the
     given rows against the current rubric + scoring prompt so an existing list reflects a change."""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+class CompanyEnrichIn(BaseModel):
+    """Refresh Apollo firmographics (the 'Update Field' button) for an explicit set of selected
+    companies — re-enrich each row's industry/size/country/evidence on demand. This is the
+    deliberate credit spend; find-company only enriches NEW rows to avoid paying twice per org."""
 
     ids: list[str] = Field(default_factory=list)
 
