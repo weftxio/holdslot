@@ -32,8 +32,10 @@ SPEC_VERSION = 3
 PROMPT_VERSION = "brief-structure-v5"
 PURPOSE = "brief_structure"
 
-# Apollo's fixed `person_seniorities` enum (the only accepted values). The LLM is constrained to
-# these at generation; `apollo_map` passes them straight through to `mixed_people/api_search`.
+# Apollo's fixed `person_seniorities` enum = the app's "Management Level" facet (the only accepted
+# values, in Apollo's own order). The LLM is constrained to these at generation; `apollo_map` passes
+# them straight through to `mixed_people/api_search`. Verified live against Apollo (2026-06-24): the
+# per-value `total_entries` counts reproduce Apollo's UI sidebar exactly.
 SENIORITY_ENUM = [
     "owner",
     "founder",
@@ -47,6 +49,97 @@ SENIORITY_ENUM = [
     "entry",
     "intern",
 ]
+
+# Apollo's `person_department_or_subdepartments` taxonomy = the app's "Departments & Job Function"
+# facet. Two tiers: 14 master departments → their subdepartments. NOT in Apollo's public API docs;
+# reconstructed from cross-agreeing community mirrors + verified live (a valid value returns a real
+# count, a bogus one silently returns 0 — never an error, so we constrain the LLM to this enum).
+# ⚠️ `workforce_mangement` and `opthalmology` are misspelled in Apollo's own taxonomy — keep verbatim.
+DEPARTMENT_TAXONOMY: dict[str, list[str]] = {
+    "c_suite": [
+        "executive", "finance_executive", "founder", "human_resources_executive",
+        "information_technology_executive", "legal_executive", "marketing_executive",
+        "medical_health_executive", "operations_executive", "sales_executive",
+    ],
+    "product_management": ["product_development", "product_management"],
+    "master_engineering_technical": [
+        "artificial_intelligence_machine_learning", "bioengineering", "biometrics",
+        "business_intelligence", "chemical_engineering", "cloud_mobility", "data_science", "devops",
+        "digital_transformation", "emerging_technology_innovation", "engineering_technical",
+        "industrial_engineering", "mechanic", "mobile_development", "project_management",
+        "research_development", "scrum_master_agile_coach", "software_development",
+        "support_technical_services", "technician", "technology_operations",
+        "test_quality_assurance", "ui_ux", "web_development",
+    ],
+    "design": ["all_design", "product_ui_ux_design", "graphic_design"],
+    "education": ["teacher", "principal", "superintendent", "professor"],
+    "master_finance": [
+        "accounting", "finance", "financial_planning_analysis", "financial_reporting",
+        "financial_strategy", "financial_systems", "internal_audit_control", "investor_relations",
+        "mergers_acquisitions", "real_estate_finance", "financial_risk", "shared_services",
+        "sourcing_procurement", "tax", "treasury",
+    ],
+    "master_human_resources": [
+        "compensation_benefits", "culture_diversity_inclusion", "employee_labor_relations",
+        "health_safety", "human_resource_information_system", "human_resources",
+        "hr_business_partner", "learning_development", "organizational_development",
+        "recruiting_talent_acquisition", "talent_management", "workforce_mangement",
+        "people_operations",
+    ],
+    "master_information_technology": [
+        "application_development", "business_service_management_itsm", "collaboration_web_app",
+        "data_center", "data_warehouse", "database_administration", "ecommerce_development",
+        "enterprise_architecture", "help_desk_desktop_services", "hr_financial_erp_systems",
+        "information_security", "information_technology", "infrastructure", "it_asset_management",
+        "it_audit_it_compliance", "it_operations", "it_procurement", "it_strategy", "it_training",
+        "networking", "project_program_management", "quality_assurance", "retail_store_systems",
+        "servers", "storage_disaster_recovery", "telecommunications", "virtualization",
+    ],
+    "master_legal": [
+        "acquisitions", "compliance", "contracts", "corporate_secretary", "ediscovery", "ethics",
+        "governance", "governmental_affairs_regulatory_law", "intellectual_property_patent",
+        "labor_employment", "lawyer_attorney", "legal", "legal_counsel", "legal_operations",
+        "litigation", "privacy",
+    ],
+    "master_marketing": [
+        "advertising", "brand_management", "content_marketing", "customer_experience",
+        "customer_marketing", "demand_generation", "digital_marketing", "ecommerce_marketing",
+        "event_marketing", "field_marketing", "lead_generation", "marketing",
+        "marketing_analytics_insights", "marketing_communications", "marketing_operations",
+        "product_marketing", "public_relations", "search_engine_optimization_pay_per_click",
+        "social_media_marketing", "strategic_communications", "technical_marketing",
+    ],
+    "medical_health": [
+        "anesthesiology", "chiropractics", "clinical_systems", "dentistry", "dermatology",
+        "doctors_physicians", "epidemiology", "first_responder", "infectious_disease",
+        "medical_administration", "medical_education_training", "medical_research", "medicine",
+        "neurology", "nursing", "nutrition_dietetics", "obstetrics_gynecology", "oncology",
+        "opthalmology", "optometry", "orthopedics", "pathology", "pediatrics", "pharmacy",
+        "physical_therapy", "psychiatry", "psychology", "public_health", "radiology", "social_work",
+    ],
+    "master_operations": [
+        "call_center", "construction", "corporate_strategy", "customer_service_support",
+        "enterprise_resource_planning", "facilities_management", "leasing", "logistics",
+        "office_operations", "operations", "physical_security", "project_development",
+        "quality_management", "real_estate", "safety", "store_operations", "supply_chain",
+    ],
+    "master_sales": [
+        "account_management", "business_development", "channel_sales",
+        "customer_retention_development", "customer_success", "field_outside_sales", "inside_sales",
+        "partnerships", "revenue_operations", "sales", "sales_enablement", "sales_engineering",
+        "sales_operations", "sales_training",
+    ],
+    "consulting": ["consultant"],
+}
+# The 14 master values (the top-level facet rows shown with live counts in Find Settings).
+MASTER_DEPARTMENTS = list(DEPARTMENT_TAXONOMY.keys())
+# Flat set of every accepted value (masters + subs) — the enum the LLM and server validate against.
+# Order-preserving dedupe: `product_management` is both a master and a sub in Apollo's own taxonomy.
+DEPARTMENT_ENUM = list(
+    dict.fromkeys(
+        MASTER_DEPARTMENTS + [sub for subs in DEPARTMENT_TAXONOMY.values() for sub in subs]
+    )
+)
 
 # Deterministic credit policy (server-merged, NOT LLM-set). Apollo-shaped: a single `people/match`
 # enrich gated on email status, phone off (8 cr + async webhook), plus hard caps. The prompt is
@@ -113,15 +206,20 @@ _COMPANY_SEARCH_PARAMS = _obj(
     }
 )
 
-# POST /api/v1/mixed_people/api_search — the subset the model emits (fit personas).
+# POST /api/v1/mixed_people/api_search — the subset the model emits (fit personas). Personas are
+# expressed as Apollo's two native facets — Management Level (`person_seniorities`) × Department/Job
+# Function (`person_department_or_subdepartments`) — NOT free-text `person_titles`: exact-title
+# matching AND's to zero against any org whose people use different title nomenclature. The two facet
+# enums match Apollo's normalized taxonomy, so they hit regardless of the org's local title style.
 _PEOPLE_SEARCH_PARAMS = _obj(
     {
-        "person_titles": _arr_str(),  # preferred over seniority
-        "include_similar_titles": {"type": "boolean"},  # false for strict match
+        "person_seniorities": _arr_enum(SENIORITY_ENUM),  # Management Level facet
+        "person_department_or_subdepartments": _arr_enum(
+            DEPARTMENT_ENUM
+        ),  # Departments & Job Function facet
         "q_keywords": {"type": "string"},  # industry/vertical for PEOPLE — single string
-        "person_seniorities": _arr_enum(SENIORITY_ENUM),  # enum backstop
-        "organization_locations": _arr_str(),  # employer HQ
-        "organization_num_employees_ranges": _arr_str(),  # comma-strings
+        "organization_locations": _arr_str(),  # employer HQ (broad search only)
+        "organization_num_employees_ranges": _arr_str(),  # comma-strings (broad search only)
     }
 )
 
@@ -237,10 +335,9 @@ class CompanySearchParams(BaseModel):
 
 class PeopleSearchParams(BaseModel):
     model_config = _STRICT
-    person_titles: list[str]
-    include_similar_titles: bool
-    q_keywords: str
     person_seniorities: list[str]
+    person_department_or_subdepartments: list[str]
+    q_keywords: str
     organization_locations: list[str]
     organization_num_employees_ranges: list[str]
 
@@ -335,12 +432,12 @@ POST /api/v1/mixed_companies/search:
 q_organization_keyword_tags[] (industry/vertical lives HERE — there is NO industry-id field), organization_num_employees_ranges[] (comma-strings like "10,100"), organization_locations[] (HQ; lowercase country/US-state/city), organization_not_locations[], revenue_range[min]/revenue_range[max] (integers, no symbols/commas), currently_using_any_of_technology_uids[] (underscored), q_organization_name, organization_ids[], latest_funding_amount_range[min]/[max], total_funding_range[min]/[max], latest_funding_date_range[min]/[max] (YYYY-MM-DD), q_organization_job_titles[], organization_job_locations[], organization_num_jobs_range[min]/[max], organization_job_posted_at_range[min]/[max] (YYYY-MM-DD).
 
 POST /api/v1/mixed_people/api_search:
-person_titles[] (PREFER over seniority), include_similar_titles (boolean; false for strict match), q_keywords (industry/vertical for PEOPLE lives HERE — single string, NOT an array), person_locations[], person_seniorities[] (ENUM ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern), organization_locations[] (employer HQ), q_organization_domains_list[] (bare domains, no www/@), organization_ids[], organization_num_employees_ranges[], revenue_range[min]/[max], currently_using_any_of_technology_uids[], q_organization_job_titles[], organization_job_locations[], organization_num_jobs_range[min]/[max], organization_job_posted_at_range[min]/[max].
+person_seniorities[] = Management Level (ENUM ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern). person_department_or_subdepartments[] = Departments & Job Function (ENUM; 14 master departments: c_suite, product_management, master_engineering_technical, design, education, master_finance, master_human_resources, master_information_technology, master_legal, master_marketing, medical_health, master_operations, master_sales, consulting — each with finer subdepartments, e.g. master_sales→business_development/account_management/partnerships, master_marketing→demand_generation/product_marketing, master_finance→accounting/treasury; use a master for breadth or subdepartments for precision). q_keywords (industry/vertical for PEOPLE lives HERE — single string, NOT an array), organization_locations[] (employer HQ), organization_num_employees_ranges[]. DO NOT use person_titles or include_similar_titles — exact-title matching AND's to zero against any org whose people use different title wording; express the persona as Management Level × Department instead.
 
 Do NOT emit: enrichment, credits, email-status, page, per_page. The system sets those.
 
 JOB 1 — FIT TARGETING (no web)
-Map ICP firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Titles -> person_titles[]; also set person_seniorities[] from the enum as backstop; set include_similar_titles:false when titles are specific.
+Map ICP firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Persona/titles -> map the BUYING-ROLE intent to person_seniorities[] (Management Level) AND person_department_or_subdepartments[] (Department/Job Function) — never person_titles. E.g. "Head of Sales / CCO / VP Revenue" -> seniorities [c_suite, vp, head, director] + departments [master_sales]; "Head of Marketing" -> [vp, head, director] + [master_marketing]; a founder-led SMB -> [owner, founder, c_suite] + the relevant department. Pick a master department for breadth, subdepartments for precision. Apollo AND's across facets and OR's within each, so keep each facet a SHORT list of the levels/functions that actually buy — over-listing one facet is fine (OR), but a needless second facet narrows (AND).
 
 JOB 2 — INTENT LAYER (no web). Separate intent_filters block. Fit AND intent both required.
 
@@ -376,10 +473,9 @@ Return exactly this json shape:
 "revenue_range": {"min": null, "max": null}
 },
 "people_search_params": {
-"person_titles": [],
-"include_similar_titles": false,
-"q_keywords": "",
 "person_seniorities": [],
+"person_department_or_subdepartments": [],
+"q_keywords": "",
 "organization_locations": [],
 "organization_num_employees_ranges": []
 },

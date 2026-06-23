@@ -110,6 +110,46 @@ class PeopleFindIn(BaseModel):
     company_ids: list[str] = Field(default_factory=list)
 
 
+class PeopleFacetsIn(BaseModel):
+    """Compute the live Find-Settings facet sidebar for an explicit set of Step-2 companies.
+
+    Counts are scoped to the union of the selected companies' Apollo orgs (one `organization_ids`
+    array) and computed PER facet value — exactly Apollo's UI sidebar ("Manager (9), Senior (3)…").
+    Free: people search costs no credits. `company_ids` are Company.id; companies without an Apollo
+    org id are ignored."""
+
+    company_ids: list[str] = Field(default_factory=list)
+
+
+class FacetOption(BaseModel):
+    """A selectable Apollo facet value + its human label (no count)."""
+
+    value: str
+    label: str
+
+
+class FacetCount(FacetOption):
+    """A facet value with its live people count in scope."""
+
+    count: int
+
+
+class DepartmentFacet(FacetCount):
+    """A master department row (with count) + its selectable subdepartment options. Only the 14
+    masters are probed for counts, to bound the request to 11 + 14 free calls; subs are
+    selection-only (the operator can refine to a subdepartment, but it shows no live count)."""
+
+    subs: list[FacetOption] = Field(default_factory=list)
+
+
+class PeopleFacetsOut(BaseModel):
+    """The facet sidebar: total people in scope + per-Management-Level and per-Department counts."""
+
+    total: int
+    seniorities: list[FacetCount]
+    departments: list[DepartmentFacet]
+
+
 class CompanyLookalikeIn(BaseModel):
     """Find peers of the selected stage-1 rows (the 'Lookalike' button). The seeds are aggregated
     into an Apollo company-search filter HoldSlot-side (Apollo has no native lookalike API), then

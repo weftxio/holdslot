@@ -180,12 +180,13 @@ export type ApolloCompanyParams = {
   organization_locations: string[];
   revenue_range: { min: number | null; max: number | null };
 };
-// Apollo people-search params (a subset of mixed_people/api_search).
+// Apollo people-search params (a subset of mixed_people/api_search). Personas are Apollo's two
+// native facets — Management Level (person_seniorities) × Department/Job Function — never free-text
+// titles (exact-title matching AND's to zero against orgs with different title wording).
 export type ApolloPeopleParams = {
-  person_titles: string[];
-  include_similar_titles: boolean;
-  q_keywords: string;
   person_seniorities: string[];
+  person_department_or_subdepartments: string[];
+  q_keywords: string;
   organization_locations: string[];
   organization_num_employees_ranges: string[];
 };
@@ -593,6 +594,29 @@ export async function findPeople(
     method: "POST",
     json: true,
     body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Find-Settings facet sidebar — live per Management-Level / Department people counts across the
+// selected Step-2 companies (free, 0 credits). One probe per facet value, server-side.
+export type FacetOption = { value: string; label: string };
+export type FacetCount = FacetOption & { count: number };
+export type DepartmentFacet = FacetCount & { subs: FacetOption[] };
+export type PeopleFacets = {
+  total: number;
+  seniorities: FacetCount[];
+  departments: DepartmentFacet[];
+};
+export async function peopleFacets(
+  client: string,
+  companyIds: string[]
+): Promise<PeopleFacets> {
+  const r = await authFetch(`/${client}/people/facets`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ company_ids: companyIds }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();

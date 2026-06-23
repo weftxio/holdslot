@@ -16,6 +16,7 @@ import {
   type CompanyEnrichment,
   type IcpApi,
   type IcpSuggestion,
+  type PeopleFacets,
   type ProspectApi,
   type ResearchJob,
   type ResearchSpecResult,
@@ -33,6 +34,7 @@ import {
   rescoreProspects,
   updateCompanyFields,
   findPeople,
+  peopleFacets,
   getBrief,
   getResearchSpec,
   getStructureStatus,
@@ -523,6 +525,14 @@ const empBand = (r: string) => {
   if (!lo) return "";
   return hi ? `${lo}–${hi}` : `${lo}+`;
 };
+// Apollo facet machine value → display label: drop a leading "master_", underscores → spaces,
+// Title-case, with the few acronym/hyphen fixups the server's _facet_label also applies.
+function humanizeFacet(value: string): string {
+  if (value === "c_suite") return "C-Suite";
+  if (value === "vp") return "VP";
+  const text = value.startsWith("master_") ? value.slice("master_".length) : value;
+  return text.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
 // A YYYY-MM-DD min/max window → "2025-12-22 → 2026-06-22" / "from …" / "until …" / null.
 function dateRange(r?: { min?: string | null; max?: string | null }): string | null {
   const lo = r?.min,
@@ -813,10 +823,9 @@ function SpecReview({
       revenue_range?: Range;
     };
     people_search_params?: {
-      person_titles?: string[];
-      include_similar_titles?: boolean;
-      q_keywords?: string;
       person_seniorities?: string[];
+      person_department_or_subdepartments?: string[];
+      q_keywords?: string;
       organization_locations?: string[];
       organization_num_employees_ranges?: string[];
     };
@@ -935,27 +944,18 @@ function SpecReview({
             </SpecCell>
           </div>
 
-          <SpecHead>People search · personas</SpecHead>
+          <SpecHead>People search · personas (Management Level × Department)</SpecHead>
           <div className="icp-grid">
-            <SpecCell label="Target titles">
-              <SpecChips items={ppl.person_titles} />
+            <SpecCell label="Management level">
+              <SpecChips items={(ppl.person_seniorities ?? []).map(humanizeFacet)} />
             </SpecCell>
-            <SpecCell label="Similar titles">
-              {ppl.person_titles?.length ? (
-                ppl.include_similar_titles ? (
-                  "Included"
-                ) : (
-                  "Exact only"
-                )
-              ) : (
-                <Dash />
-              )}
+            <SpecCell label="Departments &amp; job function">
+              <SpecChips
+                items={(ppl.person_department_or_subdepartments ?? []).map(humanizeFacet)}
+              />
             </SpecCell>
             <SpecCell label="Industry keywords">
               <Val>{ppl.q_keywords}</Val>
-            </SpecCell>
-            <SpecCell label="Seniority">
-              <SpecChips items={ppl.person_seniorities} />
             </SpecCell>
             <SpecCell label="Locations (HQ)">
               <SpecChips items={ppl.organization_locations} />
@@ -1082,10 +1082,22 @@ function SpecReview({
                   <SpecChips items={sug.company_search_params?.q_organization_keyword_tags ?? []} />
                 </div>
               )}
-              {(sug.people_search_params?.person_titles?.length ?? 0) > 0 && (
+              {(sug.people_search_params?.person_seniorities?.length ?? 0) > 0 && (
                 <div className="is-row">
-                  <span className="k">Titles</span>
-                  <SpecChips items={sug.people_search_params?.person_titles ?? []} />
+                  <span className="k">Management level</span>
+                  <SpecChips
+                    items={(sug.people_search_params?.person_seniorities ?? []).map(humanizeFacet)}
+                  />
+                </div>
+              )}
+              {(sug.people_search_params?.person_department_or_subdepartments?.length ?? 0) > 0 && (
+                <div className="is-row">
+                  <span className="k">Departments</span>
+                  <SpecChips
+                    items={(
+                      sug.people_search_params?.person_department_or_subdepartments ?? []
+                    ).map(humanizeFacet)}
+                  />
                 </div>
               )}
             </div>
@@ -1601,14 +1613,28 @@ function scopeSummary(o: ScopeOverride): string {
 // mixed_people/api_search filters. `organization_ids` is NOT here — the server sets it per selected
 // org. `null` → use the saved spec's people_search_params.
 type PeopleScopeOverride = { people_search_params: Record<string, unknown> };
+// The override now holds ONLY the two persona facets — Management Level (person_seniorities) ×
+// Department/Job Function (person_department_or_subdepartments). Org-context filters
+// (keyword/location/size) are dropped: find always pins one org, which fixes them anyway.
 type PeopleScopeForm = {
-  titles: string;
-  similar: boolean;
-  seniorities: string;
-  keywords: string;
-  locations: string;
-  sizes: string;
+  seniorities: string[];
+  departments: string[];
 };
+// The 11 Management-Level values (Apollo's order). Static so the panel renders before counts load;
+// department options come from the live facet probe (the ~245-value tree isn't duplicated here).
+const SENIORITY_OPTIONS: { value: string; label: string }[] = [
+  "owner",
+  "founder",
+  "c_suite",
+  "partner",
+  "vp",
+  "head",
+  "director",
+  "manager",
+  "senior",
+  "entry",
+  "intern",
+].map((value) => ({ value, label: humanizeFacet(value) }));
 const PPL_SCOPE_KEY = (client: string) => `holdslot_pplscope_${client}`;
 function loadPeopleScopeOverride(client: string): PeopleScopeOverride | null {
   if (typeof window === "undefined") return null;
@@ -1636,43 +1662,29 @@ function effectivePeopleScope(
   const sp = (spec?.spec ?? {}) as { people_search_params?: Record<string, unknown> };
   return { people_search_params: sp.people_search_params ?? {} };
 }
+const _arr = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
 function peopleScopeToForm(o: PeopleScopeOverride): PeopleScopeForm {
   const ps = (o.people_search_params ?? {}) as Record<string, unknown>;
   return {
-    titles: arrToCsv(ps.person_titles),
-    similar: ps.include_similar_titles === true,
-    seniorities: arrToCsv(ps.person_seniorities),
-    keywords: typeof ps.q_keywords === "string" ? ps.q_keywords : "",
-    locations: arrToCsv(ps.organization_locations),
-    sizes: Array.isArray(ps.organization_num_employees_ranges)
-      ? (ps.organization_num_employees_ranges as string[]).join("; ")
-      : "",
+    seniorities: _arr(ps.person_seniorities),
+    departments: _arr(ps.person_department_or_subdepartments),
   };
 }
 function formToPeopleOverride(f: PeopleScopeForm): PeopleScopeOverride {
   return {
     people_search_params: {
-      person_titles: csvToArr(f.titles),
-      include_similar_titles: f.similar,
-      person_seniorities: csvToArr(f.seniorities),
-      q_keywords: f.keywords.trim(),
-      organization_locations: csvToArr(f.locations),
-      organization_num_employees_ranges: semiToArr(f.sizes),
+      person_seniorities: f.seniorities,
+      person_department_or_subdepartments: f.departments,
     },
   };
 }
 function peopleScopeSummary(o: PeopleScopeOverride): string {
   const ps = (o.people_search_params ?? {}) as Record<string, unknown>;
-  const arr = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
   const parts: string[] = [];
-  if (arr(ps.person_titles).length)
-    parts.push(
-      `${arr(ps.person_titles).join("/")}${ps.include_similar_titles ? " (+similar)" : ""}`
-    );
-  if (arr(ps.person_seniorities).length) parts.push(arr(ps.person_seniorities).join("/"));
-  if (typeof ps.q_keywords === "string" && ps.q_keywords.trim())
-    parts.push(`“${ps.q_keywords.trim()}”`);
-  if (arr(ps.organization_locations).length) parts.push(arr(ps.organization_locations).join("/"));
+  if (_arr(ps.person_seniorities).length)
+    parts.push(_arr(ps.person_seniorities).map(humanizeFacet).join("/"));
+  if (_arr(ps.person_department_or_subdepartments).length)
+    parts.push(_arr(ps.person_department_or_subdepartments).map(humanizeFacet).join("/"));
   return parts.join(" · ");
 }
 
@@ -1745,7 +1757,9 @@ export default function Workspace() {
           fields: {
             ...blankFields(),
             industries: sug.company_search_params?.q_organization_keyword_tags ?? [],
-            jobTitles: sug.people_search_params?.person_titles ?? [],
+            // Personas are facets now (Management Level × Department), not free-text titles — the
+            // operator fills the ICP's target titles; the facets drive Apollo directly.
+            jobTitles: [],
           },
         },
       ];
@@ -2231,6 +2245,11 @@ export default function Workspace() {
   const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
   const [peopleScopeOpen, setPeopleScopeOpen] = useState(false);
   const [peopleScopeForm, setPeopleScopeForm] = useState<PeopleScopeForm | null>(null);
+  // Live facet sidebar for the Find-Settings modal (per Management-Level / Department people counts
+  // across the selected Step-2 companies). Null until a probe runs; departments come from here too.
+  const [pplFacets, setPplFacets] = useState<PeopleFacets | null>(null);
+  const [pplFacetsLoading, setPplFacetsLoading] = useState(false);
+  const [deptOpen, setDeptOpen] = useState<Set<string>>(new Set()); // expanded master departments
   const blankPerson = {
     full_name: "",
     company: "",
@@ -2687,13 +2706,13 @@ export default function Workspace() {
       } else if (res.dropped) {
         toast(
           `Apollo returned ${res.dropped}, but all were filtered out (already imported, no Apollo id, ` +
-            "or an avoided title). Widen the titles/seniorities in ⚙ Settings.",
+            "or an avoided title). Adjust the Management Level / Department in ⚙ Settings.",
           "warn"
         );
       } else {
         toast(
-          "No people matched at the selected companies. Loosen the titles, seniorities, or keywords " +
-            "in ⚙ Settings.",
+          "No people matched — even after widening. Pick different Management Level / Department " +
+            "facets in ⚙ Settings (the live counts show where people actually are).",
           "warn"
         );
       }
@@ -2738,9 +2757,39 @@ export default function Workspace() {
   }
 
   // ---- Step-2 Settings (find-people scope) handlers ----
+  // Load the live facet counts for the currently-ticked Step-2 companies (free, 0 credits). Skipped
+  // when nothing is ticked — management level still renders from the static list, departments need
+  // the probe. Guarded against a client switch landing the result on the wrong workspace.
+  async function loadPeopleFacets() {
+    const ids = pplCoSel.map((c) => c.id);
+    if (!ids.length) {
+      setPplFacets(null);
+      return;
+    }
+    setPplFacetsLoading(true);
+    try {
+      const f = await peopleFacets(client, ids);
+      if (clientRef.current === client) setPplFacets(f);
+    } catch {
+      if (clientRef.current === client) setPplFacets(null);
+    } finally {
+      if (clientRef.current === client) setPplFacetsLoading(false);
+    }
+  }
   function openPeopleScopeSettings() {
     setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec)));
+    setPplFacets(null);
+    setDeptOpen(new Set());
     setPeopleScopeOpen(true);
+    void loadPeopleFacets();
+  }
+  // Toggle one facet value in/out of a form facet array (immutable).
+  function toggleFacet(key: "seniorities" | "departments", value: string) {
+    setPeopleScopeForm((f) => {
+      if (!f) return f;
+      const has = f[key].includes(value);
+      return { ...f, [key]: has ? f[key].filter((v) => v !== value) : [...f[key], value] };
+    });
   }
   function savePeopleScopeSettings() {
     if (!peopleScopeForm) return;
@@ -4674,8 +4723,8 @@ export default function Workspace() {
           open={peopleScopeOpen}
           className="modal-lg"
           onClose={() => setPeopleScopeOpen(false)}
-          title="Find People · search filters"
-          subtitle="Apollo people-search filters, pre-filled from your AI scope · only your selected Step-1 companies · blank fields are dropped · saved per client."
+          title="Find People · who to target"
+          subtitle="Target people by Management Level × Department & Job Function — Apollo's own facets — with live counts for your ticked Step-2 companies · saved per client."
           footer={
             <>
               <button
@@ -4697,89 +4746,106 @@ export default function Workspace() {
         >
           {peopleScopeForm && (
             <>
-              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-                <span className="badge badge-neutral">search · apollo</span>
-                <span className="badge badge-info">pre-filled from AI scope</span>
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+                <span className="badge badge-neutral">facets · apollo</span>
+                {peopleScopeOverride ? (
+                  <span className="badge badge-warn">custom</span>
+                ) : (
+                  <span className="badge badge-info">from AI scope</span>
+                )}
+                {pplFacets && (
+                  <span className="badge badge-neutral">{pplFacets.total} people in scope</span>
+                )}
               </div>
-              <SpecHead>People search · personas</SpecHead>
-              <div className="sourcing-cols">
-                <div className="field">
-                  <label>Job titles to target (comma-separated)</label>
-                  <input
-                    className="input"
-                    type="text"
-                    placeholder="Head of Sales, VP Sales, Revenue Operations"
-                    value={peopleScopeForm.titles}
-                    onChange={(e) =>
-                      setPeopleScopeForm({ ...peopleScopeForm, titles: e.target.value })
-                    }
-                  />
-                </div>
-                <div className="field">
-                  <label>Seniorities (comma-separated)</label>
-                  <input
-                    className="input"
-                    type="text"
-                    placeholder="owner, founder, c_suite, vp, director, head, manager"
-                    value={peopleScopeForm.seniorities}
-                    onChange={(e) =>
-                      setPeopleScopeForm({ ...peopleScopeForm, seniorities: e.target.value })
-                    }
-                  />
-                </div>
+              <p className="ph-sub" style={{ marginTop: 0 }}>
+                Apollo AND&apos;s the two facets and OR&apos;s within each, so a tight Level ∩
+                Department combo can be small — Find People auto-widens (department-only, then
+                level-only) if a strict combo returns nobody. Leave a facet empty to not constrain on
+                it.
+              </p>
+              {pplCoSel.length === 0 && (
+                <p className="ph-sub" style={{ color: "var(--warn)" }}>
+                  Tick one or more companies in the Step-2 list to load live counts and the
+                  department options.
+                </p>
+              )}
+
+              <SpecHead>Management Level{pplFacetsLoading ? " · loading…" : ""}</SpecHead>
+              <div className="facet-grid">
+                {SENIORITY_OPTIONS.map((o) => {
+                  const count = pplFacets?.seniorities.find((s) => s.value === o.value)?.count;
+                  return (
+                    <label key={o.value} className="facet-row">
+                      <input
+                        type="checkbox"
+                        checked={peopleScopeForm.seniorities.includes(o.value)}
+                        onChange={() => toggleFacet("seniorities", o.value)}
+                      />
+                      <span className="facet-label">{o.label}</span>
+                      {count != null && <span className="facet-count">{count}</span>}
+                    </label>
+                  );
+                })}
               </div>
-              <label
-                className="row"
-                style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 0" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={peopleScopeForm.similar}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, similar: e.target.checked })
-                  }
-                />
-                <span>Include similar titles (Apollo expands beyond exact matches)</span>
-              </label>
-              <div className="field">
-                <label>Keywords (free text · name, skill, or focus)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="enterprise sales"
-                  value={peopleScopeForm.keywords}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, keywords: e.target.value })
-                  }
-                />
-              </div>
-              <SpecHead>Org filters · optional (people are already scoped to your selection)</SpecHead>
-              <div className="sourcing-cols">
-                <div className="field">
-                  <label>Org locations (comma-separated)</label>
-                  <input
-                    className="input"
-                    type="text"
-                    placeholder="hong kong, singapore"
-                    value={peopleScopeForm.locations}
-                    onChange={(e) =>
-                      setPeopleScopeForm({ ...peopleScopeForm, locations: e.target.value })
-                    }
-                  />
+
+              <SpecHead>Departments &amp; Job Function</SpecHead>
+              {pplFacets ? (
+                <div className="facet-depts">
+                  {pplFacets.departments.map((d) => {
+                    const open = deptOpen.has(d.value);
+                    return (
+                      <div key={d.value} className="facet-dept">
+                        <div className="facet-row facet-dept-head">
+                          <input
+                            type="checkbox"
+                            checked={peopleScopeForm.departments.includes(d.value)}
+                            onChange={() => toggleFacet("departments", d.value)}
+                          />
+                          <span className="facet-label">{d.label}</span>
+                          <span className="facet-count">{d.count}</span>
+                          {d.subs.length > 0 && (
+                            <button
+                              type="button"
+                              className="facet-expand"
+                              aria-label={open ? "Collapse subdepartments" : "Expand subdepartments"}
+                              onClick={() =>
+                                setDeptOpen((s) => {
+                                  const n = new Set(s);
+                                  if (n.has(d.value)) n.delete(d.value);
+                                  else n.add(d.value);
+                                  return n;
+                                })
+                              }
+                            >
+                              {open ? "▾" : "▸"}
+                            </button>
+                          )}
+                        </div>
+                        {open && (
+                          <div className="facet-subs">
+                            {d.subs.map((s) => (
+                              <label key={s.value} className="facet-row">
+                                <input
+                                  type="checkbox"
+                                  checked={peopleScopeForm.departments.includes(s.value)}
+                                  onChange={() => toggleFacet("departments", s.value)}
+                                />
+                                <span className="facet-label">{s.label}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
-                <div className="field">
-                  <label>Org employee size ranges · min,max (; for more)</label>
-                  <input
-                    className="input"
-                    type="text"
-                    placeholder="10,100 ; 101,500"
-                    value={peopleScopeForm.sizes}
-                    onChange={(e) =>
-                      setPeopleScopeForm({ ...peopleScopeForm, sizes: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
+              ) : (
+                <p className="ph-sub">
+                  {pplFacetsLoading
+                    ? "Loading departments…"
+                    : "Select companies above to load departments and their live counts."}
+                </p>
+              )}
             </>
           )}
         </Modal>

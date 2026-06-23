@@ -26,10 +26,9 @@ def _company_params() -> dict:
 
 def _people_params() -> dict:
     return {
-        "person_titles": ["head of growth", "head of sales"],
-        "include_similar_titles": False,
-        "q_keywords": "insurance insurtech",
         "person_seniorities": ["c_suite", "vp", "head"],
+        "person_department_or_subdepartments": ["master_sales", "master_marketing"],
+        "q_keywords": "insurance insurtech",
         "organization_locations": ["hong kong", "singapore"],
         "organization_num_employees_ranges": ["10,100"],
     }
@@ -95,6 +94,18 @@ def test_seniority_enum_in_people_schema():
     # list[str], so this guards the schema the model is actually held to).
     ppl = RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["people_search_params"]
     assert ppl["properties"]["person_seniorities"]["items"]["enum"] == RS.SENIORITY_ENUM
+
+
+def test_department_enum_in_people_schema_and_taxonomy_is_consistent():
+    # Departments are constrained to the (deduped) master+sub enum, and the flat enum is exactly
+    # the masters + their subs — so a value the LLM emits always maps to a real facet.
+    ppl = RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["people_search_params"]
+    enum = ppl["properties"]["person_department_or_subdepartments"]["items"]["enum"]
+    assert enum == RS.DEPARTMENT_ENUM
+    assert RS.MASTER_DEPARTMENTS == list(RS.DEPARTMENT_TAXONOMY.keys())
+    flat = RS.MASTER_DEPARTMENTS + [s for subs in RS.DEPARTMENT_TAXONOMY.values() for s in subs]
+    assert set(RS.DEPARTMENT_ENUM) == set(flat)  # masters + subs, nothing extra
+    assert len(RS.DEPARTMENT_ENUM) == len(set(RS.DEPARTMENT_ENUM))  # deduped
 
 
 def test_validator_matches_json_schema_root_keys():

@@ -67,27 +67,30 @@ def map_company_filter(company_search_params: dict, intent_filters: dict | None 
 def map_people_filter(people_search_params: dict, org_id: str | None = None) -> dict:
     """Build one `mixed_people/api_search` request body, scoped to a SINGLE org.
 
+    Personas are Apollo's two native facets — `person_seniorities` (Management Level) ×
+    `person_department_or_subdepartments` (Department/Job Function) — NOT free-text `person_titles`:
+    exact-title matching AND's to zero against any org whose people use different title wording (the
+    Luma bug), whereas the facet enums match Apollo's normalized taxonomy regardless of local style.
+
     Flow B loops the selected companies and calls this once per `org_id`, so each returned person's
     company is known from the loop (C0: search output has no `organization_id`). `org_id` is
     optional only so the builder stays pure/testable; the live flow always passes one.
     """
     ps = people_search_params or {}
     body = {
-        "person_titles": ps.get("person_titles"),
-        "include_similar_titles": ps.get("include_similar_titles"),
-        "q_keywords": ps.get("q_keywords"),
         "person_seniorities": ps.get("person_seniorities"),
+        "person_department_or_subdepartments": ps.get("person_department_or_subdepartments"),
         "organization_ids": [org_id] if org_id else None,
     }
-    # Org-level filters (location / employee size) only make sense for a BROAD people search. Once
-    # an exact org is pinned via `organization_ids`, re-applying them just over-constrains that one
-    # org to zero people (e.g. a small HK insurer fails a scope that expects a US / larger company),
-    # so they are dropped whenever an org_id is set — the org already fixes its location and size.
+    # Org-context filters (profile keyword / location / employee size) only make sense for a BROAD
+    # people search. Once an exact org is pinned via `organization_ids`, re-applying them just
+    # over-constrains that one org to zero people (e.g. a small HK insurer fails a US/larger-company
+    # scope, or a profile-text keyword the staff don't list), so they are dropped when org_id is set
+    # — the org already fixes industry/location/size; the two facets do the persona work.
     if not org_id:
+        body["q_keywords"] = ps.get("q_keywords")
         body["organization_locations"] = ps.get("organization_locations")
         body["organization_num_employees_ranges"] = ps.get("organization_num_employees_ranges")
-    # `_clean` drops None/""/[] but keeps a real boolean (False != [] / "" / None), so
-    # `include_similar_titles` survives whether True or False; only a None value is dropped.
     return _clean(body)
 
 

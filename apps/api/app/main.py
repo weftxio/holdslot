@@ -5,7 +5,9 @@ touches AWS at import, so SnapStart snapshots a clean app and the first post-res
 invocation initializes fresh.
 """
 
+import logging
 import os
+import sys
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,6 +18,28 @@ from app.domains.briefs.router import router as briefs_router
 from app.domains.clients.router import router as clients_router
 from app.domains.icps.router import router as icps_router
 from app.domains.prospects.router import router as prospects_router
+
+
+def _configure_logging() -> None:
+    """Surface our `holdslot.*` INFO diagnostics in CloudWatch.
+
+    The Lambda runtime configures the ROOT logger at WARNING, so an app `log.info(...)` (e.g. the
+    per-org `people-find` diagnostic) is dropped before it reaches CloudWatch. We give the
+    `holdslot` parent logger its own stdout handler at INFO and stop propagation, so app logs always
+    surface without boto3/sqlalchemy INFO noise. Level overridable via HOLDSLOT_LOG_LEVEL.
+    """
+    level = getattr(logging, os.environ.get("HOLDSLOT_LOG_LEVEL", "INFO").upper(), logging.INFO)
+    root = logging.getLogger("holdslot")
+    root.setLevel(level)
+    root.propagate = False
+    if not any(getattr(h, "_holdslot", False) for h in root.handlers):
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s %(name)s %(message)s"))
+        handler._holdslot = True  # idempotent marker (SnapStart re-imports can re-run this)
+        root.addHandler(handler)
+
+
+_configure_logging()
 
 app = FastAPI(title="HoldSlot API", version="0.1.0")
 

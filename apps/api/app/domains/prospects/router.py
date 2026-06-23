@@ -22,6 +22,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
+from app.domains.briefs.research_spec import (
+    DEPARTMENT_TAXONOMY,
+    MASTER_DEPARTMENTS,
+    SENIORITY_ENUM,
+)
 from app.domains.icps import icp_docs
 from app.domains.prospects import apollo_map, find, fit, lookalike
 from app.domains.prospects.identity import normalize_domain, normalize_email
@@ -34,10 +39,15 @@ from app.domains.prospects.schemas import (
     CompanyOut,
     CompanyRescoreIn,
     CompanySelectIn,
+    DepartmentFacet,
     EnrichIn,
     EnrichResult,
+    FacetCount,
+    FacetOption,
     FindResult,
     FitPromptOut,
+    PeopleFacetsIn,
+    PeopleFacetsOut,
     PeopleFindIn,
     ProspectManualIn,
     ProspectOut,
@@ -1109,6 +1119,35 @@ def add_prospect(
 
 # --------------------------------------------------------------- Stage 2: Apollo Flow B (find)
 
+# Auto-relax order: Apollo AND's the two persona facets, so a strict Management-Level ∩ Department
+# combo can be empty at a small org even when each facet alone has people (the Luma case). When the
+# strict combo returns 0 we widen by dropping ONE facet — department-only, then seniority-only — but
+# never all the way to org-only (that would dump interns/irrelevant roles, defeating "suitable").
+def _search_people_relaxed(
+    people_params: dict, org_id: str, per_company: int
+) -> tuple[list[dict], dict, str]:
+    """Search one org, widening the persona facets until people appear. → (rows, body_sent, level).
+
+    `level` is a short tag for diagnostics: "strict" (both facets), "dept_only" / "seniority_only"
+    (one facet dropped), or "as_is" (the spec had ≤1 facet, so nothing to relax)."""
+    sen = people_params.get("person_seniorities") or []
+    dep = people_params.get("person_department_or_subdepartments") or []
+    if sen and dep:
+        attempts = [
+            (people_params, "strict"),
+            ({**people_params, "person_seniorities": []}, "dept_only"),
+            ({**people_params, "person_department_or_subdepartments": []}, "seniority_only"),
+        ]
+    else:
+        attempts = [(people_params, "as_is")]
+    last_body: dict = {}
+    for params, level in attempts:
+        last_body = apollo_map.map_people_filter(params, org_id=org_id)
+        rows = apollo.search_people(last_body, max_results=per_company)
+        if rows:
+            return rows, last_body, level
+    return [], last_body, attempts[-1][1]
+
 
 @router.post("/{client}/people/find-people", response_model=FindResult)
 def find_people(
@@ -1183,9 +1222,10 @@ def find_people(
     for comp in selected:
         if len(new_rows) >= MAX_PEOPLE_PER_FIND:
             continue  # batch full — leave this org as-is (still "Pending") for the next run
-        pbody = apollo_map.map_people_filter(people_params, org_id=comp.apollo_org_id)
         try:
-            rows = apollo.search_people(pbody, max_results=per_company)
+            rows, pbody, relax = _search_people_relaxed(
+                people_params, comp.apollo_org_id, per_company
+            )
         except apollo.ApolloError as e:
             raise HTTPException(
                 status.HTTP_502_BAD_GATEWAY, f"apollo people search failed: {e}"
@@ -1202,9 +1242,10 @@ def find_people(
         # Per-org diagnostics — makes a 0-result explainable (Apollo returned nothing for the org
         # vs. everything filtered out). `filters` = people params actually sent (org_id excluded).
         log.info(
-            "people-find[%s]: org=%s raw=%d survivors=%d dropped=%d filters=%s",
+            "people-find[%s]: org=%s relax=%s raw=%d survivors=%d dropped=%d filters=%s",
             comp.domain,
             comp.apollo_org_id,
+            relax,
             len(rows),
             len(survivors),
             len(dropped),
@@ -1272,6 +1313,83 @@ def find_people(
         found=len(prospects),
         dropped=dropped_total,
         prospects=[_prospect_out(p) for p in prospects],
+    )
+
+
+# Display labels for the two facet sidebars (Apollo machine value → human text).
+_SENIORITY_LABELS = {
+    "c_suite": "C-Suite",
+    "vp": "VP",
+}
+
+
+def _humanize(value: str) -> str:
+    """Apollo machine value → label: drop a leading `master_`, underscores → spaces, Title-case."""
+    text = value[len("master_") :] if value.startswith("master_") else value
+    return text.replace("_", " ").title()
+
+
+def _facet_label(value: str) -> str:
+    return _SENIORITY_LABELS.get(value) or ("C-Suite" if value == "c_suite" else _humanize(value))
+
+
+@router.post("/{client}/people/facets", response_model=PeopleFacetsOut)
+def people_facets(
+    body: PeopleFacetsIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> PeopleFacetsOut:
+    """Live Find-Settings facet sidebar — per Management-Level / Department people counts across the
+    selected Step-2 companies (free; Apollo people search costs no credits). One probe per facet
+    value, scoped to the union of selected orgs, run concurrently to stay under the 30s sync cap.
+    Only the 14 master departments are probed (not the ~245 subs) so the call is a fixed 11 + 14 + 1
+    searches regardless of how many companies are selected."""
+    if not body.company_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
+    ids = [uuid.UUID(i) for i in body.company_ids]
+    org_ids = list(
+        db.execute(
+            select(Company.apollo_org_id).where(
+                Company.tenant_id == ctx.tenant.id,
+                Company.id.in_(ids),
+                Company.apollo_org_id.is_not(None),
+            )
+        ).scalars()
+    )
+    if not org_ids:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "the selected companies have no Apollo id to search"
+        )
+    base = {"organization_ids": org_ids}
+    # (kind, value, extra-filter) — one free count_people probe each, fanned out concurrently.
+    probes: list[tuple[str, str, dict]] = [
+        ("total", "", {}),
+        *[("sen", s, {"person_seniorities": [s]}) for s in SENIORITY_ENUM],
+        *[("dep", d, {"person_department_or_subdepartments": [d]}) for d in MASTER_DEPARTMENTS],
+    ]
+    try:
+        with ThreadPoolExecutor(max_workers=min(12, len(probes))) as ex:
+            counts = list(ex.map(lambda p: apollo.count_people({**base, **p[2]}), probes))
+    except apollo.ApolloError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"apollo facet probe failed: {e}") from e
+    by_key = {(p[0], p[1]): c for p, c in zip(probes, counts, strict=True)}
+    return PeopleFacetsOut(
+        total=by_key[("total", "")],
+        seniorities=[
+            FacetCount(value=s, label=_facet_label(s), count=by_key[("sen", s)])
+            for s in SENIORITY_ENUM
+        ],
+        departments=[
+            DepartmentFacet(
+                value=d,
+                label=_facet_label(d),
+                count=by_key[("dep", d)],
+                subs=[
+                    FacetOption(value=s, label=_humanize(s)) for s in DEPARTMENT_TAXONOMY[d]
+                ],
+            )
+            for d in MASTER_DEPARTMENTS
+        ],
     )
 
 

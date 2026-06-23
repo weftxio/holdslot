@@ -47,25 +47,29 @@ def test_map_company_filter_forwards_and_drops_empties():
     assert "organization_job_posted_at_range" not in body
 
 
-def test_map_people_filter_scopes_to_one_org_and_keeps_false_similar():
+def test_map_people_filter_scopes_to_one_org_with_facets():
     ps = {
-        "person_titles": ["VP Sales"],
-        "include_similar_titles": False,  # must survive _clean
+        "person_seniorities": ["vp", "head"],
+        "person_department_or_subdepartments": ["master_sales"],
         "q_keywords": "observability",
-        "person_seniorities": ["vp"],
         "organization_locations": ["United States"],
         "organization_num_employees_ranges": ["1000,5000"],
     }
     body = apollo_map.map_people_filter(ps, org_id="abc123")
     assert body["organization_ids"] == ["abc123"]
-    assert body["include_similar_titles"] is False
-    assert body["person_titles"] == ["VP Sales"]
-    # Pinned org → org-level filters are dropped (they'd over-constrain that one org to 0 people).
+    # Personas are the two facets — never free-text titles (the Luma over-constraint bug).
+    assert body["person_seniorities"] == ["vp", "head"]
+    assert body["person_department_or_subdepartments"] == ["master_sales"]
+    assert "person_titles" not in body
+    # Pinned org → org-context filters (keyword/location/size) are dropped: they'd over-constrain
+    # that one org to 0 people. Only the two persona facets survive alongside organization_ids.
+    assert "q_keywords" not in body
     assert "organization_locations" not in body
     assert "organization_num_employees_ranges" not in body
-    # No org (broad search) → org-level filters DO apply, and there is no organization_ids key.
+    # No org (broad search) → org-context filters DO apply, and there is no organization_ids key.
     broad = apollo_map.map_people_filter(ps, org_id=None)
     assert "organization_ids" not in broad
+    assert broad["q_keywords"] == "observability"
     assert broad["organization_locations"] == ["United States"]
     assert broad["organization_num_employees_ranges"] == ["1000,5000"]
 
@@ -186,6 +190,41 @@ def test_enrich_organizations_hits_single_enrich_per_domain(monkeypatch):
     assert all(c["path"] == "organizations/enrich" for c in seen)  # never bulk_enrich
     assert {c["query"]["domain"] for c in seen} == {"a.com", "boom.com", "b.com"}  # deduped
     assert [o["id"] for o in out] == ["a.com", "b.com"]  # boom dropped, order preserved
+
+
+def test_search_people_relaxed_widens_until_people_appear(monkeypatch):
+    """strict (sen∩dept) → dept_only → seniority_only: the helper stops at the first non-empty level
+    and reports which one hit, so a small org with an odd persona mix still yields people."""
+    from app.domains.prospects import router
+
+    calls: list[dict] = []
+
+    def fake_search(body, max_results=0):
+        calls.append(body)
+        has_sen = "person_seniorities" in body
+        has_dep = "person_department_or_subdepartments" in body
+        return [{"id": "p1"}] if (has_sen and not has_dep) else []  # only seniority_only hits
+
+    monkeypatch.setattr(router.apollo, "search_people", fake_search)
+    params = {"person_seniorities": ["vp"], "person_department_or_subdepartments": ["master_sales"]}
+    rows, body, level = router._search_people_relaxed(params, "org1", 10)
+    assert level == "seniority_only"
+    assert rows == [{"id": "p1"}]
+    assert body["organization_ids"] == ["org1"]
+    assert len(calls) == 3  # tried strict, dept_only, then seniority_only
+
+
+def test_search_people_relaxed_is_noop_with_single_facet(monkeypatch):
+    """≤1 facet → nothing to relax: exactly one search, tagged 'as_is'."""
+    from app.domains.prospects import router
+
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        router.apollo, "search_people", lambda body, max_results=0: (calls.append(body) or [])
+    )
+    _, _, level = router._search_people_relaxed({"person_seniorities": ["vp"]}, "org1", 10)
+    assert level == "as_is"
+    assert len(calls) == 1
 
 
 def test_api_key_env_override(monkeypatch):

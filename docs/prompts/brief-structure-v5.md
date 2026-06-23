@@ -16,12 +16,12 @@ POST /api/v1/mixed_companies/search:
 q_organization_keyword_tags[] (industry/vertical lives HERE — there is NO industry-id field), organization_num_employees_ranges[] (comma-strings like "10,100"), organization_locations[] (HQ; lowercase country/US-state/city), organization_not_locations[], revenue_range[min]/revenue_range[max] (integers, no symbols/commas), currently_using_any_of_technology_uids[] (underscored), q_organization_name, organization_ids[], latest_funding_amount_range[min]/[max], total_funding_range[min]/[max], latest_funding_date_range[min]/[max] (YYYY-MM-DD), q_organization_job_titles[], organization_job_locations[], organization_num_jobs_range[min]/[max], organization_job_posted_at_range[min]/[max] (YYYY-MM-DD).
 
 POST /api/v1/mixed_people/api_search:
-person_titles[] (PREFER over seniority), include_similar_titles (boolean; false for strict match), q_keywords (industry/vertical for PEOPLE lives HERE — single string, NOT an array), person_locations[], person_seniorities[] (ENUM ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern), organization_locations[] (employer HQ), q_organization_domains_list[] (bare domains, no www/@), organization_ids[], organization_num_employees_ranges[], revenue_range[min]/[max], currently_using_any_of_technology_uids[], q_organization_job_titles[], organization_job_locations[], organization_num_jobs_range[min]/[max], organization_job_posted_at_range[min]/[max].
+person_seniorities[] = Management Level (ENUM ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern). person_department_or_subdepartments[] = Departments & Job Function (ENUM; 14 master departments: c_suite, product_management, master_engineering_technical, design, education, master_finance, master_human_resources, master_information_technology, master_legal, master_marketing, medical_health, master_operations, master_sales, consulting — each with finer subdepartments, e.g. master_sales→business_development/account_management/partnerships, master_marketing→demand_generation/product_marketing, master_finance→accounting/treasury; use a master for breadth or subdepartments for precision). q_keywords (industry/vertical for PEOPLE lives HERE — single string, NOT an array), organization_locations[] (employer HQ), organization_num_employees_ranges[]. DO NOT use person_titles or include_similar_titles — exact-title matching AND's to zero against any org whose people use different title wording; express the persona as Management Level × Department instead.
 
 Do NOT emit: enrichment, credits, email-status, page, per_page. The system sets those.
 
 JOB 1 — FIT TARGETING (no web)
-Map ICP firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Titles -> person_titles[]; also set person_seniorities[] from the enum as backstop; set include_similar_titles:false when titles are specific.
+Map ICP firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Persona/titles -> map the BUYING-ROLE intent to person_seniorities[] (Management Level) AND person_department_or_subdepartments[] (Department/Job Function) — never person_titles. E.g. "Head of Sales / CCO / VP Revenue" -> seniorities [c_suite, vp, head, director] + departments [master_sales]; "Head of Marketing" -> [vp, head, director] + [master_marketing]; a founder-led SMB -> [owner, founder, c_suite] + the relevant department. Pick a master department for breadth, subdepartments for precision. Apollo AND's across facets and OR's within each, so keep each facet a SHORT list of the levels/functions that actually buy — over-listing one facet is fine (OR), but a needless second facet narrows (AND).
 
 JOB 2 — INTENT LAYER (no web). Separate intent_filters block. Fit AND intent both required.
 
@@ -57,10 +57,9 @@ Return exactly this json shape:
 "revenue_range": {"min": null, "max": null}
 },
 "people_search_params": {
-"person_titles": [],
-"include_similar_titles": false,
-"q_keywords": "",
 "person_seniorities": [],
+"person_department_or_subdepartments": [],
+"q_keywords": "",
 "organization_locations": [],
 "organization_num_employees_ranges": []
 },

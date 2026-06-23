@@ -65,7 +65,10 @@ def owner_member():
             spec={
                 "spec_version": 3,
                 "company_search_params": {"q_organization_keyword_tags": ["software"]},
-                "people_search_params": {"person_titles": ["Head of Sales"]},
+                "people_search_params": {
+                    "person_seniorities": ["head", "vp"],
+                    "person_department_or_subdepartments": ["master_sales"],
+                },
                 "intent_filters": {},
                 "credit_policy": {"max_companies": 500},
             },

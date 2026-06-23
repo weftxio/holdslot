@@ -139,6 +139,16 @@ def search_people(filter_body: dict, *, max_results: int = 100) -> list[dict]:
     return _paginate("mixed_people/api_search", filter_body, key="people", max_results=max_results)
 
 
+def count_people(filter_body: dict) -> int:
+    """Total people matching `filter_body`, no rows fetched (per_page=1) → `total_entries` (0 cr).
+
+    The cheap primitive behind the Find-Settings facet sidebar: one call per Management-Level /
+    Department value yields its live count (Apollo exposes no facet/aggregation param, so counts are
+    N independent searches — free, since people search costs no credits)."""
+    r = _post("mixed_people/api_search", {**filter_body, "page": 1, "per_page": 1})
+    return int(r.get("total_entries") or 0)
+
+
 _ENRICH_WORKERS = 10  # concurrent single-domain enrich calls (the find batch is ≤15)
 
 
@@ -187,6 +197,7 @@ def match_person(
 __all__ = [
     "search_companies",
     "search_people",
+    "count_people",
     "enrich_organizations",
     "match_person",
     "reset_key",
