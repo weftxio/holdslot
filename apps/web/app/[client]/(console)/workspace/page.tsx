@@ -4149,18 +4149,6 @@ export default function Workspace() {
                 <h3>Find the right person</h3>
                 <div className="band-actions">
                   <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => void removeFromStep2()}
-                    disabled={!pplCoSel.length || removing}
-                    title="Remove the ticked companies from Step 2 (back to the Step-1 list)"
-                  >
-                    {removing
-                      ? "Removing…"
-                      : pplCoSel.length
-                        ? `Remove ${pplCoSel.length}`
-                        : "Remove"}
-                  </button>
-                  <button
                     className="btn btn-primary btn-sm"
                     onClick={openPeopleScopeSettings}
                     title="Edit the Apollo people-search filters used by Find People"
@@ -4194,6 +4182,18 @@ export default function Workspace() {
                       : toEnrich.length
                         ? `Confirm enrich ${toEnrich.length}`
                         : "Confirm enrich"}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void removeFromStep2()}
+                    disabled={!pplCoSel.length || removing}
+                    title="Remove the ticked companies from Step 2 (back to the Step-1 list)"
+                  >
+                    {removing
+                      ? "Removing…"
+                      : pplCoSel.length
+                        ? `Remove ${pplCoSel.length}`
+                        : "Remove"}
                   </button>
                 </div>
               </div>
