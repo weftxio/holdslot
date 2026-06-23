@@ -10,6 +10,9 @@ bounded 429/5xx backoff. Three calls, exactly the C0-verified contract:
     key**). NEVER the legacy `mixed_people/search` (422). One org per call (Flow B loops).
   * `match_person`     — `POST people/match` (**the enrich spend**; `reveal_personal_emails` = 1 cr;
     `reveal_phone_number` off at MVP — it is async + needs a webhook).
+  * `enrich_organizations` — `GET organizations/enrich?domain=` (ONE org/call, run concurrently):
+    the firmographics company-search omits (industry / size / address / tech). Single-enrich, not
+    `bulk_enrich`, is the verified contract for this account.
 
 The map/parse of request+response lives in the pure `domains/prospects/apollo_map.py`; this layer is
 transport only.
@@ -22,7 +25,9 @@ import logging
 import os
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import boto3
@@ -62,20 +67,19 @@ def reset_key() -> None:
     _api_key.cache_clear()
 
 
-def _post(path: str, body: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
-    """POST one request with `X-Api-Key`; retry transient 429/5xx with linear backoff. A 401/403
-    drops the cached key (so a rotation is picked up next call) and raises immediately."""
-    data = json.dumps(body).encode()
+def _request(
+    method: str, path: str, *, body: dict | None = None, timeout: int = DEFAULT_TIMEOUT
+) -> dict:
+    """One `X-Api-Key` request (POST with a JSON body, or GET with the query baked into `path`);
+    retry transient 429/5xx with linear backoff. A 401/403 drops the cached key (so a rotation is
+    picked up next call) and raises immediately."""
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"X-Api-Key": _api_key(), "Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
     for attempt in range(_MAX_RETRIES + 1):
         req = urllib.request.Request(
-            f"{BASE_URL}/{path}",
-            data=data,
-            headers={
-                "X-Api-Key": _api_key(),
-                "Content-Type": "application/json",
-                "Accept": "application/json",
-            },
-            method="POST",
+            f"{BASE_URL}/{path}", data=data, headers=headers, method=method
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -94,6 +98,16 @@ def _post(path: str, body: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
                 continue
             raise ApolloError(f"Apollo transport error on {path}: {e}") from e
     raise ApolloError(f"Apollo exhausted retries on {path}")  # unreachable
+
+
+def _post(path: str, body: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
+    """POST one request with a JSON body."""
+    return _request("POST", path, body=body, timeout=timeout)
+
+
+def _get(path: str, query: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
+    """GET one request, URL-encoding `query` into the path."""
+    return _request("GET", f"{path}?{urllib.parse.urlencode(query)}", timeout=timeout)
 
 
 def _paginate(path: str, filter_body: dict, *, key: str, max_results: int) -> list[dict]:
@@ -125,24 +139,33 @@ def search_people(filter_body: dict, *, max_results: int = 100) -> list[dict]:
     return _paginate("mixed_people/api_search", filter_body, key="people", max_results=max_results)
 
 
-ENRICH_BATCH_MAX = 10  # Apollo `organizations/bulk_enrich` hard cap (domains per call)
+_ENRICH_WORKERS = 10  # concurrent single-domain enrich calls (the find batch is ≤15)
 
 
 def enrich_organizations(domains: list[str]) -> list[dict]:
-    """`organizations/bulk_enrich` → the rich org shape (industry / employee count / address /
-    tech / keywords / headcount growth) that `mixed_companies/search` omits. Chunked at the
-    10-domain cap; returns the `organizations` rows in request order (Apollo preserves it).
+    """Enrich a set of company domains via `organizations/enrich` (GET `?domain=`, ONE org per call)
+    → the rich org shape (industry / employee count / address / tech / keywords / headcount growth)
+    that `mixed_companies/search` omits. Calls run concurrently (the find batch is small) and a
+    single-domain failure is dropped, not fatal — partial enrichment beats none.
 
-    Cost: organization enrichment is metered separately from the email-reveal credit spent by
-    `people/match`; confirm the per-org cost on the dashboard before scaling a find batch.
+    Single-enrich is the endpoint Apollo's docs confirm for this account (the bulk variant takes
+    `domains[]` as query params, not a JSON body — a mismatch that silently returns nothing). Cost:
+    org enrichment is metered separately from the `people/match` email credit; confirm per-org cost
+    on the dashboard before scaling.
     """
     clean = [d for d in dict.fromkeys(domains) if d]  # dedupe, preserve order, drop empties
-    out: list[dict] = []
-    for i in range(0, len(clean), ENRICH_BATCH_MAX):
-        chunk = clean[i : i + ENRICH_BATCH_MAX]
-        resp = _post("organizations/bulk_enrich", {"domains": chunk})
-        out.extend(resp.get("organizations") or [])
-    return out
+    if not clean:
+        return []
+
+    def _one(domain: str) -> dict | None:
+        try:
+            return _get("organizations/enrich", {"domain": domain}).get("organization") or None
+        except ApolloError as e:
+            log.warning("org enrich failed for %s: %s", domain, e)
+            return None
+
+    with ThreadPoolExecutor(max_workers=min(_ENRICH_WORKERS, len(clean))) as ex:
+        return [o for o in ex.map(_one, clean) if o]
 
 
 def match_person(

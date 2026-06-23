@@ -165,6 +165,24 @@ def test_match_person_extracts_person(monkeypatch):
     assert seen["body"]["reveal_phone_number"] is False
 
 
+def test_enrich_organizations_hits_single_enrich_per_domain(monkeypatch):
+    """enrich uses GET organizations/enrich?domain= (ONE org/call) — NOT bulk_enrich — and unwraps
+    the `organization` object. A failing domain is dropped, not fatal."""
+    seen: list[dict] = []
+
+    def fake_get(path, query, timeout=apollo.DEFAULT_TIMEOUT):
+        seen.append({"path": path, "query": query})
+        if query["domain"] == "boom.com":
+            raise apollo.ApolloError("HTTP 422", status=422)
+        return {"organization": {"id": query["domain"], "industry": "Software"}}
+
+    monkeypatch.setattr(apollo, "_get", fake_get)
+    out = apollo.enrich_organizations(["a.com", "boom.com", "b.com", "a.com"])
+    assert all(c["path"] == "organizations/enrich" for c in seen)  # never bulk_enrich
+    assert {c["query"]["domain"] for c in seen} == {"a.com", "boom.com", "b.com"}  # deduped
+    assert [o["id"] for o in out] == ["a.com", "b.com"]  # boom dropped, order preserved
+
+
 def test_api_key_env_override(monkeypatch):
     monkeypatch.setenv("HOLDSLOT_APOLLO_KEY", "env-key-123")
     apollo.reset_key()
