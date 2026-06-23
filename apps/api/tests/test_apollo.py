@@ -105,6 +105,21 @@ def test_parse_match_reveals_full_contact():
     assert parsed["full_name"]
 
 
+def test_parse_enrich_promotes_firmographics_and_intent():
+    row = _load("organizations_enrich_apple.json")["organization"]
+    parsed = apollo_map.parse_enrich(row)
+    assert parsed["domain"] == "apple.com"
+    # The firmographics search omits — promoted to first-class columns.
+    assert parsed["industry"] == row["industry"]
+    assert parsed["size"] == f"{int(row['estimated_num_employees']):,}"  # display-formatted count
+    assert parsed["country"] == row["country"]
+    # Buying-intent / context evidence is curated (not all 55 keys) and long lists are capped.
+    ev = parsed["evidence"]
+    assert ev.get("short_description")
+    assert len(ev.get("technology_names", [])) <= 25
+    assert len(ev.get("keywords", [])) <= 30
+
+
 # ----------------------------------------------------------------- client paginator (mocked)
 
 

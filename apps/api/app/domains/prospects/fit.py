@@ -8,25 +8,30 @@ each sub-score is clamped to its max so no single attribute can inflate the rest
 components (not just the total) is the moat: one structure, three consumers (approval page,
 billing dispute, the learning loop).
 
-Routing (FINAL, see initial-build-plan §"Model usage"): `prospect_fit` → qwen3.5-flash,
-`temperature=0`, thinking disabled (Qwen bills thinking 3–10× output). Confirm the exact slug +
-that thinking is off at deploy time.
+Routing (FINAL, see initial-build-plan §"Model usage"): `prospect_fit`/`company_fit` →
+**DeepSeek V4 Pro with reasoning ON** (`effort=medium`, `temperature=0`) for best-quality fit
+judgement — a non-US provider (the Gemini/OpenAI fallback was dropped 2026-06-21 as geo-blocked,
+403 ToS, for this account; see openrouter/client.py module docstring). V4 Pro is a reasoning model,
+so to hold the 30s sync-gateway budget the find/rescore routes score the whole batch in ONE
+concurrent wave (`_SCORE_WORKERS` ≥ `MAX_COMPANIES_PER_FIND`): wall-clock ≈ one reasoning call, not
+N waves. Dial `effort` down to "low" or shrink the per-find cap if a batch nears the timeout.
 """
 
 from __future__ import annotations
 
+import logging
+
 from app.integrations.openrouter.client import LlmError, structured_completion
+
+log = logging.getLogger("holdslot.fit")
 
 PURPOSE = "prospect_fit"
 COMPANY_PURPOSE = "company_fit"
 RUBRIC_VERSION = "fit-rubric-v1"
-# Per-purpose routing: Qwen 3.5 Flash for cheap deterministic scoring — a non-US provider (the
-# Gemini/OpenAI fallback was dropped 2026-06-21 as geo-blocked, 403 ToS, for this account; see
-# openrouter/client.py module docstring). Fit scoring stays on the fast model, not DeepSeek V4 Pro:
-# it runs in batches behind the sync path and must not blow the latency budget.
-FIT_MODELS = ["qwen/qwen3.5-flash-02-23"]
-# `temperature=0` for determinism; `reasoning.enabled=false` disables Qwen thinking tokens.
-FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
+FIT_MODELS = ["deepseek/deepseek-v4-pro"]
+# `temperature=0` for determinism; reasoning ON (effort medium) for judgement quality. The batch
+# runs single-wave (workers = cap) so the reasoning latency does not stack across waves.
+FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": True, "effort": "medium"}}
 
 # The rubric's sub-criteria → their max points (the deterministic caps). Mirrors §2 of the
 # rubric doc; the LLM scores each, we clamp to max, cap each dimension at its sum-of-maxes.
@@ -93,8 +98,24 @@ def _fit_schema(name: str, dims: dict[str, dict[str, int]]) -> dict:
                 "reasons": _strs(list(dims)),
                 "reason_tags": {"type": "array", "items": {"type": "string"}},
                 "fit_reason": {"type": "string"},
+                # The model commits to the tier + 0–100 score it derives from its own points (the
+                # threshold formula is given in the prompt). These are NOT stored — the server
+                # recomputes both authoritatively from `components` — but emitting them forces the
+                # model to anchor `fit_reason` to the same verdict the chip will show.
+                "fit_tier": {
+                    "type": "string",
+                    "enum": ["Strong", "Good", "Moderate", "Below"],
+                },
+                "fit_score": {"type": "integer"},
             },
-            "required": ["components", "reasons", "reason_tags", "fit_reason"],
+            "required": [
+                "components",
+                "reasons",
+                "reason_tags",
+                "fit_reason",
+                "fit_tier",
+                "fit_score",
+            ],
         },
     }
 
@@ -118,12 +139,13 @@ def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[
         "enrichment scores per the rubric's Unknown policy (firmographic match → 0; tech → "
         "partial; engagement → 0; email risky/accept-all → 3). Return integer points per "
         "sub-criterion, a one-line justification per dimension, short client-facing match tags, "
-        "and one client-facing `fit_reason` sentence. The `fit_reason` MUST be consistent with the "
-        "points you awarded: state what is confirmed and what is still missing or unknown. Do NOT "
-        "assert an overall verdict (e.g. 'strong fit', 'great match') unless you scored most "
-        "criteria at full points — a tier is computed from your points downstream and prose that "
-        "overstates it will contradict the displayed score. No internal jargon, no number. Emit "
-        "ONLY the schema; do not compute totals or tiers — the system does that.\n\n"
+        "one client-facing `fit_reason` sentence, and the `fit_tier` + `fit_score` you derive from "
+        "your own points. SCORING (apply it exactly — the server re-derives the official verdict "
+        "from your points the same way): `fit_score` = the sum of points you awarded over all "
+        "four dimensions (max 100). `fit_tier` = Strong if fit_score ≥ 75, Good if ≥ 55, Moderate "
+        "if ≥ 40, otherwise Below. `fit_reason` MUST match that tier — state what is confirmed and "
+        "what is still missing or unknown, and never call a prospect a strong/great match unless "
+        "`fit_tier` is Strong. No jargon, no number in the prose. Emit ONLY the schema.\n\n"
         "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
     )
     user = (
@@ -168,6 +190,18 @@ def collapse_company(components: dict) -> tuple[int, str, dict]:
     return score, tier_for(score), normalized
 
 
+def _log_drift(purpose: str, computed_score: int, computed_tier: str, data: dict) -> None:
+    """Warn if the model's self-committed tier/score (which `fit_reason` is anchored to) diverges
+    from the authoritative server recomputation — i.e. the prose may not match the displayed chip.
+    The server value always wins; this only flags a model that mis-applied the threshold formula."""
+    llm_tier = data.get("fit_tier")
+    if llm_tier and llm_tier != computed_tier:
+        log.warning(
+            "fit tier drift (%s): model said %s/%s, server computed %s/%s — reason may misalign",
+            purpose, llm_tier, data.get("fit_score"), computed_tier, computed_score,
+        )
+
+
 def score(
     *,
     tenant_id,
@@ -191,6 +225,7 @@ def score(
         extra_body=FIT_EXTRA_BODY,
     )
     fit_score, fit_tier, normalized = collapse(result.data.get("components", {}))
+    _log_drift(PURPOSE, fit_score, fit_tier, result.data)
     fit_components = {
         "points": normalized,
         "reasons": result.data.get("reasons", {}),
@@ -224,14 +259,16 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
         "points, never more than its max. A field still unknown scores per the rubric's Unknown "
         "policy (firmographic match → 0; tech → partial; engagement → 0; email "
         "deliverability → 3, person not yet sourced). Return integer points per sub-criterion, a "
-        "one-line justification per dimension, short client-facing match tags, and one "
-        "client-facing `fit_reason` sentence about this COMPANY (no person). The `fit_reason` MUST "
-        "be consistent with the points you awarded: state what is confirmed and what is still "
-        "missing or unknown (e.g. firmographic size, timing triggers). Do NOT assert an overall "
-        "verdict (e.g. 'strong fit', 'great match') unless you scored most criteria at full "
-        "points — a tier is computed from your points downstream and prose that overstates it will "
-        "contradict the displayed score. No internal jargon, no number. Emit ONLY the schema; do "
-        "not compute totals or tiers — the system does that.\n\n"
+        "one-line justification per dimension, short client-facing match tags, one client-facing "
+        "`fit_reason` sentence about this COMPANY (no person), and the `fit_tier` + `fit_score` "
+        "you derive from your points. SCORING (apply it exactly — the server re-derives the "
+        "official verdict from your points the same way): sum the points you awarded across the "
+        "company, timing and data dimensions (max 70), then `fit_score` = round(that_sum ÷ 70 × "
+        "100). `fit_tier` = Strong if fit_score ≥ 75, Good if ≥ 55, Moderate if ≥ 40, otherwise "
+        "Below. `fit_reason` MUST match that tier — state what is confirmed and what is still "
+        "missing or unknown (e.g. firmographic size, timing triggers), and never call a company a "
+        "strong/great fit unless `fit_tier` is Strong. No internal jargon, no number in the prose. "
+        "Emit ONLY the schema.\n\n"
         "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
     )
     user = (
@@ -259,6 +296,7 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
         extra_body=FIT_EXTRA_BODY,
     )
     fit_score, fit_tier, normalized = collapse_company(result.data.get("components", {}))
+    _log_drift(COMPANY_PURPOSE, fit_score, fit_tier, result.data)
     fit_components = {
         "points": normalized,
         "reasons": result.data.get("reasons", {}),

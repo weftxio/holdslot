@@ -98,10 +98,22 @@ def parse_company(row: dict) -> dict:
     """
     row = row or {}
     domain = normalize_domain(row.get("primary_domain") or row.get("website_url"))
+    # Search rows are sparse on firmographics but DO carry free buying-intent signals (Apollo's own
+    # intent score + headcount-growth trend) — keep them so intent survives even if enrich is off.
     evidence = {
         k: row.get(k)
-        for k in ("founded_year", "organization_revenue", "naics_codes", "sic_codes")
-        if row.get(k) not in (None, "", [], 0, 0.0)
+        for k in (
+            "founded_year",
+            "organization_revenue",
+            "naics_codes",
+            "sic_codes",
+            "intent_strength",
+            "has_intent_signal_account",
+            "organization_headcount_six_month_growth",
+            "organization_headcount_twelve_month_growth",
+            "organization_headcount_twenty_four_month_growth",
+        )
+        if row.get(k) not in (None, "", [], 0, 0.0, False)
     }
     return {
         "apollo_org_id": row.get("id"),
@@ -109,9 +121,71 @@ def parse_company(row: dict) -> dict:
         "name": row.get("name") or "",
         "website": row.get("website_url"),
         "linkedin_url": row.get("linkedin_url"),
-        "industry": row.get("industry"),  # null at search; enrich-only
-        "size": None,  # estimated_num_employees null at search
-        "country": None,  # no address at search
+        "industry": row.get("industry"),  # null at search; filled by parse_enrich
+        "size": None,  # estimated_num_employees null at search; filled by parse_enrich
+        "country": None,  # no address at search; filled by parse_enrich
+        "evidence": evidence,
+    }
+
+
+# Enrich firmographics promoted to first-class columns are handled inline; everything else in this
+# set is buying-intent / context evidence the fit rubric scores against — deliberately NOT all 55
+# enrich keys, just the signals that move a score (timing, tech, scale, descriptive match).
+_ENRICH_EVIDENCE_KEYS = (
+    "founded_year",
+    "annual_revenue",
+    "organization_revenue",
+    "estimated_num_employees",
+    "industries",
+    "secondary_industries",
+    "departmental_head_count",
+    "organization_headcount_six_month_growth",
+    "organization_headcount_twelve_month_growth",
+    "organization_headcount_twenty_four_month_growth",
+    "short_description",
+    "city",
+    "state",
+    "naics_codes",
+    "sic_codes",
+)
+
+
+def _fmt_headcount(n) -> str | None:
+    """Employee count → a compact display/scoring string (`"154,000"`); None when absent."""
+    try:
+        return f"{int(n):,}" if n else None
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_enrich(row: dict) -> dict:
+    """One `organizations/bulk_enrich` org → the columns + buying-intent evidence HoldSlot stores.
+
+    Unlike `parse_company` (search, sparse), enrich returns industry / employee count / address /
+    tech / keywords / headcount growth — the firmographic + timing signals the fit rubric scores.
+    Industry/size/country become columns; the rest lands in `evidence` (long lists are capped to
+    keep the scorer payload lean). Empty values are dropped so a merge never clobbers a real value.
+    """
+    row = row or {}
+    domain = normalize_domain(row.get("primary_domain") or row.get("website_url"))
+    evidence = {
+        k: row.get(k)
+        for k in _ENRICH_EVIDENCE_KEYS
+        if row.get(k) not in (None, "", [], {}, 0, 0.0)
+    }
+    if row.get("keywords"):
+        evidence["keywords"] = row["keywords"][:30]
+    if row.get("technology_names"):
+        evidence["technology_names"] = row["technology_names"][:25]
+    return {
+        "apollo_org_id": row.get("id"),
+        "domain": domain,
+        "name": row.get("name") or "",
+        "website": row.get("website_url"),
+        "linkedin_url": row.get("linkedin_url"),
+        "industry": row.get("industry"),
+        "size": _fmt_headcount(row.get("estimated_num_employees")),
+        "country": row.get("country"),
         "evidence": evidence,
     }
 

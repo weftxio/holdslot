@@ -110,6 +110,8 @@ def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
         return dict(_CANNED_FIT)
 
     monkeypatch.setattr(apollo, "search_companies", lambda body, *, max_results=100: orgs)
+    # Enrich is best-effort; patch to the same orgs so the merge path runs without a network call.
+    monkeypatch.setattr(apollo, "enrich_organizations", lambda domains: orgs)
     monkeypatch.setattr(apollo, "search_people", lambda body, *, max_results=100: people)
     monkeypatch.setattr(
         apollo, "match_person", lambda pid, **k: {**match, "id": pid} if match else {}

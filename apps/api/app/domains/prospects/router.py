@@ -12,6 +12,7 @@ enrichment is wired in C5.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 
@@ -54,6 +55,7 @@ from app.models import (
 )
 
 router = APIRouter(tags=["prospects"])
+log = logging.getLogger("holdslot.prospects")
 
 _VALID_STAGES = ("fit_scoring",)
 
@@ -231,8 +233,9 @@ def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) 
 # A full find can score up to MAX_*_PER_FIND rows; a *sequential* LLM call per row overruns the 30s
 # API Gateway sync cap (→ 503). The LLM client is stdlib-urllib with its own telemetry session per
 # call, so the calls are thread-safe — we fan them out, then apply each result on the main thread
-# (ORM mutation stays single-threaded). Keeps a 15-row find well under the cap.
-_SCORE_WORKERS = 10
+# (ORM mutation stays single-threaded). Workers ≥ the per-find cap so the whole batch scores in ONE
+# wave: with DeepSeek V4 Pro reasoning ON the wall-clock is ~one reasoning call, not stacked waves.
+_SCORE_WORKERS = MAX_COMPANIES_PER_FIND
 
 
 def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
@@ -322,11 +325,45 @@ def _apollo_run_id() -> str:
     return f"apollo-{uuid.uuid4().hex[:12]}"
 
 
+def _enrich_survivors(survivors: list[dict]) -> None:
+    """Enrich the surviving search rows in place via `organizations/bulk_enrich` — promote real
+    industry/size/country onto each row and merge buying-intent evidence (tech, keywords, headcount
+    growth, description) so the scorer judges firmographics instead of nulls. Best-effort: an Apollo
+    failure logs and leaves the sparse search rows untouched rather than failing the whole find.
+    """
+    domains = [p["domain"] for p in survivors if p.get("domain")]
+    if not domains:
+        return
+    try:
+        rows = apollo.enrich_organizations(domains)
+    except apollo.ApolloError as e:
+        log.warning("company enrich skipped (%s) — scoring on sparse search rows", e)
+        return
+    by_domain: dict[str, dict] = {}
+    for o in rows:
+        e = apollo_map.parse_enrich(o)
+        if e.get("domain"):
+            by_domain[e["domain"]] = e
+    for p in survivors:
+        e = by_domain.get(p.get("domain"))
+        if not e:
+            continue
+        for col in ("industry", "size", "country"):
+            if e.get(col):
+                p[col] = e[col]
+        p["apollo_org_id"] = p.get("apollo_org_id") or e.get("apollo_org_id")
+        p["website"] = p.get("website") or e.get("website")
+        p["linkedin_url"] = p.get("linkedin_url") or e.get("linkedin_url")
+        p["evidence"] = {**(p.get("evidence") or {}), **(e.get("evidence") or {})}
+
+
 def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
     """Find-or-create a company by `apollo_org_id` (else `domain`); update identity fields in place.
 
-    Industry/size/country stay whatever we had — Apollo *search* doesn't return them (C0), so we
-    never overwrite a real value with a null. `apollo_org_id` is always (re)stamped.
+    Industry/size/country now come from `organizations/bulk_enrich` (merged into `parsed` before
+    this call), so a non-null enrich value REFRESHES the stored one — a re-find updates a stale or
+    previously-empty firmographic; a null never clobbers a real value. `apollo_org_id` is always
+    (re)stamped and `evidence` is merged (new keys win).
     """
     org_id, domain = parsed.get("apollo_org_id"), parsed["domain"]
     company = None
@@ -347,9 +384,9 @@ def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
     company.name = parsed.get("name") or company.name or ""
     company.website = parsed.get("website") or company.website
     company.linkedin_url = parsed.get("linkedin_url") or company.linkedin_url
-    company.industry = company.industry or parsed.get("industry")
-    company.size = company.size or parsed.get("size")
-    company.country = company.country or parsed.get("country")
+    company.industry = parsed.get("industry") or company.industry
+    company.size = parsed.get("size") or company.size
+    company.country = parsed.get("country") or company.country
     if parsed.get("evidence"):
         company.evidence = {**(company.evidence or {}), **parsed["evidence"]}
     if company.status not in ("selected", "people_found"):
@@ -404,6 +441,7 @@ def find_company(
     # Dedupe within this batch only — an org that already exists in the tenant is upserted (so a
     # manually-added or previously-unscored company gets its apollo_org_id stamped), not dropped.
     survivors, dropped = find.filter_companies(parsed, _exclusions(db, ctx.tenant.id))
+    _enrich_survivors(survivors)
 
     run_id, icp = _apollo_run_id(), (uuid.UUID(body.icp_id) if body.icp_id else None)
     brief = _latest_brief(db, ctx.tenant.id)

@@ -125,6 +125,26 @@ def search_people(filter_body: dict, *, max_results: int = 100) -> list[dict]:
     return _paginate("mixed_people/api_search", filter_body, key="people", max_results=max_results)
 
 
+ENRICH_BATCH_MAX = 10  # Apollo `organizations/bulk_enrich` hard cap (domains per call)
+
+
+def enrich_organizations(domains: list[str]) -> list[dict]:
+    """`organizations/bulk_enrich` → the rich org shape (industry / employee count / address /
+    tech / keywords / headcount growth) that `mixed_companies/search` omits. Chunked at the
+    10-domain cap; returns the `organizations` rows in request order (Apollo preserves it).
+
+    Cost: organization enrichment is metered separately from the email-reveal credit spent by
+    `people/match`; confirm the per-org cost on the dashboard before scaling a find batch.
+    """
+    clean = [d for d in dict.fromkeys(domains) if d]  # dedupe, preserve order, drop empties
+    out: list[dict] = []
+    for i in range(0, len(clean), ENRICH_BATCH_MAX):
+        chunk = clean[i : i + ENRICH_BATCH_MAX]
+        resp = _post("organizations/bulk_enrich", {"domains": chunk})
+        out.extend(resp.get("organizations") or [])
+    return out
+
+
 def match_person(
     apollo_person_id: str, *, reveal_email: bool = True, reveal_phone: bool = False
 ) -> dict:
@@ -144,6 +164,7 @@ def match_person(
 __all__ = [
     "search_companies",
     "search_people",
+    "enrich_organizations",
     "match_person",
     "reset_key",
     "ApolloError",

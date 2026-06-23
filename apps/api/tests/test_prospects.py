@@ -154,4 +154,13 @@ def test_fit_collapse_tolerates_missing_components():
 def test_fit_schema_is_strict():
     schema = fit.FIT_JSON_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"components", "reasons", "reason_tags", "fit_reason"}
+    # `fit_tier`/`fit_score` are model-committed (anchor the reason to the chip); the server still
+    # recomputes both authoritatively from `components`.
+    assert set(schema["required"]) == {
+        "components",
+        "reasons",
+        "reason_tags",
+        "fit_reason",
+        "fit_tier",
+        "fit_score",
+    }
