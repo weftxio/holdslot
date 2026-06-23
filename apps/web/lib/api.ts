@@ -447,7 +447,13 @@ export async function addCompany(client: string, body: CompanyManual): Promise<C
 // Flow A — Apollo company search from the latest ResearchSpec → suppress → upsert → score.
 export async function findCompanies(
   client: string,
-  body: { limit?: number; icp_id?: string | null } = {}
+  body: {
+    limit?: number;
+    icp_id?: string | null;
+    // Operator override of the saved AI scope (Settings modal); omitted → spec is used as-is.
+    company_search_params?: Record<string, unknown>;
+    intent_filters?: Record<string, unknown>;
+  } = {}
 ): Promise<FindResult> {
   const r = await authFetch(`/${client}/companies/find-company`, {
     method: "POST",
@@ -468,6 +474,18 @@ export async function selectCompanies(
     method: "PATCH",
     json: true,
     body: JSON.stringify({ ids, selected }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Re-run fit scoring for an explicit set of already-sourced companies (ignores the unscored gate).
+// Use after the rubric / scoring prompt changes. Returns the re-scored rows (best fit first).
+export async function rescoreCompanies(client: string, ids: string[]): Promise<CompanyApi[]> {
+  const r = await authFetch(`/${client}/companies/rescore`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ ids }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
@@ -501,7 +519,12 @@ export async function addProspect(client: string, body: ProspectManual): Promise
 // Flow B — find people across the SELECTED companies (one Apollo api_search per org), 0 credits.
 export async function findPeople(
   client: string,
-  body: { per_company?: number; icp_id?: string | null } = {}
+  body: {
+    per_company?: number;
+    icp_id?: string | null;
+    // Operator override of the saved AI scope (Step-2 Settings); omitted → spec is used as-is.
+    people_search_params?: Record<string, unknown>;
+  } = {}
 ): Promise<FindResult> {
   const r = await authFetch(`/${client}/people/find-people`, {
     method: "POST",

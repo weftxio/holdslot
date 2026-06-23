@@ -28,6 +28,7 @@
 }
 .topbar--ws + .content {
   padding-top: 12px;
+  padding-bottom: 12px; /* match the top inset so the list dock sits near the edge */
 }
 
 /* client-status: tabs sit left of the back button (natural width), so the topbar keeps its

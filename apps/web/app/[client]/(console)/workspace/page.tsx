@@ -26,6 +26,7 @@ import {
   deleteIcp as apiDeleteIcp,
   enrichProspects,
   findCompanies,
+  rescoreCompanies,
   findPeople,
   getBrief,
   getResearchSpec,
@@ -550,7 +551,16 @@ function FitScore({
   score?: number | null;
   reason?: string;
 }) {
+  // The reason popup is fixed-positioned and portaled to <body>: the table body now scrolls
+  // (overflow:auto on .list-scroll), which would clip an in-flow absolute tooltip. We compute the
+  // anchor rect on hover/focus and place the popup centered above the icon, clamped to the viewport.
+  const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
   if (!tier) return <span className="muted">—</span>;
+  const openTip = (e: { currentTarget: HTMLElement }) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = Math.min(Math.max(r.left + r.width / 2, 116), window.innerWidth - 116);
+    setTip({ x, y: r.top - 10 });
+  };
   return (
     <span className="fit-ai">
       <span className={clsx("fit-chip", FIT_CHIP[tier] ?? "fit-chip--below")}>
@@ -558,9 +568,23 @@ function FitScore({
         {score != null ? ` · ${score}` : ""}
       </span>
       {reason ? (
-        <span className="fit-tip" tabIndex={0}>
+        <span
+          className="fit-tip"
+          tabIndex={0}
+          onMouseEnter={openTip}
+          onFocus={openTip}
+          onMouseLeave={() => setTip(null)}
+          onBlur={() => setTip(null)}
+        >
           <span className="fit-i">i</span>
-          <span className="fit-pop">{reason}</span>
+          {tip
+            ? createPortal(
+                <span className="fit-pop" role="tooltip" style={{ left: tip.x, top: tip.y }}>
+                  {reason}
+                </span>,
+                document.body,
+              )
+            : null}
         </span>
       ) : null}
     </span>
@@ -1310,6 +1334,225 @@ const EXCLUSIONS: {
 ];
 const EXCLUSION_COUNT = EXCLUSIONS.reduce((n, g) => n + g.entries.length, 0);
 
+// ---- Find-company scope override (Settings modal) -----------------------------------------
+// A manual override of the AI scope's Apollo company-search filters, persisted per client in
+// localStorage and passed verbatim to find-company. `null` = use the saved spec unchanged.
+type ScopeOverride = {
+  company_search_params: Record<string, unknown>;
+  intent_filters: Record<string, unknown>;
+};
+// The editable shape — arrays are held as comma/semicolon text so they type naturally in inputs.
+type ScopeForm = {
+  keywords: string;
+  sizes: string;
+  locations: string;
+  revenueMin: string;
+  revenueMax: string;
+  hiringTitles: string;
+  fundedMin: string;
+  fundedMax: string;
+  jobsMin: string;
+  jobsMax: string;
+};
+const SCOPE_KEY = (client: string) => `holdslot_scope_${client}`;
+function loadScopeOverride(client: string): ScopeOverride | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = JSON.parse(localStorage.getItem(SCOPE_KEY(client)) || "null");
+    return v && typeof v === "object" ? (v as ScopeOverride) : null;
+  } catch {
+    return null;
+  }
+}
+function saveScopeOverride(client: string, v: ScopeOverride | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (v) localStorage.setItem(SCOPE_KEY(client), JSON.stringify(v));
+    else localStorage.removeItem(SCOPE_KEY(client));
+  } catch {
+    /* ignore */
+  }
+}
+const csvToArr = (s: string) =>
+  s
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+const semiToArr = (s: string) =>
+  s
+    .split(";")
+    .map((x) => x.trim())
+    .filter(Boolean);
+const arrToCsv = (a: unknown) => (Array.isArray(a) ? (a as string[]).join(", ") : "");
+
+// The scope find-company would use right now: the manual override if set, else the AI spec's blocks.
+function effectiveScope(
+  override: ScopeOverride | null,
+  spec: ResearchSpecResult | null
+): ScopeOverride {
+  if (override) return override;
+  const sp = (spec?.spec ?? {}) as {
+    company_search_params?: Record<string, unknown>;
+    intent_filters?: Record<string, unknown>;
+  };
+  return {
+    company_search_params: sp.company_search_params ?? {},
+    intent_filters: sp.intent_filters ?? {},
+  };
+}
+function scopeToForm(o: ScopeOverride): ScopeForm {
+  const cs = (o.company_search_params ?? {}) as Record<string, unknown>;
+  const c = ((o.intent_filters as { company?: Record<string, unknown> })?.company ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const rev = (cs.revenue_range ?? {}) as { min?: number | null; max?: number | null };
+  const fund = (c.latest_funding_date_range ?? {}) as { min?: string | null; max?: string | null };
+  const jobs = (c.organization_job_posted_at_range ?? {}) as {
+    min?: string | null;
+    max?: string | null;
+  };
+  return {
+    keywords: arrToCsv(cs.q_organization_keyword_tags),
+    sizes: Array.isArray(cs.organization_num_employees_ranges)
+      ? (cs.organization_num_employees_ranges as string[]).join("; ")
+      : "",
+    locations: arrToCsv(cs.organization_locations),
+    revenueMin: rev.min != null ? String(rev.min) : "",
+    revenueMax: rev.max != null ? String(rev.max) : "",
+    hiringTitles: arrToCsv(c.q_organization_job_titles),
+    fundedMin: fund.min ?? "",
+    fundedMax: fund.max ?? "",
+    jobsMin: jobs.min ?? "",
+    jobsMax: jobs.max ?? "",
+  };
+}
+function formToOverride(f: ScopeForm): ScopeOverride {
+  return {
+    company_search_params: {
+      q_organization_keyword_tags: csvToArr(f.keywords),
+      organization_num_employees_ranges: semiToArr(f.sizes),
+      organization_locations: csvToArr(f.locations),
+      revenue_range: {
+        min: f.revenueMin ? Number(f.revenueMin) : null,
+        max: f.revenueMax ? Number(f.revenueMax) : null,
+      },
+    },
+    intent_filters: {
+      company: {
+        q_organization_job_titles: csvToArr(f.hiringTitles),
+        latest_funding_date_range: { min: f.fundedMin || null, max: f.fundedMax || null },
+        organization_job_posted_at_range: { min: f.jobsMin || null, max: f.jobsMax || null },
+      },
+    },
+  };
+}
+// A one-line human read of the active scope — for the empty state + the 0-results toast.
+function scopeSummary(o: ScopeOverride): string {
+  const cs = (o.company_search_params ?? {}) as Record<string, unknown>;
+  const c = ((o.intent_filters as { company?: Record<string, unknown> })?.company ?? {}) as Record<
+    string,
+    unknown
+  >;
+  const arr = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
+  const fund = (c.latest_funding_date_range ?? {}) as { min?: string | null; max?: string | null };
+  const jobs = (c.organization_job_posted_at_range ?? {}) as {
+    min?: string | null;
+    max?: string | null;
+  };
+  const parts: string[] = [];
+  if (arr(cs.organization_locations).length) parts.push(arr(cs.organization_locations).join("/"));
+  if (arr(cs.q_organization_keyword_tags).length)
+    parts.push(arr(cs.q_organization_keyword_tags).join("/"));
+  if (arr(cs.organization_num_employees_ranges).length)
+    parts.push(`size ${arr(cs.organization_num_employees_ranges).join(", ")}`);
+  if (fund.min || fund.max) parts.push("recently funded");
+  if (arr(c.q_organization_job_titles).length)
+    parts.push(`hiring ${arr(c.q_organization_job_titles).join("/")}`);
+  if (jobs.min || jobs.max) parts.push("recent job posts");
+  return parts.join(" · ");
+}
+
+// ---- Find-people scope override (Step-2 Settings modal) -----------------------------------
+// Same pattern as the company scope: a per-client manual override of the AI scope's Apollo
+// mixed_people/api_search filters. `organization_ids` is NOT here — the server sets it per selected
+// org. `null` → use the saved spec's people_search_params.
+type PeopleScopeOverride = { people_search_params: Record<string, unknown> };
+type PeopleScopeForm = {
+  titles: string;
+  similar: boolean;
+  seniorities: string;
+  keywords: string;
+  locations: string;
+  sizes: string;
+};
+const PPL_SCOPE_KEY = (client: string) => `holdslot_pplscope_${client}`;
+function loadPeopleScopeOverride(client: string): PeopleScopeOverride | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const v = JSON.parse(localStorage.getItem(PPL_SCOPE_KEY(client)) || "null");
+    return v && typeof v === "object" ? (v as PeopleScopeOverride) : null;
+  } catch {
+    return null;
+  }
+}
+function savePeopleScopeOverride(client: string, v: PeopleScopeOverride | null) {
+  if (typeof window === "undefined") return;
+  try {
+    if (v) localStorage.setItem(PPL_SCOPE_KEY(client), JSON.stringify(v));
+    else localStorage.removeItem(PPL_SCOPE_KEY(client));
+  } catch {
+    /* ignore */
+  }
+}
+function effectivePeopleScope(
+  override: PeopleScopeOverride | null,
+  spec: ResearchSpecResult | null
+): PeopleScopeOverride {
+  if (override) return override;
+  const sp = (spec?.spec ?? {}) as { people_search_params?: Record<string, unknown> };
+  return { people_search_params: sp.people_search_params ?? {} };
+}
+function peopleScopeToForm(o: PeopleScopeOverride): PeopleScopeForm {
+  const ps = (o.people_search_params ?? {}) as Record<string, unknown>;
+  return {
+    titles: arrToCsv(ps.person_titles),
+    similar: ps.include_similar_titles === true,
+    seniorities: arrToCsv(ps.person_seniorities),
+    keywords: typeof ps.q_keywords === "string" ? ps.q_keywords : "",
+    locations: arrToCsv(ps.organization_locations),
+    sizes: Array.isArray(ps.organization_num_employees_ranges)
+      ? (ps.organization_num_employees_ranges as string[]).join("; ")
+      : "",
+  };
+}
+function formToPeopleOverride(f: PeopleScopeForm): PeopleScopeOverride {
+  return {
+    people_search_params: {
+      person_titles: csvToArr(f.titles),
+      include_similar_titles: f.similar,
+      person_seniorities: csvToArr(f.seniorities),
+      q_keywords: f.keywords.trim(),
+      organization_locations: csvToArr(f.locations),
+      organization_num_employees_ranges: semiToArr(f.sizes),
+    },
+  };
+}
+function peopleScopeSummary(o: PeopleScopeOverride): string {
+  const ps = (o.people_search_params ?? {}) as Record<string, unknown>;
+  const arr = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
+  const parts: string[] = [];
+  if (arr(ps.person_titles).length)
+    parts.push(
+      `${arr(ps.person_titles).join("/")}${ps.include_similar_titles ? " (+similar)" : ""}`
+    );
+  if (arr(ps.person_seniorities).length) parts.push(arr(ps.person_seniorities).join("/"));
+  if (typeof ps.q_keywords === "string" && ps.q_keywords.trim())
+    parts.push(`“${ps.q_keywords.trim()}”`);
+  if (arr(ps.organization_locations).length) parts.push(arr(ps.organization_locations).join("/"));
+  return parts.join(" · ");
+}
+
 export default function Workspace() {
   const { client } = useParams<{ client: string }>();
   const clientName = slugToTitle(client);
@@ -1824,6 +2067,7 @@ export default function Workspace() {
   const [coFit, setCoFit] = useState("");
   const [enriching, setEnriching] = useState(false);
   const [findingCo, setFindingCo] = useState(false);
+  const [rescoring, setRescoring] = useState(false);
   const [findingPpl, setFindingPpl] = useState(false);
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
@@ -1838,6 +2082,14 @@ export default function Workspace() {
   const [addCoOpen, setAddCoOpen] = useState(false);
   const [coForm, setCoForm] = useState({ ...blankCo });
   const [savingCo, setSavingCo] = useState(false);
+  // Manual override of the AI scope's Apollo company-search filters (Settings modal).
+  const [scopeOverride, setScopeOverride] = useState<ScopeOverride | null>(null);
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [scopeForm, setScopeForm] = useState<ScopeForm | null>(null);
+  // Same, for the Step-2 Apollo people-search filters.
+  const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
+  const [peopleScopeOpen, setPeopleScopeOpen] = useState(false);
+  const [peopleScopeForm, setPeopleScopeForm] = useState<PeopleScopeForm | null>(null);
   const blankPerson = {
     full_name: "",
     company: "",
@@ -1902,6 +2154,8 @@ export default function Workspace() {
     setFIcp("");
     setFFit("");
     setCoFit("");
+    setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
+    setPeopleScopeOverride(loadPeopleScopeOverride(client));
     let alive = true;
     (async () => {
       try {
@@ -1993,6 +2247,16 @@ export default function Workspace() {
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
+  // One-line read of the scope Find Companies will use right now (override or AI spec) — shown in
+  // the empty state so a 0-result is explainable, not mysterious.
+  const coScopeSummary = useMemo(
+    () => scopeSummary(effectiveScope(scopeOverride, spec)),
+    [scopeOverride, spec]
+  );
+  const pplScopeSummary = useMemo(
+    () => peopleScopeSummary(effectivePeopleScope(peopleScopeOverride, spec)),
+    [peopleScopeOverride, spec]
+  );
   function toggleCo(id: string) {
     setCompanyChecked((s) => {
       const n = new Set(s);
@@ -2025,22 +2289,72 @@ export default function Workspace() {
     }
   }
 
-  // Flow A — Apollo company search from the saved ResearchSpec. Needs a generated scope.
+  // Flow A — Apollo company search from the saved ResearchSpec (or the Settings override). Needs a
+  // generated scope. The 0-result toast distinguishes "Apollo matched nothing" (loosen filters)
+  // from "matched but all filtered out as dupes/exclusions" (`dropped`) so the cause is explainable.
   async function runFindCompanies() {
     setFindingCo(true);
     try {
-      const res = await findCompanies(client, { icp_id: fIcp || null });
+      const res = await findCompanies(client, { icp_id: fIcp || null, ...(scopeOverride ?? {}) });
       await reloadCompanies();
-      toast(
-        res.found
-          ? `Found ${res.found} ${res.found === 1 ? "company" : "companies"}`
-          : "No new companies — try widening the brief or scope"
-      );
+      if (res.found) {
+        const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
+        toast(`Found ${res.found} ${res.found === 1 ? "company" : "companies"}${tail}`);
+      } else if (res.dropped) {
+        toast(
+          `Apollo returned ${res.dropped}, but all were filtered out as duplicates or exclusions. ` +
+            "Adjust the scope in ⚙ Settings.",
+          "warn"
+        );
+      } else {
+        toast(
+          "No companies matched the current scope. Loosen the filters in ⚙ Settings " +
+            "(geo, size, keywords, or the funding/hiring windows).",
+          "warn"
+        );
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : "Find companies failed", "warn");
     } finally {
       setFindingCo(false);
     }
+  }
+
+  // Re-run fit scoring for the checked companies (e.g. after the rubric / scoring prompt changed).
+  // Unlike Find, this re-scores rows that already have a score — each call is a paid LLM request.
+  async function runRescore() {
+    const ids = [...companyChecked];
+    if (!ids.length) return toast("Select companies to re-score", "warn");
+    setRescoring(true);
+    try {
+      await rescoreCompanies(client, ids);
+      await reloadCompanies();
+      toast(`Re-scored ${ids.length} ${ids.length === 1 ? "company" : "companies"}`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Re-score failed", "warn");
+    } finally {
+      setRescoring(false);
+    }
+  }
+
+  // ---- Settings (find-company scope) handlers ----
+  function openScopeSettings() {
+    setScopeForm(scopeToForm(effectiveScope(scopeOverride, spec)));
+    setScopeOpen(true);
+  }
+  function saveScopeSettings() {
+    if (!scopeForm) return;
+    const ov = formToOverride(scopeForm);
+    setScopeOverride(ov);
+    saveScopeOverride(client, ov);
+    setScopeOpen(false);
+    toast("Search filters saved · used on the next Find");
+  }
+  function resetScopeSettings() {
+    setScopeOverride(null);
+    saveScopeOverride(client, null);
+    setScopeForm(scopeToForm(effectiveScope(null, spec)));
+    toast("Reverted to the AI-generated scope");
   }
 
   // Flow B — find people across the checked companies. Sync the selection to the server (it scopes
@@ -2051,18 +2365,52 @@ export default function Workspace() {
     setFindingPpl(true);
     try {
       await selectCompanies(client, ids, true);
-      const res = await findPeople(client, { icp_id: fIcp || null });
+      const res = await findPeople(client, {
+        icp_id: fIcp || null,
+        ...(peopleScopeOverride ?? {}),
+      });
       await Promise.all([reloadProspects(), reloadCompanies()]);
-      toast(
-        res.found
-          ? `Found ${res.found} ${res.found === 1 ? "person" : "people"}`
-          : "No new people for the selected companies"
-      );
+      if (res.found) {
+        const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
+        toast(`Found ${res.found} ${res.found === 1 ? "person" : "people"}${tail}`);
+      } else if (res.dropped) {
+        toast(
+          `Apollo returned ${res.dropped}, but all were filtered out (already imported, no Apollo id, ` +
+            "or an avoided title). Widen the titles/seniorities in ⚙ Settings.",
+          "warn"
+        );
+      } else {
+        toast(
+          "No people matched at the selected companies. Loosen the titles, seniorities, or keywords " +
+            "in ⚙ Settings.",
+          "warn"
+        );
+      }
     } catch (e) {
       toast(e instanceof Error ? e.message : "Find people failed", "warn");
     } finally {
       setFindingPpl(false);
     }
+  }
+
+  // ---- Step-2 Settings (find-people scope) handlers ----
+  function openPeopleScopeSettings() {
+    setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec)));
+    setPeopleScopeOpen(true);
+  }
+  function savePeopleScopeSettings() {
+    if (!peopleScopeForm) return;
+    const ov = formToPeopleOverride(peopleScopeForm);
+    setPeopleScopeOverride(ov);
+    savePeopleScopeOverride(client, ov);
+    setPeopleScopeOpen(false);
+    toast("Person filters saved · used on the next Find People");
+  }
+  function resetPeopleScopeSettings() {
+    setPeopleScopeOverride(null);
+    savePeopleScopeOverride(client, null);
+    setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
+    toast("Reverted to the AI-generated person scope");
   }
 
   // ---- Stage 2: people ----
@@ -3187,18 +3535,44 @@ export default function Workspace() {
                 <span className="tab-ct">({prospects.length})</span>
               </button>
             </div>
-            <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
-              ⚙ Fit rubric
-            </button>
+            <div className="head-actions">
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
+                ⚙ Fit rubric
+              </button>
+              {listStage === "companies" ? (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={runRescore}
+                  disabled={!coSelCount || rescoring || findingPpl}
+                  title="Re-run fit scoring for the selected companies · one paid LLM call each"
+                >
+                  {rescoring ? "Re-scoring…" : coSelCount ? `Re-score ${coSelCount}` : "Re-score"}
+                </button>
+              ) : null}
+            </div>
           </div>
 
           {listStage === "companies" ? (
             <>
               <div className="list-band">
                 <h3>Find companies likely to buy</h3>
-                <span className="band-sub">
-                  Sourcing never costs credits — only enrichment in Step 2 does.
-                </span>
+                <div className="band-actions">
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={openScopeSettings}
+                    title="Edit the Apollo company-search filters used by Find Companies"
+                  >
+                    ⚙ Settings{scopeOverride ? " (custom)" : ""}
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runFindCompanies}
+                    disabled={findingCo}
+                    title="Search Apollo from the current scope"
+                  >
+                    {findingCo ? "Finding…" : "Find Companies"}
+                  </button>
+                </div>
               </div>
               <div className="filter-row list-toolbar">
                 <div className="search">
@@ -3220,14 +3594,6 @@ export default function Workspace() {
                 </select>
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
                   + Add company
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={runFindCompanies}
-                  disabled={findingCo}
-                  title="Search Apollo from the saved research scope"
-                >
-                  {findingCo ? "Finding…" : "Find Companies"}
                 </button>
               </div>
               <div className="countrow">
@@ -3307,9 +3673,17 @@ export default function Workspace() {
                 </table>
                 {coVisible.length === 0 && (
                   <div className="list-empty muted">
-                    No companies yet — click Find Companies to search Apollo from your saved
-                    research scope, or add one manually. Finding is free; only enrichment in Step 2
-                    spends credits.
+                    No companies match the current scope yet · click Find Companies to search Apollo.
+                    <br />
+                    {coScopeSummary ? (
+                      <>
+                        Active filters{scopeOverride ? " (custom)" : ""} · {coScopeSummary}.
+                        <br />
+                        Too few results? Widen them in ⚙ Settings, or + Add company manually.
+                      </>
+                    ) : (
+                      <>Set your filters in ⚙ Settings, or + Add company manually. Finding is free.</>
+                    )}
                   </div>
                 )}
               </div>
@@ -3331,10 +3705,13 @@ export default function Workspace() {
                 <span className="dock-spacer" />
                 <button
                   className="btn btn-primary"
-                  onClick={() => setListStage("people")}
-                  disabled={!coSelCount}
+                  onClick={() => {
+                    setListStage("people"); // jump to Step 2 AND run the (free) search
+                    runFindPeople();
+                  }}
+                  disabled={!coSelCount || findingPpl}
                 >
-                  Find people for {coSelCount} →
+                  {findingPpl ? "Finding…" : `Find people for ${coSelCount} →`}
                 </button>
               </div>
             </>
@@ -3342,10 +3719,23 @@ export default function Workspace() {
             <>
               <div className="list-band">
                 <h3>Find the right person</h3>
-                <span className="band-sub">
-                  Sourcing is free · verified emails cost ~${ENRICH_COST_USD.toFixed(2)} each, only
-                  when you confirm.
-                </span>
+                <div className="band-actions">
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={openPeopleScopeSettings}
+                    title="Edit the Apollo people-search filters used by Find People"
+                  >
+                    ⚙ Settings{peopleScopeOverride ? " (custom)" : ""}
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runFindPeople}
+                    disabled={findingPpl || !coSelCount}
+                    title="Find people across the selected companies (free; enrich spends credits)"
+                  >
+                    {findingPpl ? "Finding…" : "Find People"}
+                  </button>
+                </div>
               </div>
               <div className="filter-row list-toolbar">
                 <div className="search">
@@ -3367,14 +3757,6 @@ export default function Workspace() {
                 </select>
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
                   + Add person
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={runFindPeople}
-                  disabled={findingPpl || !coSelCount}
-                  title="Find people across the selected companies (free; enrich spends credits)"
-                >
-                  {findingPpl ? "Finding…" : "Find People"}
                 </button>
               </div>
               <div className="countrow">
@@ -3474,9 +3856,21 @@ export default function Workspace() {
                 </table>
                 {visible.length === 0 && (
                   <div className="list-empty muted">
-                    {prospectsLoading
-                      ? "Loading prospects…"
-                      : "No people yet — select companies in Step 1, then click Find People to search Apollo across them (or add a person manually)."}
+                    {prospectsLoading ? (
+                      "Loading prospects…"
+                    ) : (
+                      <>
+                        No people yet · select companies in Step 1, then click Find People (or + Add
+                        person).
+                        {pplScopeSummary ? (
+                          <>
+                            <br />
+                            Active filters{peopleScopeOverride ? " (custom)" : ""} · {pplScopeSummary}
+                            . Too few? Widen them in ⚙ Settings.
+                          </>
+                        ) : null}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -3573,6 +3967,247 @@ export default function Workspace() {
               onChange={(e) => setRubricDraft(e.target.value)}
             />
           </div>
+        </Modal>
+
+        {/* FIND-COMPANY SCOPE SETTINGS — edit the Apollo company-search filters Phase B produced.
+            Empty fields are dropped server-side (they simply widen the search). */}
+        <Modal
+          open={scopeOpen}
+          onClose={() => setScopeOpen(false)}
+          title="Find Companies · search filters"
+          subtitle="Apollo company-search options, pre-filled from your AI scope. Edit to adjust the search · leave a field blank to drop that filter. Saved per client, used on the next Find."
+          footer={
+            <>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={resetScopeSettings}
+                title="Discard manual edits and use the AI-generated scope"
+              >
+                Reset to AI scope
+              </button>
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-ghost btn-sm" onClick={() => setScopeOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={saveScopeSettings}>
+                Save filters
+              </button>
+            </>
+          }
+        >
+          {scopeForm && (
+            <>
+              <div className="field">
+                <label>Keywords · industry / market tags (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="Insurtech, Insurance"
+                  value={scopeForm.keywords}
+                  onChange={(e) => setScopeForm({ ...scopeForm, keywords: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label>Locations · HQ country / region (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="hong kong, singapore, thailand"
+                  value={scopeForm.locations}
+                  onChange={(e) => setScopeForm({ ...scopeForm, locations: e.target.value })}
+                />
+              </div>
+              <div className="field">
+                <label>Employee size ranges · min,max (separate ranges with ;)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="10,100 ; 101,500"
+                  value={scopeForm.sizes}
+                  onChange={(e) => setScopeForm({ ...scopeForm, sizes: e.target.value })}
+                />
+              </div>
+              <div className="sourcing-cols">
+                <div className="field">
+                  <label>Revenue min (USD)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    placeholder="(any)"
+                    value={scopeForm.revenueMin}
+                    onChange={(e) => setScopeForm({ ...scopeForm, revenueMin: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Revenue max (USD)</label>
+                  <input
+                    className="input"
+                    type="number"
+                    placeholder="(any)"
+                    value={scopeForm.revenueMax}
+                    onChange={(e) => setScopeForm({ ...scopeForm, revenueMax: e.target.value })}
+                  />
+                </div>
+              </div>
+              <SpecHead>Buying signals (intent) · optional, narrows hard</SpecHead>
+              <div className="field">
+                <label>Hiring for job titles (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="sales, growth, commercial"
+                  value={scopeForm.hiringTitles}
+                  onChange={(e) => setScopeForm({ ...scopeForm, hiringTitles: e.target.value })}
+                />
+              </div>
+              <div className="sourcing-cols">
+                <div className="field">
+                  <label>Funded since</label>
+                  <input
+                    className="input"
+                    type="date"
+                    value={scopeForm.fundedMin}
+                    onChange={(e) => setScopeForm({ ...scopeForm, fundedMin: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Funded until</label>
+                  <input
+                    className="input"
+                    type="date"
+                    value={scopeForm.fundedMax}
+                    onChange={(e) => setScopeForm({ ...scopeForm, fundedMax: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="sourcing-cols">
+                <div className="field">
+                  <label>Jobs posted since</label>
+                  <input
+                    className="input"
+                    type="date"
+                    value={scopeForm.jobsMin}
+                    onChange={(e) => setScopeForm({ ...scopeForm, jobsMin: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Jobs posted until</label>
+                  <input
+                    className="input"
+                    type="date"
+                    value={scopeForm.jobsMax}
+                    onChange={(e) => setScopeForm({ ...scopeForm, jobsMax: e.target.value })}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </Modal>
+
+        {/* FIND-PEOPLE SCOPE SETTINGS — edit the Apollo people-search filters Phase B produced.
+            Empty fields are dropped server-side; the org scope comes from your Step-1 selection. */}
+        <Modal
+          open={peopleScopeOpen}
+          onClose={() => setPeopleScopeOpen(false)}
+          title="Find People · search filters"
+          subtitle="Apollo people-search options, pre-filled from your AI scope. People are searched only at the companies you selected in Step 1 · leave a field blank to drop that filter. Saved per client, used on the next Find People."
+          footer={
+            <>
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={resetPeopleScopeSettings}
+                title="Discard manual edits and use the AI-generated person scope"
+              >
+                Reset to AI scope
+              </button>
+              <span style={{ flex: 1 }} />
+              <button className="btn btn-ghost btn-sm" onClick={() => setPeopleScopeOpen(false)}>
+                Cancel
+              </button>
+              <button className="btn btn-primary btn-sm" onClick={savePeopleScopeSettings}>
+                Save filters
+              </button>
+            </>
+          }
+        >
+          {peopleScopeForm && (
+            <>
+              <div className="field">
+                <label>Job titles to target (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="Head of Sales, VP Sales, Revenue Operations"
+                  value={peopleScopeForm.titles}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, titles: e.target.value })
+                  }
+                />
+              </div>
+              <label
+                className="row"
+                style={{ display: "flex", alignItems: "center", gap: 8, margin: "2px 0 12px" }}
+              >
+                <input
+                  type="checkbox"
+                  checked={peopleScopeForm.similar}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, similar: e.target.checked })
+                  }
+                />
+                <span>Include similar titles (Apollo expands beyond exact matches)</span>
+              </label>
+              <div className="field">
+                <label>Seniorities (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="owner, founder, c_suite, vp, director, head, manager"
+                  value={peopleScopeForm.seniorities}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, seniorities: e.target.value })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Keywords (free text · name, skill, or focus)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="enterprise sales"
+                  value={peopleScopeForm.keywords}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, keywords: e.target.value })
+                  }
+                />
+              </div>
+              <SpecHead>Org filters · optional (people are already scoped to your selection)</SpecHead>
+              <div className="field">
+                <label>Org locations (comma-separated)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="hong kong, singapore"
+                  value={peopleScopeForm.locations}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, locations: e.target.value })
+                  }
+                />
+              </div>
+              <div className="field">
+                <label>Org employee size ranges · min,max (separate ranges with ;)</label>
+                <input
+                  className="input"
+                  type="text"
+                  placeholder="10,100 ; 101,500"
+                  value={peopleScopeForm.sizes}
+                  onChange={(e) =>
+                    setPeopleScopeForm({ ...peopleScopeForm, sizes: e.target.value })
+                  }
+                />
+              </div>
+            </>
+          )}
         </Modal>
 
         {/* ADD COMPANY (manual, stage 1) — same schema as an imported row, source=manual */}

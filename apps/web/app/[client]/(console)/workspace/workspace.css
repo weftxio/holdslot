@@ -13,16 +13,26 @@
   flex-direction: column;
 }
 .list-pane > .panel {
-  flex: 1;
   display: flex;
   flex-direction: column;
-  min-height: calc(100vh - 120px);
+  /* Bound the panel to the viewport so the table body (.list-scroll) scrolls
+     internally and the action dock stays pinned to the panel base, no matter how
+     long the list is. NOTE: no `flex:1` here — `flex:1` expands to flex-basis:0%
+     which overrides `height` and lets the panel grow with its rows. The explicit
+     height is the viewport minus the console chrome: 64px topbar + 12px content
+     top-pad + 12px content bottom-pad (both set on .topbar--ws + .content) = 88px. */
+  height: calc(100vh - 88px);
+  min-height: 0;
 }
 .list-scroll {
   flex: 1;
   display: flex;
   flex-direction: column;
   overflow-x: auto;
+  overflow-y: auto;
+  /* min-height:0 lets this flex child shrink below its content height so it
+     actually scrolls instead of stretching the panel past the dock. */
+  min-height: 0;
 }
 .list-empty {
   flex: 1;
@@ -2148,6 +2158,9 @@
 .list-pane .panel-head {
   padding: 12px 24px 0;
   align-items: flex-end;
+  /* Uniform 56px header rows (panel-head / band / toolbar) — the minimum height
+     that still fits the tallest content (40px tabs, 36px controls). */
+  min-height: 56px;
 }
 .list-pane .panel-head .tabs {
   margin-bottom: 0;
@@ -2185,9 +2198,15 @@
   color: var(--m-sel-edge);
   font-size: 15px;
 }
-/* The settings button sits at the tab baseline, smaller/lighter per the mock. */
-.list-pane .panel-head > .btn {
+/* The header actions (Re-score + Fit rubric) sit at the tab baseline, smaller/lighter per the
+   mock. Grouped in a flex row so the space-between panel-head keeps tabs left / actions right. */
+.list-pane .panel-head .head-actions {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px; /* match the band/toolbar gap so the columns line up between rows */
   margin-bottom: 8px;
+}
+.list-pane .panel-head .head-actions > .btn {
   font-weight: 500;
   color: var(--m-soft);
 }
@@ -2197,7 +2216,8 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 24px;
+  padding: 10px 24px; /* trimmed so the shared 56px min-height governs */
+  min-height: 56px;
   border-bottom: 1px solid var(--line-soft);
   background: var(--m-surface);
 }
@@ -2222,10 +2242,28 @@
   font-size: 12.5px;
   color: var(--m-faint);
 }
+/* Settings + Find Companies pushed to the right end of the band row. */
+.band-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px; /* match .filter-row gap so the columns line up between rows */
+}
+/* Equal-width band buttons so Settings and Find Companies line up regardless of
+   which label (with/without "(custom)") is showing — and so the toolbar controls
+   below (the fit select + Add company) stack into matching columns. */
+.band-actions .btn,
+.list-toolbar .select,
+.list-toolbar .btn,
+.list-pane .panel-head .head-actions > .btn {
+  min-width: 150px;
+  justify-content: center;
+}
 
 /* Row 3 — toolbar: search + filter on the left, +Add / Import on the right. */
 .list-toolbar {
-  padding: 13px 24px;
+  padding: 10px 24px; /* trimmed so the shared 56px min-height governs */
+  min-height: 56px;
   border-bottom: 1px solid var(--line);
 }
 /* search grows to fill the row (flex:1 from .filter-row .search); the select and
@@ -2261,6 +2299,10 @@
   letter-spacing: 0.055em;
   color: var(--m-faint);
   background: var(--m-surface);
+  /* Pin the header so it stays visible while the rows scroll under it. */
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 .list-pane .tbl tbody tr:hover {
   background: #fbfcfe;
@@ -2419,39 +2461,33 @@
   align-items: center;
   justify-content: center;
 }
+/* Fixed + portaled to <body> so the scrolling table body (overflow:auto) can't clip it. The
+   inline left/top is the anchor icon's top-center; translate(-50%,-100%) lifts the box fully
+   above that point and centers it horizontally. pointer-events:none keeps it from stealing hover. */
 .fit-pop {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: -8px;
-  z-index: 30;
+  position: fixed;
+  z-index: 1000;
   width: 220px;
-  background: var(--m-tip);
+  transform: translate(-50%, -100%);
+  /* Literal colors, not var(--m-tip): the popup is portaled to <body>, outside the .list-pane
+     scope where the --m-* tokens are defined, so a var() here would resolve to transparent. */
+  background: #14171c;
   color: #fff;
   font-size: 11.5px;
   line-height: 1.45;
   padding: 9px 11px;
   border-radius: 8px;
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(4px);
-  transition:
-    opacity 0.14s ease,
-    transform 0.14s ease;
+  pointer-events: none;
   box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
 }
 .fit-pop::after {
   content: "";
   position: absolute;
   top: 100%;
-  left: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   border: 5px solid transparent;
-  border-top-color: var(--m-tip);
-}
-.fit-tip:hover .fit-pop,
-.fit-tip:focus .fit-pop {
-  opacity: 1;
-  visibility: visible;
-  transform: translateY(0);
+  border-top-color: #14171c;
 }
 
 /* Website link + LinkedIn glyph cells. */
