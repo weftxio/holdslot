@@ -161,28 +161,35 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     assert r2.json()["found"] == 2  # upserted, not dropped
     assert len(client.get(f"/{slug}/companies", headers=_auth(token)).json()) == 2  # no dups
 
-    # Select Alpha → scopes Flow B.
+    # Stage Alpha into Step 2 (discovered → selected). Find-people is driven by explicit company_ids
+    # (not this status), but staging is what surfaces the company in the Step-2 table.
     r = client.patch(
         f"/{slug}/companies/select", json={"ids": [alpha["id"]], "selected": True},
         headers=_auth(token),
     )
     assert r.status_code == 200 and r.json()[0]["status"] == "selected"
 
-    # Flow B — find people only from the selected org. The "Sales Intern" is dropped pre-score by
-    # the ICP's avoidTitles, so only the Head of Sales survives (found == 1, not 2).
+    # Flow B — find people only at the given company. The "Sales Intern" is dropped pre-score by the
+    # ICP's avoidTitles, so only the Head of Sales survives (found == 1, not 2). People land
+    # UNSCORED ("Pending") — find never blocks on the LLM; scoring is the explicit rescore step.
     r = client.post(f"/{slug}/people/find-people",
-                    json={"per_company": 5, "icp_id": icp_id}, headers=_auth(token))
+                    json={"per_company": 5, "icp_id": icp_id, "company_ids": [alpha["id"]]},
+                    headers=_auth(token))
     assert r.status_code == 200, r.text
     pres = r.json()
     assert pres["found"] == 1 and pres["dropped"] >= 1  # intern avoided
     person = pres["prospects"][0]
     assert person["company_id"] == alpha["id"]  # linked from the loop, not the (obfuscated) row
     assert person["status"] == "found" and person["email"] == ""  # no email pre-enrich
-    assert person["fit_score"] == 80
+    assert person["fit_score"] is None  # unscored on find
 
-    # Find-people with nothing selected → 400 once we deselect.
-    client.patch(f"/{slug}/companies/select", json={"ids": [alpha["id"]], "selected": False},
-                 headers=_auth(token))
+    # 'Get AI score' — re-score the found person on demand → the canned fit (80) lands.
+    r = client.post(f"/{slug}/prospects/rescore",
+                    json={"identity_keys": [person["identity_key"]]}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()[0]["fit_score"] == 80
+
+    # Find-people with no company_ids → 400 (nothing to search).
     r = client.post(f"/{slug}/people/find-people", json={}, headers=_auth(token))
     assert r.status_code == 400
 

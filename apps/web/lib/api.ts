@@ -303,6 +303,26 @@ export async function getScopingPrompt(client: string): Promise<ScopingPrompt> {
   return r.json();
 }
 
+// The exact system + input prompt a company fit-score call would send (preview, no LLM spend). The
+// `user` message carries the REAL targeting context (this client's brief + research spec + the
+// sample row's ICP docs) so the Fit-rubric modal mirrors what reaches the model. `company_id`
+// picks the sample row; omitted → the most recent company.
+export type FitPrompt = {
+  system: string;
+  user: string;
+  company: string | null;
+  model: string[];
+  purpose: string;
+  prompt_version: string;
+};
+
+export async function getFitPrompt(client: string, companyId?: string): Promise<FitPrompt> {
+  const qs = companyId ? `?company_id=${encodeURIComponent(companyId)}` : "";
+  const r = await authFetch(`/${client}/companies/fit-prompt${qs}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 // Save an operator-edited scoping system prompt for this client (versioned, used by the next
 // Generate Scope). Saving the default text verbatim resets to default (is_custom=false).
 export type SavedSystemPrompt = { system: string; version: number; is_custom: boolean };
@@ -477,6 +497,22 @@ export async function findCompanies(
   return r.json();
 }
 
+// "Lookalike" — find the next batch of peers of the selected stage-1 rows. Apollo has no native
+// lookalike API; the server aggregates the seeds' firmographics into a company-search filter and
+// runs the normal Find tail (seeds drop out by domain dedupe). Returns the same FindResult shape.
+export async function findLookalikes(
+  client: string,
+  body: { company_ids: string[]; icp_id?: string | null }
+): Promise<FindResult> {
+  const r = await authFetch(`/${client}/companies/find-lookalikes`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 // Select/deselect stage-1 companies — the selected set scopes Flow B (find people).
 export async function selectCompanies(
   client: string,
@@ -541,20 +577,37 @@ export async function addProspect(client: string, body: ProspectManual): Promise
   return r.json();
 }
 
-// Flow B — find people across the SELECTED companies (one Apollo api_search per org), 0 credits.
+// Flow B — find people across an explicit set of Step-2 companies (one Apollo api_search per org),
+// 0 credits. Rows land UNSCORED ("Pending"); score on demand via rescoreProspects.
 export async function findPeople(
   client: string,
   body: {
+    company_ids: string[]; // the Step-2 companies to search, by id
     per_company?: number;
     icp_id?: string | null;
     // Operator override of the saved AI scope (Step-2 Settings); omitted → spec is used as-is.
     people_search_params?: Record<string, unknown>;
-  } = {}
+  }
 ): Promise<FindResult> {
   const r = await authFetch(`/${client}/people/find-people`, {
     method: "POST",
     json: true,
     body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (by identity
+// key) against the current rubric. Returns the re-scored rows (best fit first).
+export async function rescoreProspects(
+  client: string,
+  identityKeys: string[]
+): Promise<ProspectApi[]> {
+  const r = await authFetch(`/${client}/prospects/rescore`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ identity_keys: identityKeys }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();

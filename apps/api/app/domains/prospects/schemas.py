@@ -91,8 +91,13 @@ class CompanyFindIn(BaseModel):
 
 
 class PeopleFindIn(BaseModel):
-    """Trigger Apollo Flow B (find people) across the selected companies. `per_company` caps how
-    many people each selected org contributes (one api_search call per org).
+    """Trigger Apollo Flow B (find people) across an explicit set of Step-2 companies. `per_company`
+    caps how many people each org contributes (one api_search call per org).
+
+    `company_ids` are the Step-2 rows to search, by Company.id. The search is driven by this set —
+    NOT a server-side "selected" status — so an already-searched company can be re-searched and a
+    0-result company is never permanently burned. Rows land UNSCORED ("Pending"); the operator
+    scores on demand via the Step-2 'Get AI score' button (`/prospects/rescore`).
 
     `people_search_params` is an OPTIONAL operator override (the Step-2 Settings modal): when
     present it replaces the spec's people block for *this call only* (`organization_ids` is still
@@ -102,6 +107,17 @@ class PeopleFindIn(BaseModel):
     per_company: int = 10
     icp_id: str | None = None
     people_search_params: dict | None = None
+    company_ids: list[str] = Field(default_factory=list)
+
+
+class CompanyLookalikeIn(BaseModel):
+    """Find peers of the selected stage-1 rows (the 'Lookalike' button). The seeds are aggregated
+    into an Apollo company-search filter HoldSlot-side (Apollo has no native lookalike API), then
+    run through the normal Flow A tail — the seeds drop out by domain dedupe, so the result is the
+    *next* batch. `icp_id` overrides the seeds' common ICP for fit scoring (omitted → inferred)."""
+
+    company_ids: list[str] = Field(default_factory=list)
+    icp_id: str | None = None
 
 
 class CompanySelectIn(BaseModel):
@@ -125,6 +141,14 @@ class CompanyEnrichIn(BaseModel):
     deliberate credit spend; find-company only enriches NEW rows to avoid paying twice per org."""
 
     ids: list[str] = Field(default_factory=list)
+
+
+class ProspectRescoreIn(BaseModel):
+    """Re-run people fit scoring for an explicit set of already-found prospects (by identity key) —
+    the Step-2 'Get AI score' button. Mirrors CompanyRescoreIn: re-scores against the current rubric
+    regardless of whether the row was scored, so the people list reflects a rubric change."""
+
+    identity_keys: list[str] = Field(default_factory=list)
 
 
 class EnrichIn(BaseModel):
@@ -210,3 +234,19 @@ class SourcingDocIn(BaseModel):
 
     stage: str  # fit_scoring
     body: str
+
+
+class FitPromptOut(BaseModel):
+    """The exact system + input prompt a company fit-score call would send (preview, no LLM call).
+
+    Mirrors the scoping-prompt preview, but for stage-1 company scoring: `user` carries the real
+    TARGETING CONTEXT (this client's brief + research spec + ICP docs from the DB) plus the sample
+    company, so the Fit-rubric modal shows what actually reaches the model. `company` names the
+    sample row used; null when the tenant has no companies yet."""
+
+    system: str
+    user: str
+    company: str | None = None
+    model: list[str]
+    purpose: str
+    prompt_version: str

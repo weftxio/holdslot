@@ -1035,6 +1035,12 @@
 .sourcing-cols .field {
   margin-bottom: 0;
 }
+/* Stacked two-up row-groups (e.g. Funded since/until over Jobs since/until) zero their inner field
+   margins, so two in a row would touch. Restore the .field rhythm only between adjacent groups —
+   no trailing margin, and no double-spacing before a SpecHead (which carries its own top margin). */
+.sourcing-cols + .sourcing-cols {
+  margin-top: 18px;
+}
 .sourcing-cols .textarea {
   min-height: 58vh;
   resize: vertical;
@@ -2214,6 +2220,48 @@
   color: var(--m-faint);
   font-weight: 600;
 }
+.cstudy {
+  cursor: default;
+}
+
+/* Full-content hover popup — fixed + portaled to <body> so the scrolling table never clips it.
+   --up flips it to sit above the row (anchored by its own bottom edge). */
+.cstudy-pop {
+  position: fixed;
+  z-index: 1000;
+  /* width + max-height are set inline (computed from the available viewport space). */
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 12px 14px;
+  background: #fff;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  box-shadow: 0 12px 34px rgba(16, 24, 40, 0.18);
+  font-size: 12px;
+  line-height: 1.45;
+  color: #1c2430;
+}
+.cstudy-pop--up {
+  transform: translateY(-100%);
+}
+.csp-desc {
+  margin: 0 0 8px;
+}
+.csp-facts {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+.csp-row {
+  display: flex;
+  gap: 8px;
+  padding: 3px 0;
+  border-top: 1px solid #f0f2f5;
+}
+.csp-k {
+  flex: 0 0 72px;
+  color: var(--m-faint);
+  font-weight: 600;
+}
 
 /* Row 1 — tabs. Match the mock: small uppercase "STEP n" prefix (blue when active), bold name,
    faint count, a chevron between, ink underline on the active tab. Scoped to the #list panel-head
@@ -2272,6 +2320,20 @@
 .list-pane .panel-head .head-actions > .btn {
   font-weight: 500;
   color: var(--m-soft);
+}
+
+/* "Selected" pill above the company name when its row is checked. */
+.list-pane .sel-tag {
+  display: inline-block;
+  margin-bottom: 3px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--ok-wash);
+  color: var(--ok);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
 }
 
 /* Row 2 — band: title + Free pill + sub note all on one line. */
@@ -2382,6 +2444,29 @@
   color: var(--m-soft);
 }
 
+/* Step-2 company group header — one pursued company; its found people nest in the rows below it.
+   A subtle banded row separates each company; the people rows beneath leave the Company cell blank. */
+.list-pane .tbl tbody tr.grp-row > td {
+  background: var(--m-surface);
+  border-top: 1px solid var(--line);
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
+.list-pane .tbl tbody tr.grp-row:hover > td {
+  background: var(--m-surface);
+}
+.grp-co {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.grp-co .nm {
+  font-weight: 700;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
 /* Sticky action dock — docked to the panel base (the list-scroll above flexes to fill). */
 .list-dock {
   display: flex;
@@ -2438,7 +2523,9 @@
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  padding: 5px 6px 5px 12px;
+  /* zero vertical padding so the pill is exactly the button height (36px) — keeps the Step-2 dock
+     the same height as the Step-1 dock, which has a bare button and no pill. */
+  padding: 0 6px 0 12px;
   border-radius: 11px;
   transition:
     opacity 0.15s ease,
@@ -2450,19 +2537,6 @@
 }
 .dock-act.off {
   opacity: 0.45;
-}
-.dock-cost {
-  font-size: 12.5px;
-  color: var(--m-soft);
-  font-variant-numeric: tabular-nums;
-}
-.dock-cost b {
-  color: var(--ink);
-}
-.dock-or {
-  font-size: 12px;
-  font-style: italic;
-  color: var(--m-faint);
 }
 .dock-name {
   min-width: 240px;
@@ -2503,6 +2577,21 @@
 .fit-chip--below {
   color: #6b7280;
   background: #f1f3f6;
+}
+/* Per-row "Scoring…" status while AI fit-scoring runs in the background after Find Lookalike. */
+.fit-scoring {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5e7c9e;
+  white-space: nowrap;
+}
+.fit-scoring .hs-spinner {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
 }
 .fit-tip {
   position: relative;

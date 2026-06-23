@@ -20,6 +20,7 @@ import {
   type ResearchJob,
   type ResearchSpecResult,
   type ScopingPrompt,
+  type FitPrompt,
   type SourcingDocList,
   addCompany,
   addProspect,
@@ -27,13 +28,16 @@ import {
   deleteIcp as apiDeleteIcp,
   enrichProspects,
   findCompanies,
+  findLookalikes,
   rescoreCompanies,
+  rescoreProspects,
   updateCompanyFields,
   findPeople,
   getBrief,
   getResearchSpec,
   getStructureStatus,
   getScopingPrompt,
+  getFitPrompt,
   getSourcingDocs,
   saveScopingSystemPrompt,
   listCompanies,
@@ -168,9 +172,6 @@ const SOURCE_LABEL: Record<string, string> = {
   clay: "Clay",
   ai_loop: "AI",
 };
-// Clay Work-Email waterfall cost per head — the only spend in the two-stage flow (sourcing is
-// free). Drives the Step-2 dock cost preview; the real spend is reconciled in Clay (no API).
-const ENRICH_COST_USD = 0.03;
 // People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
 const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
 const ENRICHED_STATUS = "scored";
@@ -557,7 +558,8 @@ function FitScore({
   // (overflow:auto on .list-scroll), which would clip an in-flow absolute tooltip. We compute the
   // anchor rect on hover/focus and place the popup centered above the icon, clamped to the viewport.
   const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
-  if (!tier) return <span className="muted">—</span>;
+  // Unscored row: scoring is on-demand (Update AI Score), so show a clear "Pending" rather than a dash.
+  if (!tier) return <span className="muted">Pending</span>;
   const openTip = (e: { currentTarget: HTMLElement }) => {
     const r = e.currentTarget.getBoundingClientRect();
     const x = Math.min(Math.max(r.left + r.width / 2, 116), window.innerWidth - 116);
@@ -607,19 +609,36 @@ function fmtGrowth(f: number | null): string {
   return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
 
-// Enrichment cell — the 8 Apollo-enrich study fields, compact. Long lists truncate to "+N" with the
-// full set in a title tooltip; every value renders as JSX text (never innerHTML).
+// Enrichment cell — the 8 Apollo-enrich study fields. The cell shows a compact, truncated view;
+// hovering/focusing it opens a portaled popup with the FULL untruncated content (the popup is
+// fixed-positioned + portaled to <body> so the scrolling table body never clips it). It flips above
+// the row when the row sits in the lower half of the viewport. All values are JSX text, no innerHTML.
 function CompanyStudy({ e }: { e: CompanyEnrichment }) {
+  const [tip, setTip] = useState<{
+    x: number;
+    y: number;
+    up: boolean;
+    maxH: number;
+    w: number;
+  } | null>(null);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const facts = [
     e.founded_year ? `Est. ${e.founded_year}` : "",
     fmtRevenue(e.annual_revenue),
     e.headcount_growth_12mo != null ? `${fmtGrowth(e.headcount_growth_12mo)} 12mo` : "",
   ].filter(Boolean);
-  const line = (label: string, items: string[], max: number) =>
+  const compact = (label: string, items: string[], max: number) =>
     items.length ? (
-      <div className="cstudy-line" title={items.join(", ")}>
+      <div className="cstudy-line">
         <span className="cstudy-k">{label}</span> {items.slice(0, max).join(", ")}
         {items.length > max ? ` +${items.length - max}` : ""}
+      </div>
+    ) : null;
+  const full = (label: string, items: string[]) =>
+    items.length ? (
+      <div className="csp-row">
+        <span className="csp-k">{label}</span>
+        <span>{items.join(", ")}</span>
       </div>
     ) : null;
   const hasAny =
@@ -630,22 +649,67 @@ function CompanyStudy({ e }: { e: CompanyEnrichment }) {
     e.keywords.length ||
     e.hq;
   if (!hasAny) return <span className="muted">—</span>;
+
+  // Open the popup sized + placed to fit the viewport: pick whichever side (below / above the row)
+  // has more room, cap the height to that room (popup scrolls if content is taller), and clamp the
+  // width to the screen. Solves the "popup runs off the bottom and the content is unreachable" case.
+  const openTip = (ev: { currentTarget: HTMLElement }) => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    const r = ev.currentTarget.getBoundingClientRect();
+    const below = window.innerHeight - r.bottom - 12;
+    const above = r.top - 12;
+    const up = above > below && below < 260;
+    const maxH = Math.max(160, (up ? above : below) - 6);
+    const w = Math.min(460, window.innerWidth - 24);
+    const x = Math.max(12, Math.min(r.left, window.innerWidth - w - 12));
+    setTip({ x, y: up ? r.top - 6 : r.bottom + 6, up, maxH, w });
+  };
+  const scheduleClose = () => {
+    closeTimer.current = setTimeout(() => setTip(null), 90); // bridge the cell→popup gap
+  };
   return (
-    <div className="cstudy">
-      {e.short_description ? (
-        <p className="cstudy-desc" title={e.short_description}>
-          {e.short_description}
-        </p>
-      ) : null}
+    <div
+      className="cstudy"
+      tabIndex={0}
+      onMouseEnter={openTip}
+      onFocus={openTip}
+      onMouseLeave={scheduleClose}
+      onBlur={() => setTip(null)}
+    >
+      {e.short_description ? <p className="cstudy-desc">{e.short_description}</p> : null}
       {facts.length ? <div className="cstudy-facts">{facts.join(" · ")}</div> : null}
-      {line("Industries", e.industries, 2)}
-      {line("Tech", e.technologies, 4)}
-      {line("Keywords", e.keywords, 4)}
+      {compact("Industries", e.industries, 2)}
+      {compact("Tech", e.technologies, 4)}
+      {compact("Keywords", e.keywords, 4)}
       {e.hq ? (
         <div className="cstudy-line">
           <span className="cstudy-k">HQ</span> {e.hq}
         </div>
       ) : null}
+      {tip
+        ? createPortal(
+            <div
+              className={clsx("cstudy-pop", tip.up && "cstudy-pop--up")}
+              role="tooltip"
+              style={{ left: tip.x, top: tip.y, width: tip.w, maxHeight: tip.maxH }}
+              onMouseEnter={() => closeTimer.current && clearTimeout(closeTimer.current)}
+              onMouseLeave={scheduleClose}
+            >
+              {e.short_description ? <p className="csp-desc">{e.short_description}</p> : null}
+              {facts.length ? <div className="csp-facts">{facts.join(" · ")}</div> : null}
+              {full("Industries", e.industries)}
+              {full("Tech", e.technologies)}
+              {full("Keywords", e.keywords)}
+              {e.hq ? (
+                <div className="csp-row">
+                  <span className="csp-k">HQ</span>
+                  <span>{e.hq}</span>
+                </div>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
     </div>
   );
 }
@@ -2117,6 +2181,11 @@ export default function Workspace() {
   const [docs, setDocs] = useState<SourcingDocList | null>(null);
   const [rubricDraft, setRubricDraft] = useState("");
   const [savingDoc, setSavingDoc] = useState<"fit_scoring" | null>(null);
+  // The real fit-score prompt for one sample company (system rubric + the live targeting context
+  // built from this client's brief + research spec + ICP docs), fetched when the modal opens.
+  const [fitPrompt, setFitPrompt] = useState<FitPrompt | null>(null);
+  const [fitPromptLoading, setFitPromptLoading] = useState(false);
+  const [fitPromptErr, setFitPromptErr] = useState<string | null>(null);
 
   // Two-stage prospecting (company-first): step 1 finds companies, step 2 finds people at the
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
@@ -2125,11 +2194,21 @@ export default function Workspace() {
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
   const [coFit, setCoFit] = useState("");
+  // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
+  const [coStatus, setCoStatus] = useState("");
   const [enriching, setEnriching] = useState(false);
   const [findingCo, setFindingCo] = useState(false);
-  const [rescoring, setRescoring] = useState(false);
   const [updatingFields, setUpdatingFields] = useState(false);
+  const [findingLookalike, setFindingLookalike] = useState(false);
+  // Company rows whose AI fit-score is being computed in the background (post-Lookalike). The AI
+  // Score cell shows a "Scoring…" status for these until each chunk lands.
+  const [scoringCoIds, setScoringCoIds] = useState<Set<string>>(new Set());
   const [findingPpl, setFindingPpl] = useState(false);
+  const [staging, setStaging] = useState(false); // Step-1 → Step-2 move in flight
+  // Step-2 company rows whose people are being searched right now (per-row "Finding people…").
+  const [findingPplIds, setFindingPplIds] = useState<Set<string>>(new Set());
+  // Prospect rows whose AI fit-score is being computed in the background (Step-2 'Get AI score').
+  const [scoringPersonIds, setScoringPersonIds] = useState<Set<string>>(new Set());
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
     domain: "",
@@ -2218,6 +2297,7 @@ export default function Workspace() {
     setFIcp("");
     setFFit("");
     setCoFit("");
+    setCoStatus("");
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(loadPeopleScopeOverride(client));
     let alive = true;
@@ -2249,20 +2329,42 @@ export default function Workspace() {
     };
   }, [client]);
 
-  const visible = useMemo(
+  // Step 2 is company-centric: the pursued companies (staged into Step 2 as `selected`, or already
+  // searched → `people_found`) are the rows; each company's found people nest beneath it. `search`
+  // filters the companies; `fFit` filters the people shown within them.
+  const pursued = useMemo(
     () =>
-      prospects.filter((p) => {
-        const text = `${p.full_name} ${p.company} ${p.email} ${p.title}`.toLowerCase();
-        return (
-          (!search || text.includes(search.toLowerCase())) &&
-          (!fIcp || p.icp_id === fIcp) &&
-          (!fFit || p.fit_tier === fFit)
-        );
-      }),
-    [prospects, search, fIcp, fFit]
+      companies.filter(
+        (c) =>
+          (c.status === "selected" || c.status === "people_found") &&
+          (!search || `${c.name} ${c.domain}`.toLowerCase().includes(search.toLowerCase()))
+      ),
+    [companies, search]
+  );
+  // Prospects grouped by their company id (robust — the company label can drift; the id can't).
+  const prospectsByCompany = useMemo(() => {
+    const m = new Map<string, ProspectApi[]>();
+    for (const p of prospects) {
+      if (!p.company_id) continue;
+      const g = m.get(p.company_id);
+      if (g) g.push(p);
+      else m.set(p.company_id, [p]);
+    }
+    return m;
+  }, [prospects]);
+  // Rows of a pursued company that pass the fit filter — the per-company nested list.
+  const rowsForCompany = (id: string) =>
+    (prospectsByCompany.get(id) ?? []).filter((p) => !fFit || p.fit_tier === fFit);
+  // People in view across all pursued companies = the unit of selection for score / enrich / batch.
+  const visible = useMemo(
+    () => pursued.flatMap((c) => rowsForCompany(c.id)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [pursued, prospectsByCompany, fFit]
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
   const allChecked = visible.length > 0 && selCount === visible.length;
+  // Step-2 companies that are ticked — the unit of selection for Find People.
+  const pplCoSel = pursued.filter((c) => companyChecked.has(c.id));
   // Step-2 dock: enrich and batch are mutually exclusive — find before enrich, enrich before
   // batch. Computed over the WHOLE selection (not the filtered view) so a filter change can't
   // drop checked rows. `confirmEnrich`/`createBatch` re-derive from the same rule.
@@ -2273,20 +2375,10 @@ export default function Workspace() {
   const toEnrich = selectedProspects.filter((p) => NEEDS_ENRICH.has(p.status));
   const enrichedSel = selectedProspects.filter((p) => p.status === ENRICHED_STATUS);
   const canEnrich = toEnrich.length > 0;
-  const canBatch = selectedProspects.length > 0 && toEnrich.length === 0;
-  const enrichCost = toEnrich.length * ENRICH_COST_USD;
-  // Group the visible rows by company so prospects from the same company sit together (the
-  // company cell is then merged via rowSpan). First-seen order is preserved across groups.
-  const companyGroups = useMemo(() => {
-    const m = new Map<string, ProspectApi[]>();
-    for (const p of visible) {
-      const key = p.company || p.domain || "—";
-      const g = m.get(key);
-      if (g) g.push(p);
-      else m.set(key, [p]);
-    }
-    return Array.from(m, ([company, rows]) => ({ company, rows }));
-  }, [visible]);
+  // Batch only once EVERY selected person is enriched (a verified email) — closes the gap where an
+  // enrich_failed (no-email) row slipped through the old "nothing still needs enrich" gate.
+  const canBatch =
+    selectedProspects.length > 0 && selectedProspects.every((p) => p.status === ENRICHED_STATUS);
 
   function toggleRow(id: string) {
     setChecked((s) => {
@@ -2310,17 +2402,33 @@ export default function Workspace() {
     () =>
       companies.filter((c) => {
         const text = `${c.name} ${c.domain} ${c.industry}`.toLowerCase();
+        const accepted = c.status === "people_found";
+        const statusOk =
+          !coStatus || (coStatus === "accepted" ? accepted : !accepted);
         return (
-          (!coSearch || text.includes(coSearch.toLowerCase())) && (!coFit || c.fit_tier === coFit)
+          (!coSearch || text.includes(coSearch.toLowerCase())) &&
+          (!coFit || c.fit_tier === coFit) &&
+          statusOk
         );
       }),
-    [companies, coSearch, coFit]
+    [companies, coSearch, coFit, coStatus]
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
+  // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
+  const scoringActive = scoringCoIds.size > 0;
+  const scoringPeopleActive = scoringPersonIds.size > 0;
   const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
+  // Sample company for the Fit-rubric preview: the first ticked row, else the first one in view. Its
+  // id is sent to GET /companies/fit-prompt so the modal shows that row's real input prompt.
+  const rubricSample = useMemo(
+    () => coVisible.find((c) => companyChecked.has(c.id)) ?? coVisible[0] ?? companies[0] ?? null,
+    [coVisible, companyChecked, companies]
+  );
   // List is "fetching" during initial hydrate, an Apollo find, or a re-score — show the overlay
   // spinner over the table for the whole period, whether or not rows already exist.
-  const coBusy = companiesLoading || findingCo || rescoring || updatingFields;
+  // Note: `scoringActive` is deliberately NOT here — background scoring keeps the table visible with
+  // per-row "Scoring…" status instead of the full-list overlay.
+  const coBusy = companiesLoading || findingCo || updatingFields || findingLookalike;
   const pplBusy = prospectsLoading || findingPpl;
   // One-line read of the scope Find Companies will use right now (override or AI spec) — shown in
   // the empty state so a 0-result is explainable, not mysterious.
@@ -2374,7 +2482,12 @@ export default function Workspace() {
       await reloadCompanies();
       if (res.found) {
         const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
-        toast(`Found ${res.found} ${res.found === 1 ? "company" : "companies"}${tail}`);
+        // Rows land unscored and stay that way (AI Score shows "Pending"); the operator scores on
+        // demand by selecting rows and clicking Update AI Score. No auto-trigger.
+        toast(
+          `Found ${res.found} ${res.found === 1 ? "company" : "companies"}${tail} · ` +
+            "select rows and click Update AI Score to score them"
+        );
       } else if (res.dropped) {
         toast(
           `Apollo returned ${res.dropped}, but all were filtered out as duplicates or exclusions. ` +
@@ -2397,19 +2510,13 @@ export default function Workspace() {
 
   // Re-run fit scoring for the checked companies (e.g. after the rubric / scoring prompt changed).
   // Unlike Find, this re-scores rows that already have a score — each call is a paid LLM request.
-  async function runRescore() {
+  // Runs in the BACKGROUND (chunked, per-row "Scoring…" status) so the UI never blocks and a slow
+  // LLM call can never time the request out.
+  function runRescore() {
     const ids = [...companyChecked];
     if (!ids.length) return toast("Select companies to re-score", "warn");
-    setRescoring(true);
-    try {
-      await rescoreCompanies(client, ids);
-      await reloadCompanies();
-      toast(`Re-scored ${ids.length} ${ids.length === 1 ? "company" : "companies"}`);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Re-score failed", "warn");
-    } finally {
-      setRescoring(false);
-    }
+    toast(`Re-scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
+    void scoreInBackground(ids);
   }
 
   // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
@@ -2426,6 +2533,71 @@ export default function Workspace() {
       toast(e instanceof Error ? e.message : "Update failed", "warn");
     } finally {
       setUpdatingFields(false);
+    }
+  }
+
+  // Score a set of company rows in the BACKGROUND, in small chunks so no single request nears the
+  // 30s gateway cap. Each chunk re-scores via the existing /rescore endpoint; as it lands, those
+  // rows clear their "Scoring…" status and the table refreshes with the new scores. A failed chunk
+  // just clears its status (rows stay unscored — recoverable via the Update AI Score button).
+  async function scoreInBackground(ids: string[]) {
+    const CHUNK = 3; // ~3 reasoning calls per request keeps wall-clock well under 30s
+    setScoringCoIds((prev) => new Set([...prev, ...ids]));
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const chunk = ids.slice(i, i + CHUNK);
+      try {
+        await rescoreCompanies(client, chunk);
+      } catch {
+        /* leave these rows unscored; the manual Update AI Score button can retry */
+      } finally {
+        if (clientRef.current === client) {
+          setScoringCoIds((prev) => {
+            const next = new Set(prev);
+            chunk.forEach((id) => next.delete(id));
+            return next;
+          });
+        }
+      }
+      if (clientRef.current !== client) return; // client switched away — stop
+      await reloadCompanies();
+    }
+  }
+
+  // "Find Lookalike" — find the next batch of peers of the checked rows. The seeds are the search
+  // input (no Settings modal); the server aggregates their firmographics and drops every company
+  // already in the list (seeds included), so `found` is the genuinely-new peers. Rows land UNSCORED
+  // and stay that way (AI Score shows "Pending") — the operator scores on demand via Update AI
+  // Score. The toast tells the outcomes apart: new / all-listed / none.
+  async function runLookalike() {
+    const ids = [...companyChecked];
+    if (!ids.length) return toast("Select companies to find lookalikes", "warn");
+    setFindingLookalike(true);
+    try {
+      const res = await findLookalikes(client, { company_ids: ids, icp_id: fIcp || null });
+      await reloadCompanies();
+      if (res.found) {
+        const tail = res.dropped ? ` · ${res.dropped} already in your list` : "";
+        toast(
+          `Found ${res.found} new lookalike ${res.found === 1 ? "company" : "companies"}${tail} · ` +
+            "select rows and click Update AI Score to score them"
+        );
+      } else if (res.dropped) {
+        toast(
+          `Apollo returned ${res.dropped} similar ${res.dropped === 1 ? "company" : "companies"}, ` +
+            `but ${res.dropped === 1 ? "it is" : "all are"} already in your list — nothing new to add.`,
+          "warn"
+        );
+      } else {
+        toast(
+          "No companies similar to the selection were found. The seeds may be too sparse — " +
+            "enrich them first (industry, size and revenue drive the match) or select more rows.",
+          "warn"
+        );
+      }
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Lookalike search failed", "warn");
+    } finally {
+      setFindingLookalike(false);
     }
   }
 
@@ -2449,22 +2621,45 @@ export default function Workspace() {
     toast("Reverted to the AI-generated scope");
   }
 
-  // Flow B — find people across the checked companies. Sync the selection to the server (it scopes
-  // the search), then run find-people. Sourcing is free; only enrichment in Step 2 spends credits.
-  async function runFindPeople() {
+  // Step 1 → Step 2: stage the ticked companies (discovered → selected) so they appear in the Step-2
+  // table as "Pending" rows, then switch to Step 2. No Apollo call yet — people are found there, per
+  // company. The ticks carry over (companyChecked is shared) so Find People is one click away.
+  async function stageForPeople() {
     const ids = [...companyChecked];
-    if (!ids.length) return toast("Select companies first", "warn");
-    setFindingPpl(true);
+    if (!ids.length) return;
+    setStaging(true);
     try {
       await selectCompanies(client, ids, true);
+      await reloadCompanies();
+      setListStage("people");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t move companies to Step 2", "warn");
+    } finally {
+      setStaging(false);
+    }
+  }
+
+  // Flow B — find people at the ticked Step-2 companies (free; enrichment is the credit spend). The
+  // search is driven by the explicit company ids, so a row can be re-searched after loosening the
+  // filters. People land UNSCORED ("Pending") — the operator scores them via Get AI score.
+  async function runFindPeople() {
+    const ids = pplCoSel.map((c) => c.id);
+    if (!ids.length) return toast("Select companies in the list to find people", "warn");
+    setFindingPpl(true);
+    setFindingPplIds(new Set(ids));
+    try {
       const res = await findPeople(client, {
+        company_ids: ids,
         icp_id: fIcp || null,
         ...(peopleScopeOverride ?? {}),
       });
       await Promise.all([reloadProspects(), reloadCompanies()]);
       if (res.found) {
         const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
-        toast(`Found ${res.found} ${res.found === 1 ? "person" : "people"}${tail}`);
+        toast(
+          `Found ${res.found} ${res.found === 1 ? "person" : "people"}${tail} · ` +
+            "select them and click Get AI score to score them"
+        );
       } else if (res.dropped) {
         toast(
           `Apollo returned ${res.dropped}, but all were filtered out (already imported, no Apollo id, ` +
@@ -2482,6 +2677,39 @@ export default function Workspace() {
       toast(e instanceof Error ? e.message : "Find people failed", "warn");
     } finally {
       setFindingPpl(false);
+      setFindingPplIds(new Set());
+    }
+  }
+
+  // Step-2 'Get AI score' — re-score the checked people in the background (chunked, per-row
+  // "Scoring…"), mirroring the Step-1 company scorer. Each call is a paid LLM request.
+  function runScorePeople() {
+    const picked = selectedProspects;
+    if (!picked.length) return toast("Select people to score", "warn");
+    toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
+    void scorePeopleInBackground(picked.map((p) => ({ id: p.id, key: p.identity_key })));
+  }
+
+  async function scorePeopleInBackground(rows: { id: string; key: string }[]) {
+    const CHUNK = 3; // a few reasoning calls per request keeps wall-clock well under the 30s cap
+    setScoringPersonIds((prev) => new Set([...prev, ...rows.map((r) => r.id)]));
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      try {
+        await rescoreProspects(client, chunk.map((r) => r.key));
+      } catch {
+        /* leave these rows unscored; the manual Get AI score button can retry */
+      } finally {
+        if (clientRef.current === client) {
+          setScoringPersonIds((prev) => {
+            const next = new Set(prev);
+            chunk.forEach((r) => next.delete(r.id));
+            return next;
+          });
+        }
+      }
+      if (clientRef.current !== client) return; // client switched away — stop
+      await reloadProspects();
     }
   }
 
@@ -2547,6 +2775,24 @@ export default function Workspace() {
       toast(e instanceof Error ? e.message : "Confirm failed", "warn");
     } finally {
       setEnriching(false);
+    }
+  }
+
+  // Open the Fit-rubric modal and fetch the real fit-score prompt for one sample company (the first
+  // ticked row, else the first in view) — the backend builds it from this client's brief + research
+  // spec + ICP docs, so the Input-prompt pane shows exactly what reaches the model.
+  async function openRubric() {
+    setShowSourcing(true);
+    setFitPrompt(null);
+    setFitPromptErr(null);
+    setFitPromptLoading(true);
+    try {
+      const fp = await getFitPrompt(client, rubricSample?.id);
+      setFitPrompt(fp);
+    } catch (e) {
+      setFitPromptErr(e instanceof Error ? e.message : "Could not load the input prompt");
+    } finally {
+      setFitPromptLoading(false);
     }
   }
 
@@ -3628,19 +3874,36 @@ export default function Workspace() {
               </button>
             </div>
             <div className="head-actions">
-              <button className="btn btn-ghost btn-sm" onClick={() => setShowSourcing(true)}>
-                ⚙ Fit rubric
+              <button className="btn btn-ghost btn-sm" onClick={openRubric}>
+                Fit Rubric
               </button>
               {listStage === "companies" ? (
                 <button
                   className="btn btn-ghost btn-sm"
                   onClick={runRescore}
-                  disabled={!coSelCount || rescoring || findingPpl}
+                  disabled={!coSelCount || scoringActive || findingPpl}
                   title="Re-run fit scoring for the selected companies · one paid LLM call each"
                 >
-                  {rescoring ? "Re-scoring…" : coSelCount ? `Re-score ${coSelCount}` : "Re-score"}
+                  {scoringActive
+                    ? "Scoring…"
+                    : coSelCount
+                      ? `Get AI score ${coSelCount}`
+                      : "Get AI score"}
                 </button>
-              ) : null}
+              ) : (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={runScorePeople}
+                  disabled={!selCount || scoringPeopleActive || findingPpl}
+                  title="Run fit scoring for the selected people · one paid LLM call each"
+                >
+                  {scoringPeopleActive
+                    ? "Scoring…"
+                    : selCount
+                      ? `Get AI score ${selCount}`
+                      : "Get AI score"}
+                </button>
+              )}
             </div>
           </div>
 
@@ -3650,11 +3913,31 @@ export default function Workspace() {
                 <h3>Find companies likely to buy</h3>
                 <div className="band-actions">
                   <button
-                    className="btn btn-ghost btn-sm"
+                    className="btn btn-primary btn-sm"
                     onClick={openScopeSettings}
-                    title="Edit the Apollo company-search filters used by Find Companies"
+                    title="Edit the Apollo company-search filters used by Find Company"
                   >
-                    ⚙ Settings{scopeOverride ? " (custom)" : ""}
+                    Find Settings
+                  </button>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runFindCompanies}
+                    disabled={findingCo}
+                    title="Search Apollo from the current scope · enriches only new companies"
+                  >
+                    {findingCo ? "Finding…" : "Find Company"}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={runLookalike}
+                    disabled={!coSelCount || findingLookalike || findingCo}
+                    title="Find the next batch of companies similar to the selected rows · spends Apollo credits"
+                  >
+                    {findingLookalike
+                      ? "Finding…"
+                      : coSelCount
+                        ? `Find Lookalike ${coSelCount}`
+                        : "Find Lookalike"}
                   </button>
                   <button
                     className="btn btn-ghost btn-sm"
@@ -3665,16 +3948,8 @@ export default function Workspace() {
                     {updatingFields
                       ? "Updating…"
                       : coSelCount
-                        ? `Update Field ${coSelCount}`
-                        : "Update Field"}
-                  </button>
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={runFindCompanies}
-                    disabled={findingCo}
-                    title="Search Apollo from the current scope · enriches only new companies"
-                  >
-                    {findingCo ? "Finding…" : "Find Companies"}
+                        ? `Enrichment ${coSelCount}`
+                        : "Enrichment"}
                   </button>
                 </div>
               </div>
@@ -3689,6 +3964,15 @@ export default function Workspace() {
                     onChange={(e) => setCoSearch(e.target.value)}
                   />
                 </div>
+                <select
+                  className="select"
+                  value={coStatus}
+                  onChange={(e) => setCoStatus(e.target.value)}
+                >
+                  <option value="">All status</option>
+                  <option value="accepted">Accepted</option>
+                  <option value="pending">Pending</option>
+                </select>
                 <select className="select" value={coFit} onChange={(e) => setCoFit(e.target.value)}>
                   <option value="">Any fit</option>
                   <option value="Strong">Strong fit</option>
@@ -3697,7 +3981,7 @@ export default function Workspace() {
                   <option value="Below">Below</option>
                 </select>
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
-                  + Add company
+                  Manual Upload
                 </button>
               </div>
               <div className="countrow">
@@ -3723,12 +4007,12 @@ export default function Workspace() {
                         />
                       </th>
                       <th>Company</th>
+                      <th>AI Score</th>
                       <th>Domain</th>
                       <th>Website</th>
                       <th>Industry</th>
                       <th>Size</th>
                       <th>Source</th>
-                      <th>AI Score</th>
                       <th>Enrichment</th>
                     </tr>
                   </thead>
@@ -3746,14 +4030,28 @@ export default function Workspace() {
                           </td>
                           <td>
                             <div className="who-cell">
-                              <div className="av-sm">
-                                {(c.name || c.domain || "?").slice(0, 2).toUpperCase()}
-                              </div>
                               <div>
+                                {c.status === "people_found" ? (
+                                  <span className="sel-tag">Accepted</span>
+                                ) : null}
                                 <div className="nm">{c.name || c.domain}</div>
                                 {c.country ? <div className="sub">{c.country}</div> : null}
                               </div>
                             </div>
+                          </td>
+                          <td>
+                            {scoringCoIds.has(c.id) ? (
+                              <span className="fit-scoring" title="AI fit-scoring in progress">
+                                <span className="hs-spinner" aria-hidden="true" />
+                                Scoring…
+                              </span>
+                            ) : (
+                              <FitScore
+                                tier={c.fit_tier}
+                                score={c.fit_score}
+                                reason={c.fit_reason}
+                              />
+                            )}
                           </td>
                           <td>
                             <span className="domain">{c.domain}</span>
@@ -3770,13 +4068,6 @@ export default function Workspace() {
                               <span className="bdot" />
                               {SOURCE_LABEL[c.source] ?? c.source}
                             </span>
-                          </td>
-                          <td>
-                            <FitScore
-                              tier={c.fit_tier}
-                              score={c.fit_score}
-                              reason={c.fit_reason}
-                            />
                           </td>
                           <td>
                             <CompanyStudy e={c.enrichment} />
@@ -3810,7 +4101,7 @@ export default function Workspace() {
                       <b>{coSelCount}</b> companies selected
                     </>
                   ) : (
-                    "Select companies to find people"
+                    "Select companies to move to Step 2"
                   )}
                 </span>
                 {coSelCount ? (
@@ -3821,13 +4112,10 @@ export default function Workspace() {
                 <span className="dock-spacer" />
                 <button
                   className="btn btn-primary"
-                  onClick={() => {
-                    setListStage("people"); // jump to Step 2 AND run the (free) search
-                    runFindPeople();
-                  }}
-                  disabled={!coSelCount || findingPpl}
+                  onClick={() => void stageForPeople()}
+                  disabled={!coSelCount || staging}
                 >
-                  {findingPpl ? "Finding…" : `Find people for ${coSelCount} →`}
+                  {staging ? "Moving…" : `Find people for ${coSelCount} →`}
                 </button>
               </div>
             </>
@@ -3837,19 +4125,39 @@ export default function Workspace() {
                 <h3>Find the right person</h3>
                 <div className="band-actions">
                   <button
-                    className="btn btn-ghost btn-sm"
+                    className="btn btn-primary btn-sm"
                     onClick={openPeopleScopeSettings}
                     title="Edit the Apollo people-search filters used by Find People"
                   >
-                    ⚙ Settings{peopleScopeOverride ? " (custom)" : ""}
+                    Find Settings
                   </button>
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={runFindPeople}
-                    disabled={findingPpl || !coSelCount}
-                    title="Find people across the selected companies (free; enrich spends credits)"
+                    disabled={findingPpl || !pplCoSel.length}
+                    title="Find people at the ticked companies (free; enrich spends credits)"
                   >
-                    {findingPpl ? "Finding…" : "Find People"}
+                    {findingPpl
+                      ? "Finding…"
+                      : pplCoSel.length
+                        ? `Find People ${pplCoSel.length}`
+                        : "Find People"}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={confirmEnrich}
+                    disabled={!canEnrich || enriching}
+                    title={
+                      canEnrich
+                        ? "Enrich the selected Found people · spends Apollo credits"
+                        : "Select people marked Found to enrich them."
+                    }
+                  >
+                    {enriching
+                      ? "Confirming…"
+                      : toEnrich.length
+                        ? `Confirm enrich ${toEnrich.length}`
+                        : "Confirm enrich"}
                   </button>
                 </div>
               </div>
@@ -3859,7 +4167,7 @@ export default function Workspace() {
                   <input
                     className="input"
                     type="text"
-                    placeholder="Search name or company"
+                    placeholder="Search company or domain"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
                   />
@@ -3872,11 +4180,12 @@ export default function Workspace() {
                   <option value="Below">Below</option>
                 </select>
                 <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
-                  + Add person
+                  Manual Upload
                 </button>
               </div>
               <div className="countrow">
-                <b>{visible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{selCount}</b>&nbsp;selected
+                <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>&nbsp;people&nbsp;·&nbsp;
+                <b>{selCount}</b>&nbsp;selected
               </div>
               <div className="list-body">
                 {pplBusy && (
@@ -3905,91 +4214,139 @@ export default function Workspace() {
                       <th>Status</th>
                     </tr>
                   </thead>
-                  {visible.length > 0 && (
+                  {pursued.length > 0 && (
                     <tbody>
-                      {companyGroups.map((g) =>
-                        g.rows.map((p, ri) => {
-                          const enriched = p.status === ENRICHED_STATUS;
-                          const stClass = enriched
-                            ? "st--enriched"
-                            : p.status === "score_error" || p.status === "enrich_failed"
-                              ? "st--error"
-                              : "st--found";
-                          const stMeta = enriched
-                            ? "email verified"
-                            : p.status === "confirmed"
-                              ? "awaiting enrichment"
-                              : p.status === "score_error"
-                                ? "scoring failed"
-                                : p.status === "enrich_failed"
-                                  ? "no Apollo match"
-                                  : "no email yet";
-                          return (
-                            <tr key={p.id} className={clsx(checked.has(p.id) && "row-sel")}>
+                      {pursued.map((c) => {
+                        const rows = rowsForCompany(c.id);
+                        const finding = findingPplIds.has(c.id);
+                        const searched = c.status === "people_found";
+                        return (
+                          <Fragment key={c.id}>
+                            <tr className="grp-row">
                               <td>
                                 <input
                                   type="checkbox"
                                   className="tbl-check"
-                                  checked={checked.has(p.id)}
-                                  onChange={() => toggleRow(p.id)}
+                                  checked={companyChecked.has(c.id)}
+                                  onChange={() => toggleCo(c.id)}
+                                  title="Select this company to find people"
                                 />
                               </td>
-                              {ri === 0 && (
-                                <td className="vtop" rowSpan={g.rows.length}>
-                                  {g.company}
-                                </td>
-                              )}
-                              <td>
-                                <div className="who-cell">
-                                  <div className="av-sm">
-                                    {(p.full_name || p.company || "?").slice(0, 2).toUpperCase()}
-                                  </div>
-                                  <div>
-                                    <div className="nm">{p.full_name || "—"}</div>
-                                    <div className="sub">{p.email || "no email yet"}</div>
-                                  </div>
-                                </div>
-                              </td>
-                              <td>
-                                <LinkedInLink url={p.linkedin_url} />
-                              </td>
-                              <td className="muted">{p.title || "—"}</td>
-                              <td>
-                                <FitScore
-                                  tier={p.fit_tier}
-                                  score={p.fit_score}
-                                  reason={p.fit_reason}
-                                />
-                              </td>
-                              <td>
-                                <div className="st2">
-                                  <span className={clsx("st", stClass)}>
-                                    <span className="st-dot" />
-                                    {STATUS_LABEL[p.status] ?? p.status}
-                                  </span>
-                                  <span className="st-meta">{stMeta}</span>
+                              <td colSpan={6}>
+                                <div className="grp-co">
+                                  <span className="nm">{c.name || c.domain}</span>
+                                  {c.domain ? <span className="domain">{c.domain}</span> : null}
+                                  {finding ? (
+                                    <span className="fit-scoring">
+                                      <span className="hs-spinner" aria-hidden="true" />
+                                      Finding people…
+                                    </span>
+                                  ) : !searched ? (
+                                    <span className="badge badge-warn">
+                                      <span className="bdot" />
+                                      Pending · tick &amp; Find People
+                                    </span>
+                                  ) : rows.length === 0 ? (
+                                    <span className="muted">
+                                      No people found · tick &amp; Find People to retry
+                                    </span>
+                                  ) : (
+                                    <span className="muted">
+                                      {rows.length} {rows.length === 1 ? "person" : "people"}
+                                    </span>
+                                  )}
                                 </div>
                               </td>
                             </tr>
-                          );
-                        })
-                      )}
+                            {rows.map((p) => {
+                              const enriched = p.status === ENRICHED_STATUS;
+                              const stClass = enriched
+                                ? "st--enriched"
+                                : p.status === "score_error" || p.status === "enrich_failed"
+                                  ? "st--error"
+                                  : "st--found";
+                              const stMeta = enriched
+                                ? "email verified"
+                                : p.status === "confirmed"
+                                  ? "awaiting enrichment"
+                                  : p.status === "score_error"
+                                    ? "scoring failed"
+                                    : p.status === "enrich_failed"
+                                      ? "no Apollo match"
+                                      : "no email yet";
+                              return (
+                                <tr key={p.id} className={clsx(checked.has(p.id) && "row-sel")}>
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      className="tbl-check"
+                                      checked={checked.has(p.id)}
+                                      onChange={() => toggleRow(p.id)}
+                                    />
+                                  </td>
+                                  <td />
+                                  <td>
+                                    <div className="who-cell">
+                                      <div className="av-sm">
+                                        {(p.full_name || p.company || "?")
+                                          .slice(0, 2)
+                                          .toUpperCase()}
+                                      </div>
+                                      <div>
+                                        <div className="nm">{p.full_name || "—"}</div>
+                                        <div className="sub">{p.email || "no email yet"}</div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <LinkedInLink url={p.linkedin_url} />
+                                  </td>
+                                  <td className="muted">{p.title || "—"}</td>
+                                  <td>
+                                    {scoringPersonIds.has(p.id) ? (
+                                      <span className="fit-scoring" title="AI fit-scoring in progress">
+                                        <span className="hs-spinner" aria-hidden="true" />
+                                        Scoring…
+                                      </span>
+                                    ) : (
+                                      <FitScore
+                                        tier={p.fit_tier}
+                                        score={p.fit_score}
+                                        reason={p.fit_reason}
+                                      />
+                                    )}
+                                  </td>
+                                  <td>
+                                    <div className="st2">
+                                      <span className={clsx("st", stClass)}>
+                                        <span className="st-dot" />
+                                        {STATUS_LABEL[p.status] ?? p.status}
+                                      </span>
+                                      <span className="st-meta">{stMeta}</span>
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </Fragment>
+                        );
+                      })}
                     </tbody>
                   )}
                 </table>
-                {visible.length === 0 && (
+                {pursued.length === 0 && (
                   <div className="list-empty muted">
-                    {prospectsLoading ? (
-                      "Loading prospects…"
+                    {prospectsLoading || companiesLoading ? (
+                      "Loading…"
                     ) : (
                       <>
-                        No people yet · select companies in Step 1, then click Find People (or + Add
-                        person).
+                        No companies in Step 2 yet · go to Step 1, tick companies, and click
+                        “Find people for N →”.
                         {pplScopeSummary ? (
                           <>
                             <br />
-                            Active filters{peopleScopeOverride ? " (custom)" : ""} · {pplScopeSummary}
-                            . Too few? Widen them in ⚙ Settings.
+                            Person filters{peopleScopeOverride ? " (custom)" : ""} · {pplScopeSummary}
+                            . Adjust them in ⚙ Settings.
                           </>
                         ) : null}
                       </>
@@ -4008,7 +4365,7 @@ export default function Workspace() {
                       ) : null}
                     </>
                   ) : (
-                    "Select people to enrich or batch"
+                    "Select people to create batch"
                   )}
                 </span>
                 {selectedProspects.length ? (
@@ -4017,22 +4374,6 @@ export default function Workspace() {
                   </button>
                 ) : null}
                 <span className="dock-spacer" />
-                <div className={clsx("dock-act", canEnrich ? "on" : "off")}>
-                  {canEnrich ? (
-                    <span className="dock-cost">
-                      {toEnrich.length} to enrich · <b>${enrichCost.toFixed(2)}</b>
-                    </span>
-                  ) : null}
-                  <button
-                    className="btn btn-accent"
-                    onClick={confirmEnrich}
-                    disabled={!canEnrich || enriching}
-                    title={canEnrich ? "" : "Select people marked Found to enrich them."}
-                  >
-                    {enriching ? "Confirming…" : "Confirm enrich →"}
-                  </button>
-                </div>
-                <span className="dock-or">or</span>
                 <div className={clsx("dock-act", canBatch ? "on" : "off")}>
                   <input
                     className="input dock-name"
@@ -4067,6 +4408,7 @@ export default function Workspace() {
           open={showSourcing}
           onClose={() => setShowSourcing(false)}
           title={`Fit rubric · ${clientName}`}
+          subtitle="The exact system + input prompt sent to the model to score each company."
           className="modal-lg"
           footer={
             <button className="btn btn-primary btn-sm" onClick={() => setShowSourcing(false)}>
@@ -4074,22 +4416,66 @@ export default function Workspace() {
             </button>
           }
         >
-          <div className="field">
-            <div className="between">
-              <label>Fit rubric (v{docs?.fit_scoring?.version ?? "—"})</label>
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={() => saveDoc("fit_scoring")}
-                disabled={savingDoc === "fit_scoring"}
-              >
-                {savingDoc === "fit_scoring" ? "Saving…" : "Save as new version"}
-              </button>
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            {fitPrompt && (
+              <span className="badge badge-info">model · {fitPrompt.model.join(" → ")}</span>
+            )}
+            <span className="badge badge-neutral">
+              purpose · {fitPrompt?.purpose ?? "company_fit"}
+            </span>
+            <span className="badge badge-neutral">rubric v{docs?.fit_scoring?.version ?? "—"}</span>
+          </div>
+          <div className="prompt-cols">
+            {/* LEFT — System prompt: the rubric, editable + saved as the next version. */}
+            <div className="prompt-col">
+              <div className="prompt-col-head">
+                <label>
+                  System prompt{" "}
+                  <span className="badge badge-neutral">v{docs?.fit_scoring?.version ?? "—"}</span>
+                </label>
+                <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <button
+                    type="button"
+                    className="btn btn-accent btn-xs"
+                    onClick={() => saveDoc("fit_scoring")}
+                    disabled={savingDoc === "fit_scoring"}
+                  >
+                    {savingDoc === "fit_scoring" ? "Saving…" : "Save as new version"}
+                  </button>
+                </div>
+              </div>
+              <textarea
+                className="prompt-edit"
+                value={rubricDraft}
+                spellCheck={false}
+                onChange={(e) => setRubricDraft(e.target.value)}
+              />
             </div>
-            <textarea
-              className="textarea"
-              value={rubricDraft}
-              onChange={(e) => setRubricDraft(e.target.value)}
-            />
+            {/* RIGHT — Input prompt: the REAL message the model receives, fetched from the API
+                (targeting context = this client's brief + research spec + ICP docs + sample co). */}
+            <div className="prompt-col">
+              <div className="prompt-col-head">
+                <label>Input prompt</label>
+                <span className="ph-sub">
+                  {fitPromptLoading
+                    ? "loading…"
+                    : fitPrompt?.company
+                      ? `read-only · sample: ${fitPrompt.company}`
+                      : "read-only · no company yet"}
+                </span>
+              </div>
+              <pre className="prompt-pre">
+                {fitPromptLoading
+                  ? "Loading the input prompt…"
+                  : fitPromptErr
+                    ? fitPromptErr
+                    : fitPrompt?.user || "Find a company first to preview its input prompt."}
+              </pre>
+            </div>
+          </div>
+          <div className="ph-sub prompt-hint">
+            Edits are saved for this client and used on the next re-score. Each company is scored
+            against this rubric with the input prompt shown on the right.
           </div>
         </Modal>
 
@@ -4097,9 +4483,10 @@ export default function Workspace() {
             Empty fields are dropped server-side (they simply widen the search). */}
         <Modal
           open={scopeOpen}
+          className="modal-lg"
           onClose={() => setScopeOpen(false)}
           title="Find Companies · search filters"
-          subtitle="Apollo company-search options, pre-filled from your AI scope. Edit to adjust the search · leave a field blank to drop that filter. Saved per client, used on the next Find."
+          subtitle="Apollo company-search filters, pre-filled from your AI scope · blank fields are dropped · saved per client for the next Find."
           footer={
             <>
               <button
@@ -4121,37 +4508,44 @@ export default function Workspace() {
         >
           {scopeForm && (
             <>
-              <div className="field">
-                <label>Keywords · industry / market tags (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="Insurtech, Insurance"
-                  value={scopeForm.keywords}
-                  onChange={(e) => setScopeForm({ ...scopeForm, keywords: e.target.value })}
-                />
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                <span className="badge badge-neutral">search · apollo</span>
+                <span className="badge badge-info">pre-filled from AI scope</span>
               </div>
-              <div className="field">
-                <label>Locations · HQ country / region (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="hong kong, singapore, thailand"
-                  value={scopeForm.locations}
-                  onChange={(e) => setScopeForm({ ...scopeForm, locations: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Employee size ranges · min,max (separate ranges with ;)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="10,100 ; 101,500"
-                  value={scopeForm.sizes}
-                  onChange={(e) => setScopeForm({ ...scopeForm, sizes: e.target.value })}
-                />
-              </div>
+              <SpecHead>Company search · firmographics</SpecHead>
               <div className="sourcing-cols">
+                <div className="field">
+                  <label>Keywords · industry / market tags (comma-separated)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Insurtech, Insurance"
+                    value={scopeForm.keywords}
+                    onChange={(e) => setScopeForm({ ...scopeForm, keywords: e.target.value })}
+                  />
+                </div>
+                <div className="field">
+                  <label>Locations · HQ country / region (comma-separated)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="hong kong, singapore, thailand"
+                    value={scopeForm.locations}
+                    onChange={(e) => setScopeForm({ ...scopeForm, locations: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+                <div className="field">
+                  <label>Employee size ranges · min,max (; for more)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="10,100 ; 101,500"
+                    value={scopeForm.sizes}
+                    onChange={(e) => setScopeForm({ ...scopeForm, sizes: e.target.value })}
+                  />
+                </div>
                 <div className="field">
                   <label>Revenue min (USD)</label>
                   <input
@@ -4184,7 +4578,7 @@ export default function Workspace() {
                   onChange={(e) => setScopeForm({ ...scopeForm, hiringTitles: e.target.value })}
                 />
               </div>
-              <div className="sourcing-cols">
+              <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
                 <div className="field">
                   <label>Funded since</label>
                   <input
@@ -4203,8 +4597,6 @@ export default function Workspace() {
                     onChange={(e) => setScopeForm({ ...scopeForm, fundedMax: e.target.value })}
                   />
                 </div>
-              </div>
-              <div className="sourcing-cols">
                 <div className="field">
                   <label>Jobs posted since</label>
                   <input
@@ -4232,9 +4624,10 @@ export default function Workspace() {
             Empty fields are dropped server-side; the org scope comes from your Step-1 selection. */}
         <Modal
           open={peopleScopeOpen}
+          className="modal-lg"
           onClose={() => setPeopleScopeOpen(false)}
           title="Find People · search filters"
-          subtitle="Apollo people-search options, pre-filled from your AI scope. People are searched only at the companies you selected in Step 1 · leave a field blank to drop that filter. Saved per client, used on the next Find People."
+          subtitle="Apollo people-search filters, pre-filled from your AI scope · only your selected Step-1 companies · blank fields are dropped · saved per client."
           footer={
             <>
               <button
@@ -4256,21 +4649,40 @@ export default function Workspace() {
         >
           {peopleScopeForm && (
             <>
-              <div className="field">
-                <label>Job titles to target (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="Head of Sales, VP Sales, Revenue Operations"
-                  value={peopleScopeForm.titles}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, titles: e.target.value })
-                  }
-                />
+              <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+                <span className="badge badge-neutral">search · apollo</span>
+                <span className="badge badge-info">pre-filled from AI scope</span>
+              </div>
+              <SpecHead>People search · personas</SpecHead>
+              <div className="sourcing-cols">
+                <div className="field">
+                  <label>Job titles to target (comma-separated)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="Head of Sales, VP Sales, Revenue Operations"
+                    value={peopleScopeForm.titles}
+                    onChange={(e) =>
+                      setPeopleScopeForm({ ...peopleScopeForm, titles: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="field">
+                  <label>Seniorities (comma-separated)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="owner, founder, c_suite, vp, director, head, manager"
+                    value={peopleScopeForm.seniorities}
+                    onChange={(e) =>
+                      setPeopleScopeForm({ ...peopleScopeForm, seniorities: e.target.value })
+                    }
+                  />
+                </div>
               </div>
               <label
                 className="row"
-                style={{ display: "flex", alignItems: "center", gap: 8, margin: "2px 0 12px" }}
+                style={{ display: "flex", alignItems: "center", gap: 8, margin: "12px 0" }}
               >
                 <input
                   type="checkbox"
@@ -4281,18 +4693,6 @@ export default function Workspace() {
                 />
                 <span>Include similar titles (Apollo expands beyond exact matches)</span>
               </label>
-              <div className="field">
-                <label>Seniorities (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="owner, founder, c_suite, vp, director, head, manager"
-                  value={peopleScopeForm.seniorities}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, seniorities: e.target.value })
-                  }
-                />
-              </div>
               <div className="field">
                 <label>Keywords (free text · name, skill, or focus)</label>
                 <input
@@ -4306,29 +4706,31 @@ export default function Workspace() {
                 />
               </div>
               <SpecHead>Org filters · optional (people are already scoped to your selection)</SpecHead>
-              <div className="field">
-                <label>Org locations (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="hong kong, singapore"
-                  value={peopleScopeForm.locations}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, locations: e.target.value })
-                  }
-                />
-              </div>
-              <div className="field">
-                <label>Org employee size ranges · min,max (separate ranges with ;)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="10,100 ; 101,500"
-                  value={peopleScopeForm.sizes}
-                  onChange={(e) =>
-                    setPeopleScopeForm({ ...peopleScopeForm, sizes: e.target.value })
-                  }
-                />
+              <div className="sourcing-cols">
+                <div className="field">
+                  <label>Org locations (comma-separated)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="hong kong, singapore"
+                    value={peopleScopeForm.locations}
+                    onChange={(e) =>
+                      setPeopleScopeForm({ ...peopleScopeForm, locations: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="field">
+                  <label>Org employee size ranges · min,max (; for more)</label>
+                  <input
+                    className="input"
+                    type="text"
+                    placeholder="10,100 ; 101,500"
+                    value={peopleScopeForm.sizes}
+                    onChange={(e) =>
+                      setPeopleScopeForm({ ...peopleScopeForm, sizes: e.target.value })
+                    }
+                  />
+                </div>
               </div>
             </>
           )}
@@ -4339,6 +4741,7 @@ export default function Workspace() {
           open={addCoOpen}
           onClose={() => setAddCoOpen(false)}
           title="Add company"
+          subtitle="Add one company by hand · suppression-checked, then fit-scored against your rubric on save."
           footer={
             <>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(false)}>
@@ -4354,6 +4757,10 @@ export default function Workspace() {
             </>
           }
         >
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            <span className="badge badge-neutral">source · manual</span>
+            <span className="badge badge-info">fit-scored on add</span>
+          </div>
           <div className="field">
             <label>Company domain *</label>
             <input
@@ -4426,6 +4833,9 @@ export default function Workspace() {
               />
             </div>
           </div>
+          <div className="ph-sub" style={{ marginTop: 16 }}>
+            Domain required · rest optional · scored on save.
+          </div>
         </Modal>
 
         {/* ADD PERSON (manual, stage 2) — same schema as an imported row, source=manual */}
@@ -4433,6 +4843,7 @@ export default function Workspace() {
           open={addPersonOpen}
           onClose={() => setAddPersonOpen(false)}
           title="Add person"
+          subtitle="Add one person by hand · suppression-checked, then fit-scored against your rubric on save."
           footer={
             <>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(false)}>
@@ -4448,10 +4859,10 @@ export default function Workspace() {
             </>
           }
         >
-          <p className="ph-sub" style={{ marginTop: 0 }}>
-            Provide a LinkedIn URL, or a name + company domain, or an email — enough to identify the
-            person.
-          </p>
+          <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            <span className="badge badge-neutral">source · manual</span>
+            <span className="badge badge-info">fit-scored on add</span>
+          </div>
           <div className="sourcing-cols">
             <div className="field">
               <label>Full name</label>
@@ -4512,6 +4923,9 @@ export default function Workspace() {
               value={personForm.email}
               onChange={(e) => setPersonForm({ ...personForm, email: e.target.value })}
             />
+          </div>
+          <div className="ph-sub" style={{ marginTop: 16 }}>
+            LinkedIn URL, name + company domain, or email · rest optional · scored on save.
           </div>
         </Modal>
 

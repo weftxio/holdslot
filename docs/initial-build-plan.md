@@ -1,66 +1,33 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status (2026-06-22):** Phases **A (S0)** + **B (S1)** **built, reviewed & live on `dev`** — backend on
-> the `dev` API (alias `live`, **Lambda v21**), Workspace web on Amplify `dev`. **B6 is now built &
-> deployed**: async **ResearchSpec v3** (Apollo-native — the LLM emits exact Apollo request fields;
-> `SPEC_VERSION=3`, `PROMPT_VERSION="brief-structure-v5"`), the `research_job` async-structuring tracker
-> (migration `0009`), and the `sourcing_doc`→`prompt` table rename + `stage` column (migration `0010`,
-> seeds `briefing` v1). 37 backend tests green; ruff/tsc clean. Last *committed*: `023be68` on
-> `origin/dev`; the B6/v3 work is deployed to dev but **uncommitted** (this commit lands it). **Phase C
-> (S2) is being rebuilt Apollo-only.** The Clay-based Phase C (seed push → CSV
-> ingest + fit scoring → AI sourcing loop) was built and ran on `dev`, but **Clay has no programmatic Find
-> Company / Find People API on any tier** — discovery stayed operator-run in Clay's UI with a CSV bridge.
-> **Apollo.io is a headless REST search + enrichment API** (company search, people search, `people/match`,
-> static key), so Phase C moves to **Apollo only**: Apollo does discovery *and* enrichment; the LLM only
-> scores rows (the Brief→targeting LLM already ran in B; the B→C param mapping is **deterministic**, no
-> second LLM). No Clay, no webhooks, no CSV. See **Phase C** for the rebuild plan; schema deltas in
-> [`data-schema.md`](data-schema.md). **The Apollo find/enrich loop is the one gate left to tick S2.**
+> **Status (2026-06-23):** Phases **A (S0)** + **B (S1)** + **C (S2)** **built, reviewed & live on `dev`** —
+> backend on the `dev` API (alias `live`, **Lambda v37**), Workspace web on Amplify `dev`. The single-tenant
+> **Apollo find → score → select → enrich loop is a live functional MVP**: Apollo does discovery *and*
+> enrichment (company search, people search, `people/match`, static key); the LLM only scores rows (the
+> Brief→targeting LLM ran in B; the B→C param mapping is **deterministic**). No Clay, no CSV. **C7 (Find
+> Lookalike) + background fit-scoring shipped this session** (see Phase C). Schema deltas in
+> [`data-schema.md`](data-schema.md). Phase D (batch) is next. **S2 ticks once the founder runs one live
+> end-to-end round** (the one operational gate left).
 
 > ## ▶ NEXT SESSION — START HERE
-> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP (2026-06-22).** C0–C6 built; deployed and
-> proven end-to-end on the cloud stack. The four operational steps are done:
-> - ✅ **(1) Migration `0011` applied to dev Aurora** (DB at `0011 (head)`; `apollo_org_id`/`apollo_person_id`
->   present, `seed_limit` dropped). **All 59 tests pass on Aurora** — the 9 previously-skipped DB-gated tests
->   now run green (`test_migrations`, `test_prospects_apollo` full find→select→find→enrich, real-LLM briefs).
-> - ✅ **(2) Lambda deployed** — `holdslot-dev-api` **version 23**, `live` alias shifted, `/health` 200.
->   v23 adds the 10 code-review fixes (credit-safety: per-row commit, idempotent enrich, `enrich_failed`;
->   sync-budget caps) **and** the B→C linkage fixes (GAP 0 ICP-docs→fit context, GAP 1 `avoidTitles` drop).
->   **All Phase C is committed to `dev` (`db1749c`)** — git, disk, and the live Lambda now agree.
-> - ⚠️ **(3) Credit cost — determined as far as the API allows; one founder dashboard glance still wanted.**
->   Apollo exposes **no credit-balance endpoint** (only `auth/health`); search responses carry only
->   request-rate headers (50k/day), no credit field, and withhold firmographics — all consistent with
->   **company search being request-metered, not credit-metered**. **Enrich = 1 credit/email is empirically
->   confirmed** (the live smoke spent exactly 1). *Founder: glance at Apollo → Settings → Usage/Credits before
->   vs. after a find run to confirm the monthly pool is untouched by search → lock into MVP running cost.*
-> - ✅ **(4) Live 1-row end-to-end smoke PASSED** on the deployed stack (ephemeral tenant, torn down):
->   find-company (8 found, scored) → select → find-people (3 real people, `company_id` linked from the loop)
->   → enrich (`people/match`, **1 credit**, returned a verified email `manmeet.saluja@saaslabs.co`,
->   `email_valid=true`, status→`scored`). The full loop works on Lambda v22 + live Apollo + live LLM + Aurora.
+> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP on Lambda v37.** C0–C7 built, deployed, and
+> proven end-to-end on the cloud stack (ephemeral-tenant smoke: find-company → select → find-people →
+> `people/match` returned a verified email, **1 credit**; full per-step detail in the Phase C task list).
+> Migration `0011` is applied (DB at head); all 59 tests pass on Aurora.
 >
-> **Next:** the loop is ready to run for real outreach (Phase E warm-up is the gating long pole). Optionally
-> revisit the *⚠️ Post-C review* deferred ICP inputs (`avoidTitles` first) now that the MVP is proven.
+> **Shipped this session (2026-06-23) — C7 + async scoring** (all green: backend tests + ruff, web tsc +
+> build): **Find Lookalike** (deterministic peer synthesis off selected rows — Apollo has no lookalike API)
+> and **background fit-scoring** across Find Company / Find Lookalike / Update AI Score (find returns rows
+> unscored fast; the web app scores in the background via chunked `/rescore` with a per-row "Scoring…"
+> status — fixes the 30s-gateway timeout that synchronous reasoning-model scoring was hitting). See **Phase C
+> → C7** for the architecture.
 >
-> **Built this session (all green: backend 50 pure tests + ruff, web tsc + build; 9 DB-gated tests pending
-> Aurora):**
-> - **C1 — migration `0011`** + models: `company.apollo_org_id` (unique/tenant), `prospect.apollo_person_id`,
->   `DROP tenant.seed_limit`. Single alembic head; `test_migrations` guards it. *(up/down on Aurora pending.)*
-> - **C2 — `integrations/apollo/client.py`** (lazy `X-Api-Key`, 429 backoff, pagination, the 3 endpoints) +
->   pure **`domains/prospects/apollo_map.py`** (request builders + parsers). Parsers tested against the live
->   C0 fixtures; request builders **live-verified 200** (company w/ revenue+funding+hiring, people scoped).
-> - **C3** — folded in: the post-filter is the existing `suppression` (exclusion + existing-customer-domain
->   drop) + per-row `fit.score`/`score_company`; **no new module** (simplest path, reuses tested code).
-> - **C4 — Flow A** `POST /{client}/companies/find-company` + `PATCH …/companies/select` (map→search→
->   suppress→upsert on `apollo_org_id`→score→`research_run`).
-> - **C5 — Flow B** `POST /{client}/people/find-people` (**loops one `organization_ids` per selected org** —
->   C0: search rows have no org id, so `company_id` comes from the loop) + reworked `POST …/prospects/enrich`
->   (real `people/match`, the only credit spend, writes email/last-name/linkedin/departments, → `scored`).
-> - **C6 — frontend**: the two "Find Companies / Find People" stub buttons are now **live** (`findCompanies`,
->   `selectCompanies`, `findPeople`, reworked `enrichProspects` in `lib/api.ts`); enrich toast shows credits.
-> - **B6 — `ResearchSpec` v3 (done earlier)** is the B→C contract that all of the above consumes.
+> **Next:** Phase D (batch), then the loop is ready for real outreach (Phase E warm-up is the gating long
+> pole). The one operational gate left to tick **S2** is a founder live end-to-end round (below). Optionally
+> revisit the *⚠️ Post-C review* deferred ICP inputs (`avoidTitles` first).
 >
-> **Coverage note:** the B6→C study confirmed the fit+intent+exclusion spine forwards end-to-end; four ICP
-> inputs (`avoidTitles`, `departments`, `technologies`, `revenue_range`) are collected but not yet wired —
-> **deliberately deferred**, see *⚠️ Post-C review* at the end of Phase C.
+> **Uncommitted:** the C7 + async-scoring work is deployed to dev (v37) but not yet committed; last commit on
+> `origin/dev` is `023be68`.
 >
 > **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
 > - **OpenRouter HK geo-block.** OpenAI / Anthropic / Google providers return **403 ToS** for this account
@@ -68,7 +35,9 @@
 >   (DeepSeek / Qwen / Mistral — Llama dropped 2026-06-22). Scoping model = `deepseek/deepseek-v4-pro`
 >   with **thinking + the web-search plugin** (pinned in `research_spec.SCOPING_*`). ⚠️ Pro reasons
 >   55–76s → **exceeds the 30s API Gateway sync cap**: viable only via a local backend or an async
->   structuring path; behind the gateway it 504s. Fit scoring stays on fast Qwen. (B0.)
+>   structuring path; behind the gateway it 504s. **Fit scoring** = `deepseek/deepseek-v4-pro` (reasoning
+>   `medium`) — also too slow for the sync path, so it runs in the **background** (chunked `/rescore`), never
+>   on the find request (see *Step-1 scoring is async*, C7). (B0.)
 > - **Apollo credit model (live-measured 2026-06-22).** **People search (`mixed_people/api_search`) = 0
 >   credits.** **`people/match` = the spend: 1 credit/email** — empirically confirmed (the live smoke spent
 >   exactly 1; 8 cr/phone async, `PHONE_ENABLED=false` at MVP), human-gated at Gate 2. **Company search**
@@ -304,7 +273,8 @@ ICP-card `.icp-grid` grammar (exclusions as `.icp-chip.warn`), gap prompts in a 
   - **Model choice (scoping):** B0 shipped on DeepSeek V4 Flash to fit the 30s sync Lambda budget (~18s).
     **B6 then moved scoping to the flagship `deepseek/deepseek-v4-pro`** (deeper reasoning + the web-search
     plugin, ~55–76s) by running it on the **async** `research_job` path — past the 30s API Gateway cap, so
-    Pro no longer times out. Fit scoring stays on fast Qwen (it runs batched, behind the sync path).
+    Pro no longer times out. Fit scoring also moved to `deepseek/deepseek-v4-pro` (reasoning `medium`); being
+    ~15–25s/call it runs **off the request path** in the background (see *Step-1 scoring is async*, C7).
   - **Model routing override:** `HOLDSLOT_OPENROUTER_MODELS` (comma-separated) env var beats the secret's
     `models` — lets ops repoint models via a Lambda env var (or local dev) without a Secrets Manager write.
   - **Prompt-preview:** `GET /{client}/brief/structure/preview` returns the exact system + input prompt
@@ -346,7 +316,7 @@ frontend edit + a rubric entry — no migration. **Cost:** ~$5–20/mo LLM; **no
 
 ---
 
-## Phase C — Prospects: Apollo find + enrich (S2) ⏳ REBUILD (Apollo-only · supersedes the Clay build)
+## Phase C — Prospects: Apollo find + enrich (S2) ✅ BUILT & LIVE (Apollo-only, Lambda v37 · superseded the Clay build)
 
 > **Direction change (locked 2026-06-21):** the Clay-based Phase C (seed push + CSV ingest + AI sourcing
 > loop) was built and ran on `dev`, but **Clay has no programmatic Find Company / Find People API on any
@@ -383,7 +353,7 @@ programmatic Apollo call replaces the operator's Clay UI + CSV round-trip. The s
 | Discovery + enrichment engine | **Apollo only** (replaces Clay entirely) | Clay has no Find API; Apollo is headless REST |
 | Plan | **Professional + master API key**, upgraded *once this plan is ready to execute* | Search/Match are paid-plan-gated (free key 403s) |
 | AI sourcing loop | **Killed.** The LLM never generates rows | Apollo generates rows; LLM only scopes the filter + scores |
-| LLM scoring | **Lighter batched scorer** — 50–100 rows/call → `[{id, ai_score, reason}]`, **auto-run** on each arriving batch | Find returns 100s of rows; per-row scoring is too slow/costly. Drops the 12-line rubric components for the list view |
+| LLM scoring | Per-row fit scorer on `deepseek/deepseek-v4-pro`, **run in the background** (chunked `/rescore`), never on the find request | Reasoning scorer is ~15–25s/call → a synchronous batch blows the 30s gateway cap (see *Step-1 scoring is async*, C7) |
 | Real `batches` table | **Deferred to Phase D**; B.4 sets selection/status only | Avoid overlapping the next phase |
 | Selection | Reuse existing `company.status` / `prospect.status` (no new `selected` columns) | Same meaning, fewer columns |
 | Phone enrichment | **`PHONE_ENABLED=false`** default (8× email cost) | Off at dogfood |
@@ -398,7 +368,7 @@ as the old `import_companies` did. No new tenancy, no campaign table.
 |---|---|---|
 | **Apollo** (REST, headless) | company search (credit-consuming — confirm at C0) + people search (**0 cr**); `people/match` enriches the selected set | company search: plan credits · people search $0 · enrich 1 cr/email (8/phone) |
 | **`apollo_map`** (pure, fixture-tested) | `ResearchSpec` v3 → Apollo request params (near pass-through — v3 already emits Apollo field names; no LLM); routes the `⊘` fields DB-side | — |
-| **LLM** (OpenRouter, built) | **only** batched `score_rows` (company/person fit). *(All Brief→targeting judgment now lives in the B LLM that wrote the v3 spec — no second `design_filter` LLM pass; see below.)* | OpenRouter $ (small) |
+| **LLM** (OpenRouter, built) | **only** per-row `fit.score`/`score_company` (company/person fit), run in the background. *(All Brief→targeting judgment now lives in the B LLM that wrote the v3 spec — no second `design_filter` LLM pass.)* | OpenRouter $ (small) |
 | **HoldSlot DB** (Aurora) | system of record: dedupe, suppression, DB-side post-filters, scores, lineage, status | — |
 
 > **Architecture refinement (2026-06-21):** v1's plan had a second LLM (`design_filter`, purpose
@@ -414,14 +384,13 @@ as the old `import_companies` did. No new tenancy, no campaign table.
 FLOW A — Find Company
   apollo_map.map_company_filter(spec.company_search_params + intent_filters) ─▶ Apollo mixed_companies/search (paginate; plan credits)
         └─ DB-side post-filter (founded/company_types/kw-exclude) + exclusion/existing-customer drop
-        └─ upsert company on apollo_org_id (discovered) ─▶ auto batched score_rows("company") ─▶ fit_score + reason
+        └─ upsert company on apollo_org_id (discovered), return UNSCORED ─▶ web app scores in background (chunked /rescore) ─▶ fit_score + reason
   GATE 1: review + PATCH companies/select  (status=selected) — scopes Flow B
 FLOW B — Find People
   apollo_map.map_people_filter(spec.people_search_params, org_ids=selected apollo_org_ids)
         ─▶ Apollo mixed_people/api_search (0 cr, NO email/phone)
         └─ DB-side post-filter (title-exclude/departments/max_per_company) + exclusion drop
-        └─ upsert prospect on apollo_person_id, link company_id directly (found, unenriched)
-        └─ auto batched score_rows("people")
+        └─ upsert prospect on apollo_person_id, link company_id directly (found, unenriched, scored in background)
   GATE 2 (enrich gate): review scores + select ─▶ POST prospects/enrich
         └─ Apollo people/match on selected ONLY (1 cr/email — the ONLY enrich spend; phone off) ─▶
            email / email_valid / phone / provider, status=scored
@@ -429,7 +398,8 @@ FLOW B — Find People
 ```
 **Cost rules (enforced in code):** people search is 0 credits; **company search consumes plan credits**
 (confirm cost at C0) — paginate only to `max_results`; never `people/match` before gate 2;
-exclusion/existing-customer/post-filter is DB-side (no extra API calls); scoring batched + cached; enrich
+exclusion/existing-customer/post-filter is DB-side (no extra API calls); fit scoring runs in the background
+(chunked `/rescore`, never on the find request — see *Step-1 scoring is async*, C7); enrich
 only user-selected rows; phone off by default (8× + async webhook).
 
 ### Model usage — ONE LLM service in Phase C (`llm_call.purpose`)
@@ -437,7 +407,7 @@ The Brief→targeting LLM ran in **B** (writing the v3 spec); **`apollo_map` is 
 Phase C's only LLM is the fit scorer:
 | `llm_call.purpose` | Where | Function | Model | Notes |
 |---|---|---|---|---|
-| `company_fit` / `prospect_fit` | C3 `score_rows` | batched 50–100 rows → `[{id, ai_score, reason}]` | `qwen/qwen3.5-flash-02-23` (`FIT_MODELS`; Llama fallback dropped 2026-06-22), `temp=0`, thinking off | **auto-run per arriving batch**; cached, re-score on ICP edit |
+| `company_fit` / `prospect_fit` | `fit.score`/`score_company` | per-row fit → `{ai_score, reason}` | **`deepseek/deepseek-v4-pro`** (`FIT_MODELS`), reasoning `medium`, `temp=0`, no web-search | ~15–25s/call → **run in the background, never on the find request** (see *Step-1 scoring is async*, C7); re-score on ICP/rubric edit |
 
 > **Region rule (see B0):** OpenAI / Anthropic / Google providers are geo-blocked (403 ToS) for this HK account — every purpose routes to non-US providers only (Qwen / Llama / DeepSeek / Mistral).
 
@@ -532,17 +502,17 @@ head; up/down clean on dev.
 
 **C4 — Flow A (Find Company). ✅ BUILT.** `POST /{client}/companies/find-company` (A.1):
 `search_companies(map_company_filter(spec.company_search_params + intent_filters))` (paginate, cap at `max_results`) → DB-side
-post-filter + exclusion / existing-customer drop → upsert on `apollo_org_id` (`discovered`) → auto
-`score_rows("company")` → return rows + a `research_run` (`source="apollo"`). `PATCH
-/{client}/companies/select` (A.3): `status=selected`. **DoD:** companies land scored; selection scopes
-Flow B; `GET /companies` feeds the table.
+post-filter + exclusion / existing-customer drop → upsert on `apollo_org_id` (`discovered`) → return rows
+**unscored** + a `research_run` (`source="apollo"`); the web app fit-scores them in the background (see
+*Step-1 scoring is async*, C7). `PATCH /{client}/companies/select` (A.3): `status=selected`. **DoD:**
+companies land fast and fill in scores; selection scopes Flow B; `GET /companies` feeds the table.
 
 **C5 — Flow B (Find People + enrich). ✅ BUILT.** `POST /{client}/people/find-people` (B.1): **loop the selected orgs**,
 one `search_people(map_people_filter(spec.people_search_params, org_ids=[<one apollo_org_id>]))` call each
 (0 cr, no email) — C0: search rows carry no `organization_id`, so the per-org loop is how `company_id` is
 known and `max_per_company` = the per-call `per_page` cap → DB-side post-filter (`job_title_exclude` on
 `title`; **no `departments` filter here — absent at search**) + exclusion drop → upsert on `apollo_person_id`,
-link `company_id` from the loop, `status=found` → auto `score_rows("people")`. (Empty selected-org set →
+link `company_id` from the loop, `status=found` (scored in the background). (Empty selected-org set →
 `400 "select companies first"`.)
 `POST /{client}/prospects/enrich` (B.3, reworked): Apollo `people/match` on the **selected** rows only →
 write `email` / `email_valid` / `phone` / `provider`, `status=scored` (the only credit spend, human-gated).
@@ -566,7 +536,73 @@ fetches.)*
   + the Sourcing-settings modal; schemas `SourcingRound*` / `AcceptIn` / `*ImportResult` / `EnrichExportRow`
   / `SourcingSettings*`. Founder retires the `holdslot/prod/clay` secret.
 
-**Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6. **C1/C2/C3 can be built in parallel against the C0
+**C7 — Find Lookalike (find similar companies). ✅ BUILT & LIVE (Lambda v37, 2026-06-23).** A second discovery
+door on Flow A: instead of scoping from the v3 spec, **the operator selects ≥1 row in the Step-1 table and
+HoldSlot finds the next batch of peers**, mirroring Apollo's "Lookalikes · Powered by Apollo AI" panel.
+
+> **API reality:** **Apollo has NO lookalike / similarity API.** The Lookalikes panel is a UI-only Apollo-AI
+> feature; [`mixed_companies/search`](https://docs.apollo.io/reference/organization-search) exposes
+> `organization_ids[]` (*include*) but **no `organization_not_ids`** and **no seed/similar param**. So
+> "lookalike" is **synthesized HoldSlot-side** from the selected rows' firmographics (deterministic, no LLM,
+> no extra credit), then run through the existing Flow A search.
+
+**Locked decisions (founder, 2026-06-23):** synthesis = **deterministic aggregation** over the seeds' evidence,
+spanning/union across a multi-select · **fetch cap 10** (`per_page≤10`, one page); seeds + known domains drop
+post-fetch via existing suppression → net new batch **≤10, often fewer** (no over-fetch) · new rows keep
+**`source="apollo"`**, but the `research_run` lineage row carries **`source="lookalike"`** so the cost
+scoreboard separates seeded from scoped finds.
+
+**The aggregator** ([`lookalike.build_lookalike_filter(seeds) → company_search_params`](../apps/api/app/domains/prospects/lookalike.py),
+pure, 7 fixture-tests) maps the seeds' evidence onto the four Flow-A firmographic axes:
+- `q_organization_keyword_tags[]` — **union** of each seed's `evidence.keywords` + `industries` + `industry`,
+  deduped case-insensitively, capped at 10 (Apollo ORs tags — too many over-broadens).
+- `organization_num_employees_ranges[]` — a **single band** spanning min→max headcount across all seeds,
+  widened 0.5×–2× so same-size-band peers surface (falls back to the `size` string when evidence is absent).
+- `revenue_range[min/max]` — **min→max** of seeds' `annual_revenue`, widened 0.5×–2×.
+- `organization_locations[]` — **union** of seeds' `country` (HQ city is too narrow for "lookalike").
+- All-sparse selection → **empty filter `{}`** → the endpoint refuses (400), never searching wide.
+- **No** intent/funding block (lookalike is firmographic, not timing) · **no** tech UIDs (deferred resolver) ·
+  `icp_id` = explicit → seeds' common → null (fit scores against the ICP union, exactly as Flow A).
+
+**Reuses the Flow-A tail** — the only new code is the endpoint + the pure aggregator. The tail was extracted as
+[`_run_company_find`](../apps/api/app/domains/prospects/router.py) (shared by Find Company and Find Lookalike):
+search → suppress/dedupe → enrich new → upsert → optional score → `research_run`, with per-stage timing logs
+that flag any request crossing the 30s gateway cap. The seeds drop out because Find Lookalike passes
+`seen_domains` (all existing tenant domains) into `find.filter_companies` — domain dedupe excludes them with no
+`organization_not_ids`.
+
+- **Endpoint:** `POST /{client}/companies/find-lookalikes` · `CompanyLookalikeIn {company_ids, icp_id?}` →
+  `FindResult`. Empty `company_ids` → `400`; all-sparse seeds → `400 "enrich them first"`.
+- **Web:** ghost button **"Find Lookalike"** in the Step-1 toolbar (before "Update Enrichment"), disabled
+  unless `coSelCount`, label shows the seed count (`Find Lookalike 3`) → `findLookalikes(client, …)` → reload →
+  toast that tells the outcomes apart (new peers found / all already listed / seeds too sparse). Found rows
+  scored in the background (see below). No input box — selection is the seed.
+- **DoD (met):** select rows → Find Lookalike → ≤10 peers land, seeds excluded, `source="apollo"` /
+  `research_run.source="lookalike"`; scored in the background; aggregator unit-tested (no network).
+
+#### Step-1 scoring is async — fit scoring never blocks the find request (2026-06-23)
+Built this session across **all three Step-1 buttons** (Find Company, Find Lookalike, Update AI Score). The
+driver: fit scoring is **`deepseek/deepseek-v4-pro`** (reasoning effort `medium`, `temp=0`, no web-search;
+[`fit.FIT_MODELS`/`FIT_EXTRA_BODY`](../apps/api/app/domains/prospects/fit.py)) — deep reasoning at ~15–25s/call
+(25s timeout + 1 retry → a slow call nears ~50s). A fresh batch scored synchronously **blew the 30s
+API-Gateway sync cap** → 503. *(This was the root cause of the field report "no company returned, still 15 in
+the list": CloudWatch showed a 95s Lambda → gateway 503 — not an empty result, not an Apollo error.)*
+
+**Architecture:** separate the fast find from the slow score.
+- **Find/Lookalike return rows UNSCORED** (`_run_company_find(score=False)`) — search + enrich only, always
+  well under 30s.
+- The **web app scores in the background**: `scoreInBackground(ids)` fires chunked `POST …/companies/rescore`
+  calls (**3 rows/chunk**, each safely under 30s) and shows a per-row **"Scoring…"** spinner in the AI Score
+  column until each chunk lands, then the fit chip fills in. The table stays visible throughout (no full-list
+  overlay); **Update AI Score** reads "Scoring…" and is disabled while a pass runs.
+- **Never blocks the UI, never fails the request on a slow LLM.** A failed chunk just clears its status (rows
+  stay unscored, recoverable by re-clicking Update AI Score); switching clients stops the loop.
+- **Cost attribution:** scoring spend is now booked under **`research_run.source="rescore"`**; the
+  `apollo`/`lookalike` find-runs show `cost_usd=0` (search/enrich only). Total unchanged — it just maps to the
+  scoring step, matching the async model. `/rescore` is capped at `MAX_COMPANIES_PER_FIND` (15) per request and
+  rejects (not truncates) a larger selection.
+
+**Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6 (→ **C7 additive**, no dependency past C4). **C1/C2/C3 can be built in parallel against the C0
 fixtures** before the live key is integration-ready; only C0's smoke test + C4/C5 end-to-end need the
 upgraded plan. **Depends on B6** (the v3 spec `apollo_map` consumes — built). **MVP cost:** Apollo Professional
 (master key — see *MVP running cost*) + LLM <$10/mo; **people search is 0 credits**, but **company search
@@ -620,11 +656,13 @@ person's `company_id`.
   a deliverability control. **Domain warm-up runs in parallel** (already started — see *Sending infrastructure*).
 
 ### Operational sign-off — what's left to tick S2 (not code)
-- ⏳ **Apollo plan upgrade (founder action).** Professional + master key in `holdslot/prod/apollo`; until
-  then C0.2's smoke test and the C4/C5 end-to-end runs are blocked.
-- ⏳ **Founder end-to-end round on Apollo.** From the live Workspace: Trigger Find Companies → review/score
-  → select → Trigger Find People → review/score → confirm-enrich (Apollo `people/match`) → create batch —
-  all in-app, no CSV; the scoreboard shows real `cost_usd`. **The last gate before S2 is ticked done.**
+- ✅ **Apollo plan upgrade (done).** Professional + master key in `holdslot/prod/apollo`; all 3 endpoints 200.
+- ⏳ **Founder end-to-end round on Apollo** — the one gate left. From the live Workspace: Find Companies →
+  review/score → select → Find People → review/score → confirm-enrich (Apollo `people/match`) → create batch
+  — all in-app, no CSV; the scoreboard shows real `cost_usd`. **Tick S2 once run.**
+- ⚠️ **Credit-cost dashboard glance (optional confirm).** Founder reads Apollo → Settings → Usage/Credits
+  before vs. after a find run to confirm company search doesn't draw the monthly pool (enrich = 1 cr/email is
+  already empirically confirmed). Feeds *MVP running cost*.
 
 ---
 
@@ -826,7 +864,7 @@ fields show `PEND`, not `FAIL`; use `--strict` at the phase that needs them).
 | Secret | Status | Verifier confirms |
 |---|---|---|
 | `holdslot/prod/app` | ✅ | JWT signing+refresh present, ≥32 chars, distinct |
-| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK. The secret `models` is only the default fallback now: each call site pins its own list in code — **scoping** = `SCOPING_MODELS` (`deepseek/deepseek-v4-pro`, async path), **fit** = `FIT_MODELS` (`qwen/qwen3.5-flash-02-23`); Llama dropped 2026-06-22 |
+| `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK. The secret `models` is only the default fallback now: each call site pins its own list in code — **scoping** = `SCOPING_MODELS` (`deepseek/deepseek-v4-pro`, async path), **fit** = `FIT_MODELS` (`deepseek/deepseek-v4-pro`, reasoning `medium`, background-scored); Qwen/Llama dropped 2026-06-23 |
 | `holdslot/prod/apollo` | ◑ | `key` stored but **free-tier** (Search/Match 403) — upgrade to Professional + master key → C0. (`holdslot/prod/clay` retired) |
 | `holdslot/prod/smartlead` | ◑ | `api_key` valid; sending accounts + `webhook_signing_secret` → E |
 | `holdslot/prod/google` | ✅ | SA + domain-wide delegation + Calendar + Meet REST all 200, one seat (`info@tryholdslot.com`) |
