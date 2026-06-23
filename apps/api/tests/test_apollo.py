@@ -53,16 +53,21 @@ def test_map_people_filter_scopes_to_one_org_and_keeps_false_similar():
         "include_similar_titles": False,  # must survive _clean
         "q_keywords": "observability",
         "person_seniorities": ["vp"],
-        "organization_locations": [],
-        "organization_num_employees_ranges": ["11,50"],
+        "organization_locations": ["United States"],
+        "organization_num_employees_ranges": ["1000,5000"],
     }
     body = apollo_map.map_people_filter(ps, org_id="abc123")
     assert body["organization_ids"] == ["abc123"]
     assert body["include_similar_titles"] is False
     assert body["person_titles"] == ["VP Sales"]
+    # Pinned org → org-level filters are dropped (they'd over-constrain that one org to 0 people).
     assert "organization_locations" not in body
-    # No org → no organization_ids key (pure-testing path).
-    assert "organization_ids" not in apollo_map.map_people_filter(ps, org_id=None)
+    assert "organization_num_employees_ranges" not in body
+    # No org (broad search) → org-level filters DO apply, and there is no organization_ids key.
+    broad = apollo_map.map_people_filter(ps, org_id=None)
+    assert "organization_ids" not in broad
+    assert broad["organization_locations"] == ["United States"]
+    assert broad["organization_num_employees_ranges"] == ["1000,5000"]
 
 
 # ----------------------------------------------------------------- response parsers (fixtures)

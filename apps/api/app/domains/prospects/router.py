@@ -711,11 +711,13 @@ def select_companies(
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> list[CompanyOut]:
-    """Queue stage-1 companies for Flow B by flipping `discovered` → `selected` (or back).
+    """Stage stage-1 companies into Step 2 (`discovered` → `selected`) or remove them (`selected` or
+    `people_found` → `discovered`).
 
-    Only `discovered` rows are (de)moved — a company already advanced to `people_found` is left
-    alone, so re-selecting a checkbox set that includes processed companies does NOT re-queue them
-    for another people search (which would re-spend search calls and re-scope the run).
+    `selected=True` only promotes `discovered` rows (an already-searched `people_found` row is left
+    as-is). `selected=False` is the Step-2 "Remove" — it un-stages a `selected` row OR an already
+    searched `people_found` row back to the stage-1 pool, so an Accepted company can be taken out
+    of Step 2. Re-searching is by explicit id (find-people), so demoting never blocks a later find.
     """
     if not body.ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
@@ -730,7 +732,7 @@ def select_companies(
     for c in rows:
         if body.selected and c.status == "discovered":
             c.status = "selected"
-        elif not body.selected and c.status == "selected":
+        elif not body.selected and c.status in ("selected", "people_found"):
             c.status = "discovered"
     db.commit()
     for c in rows:
@@ -1197,6 +1199,17 @@ def find_people(
             parsed, seen_ids, avoid_titles=avoid_by_icp.get(applicable, [])
         )
         dropped_total += len(dropped)
+        # Per-org diagnostics — makes a 0-result explainable (Apollo returned nothing for the org
+        # vs. everything filtered out). `filters` = people params actually sent (org_id excluded).
+        log.info(
+            "people-find[%s]: org=%s raw=%d survivors=%d dropped=%d filters=%s",
+            comp.domain,
+            comp.apollo_org_id,
+            len(rows),
+            len(survivors),
+            len(dropped),
+            {k: v for k, v in pbody.items() if k != "organization_ids"},
+        )
         for p in survivors:
             if len(new_rows) >= MAX_PEOPLE_PER_FIND:
                 break

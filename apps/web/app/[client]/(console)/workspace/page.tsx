@@ -2205,6 +2205,7 @@ export default function Workspace() {
   const [scoringCoIds, setScoringCoIds] = useState<Set<string>>(new Set());
   const [findingPpl, setFindingPpl] = useState(false);
   const [staging, setStaging] = useState(false); // Step-1 → Step-2 move in flight
+  const [removing, setRemoving] = useState(false); // Step-2 → Step-1 un-stage in flight
   // Step-2 company rows whose people are being searched right now (per-row "Finding people…").
   const [findingPplIds, setFindingPplIds] = useState<Set<string>>(new Set());
   // Prospect rows whose AI fit-score is being computed in the background (Step-2 'Get AI score').
@@ -2636,6 +2637,29 @@ export default function Workspace() {
       toast(e instanceof Error ? e.message : "Couldn’t move companies to Step 2", "warn");
     } finally {
       setStaging(false);
+    }
+  }
+
+  // Step 2 → Step 1: remove the ticked companies from Step 2 (selected | people_found → discovered),
+  // so an Accepted company can be taken back out of the pursuit. The rows leave the Step-2 table and
+  // reappear in the Step-1 list; their checks are cleared.
+  async function removeFromStep2() {
+    const ids = pplCoSel.map((c) => c.id);
+    if (!ids.length) return;
+    setRemoving(true);
+    try {
+      await selectCompanies(client, ids, false);
+      await reloadCompanies();
+      setCompanyChecked((s) => {
+        const n = new Set(s);
+        ids.forEach((id) => n.delete(id));
+        return n;
+      });
+      toast(`Removed ${ids.length} ${ids.length === 1 ? "company" : "companies"} from Step 2`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t remove companies", "warn");
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -4125,6 +4149,18 @@ export default function Workspace() {
                 <h3>Find the right person</h3>
                 <div className="band-actions">
                   <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => void removeFromStep2()}
+                    disabled={!pplCoSel.length || removing}
+                    title="Remove the ticked companies from Step 2 (back to the Step-1 list)"
+                  >
+                    {removing
+                      ? "Removing…"
+                      : pplCoSel.length
+                        ? `Remove ${pplCoSel.length}`
+                        : "Remove"}
+                  </button>
+                  <button
                     className="btn btn-primary btn-sm"
                     onClick={openPeopleScopeSettings}
                     title="Edit the Apollo people-search filters used by Find People"
@@ -4232,30 +4268,42 @@ export default function Workspace() {
                                   title="Select this company to find people"
                                 />
                               </td>
-                              <td colSpan={6}>
+                              <td>
                                 <div className="grp-co">
                                   <span className="nm">{c.name || c.domain}</span>
                                   {c.domain ? <span className="domain">{c.domain}</span> : null}
-                                  {finding ? (
-                                    <span className="fit-scoring">
-                                      <span className="hs-spinner" aria-hidden="true" />
-                                      Finding people…
-                                    </span>
-                                  ) : !searched ? (
-                                    <span className="badge badge-warn">
-                                      <span className="bdot" />
-                                      Pending · tick &amp; Find People
-                                    </span>
-                                  ) : rows.length === 0 ? (
-                                    <span className="muted">
-                                      No people found · tick &amp; Find People to retry
-                                    </span>
-                                  ) : (
-                                    <span className="muted">
-                                      {rows.length} {rows.length === 1 ? "person" : "people"}
-                                    </span>
-                                  )}
                                 </div>
+                              </td>
+                              <td className="muted grp-hint" colSpan={4}>
+                                {finding
+                                  ? "Finding people…"
+                                  : !searched
+                                    ? "Tick this company, then Find People"
+                                    : rows.length === 0
+                                      ? "No people found · loosen Find Settings, then Find People again"
+                                      : null}
+                              </td>
+                              <td>
+                                {finding ? (
+                                  <span className="fit-scoring">
+                                    <span className="hs-spinner" aria-hidden="true" />
+                                    Finding…
+                                  </span>
+                                ) : !searched ? (
+                                  <span className="badge badge-warn">
+                                    <span className="bdot" />
+                                    Pending
+                                  </span>
+                                ) : rows.length === 0 ? (
+                                  <span className="badge badge-neutral">
+                                    <span className="bdot" />0 people
+                                  </span>
+                                ) : (
+                                  <span className="badge badge-info">
+                                    <span className="bdot" />
+                                    {rows.length} {rows.length === 1 ? "person" : "people"}
+                                  </span>
+                                )}
                               </td>
                             </tr>
                             {rows.map((p) => {

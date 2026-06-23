@@ -77,10 +77,15 @@ def map_people_filter(people_search_params: dict, org_id: str | None = None) -> 
         "include_similar_titles": ps.get("include_similar_titles"),
         "q_keywords": ps.get("q_keywords"),
         "person_seniorities": ps.get("person_seniorities"),
-        "organization_locations": ps.get("organization_locations"),
-        "organization_num_employees_ranges": ps.get("organization_num_employees_ranges"),
         "organization_ids": [org_id] if org_id else None,
     }
+    # Org-level filters (location / employee size) only make sense for a BROAD people search. Once
+    # an exact org is pinned via `organization_ids`, re-applying them just over-constrains that one
+    # org to zero people (e.g. a small HK insurer fails a scope that expects a US / larger company),
+    # so they are dropped whenever an org_id is set — the org already fixes its location and size.
+    if not org_id:
+        body["organization_locations"] = ps.get("organization_locations")
+        body["organization_num_employees_ranges"] = ps.get("organization_num_employees_ranges")
     # `_clean` drops None/""/[] but keeps a real boolean (False != [] / "" / None), so
     # `include_similar_titles` survives whether True or False; only a None value is dropped.
     return _clean(body)

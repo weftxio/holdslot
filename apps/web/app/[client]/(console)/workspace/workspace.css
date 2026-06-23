@@ -2457,14 +2457,17 @@
 }
 .grp-co {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 2px;
 }
 .grp-co .nm {
   font-weight: 700;
   font-size: 13.5px;
   color: var(--ink);
+}
+.grp-hint {
+  font-size: 12.5px;
+  font-style: italic;
 }
 
 /* Sticky action dock — docked to the panel base (the list-scroll above flexes to fill). */
