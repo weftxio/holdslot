@@ -62,18 +62,31 @@ class ProspectManualIn(BaseModel):
 
 class CompanyFindIn(BaseModel):
     """Trigger Apollo Flow A (find companies) from the latest ResearchSpec. `limit` is capped to
-    the spec's `credit_policy.max_companies` server-side."""
+    the spec's `credit_policy.max_companies` server-side.
+
+    `company_search_params`/`intent_filters` are an OPTIONAL operator override (the Settings modal):
+    when present they replace the spec's blocks for *this call only* — the spec stays the AI source
+    of truth, the override is the manual tuning. Omitted → the saved spec is used unchanged.
+    """
 
     limit: int = 25
     icp_id: str | None = None
+    company_search_params: dict | None = None
+    intent_filters: dict | None = None
 
 
 class PeopleFindIn(BaseModel):
     """Trigger Apollo Flow B (find people) across the selected companies. `per_company` caps how
-    many people each selected org contributes (one api_search call per org)."""
+    many people each selected org contributes (one api_search call per org).
+
+    `people_search_params` is an OPTIONAL operator override (the Step-2 Settings modal): when
+    present it replaces the spec's people block for *this call only* (`organization_ids` is still
+    set per-org by the loop, never by the override). Omitted → the saved spec is used unchanged.
+    """
 
     per_company: int = 10
     icp_id: str | None = None
+    people_search_params: dict | None = None
 
 
 class CompanySelectIn(BaseModel):
@@ -81,6 +94,14 @@ class CompanySelectIn(BaseModel):
 
     ids: list[str] = Field(default_factory=list)
     selected: bool = True
+
+
+class CompanyRescoreIn(BaseModel):
+    """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
+    selection). Unlike find-company, this ignores the `fit_score is None` gate — it re-scores the
+    given rows against the current rubric + scoring prompt so an existing list reflects a change."""
+
+    ids: list[str] = Field(default_factory=list)
 
 
 class EnrichIn(BaseModel):

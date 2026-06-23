@@ -118,8 +118,12 @@ def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[
         "enrichment scores per the rubric's Unknown policy (firmographic match → 0; tech → "
         "partial; engagement → 0; email risky/accept-all → 3). Return integer points per "
         "sub-criterion, a one-line justification per dimension, short client-facing match tags, "
-        "and one client-facing `fit_reason` sentence (no internal jargon, no score). Emit ONLY "
-        "the schema; do not compute totals or tiers — the system does that.\n\n"
+        "and one client-facing `fit_reason` sentence. The `fit_reason` MUST be consistent with the "
+        "points you awarded: state what is confirmed and what is still missing or unknown. Do NOT "
+        "assert an overall verdict (e.g. 'strong fit', 'great match') unless you scored most "
+        "criteria at full points — a tier is computed from your points downstream and prose that "
+        "overstates it will contradict the displayed score. No internal jargon, no number. Emit "
+        "ONLY the schema; do not compute totals or tiers — the system does that.\n\n"
         "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
     )
     user = (
@@ -221,8 +225,13 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
         "policy (firmographic match → 0; tech → partial; engagement → 0; email "
         "deliverability → 3, person not yet sourced). Return integer points per sub-criterion, a "
         "one-line justification per dimension, short client-facing match tags, and one "
-        "client-facing `fit_reason` sentence (why this COMPANY is a fit; no person, no score). "
-        "Emit ONLY the schema; do not compute totals or tiers — the system does that.\n\n"
+        "client-facing `fit_reason` sentence about this COMPANY (no person). The `fit_reason` MUST "
+        "be consistent with the points you awarded: state what is confirmed and what is still "
+        "missing or unknown (e.g. firmographic size, timing triggers). Do NOT assert an overall "
+        "verdict (e.g. 'strong fit', 'great match') unless you scored most criteria at full "
+        "points — a tier is computed from your points downstream and prose that overstates it will "
+        "contradict the displayed score. No internal jargon, no number. Emit ONLY the schema; do "
+        "not compute totals or tiers — the system does that.\n\n"
         "=== FIT RUBRIC (authoritative) ===\n" + rubric_body
     )
     user = (

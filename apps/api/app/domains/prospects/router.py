@@ -13,6 +13,7 @@ enrichment is wired in C5.
 from __future__ import annotations
 
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select
@@ -26,6 +27,7 @@ from app.domains.prospects.schemas import (
     CompanyFindIn,
     CompanyManualIn,
     CompanyOut,
+    CompanyRescoreIn,
     CompanySelectIn,
     EnrichIn,
     EnrichResult,
@@ -204,19 +206,51 @@ def _company_payload(c: Company) -> dict:
     }
 
 
-def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) -> float:
-    """Score one company in place (LLM). Returns the call's cost_usd. Raises LlmError."""
-    scored = fit.score_company(
-        tenant_id=tenant_id,
-        rubric_body=rubric_body,
-        company=_company_payload(c),
-        targeting=targeting,
-    )
+def _apply_company_score(c: Company, scored: dict) -> float:
+    """Write a company fit result onto the row in place; return the call's cost_usd."""
     c.fit_score = scored["fit_score"]
     c.fit_tier = scored["fit_tier"]
     c.fit_components = scored["fit_components"]
     c.fit_reason = scored["fit_reason"]
     return float(scored.get("cost_usd") or 0.0)
+
+
+def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) -> float:
+    """Score one company in place (LLM). Returns the call's cost_usd. Raises LlmError."""
+    return _apply_company_score(
+        c,
+        fit.score_company(
+            tenant_id=tenant_id,
+            rubric_body=rubric_body,
+            company=_company_payload(c),
+            targeting=targeting,
+        ),
+    )
+
+
+# A full find can score up to MAX_*_PER_FIND rows; a *sequential* LLM call per row overruns the 30s
+# API Gateway sync cap (→ 503). The LLM client is stdlib-urllib with its own telemetry session per
+# call, so the calls are thread-safe — we fan them out, then apply each result on the main thread
+# (ORM mutation stays single-threaded). Keeps a 15-row find well under the cap.
+_SCORE_WORKERS = 10
+
+
+def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
+    """Run independent fit-score jobs concurrently. `jobs` = [(key, fn)] where `fn() -> scored dict`
+    (or raises LlmError). Returns [(key, scored | None)] — None when that call failed (row kept
+    unscored). Each `fn` must close over plain data, never touch the request session off-thread."""
+    if not jobs:
+        return []
+
+    def _run(job: tuple) -> tuple:
+        key, fn = job
+        try:
+            return key, fn()
+        except LlmError:
+            return key, None
+
+    with ThreadPoolExecutor(max_workers=min(_SCORE_WORKERS, len(jobs))) as ex:
+        return list(ex.map(_run, jobs))
 
 
 @router.get("/{client}/companies", response_model=list[CompanyOut])
@@ -345,9 +379,20 @@ def find_company(
     credit = spec.spec.get("credit_policy") or {}
     hard_cap = min(MAX_COMPANIES_PER_FIND, credit.get("max_companies", 500))
     limit = max(1, min(body.limit, hard_cap))
-    filter_body = apollo_map.map_company_filter(
-        spec.spec.get("company_search_params") or {}, spec.spec.get("intent_filters") or {}
+    # Operator override (Settings modal) wins over the AI spec for *this call only*; an omitted
+    # block falls back to the spec. `_clean` in apollo_map drops empty filters, so a cleared field
+    # simply widens the search.
+    csp = (
+        body.company_search_params
+        if body.company_search_params is not None
+        else (spec.spec.get("company_search_params") or {})
     )
+    intent = (
+        body.intent_filters
+        if body.intent_filters is not None
+        else (spec.spec.get("intent_filters") or {})
+    )
+    filter_body = apollo_map.map_company_filter(csp, intent)
     try:
         rows = apollo.search_companies(filter_body, max_results=limit)
     except apollo.ApolloError as e:
@@ -370,14 +415,29 @@ def find_company(
     for p in survivors:
         c = _upsert_company(db, ctx.tenant.id, p)
         c.run_id, c.icp_id = run_id, icp or c.icp_id
-        if c.fit_score is None:  # score once; re-finds don't re-spend on already-scored rows
-            try:
-                cost += _score_company(
-                    c, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
-                )
-            except LlmError:
-                pass  # keep the discovered row even if scoring failed; a later find can re-score
         companies.append(c)
+
+    # Score the unscored rows concurrently (re-finds don't re-spend on already-scored rows). The
+    # scoring payload is built here on the main thread so no lazy ORM load runs off-thread; results
+    # are applied back here too. Sequential scoring of a full batch overruns the 30s gateway cap.
+    to_score = [(c, _company_payload(c)) for c in companies if c.fit_score is None]
+    jobs = [
+        (
+            c,
+            (
+                lambda payload=payload: fit.score_company(
+                    tenant_id=ctx.tenant.id,
+                    rubric_body=rubric_body,
+                    company=payload,
+                    targeting=targeting,
+                )
+            ),
+        )
+        for c, payload in to_score
+    ]
+    for c, scored in _score_concurrently(jobs):
+        if scored is not None:
+            cost += _apply_company_score(c, scored)
 
     db.add(
         ResearchRun(
@@ -436,6 +496,91 @@ def select_companies(
     db.commit()
     for c in rows:
         db.refresh(c)
+    return [_company_out(c) for c in rows]
+
+
+@router.post("/{client}/companies/rescore", response_model=list[CompanyOut])
+def rescore_companies(
+    body: CompanyRescoreIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> list[CompanyOut]:
+    """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
+    selection), ignoring the `fit_score is None` gate that find-company uses. Run this after the
+    rubric or the scoring prompt changes so existing rows reflect the new scoring.
+
+    Bounded by `MAX_COMPANIES_PER_FIND` (the 30s API-Gateway sync cap) — a larger selection is
+    rejected, not silently truncated, so the caller never thinks rows were re-scored when they
+    weren't. Each row is scored against ITS OWN ICP context (targeting is memoized per icp_id, so
+    a mixed selection is scored correctly). Records one `research_run` (source=rescore) for cost.
+    """
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    if len(body.ids) > MAX_COMPANIES_PER_FIND:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"re-score at most {MAX_COMPANIES_PER_FIND} companies per request",
+        )
+    ids = [uuid.UUID(i) for i in body.ids]
+    rows = (
+        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
+
+    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
+    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric_body = rubric.body if rubric else ""
+    # ICP docs differ per row, so build targeting once per distinct icp_id on the main thread (the
+    # off-thread jobs must close over plain data, never the session). Mirrors find/add scoring.
+    targeting_cache: dict[str | None, dict] = {}
+
+    def _targeting_for(icp_id) -> dict:
+        key = str(icp_id) if icp_id else None
+        if key not in targeting_cache:
+            targeting_cache[key] = _build_targeting(
+                brief, spec, icp_docs(db, ctx.tenant.id, icp_id)
+            )
+        return targeting_cache[key]
+
+    jobs = [
+        (
+            c,
+            (
+                lambda payload=_company_payload(c), targeting=_targeting_for(c.icp_id): (
+                    fit.score_company(
+                        tenant_id=ctx.tenant.id,
+                        rubric_body=rubric_body,
+                        company=payload,
+                        targeting=targeting,
+                    )
+                )
+            ),
+        )
+        for c in rows
+    ]
+    cost = 0.0
+    for c, scored in _score_concurrently(jobs):
+        if scored is not None:
+            cost += _apply_company_score(c, scored)
+
+    db.add(
+        ResearchRun(
+            tenant_id=ctx.tenant.id,
+            run_id=_apollo_run_id(),
+            spec_version=spec.version if spec else None,
+            source="rescore",
+            rubric_version=fit.RUBRIC_VERSION,
+            rows_pushed=len(rows),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for c in rows:
+        db.refresh(c)
+    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
     return [_company_out(c) for c in rows]
 
 
@@ -653,7 +798,14 @@ def find_people(
     if not selected:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
 
-    people_params = spec.spec.get("people_search_params") or {}
+    # Operator override (Step-2 Settings) wins over the AI spec for this call; `_clean` in
+    # apollo_map drops empty filters, so a cleared field widens the search. `organization_ids` is
+    # never taken from here: the per-org loop sets it (C0: search rows carry no org id).
+    people_params = (
+        body.people_search_params
+        if body.people_search_params is not None
+        else (spec.spec.get("people_search_params") or {})
+    )
     per_company = max(1, min(body.per_company, apollo.PER_PAGE_MAX))
     seen_ids = set(
         db.execute(
@@ -700,6 +852,7 @@ def find_people(
 
     cost = 0.0
     prospects: list[Prospect] = []
+    to_score: list[tuple[Prospect, dict]] = []
     for p, comp in new_rows:
         key = f"apollo:{p['apollo_person_id']}"
         prospect = db.execute(
@@ -728,21 +881,32 @@ def find_people(
         prospect.enrichment = enrichment
         prospect.email_valid = False
         prospect.source_lineage = {"apollo_org_id": comp.apollo_org_id, "run_id": run_id}
-        try:
-            scored = fit.score(
-                tenant_id=ctx.tenant.id,
-                rubric_body=rubric_body,
-                enrichment=enrichment,
-                targeting=targeting,
-            )
-            prospect.fit_score = scored["fit_score"]
-            prospect.fit_tier = scored["fit_tier"]
-            prospect.fit_components = scored["fit_components"]
-            cost += float(scored.get("cost_usd") or 0.0)
-        except LlmError:
-            pass  # keep the found row even if scoring failed
         prospect.status = "found"  # comp already advanced to people_found in the search loop
         prospects.append(prospect)
+        to_score.append((prospect, enrichment))
+
+    # Score concurrently (same 30s-cap reason as find-company). `enrichment` is a plain dict, safe
+    # to read off-thread; fit results are applied here on the main thread.
+    jobs = [
+        (
+            pr,
+            (
+                lambda e=enr: fit.score(
+                    tenant_id=ctx.tenant.id,
+                    rubric_body=rubric_body,
+                    enrichment=e,
+                    targeting=targeting,
+                )
+            ),
+        )
+        for pr, enr in to_score
+    ]
+    for pr, scored in _score_concurrently(jobs):
+        if scored is not None:
+            pr.fit_score = scored["fit_score"]
+            pr.fit_tier = scored["fit_tier"]
+            pr.fit_components = scored["fit_components"]
+            cost += float(scored.get("cost_usd") or 0.0)
 
     db.add(
         ResearchRun(
