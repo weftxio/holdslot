@@ -183,12 +183,16 @@ const SOURCE_LABEL: Record<string, string> = {
 // People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
 const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
 const ENRICHED_STATUS = "scored";
-// Prospect-list ordering: AI Score first (highest → lowest, unscored sink), then Enriched, then Found.
+// Prospect-list ordering: Enriched (status `scored`) first, then AI Score (highest → lowest,
+// unscored sink), then remaining status (Found before anything else).
 const STATUS_SORT: Record<string, number> = { scored: 0, found: 1 };
 function compareProspectRows(a: ProspectApi, b: ProspectApi): number {
+  const ae = a.status === ENRICHED_STATUS ? 0 : 1;
+  const be = b.status === ENRICHED_STATUS ? 0 : 1;
+  if (ae !== be) return ae - be; // Enriched on top
   const sa = a.fit_score ?? -1;
   const sb = b.fit_score ?? -1;
-  if (sb !== sa) return sb - sa;
+  if (sb !== sa) return sb - sa; // then AI Score desc
   return (STATUS_SORT[a.status] ?? 2) - (STATUS_SORT[b.status] ?? 2);
 }
 const BATCH_STATUS_CLS: Record<string, string> = {
@@ -2507,17 +2511,25 @@ export default function Workspace() {
   // ---- Stage 1: companies ----
   const coVisible = useMemo(
     () =>
-      companies.filter((c) => {
-        const text = `${c.name} ${c.domain} ${c.industry}`.toLowerCase();
-        const accepted = c.status === "people_found";
-        const statusOk =
-          !coStatus || (coStatus === "accepted" ? accepted : !accepted);
-        return (
-          (!coSearch || text.includes(coSearch.toLowerCase())) &&
-          (!coFit || c.fit_tier === coFit) &&
-          statusOk
-        );
-      }),
+      companies
+        .filter((c) => {
+          const text = `${c.name} ${c.domain} ${c.industry}`.toLowerCase();
+          const accepted = c.status === "people_found";
+          const statusOk =
+            !coStatus || (coStatus === "accepted" ? accepted : !accepted);
+          return (
+            (!coSearch || text.includes(coSearch.toLowerCase())) &&
+            (!coFit || c.fit_tier === coFit) &&
+            statusOk
+          );
+        })
+        // Accepted (people_found) rows float to the top; the sort is stable, so within each group
+        // the existing order (backend: fit_score desc, nulls last) is preserved.
+        .sort((a, b) => {
+          const aa = a.status === "people_found" ? 0 : 1;
+          const ba = b.status === "people_found" ? 0 : 1;
+          return aa - ba;
+        }),
     [companies, coSearch, coFit, coStatus]
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
