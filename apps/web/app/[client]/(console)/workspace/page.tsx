@@ -197,6 +197,50 @@ const BATCH_STATUS_CLS: Record<string, string> = {
   Pending: "badge-warn",
 };
 
+// A `Set<string>` state updater (the "Scoring…" row sets). Typed loosely so the reconcile helpers
+// below can live at module scope and serve both the company and people scorers.
+type ScoringSetter = (updater: (prev: Set<string>) => Set<string>) => void;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+function clearScoring(setScoring: ScoringSetter, ids: string[]) {
+  if (!ids.length) return;
+  setScoring((prev) => {
+    const next = new Set(prev);
+    ids.forEach((id) => next.delete(id));
+    return next;
+  });
+}
+
+// Reconcile a background re-score from the DB, not the HTTP response. A re-score can exceed the 30s
+// API-Gateway sync cap: the request 503s while the Lambda keeps scoring and commits out of band, so
+// trusting the response would flash a row back to "Pending" before its score lands. Instead we poll
+// the list and keep each row's "Scoring…" status until it actually shows a score. Bounded by a
+// ceiling so a hard LLM failure can't spin forever. `fetchScored` returns the ids that now score.
+async function pollClearScored(
+  ids: string[],
+  fetchScored: () => Promise<Set<string>>,
+  setScoring: ScoringSetter,
+  stillCurrent: () => boolean,
+) {
+  if (!ids.length) return;
+  const deadline = Date.now() + 150_000; // ~2.5 min ceiling
+  const remaining = new Set(ids);
+  while (remaining.size && stillCurrent() && Date.now() < deadline) {
+    await sleep(3000);
+    if (!stillCurrent()) return;
+    let scored: Set<string>;
+    try {
+      scored = await fetchScored();
+    } catch {
+      continue; // transient list error — keep "Scoring…" and retry on the next tick
+    }
+    const done = [...remaining].filter((id) => scored.has(id));
+    if (done.length) {
+      clearScoring(setScoring, done);
+      done.forEach((id) => remaining.delete(id));
+    }
+  }
+}
+
 // Per-prospect enrichment shown in the expanded Approval Batches table (mock — wired in Phase C/E).
 // Mirrors the columns an external sourcing tool surfaces: a fit score (grade · intent heat),
 // the prospect's industry, and which of the client's people they're connected to.
@@ -2592,7 +2636,12 @@ export default function Workspace() {
     const ids = [...companyChecked];
     if (!ids.length) return toast("Select companies to re-score", "warn");
     toast(`Re-scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
-    void scoreInBackground(ids);
+    // Rows that already have a score can't be reconciled by "now has a score" — the driver clears
+    // those on the request's success; the poll only tracks Pending → scored transitions.
+    const baselineScored = new Set(
+      companies.filter((c) => companyChecked.has(c.id) && c.fit_tier != null).map((c) => c.id)
+    );
+    void scoreInBackground(ids, baselineScored);
   }
 
   // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
@@ -2613,30 +2662,43 @@ export default function Workspace() {
   }
 
   // Score a set of company rows in the BACKGROUND, in small chunks so no single request nears the
-  // 30s gateway cap. Each chunk re-scores via the existing /rescore endpoint; as it lands, those
-  // rows clear their "Scoring…" status and the table refreshes with the new scores. A failed chunk
-  // just clears its status (rows stay unscored — recoverable via the Update AI Score button).
-  async function scoreInBackground(ids: string[]) {
+  // 30s gateway cap. A row shows "Scoring…" until it ACTUALLY shows a score in the DB — not until
+  // the HTTP call returns: a slow chunk can 503 on the gateway cap while the Lambda keeps scoring
+  // and commits a moment later, so trusting the response would flash the row back to "Pending".
+  // The driver fires the chunks (clearing each on success, the fast path); the poll reconciles any
+  // row that 503'd from the list, so it never reverts to Pending. A hard LLM failure is bounded by
+  // the poll ceiling, after which the safety-net clear lets the row show its real (unscored) state.
+  async function scoreInBackground(ids: string[], baselineScored: Set<string>) {
     const CHUNK = 3; // ~3 reasoning calls per request keeps wall-clock well under 30s
     setScoringCoIds((prev) => new Set([...prev, ...ids]));
-    for (let i = 0; i < ids.length; i += CHUNK) {
-      const chunk = ids.slice(i, i + CHUNK);
-      try {
-        await rescoreCompanies(client, chunk);
-      } catch {
-        /* leave these rows unscored; the manual Update AI Score button can retry */
-      } finally {
-        if (clientRef.current === client) {
-          setScoringCoIds((prev) => {
-            const next = new Set(prev);
-            chunk.forEach((id) => next.delete(id));
-            return next;
-          });
+    const driver = (async () => {
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        if (clientRef.current !== client) return;
+        const chunk = ids.slice(i, i + CHUNK);
+        try {
+          await rescoreCompanies(client, chunk);
+          if (clientRef.current === client) {
+            clearScoring(setScoringCoIds, chunk); // success → clear now (fast path)
+            await reloadCompanies();
+          }
+        } catch {
+          /* timeout/error: keep the flag — the poll clears each row once the DB shows its score */
         }
       }
-      if (clientRef.current !== client) return; // client switched away — stop
-      await reloadCompanies();
-    }
+    })();
+    const poll = pollClearScored(
+      ids.filter((id) => !baselineScored.has(id)),
+      async () => {
+        const cs = await listCompanies(client);
+        if (clientRef.current === client) setCompanies(cs);
+        return new Set(cs.filter((c) => c.fit_tier != null).map((c) => c.id));
+      },
+      setScoringCoIds,
+      () => clientRef.current === client
+    );
+    await Promise.all([driver, poll]);
+    // Safety net: nothing should stay flagged once both settle (e.g. a hard LLM failure → Pending).
+    if (clientRef.current === client) clearScoring(setScoringCoIds, ids);
   }
 
   // "Find Lookalike" — find the next batch of peers of the checked rows. The seeds are the search
@@ -2788,30 +2850,52 @@ export default function Workspace() {
     const picked = selectedProspects;
     if (!picked.length) return toast("Select people to score", "warn");
     toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
-    void scorePeopleInBackground(picked.map((p) => ({ id: p.id, key: p.identity_key })));
+    // Already-scored rows are reconciled by the driver (on success); the poll only tracks the
+    // Pending → scored transition (a row that "now has a score").
+    const baselineScored = new Set(picked.filter((p) => p.fit_tier != null).map((p) => p.id));
+    void scorePeopleInBackground(
+      picked.map((p) => ({ id: p.id, key: p.identity_key })),
+      baselineScored
+    );
   }
 
-  async function scorePeopleInBackground(rows: { id: string; key: string }[]) {
+  // Mirrors the company scorer: a person shows "Scoring…" until the DB shows a score, surviving the
+  // 30s gateway cap (a 503 while the Lambda finishes scoring no longer flashes the row to "Pending").
+  async function scorePeopleInBackground(
+    rows: { id: string; key: string }[],
+    baselineScored: Set<string>
+  ) {
     const CHUNK = 3; // a few reasoning calls per request keeps wall-clock well under the 30s cap
-    setScoringPersonIds((prev) => new Set([...prev, ...rows.map((r) => r.id)]));
-    for (let i = 0; i < rows.length; i += CHUNK) {
-      const chunk = rows.slice(i, i + CHUNK);
-      try {
-        await rescoreProspects(client, chunk.map((r) => r.key));
-      } catch {
-        /* leave these rows unscored; the manual Get AI score button can retry */
-      } finally {
-        if (clientRef.current === client) {
-          setScoringPersonIds((prev) => {
-            const next = new Set(prev);
-            chunk.forEach((r) => next.delete(r.id));
-            return next;
-          });
+    const ids = rows.map((r) => r.id);
+    setScoringPersonIds((prev) => new Set([...prev, ...ids]));
+    const driver = (async () => {
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        if (clientRef.current !== client) return;
+        const chunk = rows.slice(i, i + CHUNK);
+        try {
+          await rescoreProspects(client, chunk.map((r) => r.key));
+          if (clientRef.current === client) {
+            clearScoring(setScoringPersonIds, chunk.map((r) => r.id)); // success → clear now
+            await reloadProspects();
+          }
+        } catch {
+          /* timeout/error: keep the flag — the poll clears each row once the DB shows its score */
         }
       }
-      if (clientRef.current !== client) return; // client switched away — stop
-      await reloadProspects();
-    }
+    })();
+    const poll = pollClearScored(
+      ids.filter((id) => !baselineScored.has(id)),
+      async () => {
+        const ps = await listProspects(client);
+        if (clientRef.current === client) setProspects(ps);
+        return new Set(ps.filter((p) => p.fit_tier != null).map((p) => p.id));
+      },
+      setScoringPersonIds,
+      () => clientRef.current === client
+    );
+    await Promise.all([driver, poll]);
+    // Safety net: clear any row still flagged once both settle (e.g. a hard LLM failure → Pending).
+    if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
   }
 
   // ---- Step-2 Settings (find-people scope) handlers ----
