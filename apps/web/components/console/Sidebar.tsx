@@ -6,15 +6,13 @@ import { clearTokens } from "@/lib/api";
 import { DEFAULT_CLIENT_PAGE } from "@/lib/client";
 import { ClientSwitcher } from "./ClientSwitcher";
 import { initialsOf, useMe } from "./MeContext";
-import { STATUS_TABS, useStatusTab } from "./StatusTab";
+import { STATUS_TABS } from "./StatusTab";
 
 export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
   const pathname = usePathname();
   const base = `/${slug}`;
   const onPerformance = pathname === `${base}/performance-summary`;
-  const onWorkspace = pathname === `${base}/workspace`;
-  const onStatus = pathname === `${base}/client-status`;
-  const { tab, setTab } = useStatusTab();
+  const onWorkspace = pathname.startsWith(`${base}/workspace`);
 
   const { me } = useMe();
   const name = me?.full_name || me?.email || "Loading…";
@@ -42,13 +40,8 @@ export function Sidebar({ slug, open }: { slug: string; open: boolean }) {
         {STATUS_TABS.map(([key, label]) => (
           <Link
             key={key}
-            href={`${base}/client-status#${key}`}
-            scroll={false}
-            className={clsx(onStatus && tab === key && "active")}
-            onClick={() => {
-              setTab(key);
-              if (typeof window !== "undefined") window.scrollTo({ top: 0 });
-            }}
+            href={`${base}/client-status/${key}`}
+            className={clsx(pathname === `${base}/client-status/${key}` && "active")}
           >
             {label}
           </Link>

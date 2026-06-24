@@ -7,7 +7,7 @@ import { MeProvider } from "./MeContext";
 import { SessionGuard } from "./SessionGuard";
 import { ToastProvider } from "../Toast";
 import { slugToTitle } from "@/lib/client";
-import { StatusTabCtx, STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
+import { STATUS_LABEL, STATUS_BACK, type StatusTabKey } from "./StatusTab";
 import "./console-shell.css";
 
 const LABELS: Record<string, string> = {
@@ -23,21 +23,24 @@ export const TopbarSlotCtx = createContext<HTMLElement | null>(null);
 
 export function ConsoleShell({ slug, children }: { slug: string; children: React.ReactNode }) {
   const [open, setOpen] = useState(false);
-  const [statusTab, setStatusTab] = useState<StatusTabKey>("approval");
   const [tabSlot, setTabSlot] = useState<HTMLElement | null>(null);
   const pathname = usePathname();
-  const seg = pathname.split("/").pop() || "workspace";
-  const label = LABELS[seg] || "Workspace";
-  const onStatus = seg === "client-status";
-  const onWorkspace = seg === "workspace";
-  const onSummary = seg === "performance-summary";
+  // Section/sub-tab derived from the path (handles nested routes like /workspace/brief and
+  // /client-status/approval) — the `.pop()` segment broke once these became real routes.
+  const parts = pathname.split("/").filter(Boolean); // [client, section, sub?]
+  const section = parts[1] || "workspace";
+  const sub = parts[2];
+  const label = LABELS[section] || "Workspace";
+  const onStatus = section === "client-status";
+  const onWorkspace = section === "workspace";
+  const onSummary = section === "performance-summary";
+  const statusTab = (onStatus ? sub || "approval" : "approval") as StatusTabKey;
   // Workspace + client-status lift their tab bar into the topbar (portaled into the slot below).
   const showTabSlot = onWorkspace || onStatus;
   const topbarCls =
     "topbar" + (onWorkspace ? " topbar--ws" : "") + (onSummary ? " topbar--bare" : "");
 
   return (
-    <StatusTabCtx.Provider value={{ tab: statusTab, setTab: setStatusTab }}>
       <MeProvider>
       <ToastProvider>
         <SessionGuard />
@@ -84,6 +87,5 @@ export function ConsoleShell({ slug, children }: { slug: string; children: React
         </div>
       </ToastProvider>
       </MeProvider>
-    </StatusTabCtx.Provider>
   );
 }

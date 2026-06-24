@@ -1,5 +1,6 @@
-"use client";
-import { createContext, useContext } from "react";
+// Shared constants for the Client Action (client-status) tabs. The active tab is now derived from
+// the URL (real nested routes), so no React context is needed — the sidebar, the client-status
+// layout, and the topbar breadcrumb/back-button all read these constants + the pathname.
 
 export type StatusTabKey = "approval" | "booking" | "feedback";
 
@@ -19,13 +20,3 @@ export const STATUS_BACK: Record<StatusTabKey, [string, string]> = {
   booking: ["workspace#campaign", "Back to Outreach Campaigns"],
   feedback: ["workspace#summaries", "Back to Meeting Recaps"],
 };
-
-// Shared so the sidebar, the client-status page, and the topbar breadcrumb all agree on
-// the active tab without relying on hashchange events (which Next's client router doesn't fire).
-export const StatusTabCtx = createContext<{ tab: StatusTabKey; setTab: (t: StatusTabKey) => void }>(
-  {
-    tab: "approval",
-    setTab: () => {},
-  }
-);
-export const useStatusTab = () => useContext(StatusTabCtx);
