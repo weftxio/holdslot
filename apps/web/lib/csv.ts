@@ -5,7 +5,7 @@
 
 export type ExclRow = { domain: string; name: string; website: string };
 export type RowError = { line: number; raw: string; reasons: string[] };
-export type ExclParseResult = {
+type ExclParseResult = {
   valid: ExclRow[];
   errors: RowError[];
   headerSkipped: boolean;
@@ -16,7 +16,7 @@ export type ExclParseResult = {
 // Handles quoted fields, commas/newlines inside quotes, escaped quotes (""),
 // CRLF or LF line endings, and a leading UTF-8 BOM. Returns a grid of strings.
 // Fully-empty rows are dropped.
-export function parseCsv(input: string): string[][] {
+function parseCsv(input: string): string[][] {
   let text = input;
   if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // strip BOM
 
@@ -60,11 +60,11 @@ export function parseCsv(input: string): string[][] {
 }
 
 // --- normalizers ------------------------------------------------------------
-export function isDomain(d: string): boolean {
+function isDomain(d: string): boolean {
   return /^(?=.{1,253}$)([a-z0-9](-?[a-z0-9])*\.)+[a-z]{2,}$/i.test(d);
 }
 
-export function normalizeDomain(raw: string): string | null {
+function normalizeDomain(raw: string): string | null {
   let d = (raw || "").trim().toLowerCase();
   if (!d) return null;
   d = d.replace(/^https?:\/\//, "").replace(/^www\./, "");
@@ -73,7 +73,7 @@ export function normalizeDomain(raw: string): string | null {
   return isDomain(d) ? d : null;
 }
 
-export function normalizeUrl(raw: string): string | null {
+function normalizeUrl(raw: string): string | null {
   const v = (raw || "").trim();
   if (!v) return null;
   const withScheme = /^https?:\/\//i.test(v) ? v : "https://" + v;
@@ -176,7 +176,7 @@ export function parseExclusionCsv(text: string): ExclParseResult {
 function csvCell(s: string): string {
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
-export function rowsToText(rows: ExclRow[]): string {
+function rowsToText(rows: ExclRow[]): string {
   return rows
     .map((r) => `${csvCell(r.domain)}, ${csvCell(r.name)}, ${csvCell(r.website)}`)
     .join("\n");

@@ -370,13 +370,22 @@ export default function ListPage() {
     () => prospects.filter((p) => checked.has(p.id)),
     [prospects, checked]
   );
-  const toEnrich = selectedProspects.filter((p) => NEEDS_ENRICH.has(p.status));
-  const enrichedSel = selectedProspects.filter((p) => p.status === ENRICHED_STATUS);
+  const toEnrich = useMemo(
+    () => selectedProspects.filter((p) => NEEDS_ENRICH.has(p.status)),
+    [selectedProspects]
+  );
+  const enrichedSel = useMemo(
+    () => selectedProspects.filter((p) => p.status === ENRICHED_STATUS),
+    [selectedProspects]
+  );
   const canEnrich = toEnrich.length > 0;
   // Batch only once EVERY selected person is enriched (a verified email) — closes the gap where an
   // enrich_failed (no-email) row slipped through the old "nothing still needs enrich" gate.
-  const canBatch =
-    selectedProspects.length > 0 && selectedProspects.every((p) => p.status === ENRICHED_STATUS);
+  const canBatch = useMemo(
+    () =>
+      selectedProspects.length > 0 && selectedProspects.every((p) => p.status === ENRICHED_STATUS),
+    [selectedProspects]
+  );
 
   function toggleRow(id: string) {
     setChecked((s) => {

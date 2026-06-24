@@ -1,0 +1,9 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "app/**/{page,layout,route,not-found,loading,error,template,default,global-error}.tsx",
+    "next.config.{js,ts,mjs}",
+    "e2e/**/*.spec.ts"
+  ],
+  "project": ["**/*.{ts,tsx}"]
+}
