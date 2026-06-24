@@ -5,6 +5,5 @@
     "next.config.{js,ts,mjs}",
     "e2e/**/*.spec.ts"
   ],
-  "project": ["**/*.{ts,tsx}"],
-  "ignore": ["lib/api-types.ts"]
+  "project": ["**/*.{ts,tsx}"]
 }
