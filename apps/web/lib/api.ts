@@ -304,22 +304,32 @@ export async function getScopingPrompt(client: string): Promise<ScopingPrompt> {
   return r.json();
 }
 
-// The exact system + input prompt a company fit-score call would send (preview, no LLM spend). The
-// `user` message carries the REAL targeting context (this client's brief + research spec + the
-// sample row's ICP docs) so the Fit-rubric modal mirrors what reaches the model. `company_id`
-// picks the sample row; omitted → the most recent company.
+// The two fit-scoring rubrics, one per stage: company buying-intent (Step 1) vs people
+// reply-potential / decision-power (Step 2). The names match the backend prompt stages + LLM
+// purposes 1:1.
+export type FitStage = "company_fit" | "prospect_fit";
+
+// The exact system + input prompt a fit-score call would send (preview, no LLM spend). The `user`
+// message carries the REAL targeting context (this client's brief + research spec + the sample row's
+// ICP docs) so the Fit-rubric modal mirrors what reaches the model. `sampleId` picks the sample row
+// (a company id for `company_fit`, a prospect id for `prospect_fit`); omitted → the most recent.
 export type FitPrompt = {
   system: string;
   user: string;
-  company: string | null;
+  company: string | null; // the sample row's label (company name, or person name for prospect_fit)
   model: string[];
   purpose: string;
   prompt_version: string;
 };
 
-export async function getFitPrompt(client: string, companyId?: string): Promise<FitPrompt> {
-  const qs = companyId ? `?company_id=${encodeURIComponent(companyId)}` : "";
-  const r = await authFetch(`/${client}/companies/fit-prompt${qs}`);
+export async function getFitPrompt(
+  client: string,
+  stage: FitStage,
+  sampleId?: string
+): Promise<FitPrompt> {
+  const qs = new URLSearchParams({ stage });
+  if (sampleId) qs.set("sample_id", sampleId);
+  const r = await authFetch(`/${client}/fit-prompt?${qs.toString()}`);
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
@@ -419,8 +429,8 @@ export type SourcingDocApi = {
   created_at: string | null;
 };
 export type SourcingDocList = {
-  fit_scoring: SourcingDocApi | null;
-  rubric_versions: number[];
+  company_fit: SourcingDocApi | null;
+  prospect_fit: SourcingDocApi | null;
 };
 
 export async function listProspects(client: string): Promise<ProspectApi[]> {
@@ -437,7 +447,7 @@ export async function getSourcingDocs(client: string): Promise<SourcingDocList> 
 
 export async function saveSourcingDoc(
   client: string,
-  stage: "fit_scoring",
+  stage: FitStage,
   body: string
 ): Promise<SourcingDocApi> {
   const r = await authFetch(`/${client}/sourcing-docs`, {

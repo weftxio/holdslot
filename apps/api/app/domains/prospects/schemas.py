@@ -92,7 +92,8 @@ class CompanyFindIn(BaseModel):
 
 class PeopleFindIn(BaseModel):
     """Trigger Apollo Flow B (find people) across an explicit set of Step-2 companies. `per_company`
-    caps how many people each org contributes (one api_search call per org).
+    is how many people each org contributes (one api_search call per org); the default fetches
+    everyone matching the Find Settings, up to Apollo's 100-per-call max — no artificial 10 cap.
 
     `company_ids` are the Step-2 rows to search, by Company.id. The search is driven by this set —
     NOT a server-side "selected" status — so an already-searched company can be re-searched and a
@@ -104,7 +105,7 @@ class PeopleFindIn(BaseModel):
     set per-org by the loop, never by the override). Omitted → the saved spec is used unchanged.
     """
 
-    per_company: int = 10
+    per_company: int = 100
     icp_id: str | None = None
     people_search_params: dict | None = None
     company_ids: list[str] = Field(default_factory=list)
@@ -277,16 +278,18 @@ class SourcingDocOut(BaseModel):
 
 
 class SourcingDocList(BaseModel):
-    """Latest + version list for the fit rubric (the one editable scoring doc)."""
+    """Latest version of each editable fit rubric: `company_fit` (Step 1) and
+    `prospect_fit` (Step 2)."""
 
-    fit_scoring: SourcingDocOut | None = None
-    rubric_versions: list[int] = []
+    company_fit: SourcingDocOut | None = None
+    prospect_fit: SourcingDocOut | None = None
 
 
 class SourcingDocIn(BaseModel):
-    """Save the founder's edit as the next version of the fit-scoring rubric."""
+    """Save the founder's edit as the next version of a fit rubric
+    (`company_fit` | `prospect_fit`)."""
 
-    stage: str  # fit_scoring
+    stage: str  # company_fit | prospect_fit
     body: str
 
 

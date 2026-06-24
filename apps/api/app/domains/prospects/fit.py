@@ -149,8 +149,13 @@ def build_messages(rubric_body: str, enrichment: dict, targeting: dict) -> list[
     import json
 
     system = (
-        "You are HoldSlot's prospect fit scorer. Score ONE enriched prospect against the fixed "
-        "rubric below, criterion by criterion. For each sub-criterion award the rubric's "
+        "You are HoldSlot's prospect fit scorer (stage 2 of two: the company already cleared "
+        "stage 1, now judge the PERSON). Score how likely this individual is to reply AND to hold "
+        "the decision-making power to convert a deal. Score ONE prospect against the fixed "
+        "rubric below, criterion by criterion. The prospect carries the person's signals (title, "
+        "seniority, department, email) plus the parent company's firmographics and its stage-1 fit "
+        "verdict (`company_fit`); the targeting context's `spec.people_search_params` is the "
+        "intended decision-maker scope we searched for. For each sub-criterion award the rubric's "
         "full / partial / zero points — never more than its max. A field still unknown after "
         "enrichment scores per the rubric's Unknown policy (firmographic match → 0; tech → "
         "partial; engagement → 0; email risky/accept-all → 3). Return integer points per "

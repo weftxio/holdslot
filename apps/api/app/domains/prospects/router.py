@@ -77,7 +77,12 @@ from app.models import (
 router = APIRouter(tags=["prospects"])
 log = logging.getLogger("holdslot.prospects")
 
-_VALID_STAGES = ("fit_scoring",)
+# The two editable fit rubrics — one per scoring stage. `company_fit` (Step 1) grades buying intent;
+# `prospect_fit` (Step 2) grades a person's reply potential + decision-making power. The stage names
+# match the LLM purposes in `fit.py` (COMPANY_PURPOSE / PURPOSE) so doc ↔ scorer line up 1:1.
+COMPANY_STAGE = "company_fit"
+PROSPECT_STAGE = "prospect_fit"
+_VALID_STAGES = (COMPANY_STAGE, PROSPECT_STAGE)
 
 # Sync-budget caps. Find/enrich run synchronously behind the 30s API-Gateway HTTP-API cap, and each
 # scored row is one blocking LLM call — so a single request must bound how many it does. Larger sets
@@ -85,7 +90,8 @@ _VALID_STAGES = ("fit_scoring",)
 # operator re-clicks to continue). Keep the product (calls × ~1-2s) comfortably under 30s.
 MAX_COMPANIES_PER_FIND = 15  # company-search rows scored per find-company request
 MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apollo call each)
-MAX_PEOPLE_PER_FIND = 15  # people scored per find-people request
+MAX_PEOPLE_PER_FIND = 15  # LLM-scored people per RESCORE request (30s sync cap; the spend)
+MAX_PEOPLE_PER_FIND_RUN = 250  # unscored people landed per find-people request (free, no LLM)
 LOOKALIKE_LIMIT = 10  # peers fetched per Lookalike find (seeds drop via domain dedupe → ≤10 net)
 
 
@@ -260,6 +266,35 @@ def _company_payload(c: Company) -> dict:
     }
 
 
+def _prospect_payload(enrichment: dict | None, company: Company | None) -> dict:
+    """The person facts the stage-2 rubric scores against — the decision-maker signals (title,
+    seniority, department, email) PLUS the parent company's firmographics and its stage-1 fit
+    verdict, so a person is judged as a decision-maker INSIDE an already-qualified account. Apollo
+    obfuscates seniority/department until enrich, so those stay empty pre-enrich (rubric Unknown
+    policy applies); the intended persona scope reaches the model via the targeting `spec` block."""
+    e = dict(enrichment or {})
+    payload = {
+        "full_name": e.get("full_name", ""),
+        "title": e.get("title", ""),
+        "seniority": e.get("seniority", ""),
+        "departments": e.get("departments", []),
+        "email": e.get("email", ""),
+        "email_present": bool(e.get("email")),
+        "linkedin_url": e.get("linkedin_url", ""),
+        "company": e.get("company", ""),
+        "company_domain": e.get("company_domain") or e.get("domain", ""),
+        "company_industry": e.get("company_industry", ""),
+        "company_size": e.get("company_size", ""),
+    }
+    if company is not None:
+        payload["company_fit"] = {
+            "score": company.fit_score,
+            "tier": company.fit_tier,
+            "reason": company.fit_reason or (company.fit_components or {}).get("fit_reason", ""),
+        }
+    return payload
+
+
 def _apply_company_score(c: Company, scored: dict) -> float:
     """Write a company fit result onto the row in place; return the call's cost_usd."""
     c.fit_score = scored["fit_score"]
@@ -342,7 +377,7 @@ def add_company(
     icp = uuid.UUID(body.icp_id) if body.icp_id else None
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
     targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric = _latest_doc(db, ctx.tenant.id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
 
     company = db.execute(
@@ -583,7 +618,7 @@ def _run_company_find(
     run_id = _apollo_run_id()
     brief = _latest_brief(db, tenant_id)
     targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp))
-    rubric = _latest_doc(db, tenant_id, "fit_scoring")
+    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
     cost = 0.0
     companies: list[Company] = []
@@ -767,56 +802,116 @@ def select_companies(
     return [_company_out(c) for c in rows]
 
 
-@router.get("/{client}/companies/fit-prompt", response_model=FitPromptOut)
-def preview_fit_prompt(
-    company_id: str | None = None,
-    ctx: AccessContext = Depends(require_membership()),
-    db: Session = Depends(get_db),
-) -> FitPromptOut:
-    """The exact system + input prompt a company fit-score call would send — no LLM call, no spend.
-
-    Built from the same `fit.build_company_messages(rubric, payload, targeting)` the live scoring
-    uses, with the REAL targeting context queried from the DB (this client's brief + research spec +
-    the row's ICP docs), so the Fit-rubric modal preview mirrors what actually reaches the model.
-    `company_id` picks the sample row; omitted (or unknown) → the most recent company, a stable
-    default. Mirrors the scoping-prompt preview (`/brief/structure/preview`).
-    """
+def _company_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPromptOut:
+    """Stage-1 preview — `fit.build_company_messages` with the REAL targeting context (brief +
+    research spec + the sample row's ICP docs). `sample_id` picks the company; omitted → newest."""
     company = None
-    if company_id:
+    if sample_id:
         try:
-            cid = uuid.UUID(company_id)
+            cid = uuid.UUID(sample_id)
         except ValueError:
             cid = None
         if cid is not None:
             company = db.execute(
-                select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id == cid)
+                select(Company).where(Company.tenant_id == tenant_id, Company.id == cid)
             ).scalar_one_or_none()
     if company is None:
         company = (
             db.execute(
                 select(Company)
-                .where(Company.tenant_id == ctx.tenant.id)
+                .where(Company.tenant_id == tenant_id)
                 .order_by(Company.created_at.desc().nullslast())
             )
             .scalars()
             .first()
         )
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
     icp_id = company.icp_id if company else None
-    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp_id))
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
     payload = _company_payload(company) if company else {}
-    messages = fit.build_company_messages(rubric_body, payload, targeting)
-    by_role = {m["role"]: m["content"] for m in messages}
+    msgs = fit.build_company_messages(rubric_body, payload, targeting)
+    by_role = {m["role"]: m["content"] for m in msgs}
     return FitPromptOut(
         system=by_role.get("system", ""),
         user=by_role.get("user", ""),
         company=(company.name or company.domain) if company else None,
         model=list(fit.FIT_MODELS),
         purpose=fit.COMPANY_PURPOSE,
-        prompt_version=fit.RUBRIC_VERSION,
+        prompt_version=f"v{rubric.version}" if rubric else "—",
     )
+
+
+def _prospect_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPromptOut:
+    """Stage-2 preview — `fit.build_messages` with a sample prospect's payload (decision-maker
+    signals + parent-company fit) and the same targeting context. `sample_id` picks the prospect;
+    omitted → newest. Mirrors live scoring, so the modal shows exactly what reaches the model."""
+    prospect = None
+    if sample_id:
+        try:
+            pid = uuid.UUID(sample_id)
+        except ValueError:
+            pid = None
+        if pid is not None:
+            prospect = db.execute(
+                select(Prospect).where(Prospect.tenant_id == tenant_id, Prospect.id == pid)
+            ).scalar_one_or_none()
+    if prospect is None:
+        prospect = (
+            db.execute(
+                select(Prospect)
+                .where(Prospect.tenant_id == tenant_id)
+                .order_by(Prospect.created_at.desc().nullslast())
+            )
+            .scalars()
+            .first()
+        )
+    company = None
+    if prospect and prospect.company_id:
+        company = db.execute(
+            select(Company).where(
+                Company.tenant_id == tenant_id, Company.id == prospect.company_id
+            )
+        ).scalar_one_or_none()
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, PROSPECT_STAGE)
+    rubric_body = rubric.body if rubric else ""
+    icp_id = prospect.icp_id if prospect else None
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+    payload = _prospect_payload(prospect.enrichment, company) if prospect else {}
+    by_role = {m["role"]: m["content"] for m in fit.build_messages(rubric_body, payload, targeting)}
+    sample = (prospect.enrichment or {}).get("full_name") or (
+        (prospect.enrichment or {}).get("company") if prospect else None
+    )
+    return FitPromptOut(
+        system=by_role.get("system", ""),
+        user=by_role.get("user", ""),
+        company=sample or None,
+        model=list(fit.FIT_MODELS),
+        purpose=fit.PURPOSE,
+        prompt_version=f"v{rubric.version}" if rubric else "—",
+    )
+
+
+@router.get("/{client}/fit-prompt", response_model=FitPromptOut)
+def preview_fit_prompt(
+    stage: str = COMPANY_STAGE,
+    sample_id: str | None = None,
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> FitPromptOut:
+    """The exact system + input prompt a fit-score call would send — no LLM call, no spend.
+
+    `stage=company_fit` (default) previews Step-1 company scoring; `stage=prospect_fit` previews
+    Step-2 people scoring. Each is built from the SAME function the live scorer uses, with the real
+    targeting context from the DB, so the Fit-rubric modal mirrors what reaches the model.
+    `sample_id` picks the sample row (company id or prospect id for the respective stage)."""
+    if stage == PROSPECT_STAGE:
+        return _prospect_fit_prompt(db, ctx.tenant.id, sample_id)
+    if stage != COMPANY_STAGE:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"unknown stage {stage!r}")
+    return _company_fit_prompt(db, ctx.tenant.id, sample_id)
 
 
 @router.post("/{client}/companies/rescore", response_model=list[CompanyOut])
@@ -851,7 +946,7 @@ def rescore_companies(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
 
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric = _latest_doc(db, ctx.tenant.id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
     # ICP docs differ per row, so build targeting once per distinct icp_id on the main thread (the
     # off-thread jobs must close over plain data, never the session). Mirrors find/add scoring.
@@ -1013,16 +1108,10 @@ def get_sourcing_docs(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> SourcingDocList:
-    versions = list(
-        db.execute(
-            select(Prompt.version)
-            .where(Prompt.tenant_id == ctx.tenant.id, Prompt.stage == "fit_scoring")
-            .order_by(Prompt.version.desc())
-        ).scalars()
-    )
+    """The two editable fit rubrics: `company_fit` (Step 1) and `prospect_fit` (Step 2)."""
     return SourcingDocList(
-        fit_scoring=_doc_out(_latest_doc(db, ctx.tenant.id, "fit_scoring")),
-        rubric_versions=versions,
+        company_fit=_doc_out(_latest_doc(db, ctx.tenant.id, COMPANY_STAGE)),
+        prospect_fit=_doc_out(_latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)),
     )
 
 
@@ -1081,7 +1170,7 @@ def add_prospect(
     icp = uuid.UUID(body.icp_id) if body.icp_id else None
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
     targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric = _latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)
     rubric_body = rubric.body if rubric else ""
 
     domain = normalize_domain(body.domain)
@@ -1120,7 +1209,7 @@ def add_prospect(
         scored_row = fit.score(
             tenant_id=ctx.tenant.id,
             rubric_body=rubric_body,
-            enrichment=enrichment,
+            enrichment=_prospect_payload(enrichment, comp),
             targeting=targeting,
         )
     except LlmError as e:
@@ -1179,9 +1268,11 @@ def find_people(
     `found` (no email yet), are fit-scored on what's known, and dedupe on `apollo_person_id`.
     Enrichment (the credit spend) is a separate, human-gated step (`/prospects/enrich`).
 
-    Bounded per request (`MAX_ORGS_PER_FIND` orgs, `MAX_PEOPLE_PER_FIND` people) to stay under the
-    sync timeout. Every org actually searched advances to `people_found`, so it is not searched
-    again; the operator re-runs to drain the rest of a large selection.
+    No per-company people cap: each org contributes everyone matching the Find Settings (up to
+    Apollo's 100/call). Bounded per request only by `MAX_ORGS_PER_FIND` orgs and
+    `MAX_PEOPLE_PER_FIND_RUN` total people (find is free + unscored, an I/O bound, not the LLM one).
+    Every org
+    actually searched advances to `people_found`; the operator re-runs to drain a large selection.
     """
     spec = _latest_spec(db, ctx.tenant.id)
     if spec is None or not (spec.spec or {}).get("people_search_params"):
@@ -1243,7 +1334,7 @@ def find_people(
     new_rows: list[tuple[dict, Company]] = []
     dropped_total = 0
     for comp in selected:
-        if len(new_rows) >= MAX_PEOPLE_PER_FIND:
+        if len(new_rows) >= MAX_PEOPLE_PER_FIND_RUN:
             continue  # batch full — leave this org as-is (still "Pending") for the next run
         try:
             rows, pbody, relax = _search_people_relaxed(
@@ -1275,7 +1366,7 @@ def find_people(
             {k: v for k, v in pbody.items() if k != "organization_ids"},
         )
         for p in survivors:
-            if len(new_rows) >= MAX_PEOPLE_PER_FIND:
+            if len(new_rows) >= MAX_PEOPLE_PER_FIND_RUN:
                 break
             seen_ids.add(p["apollo_person_id"])
             new_rows.append((p, comp))
@@ -1522,8 +1613,23 @@ def rescore_prospects(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching prospects")
 
     brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    rubric = _latest_doc(db, ctx.tenant.id, "fit_scoring")
+    rubric = _latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)
     rubric_body = rubric.body if rubric else ""
+    # Parent companies, loaded once, so each person is scored with its account's firmographics + the
+    # stage-1 fit verdict (decision-maker INSIDE an already-qualified company).
+    company_ids = {p.company_id for p in rows if p.company_id}
+    companies = (
+        {
+            c.id: c
+            for c in db.execute(
+                select(Company).where(
+                    Company.tenant_id == ctx.tenant.id, Company.id.in_(company_ids)
+                )
+            ).scalars()
+        }
+        if company_ids
+        else {}
+    )
     targeting_cache: dict[str | None, dict] = {}
 
     def _targeting_for(icp_id) -> dict:
@@ -1538,10 +1644,11 @@ def rescore_prospects(
         (
             p,
             (
-                lambda e=dict(p.enrichment or {}), targeting=_targeting_for(p.icp_id): fit.score(
+                lambda payload=_prospect_payload(p.enrichment, companies.get(p.company_id)),
+                targeting=_targeting_for(p.icp_id): fit.score(
                     tenant_id=ctx.tenant.id,
                     rubric_body=rubric_body,
-                    enrichment=e,
+                    enrichment=payload,
                     targeting=targeting,
                 )
             ),

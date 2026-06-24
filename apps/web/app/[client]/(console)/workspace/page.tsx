@@ -23,6 +23,7 @@ import {
   type ResearchSpecResult,
   type ScopingPrompt,
   type FitPrompt,
+  type FitStage,
   type SourcingDocList,
   addCompany,
   addProspect,
@@ -182,6 +183,14 @@ const SOURCE_LABEL: Record<string, string> = {
 // People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
 const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
 const ENRICHED_STATUS = "scored";
+// Prospect-list ordering: AI Score first (highest → lowest, unscored sink), then Enriched, then Found.
+const STATUS_SORT: Record<string, number> = { scored: 0, found: 1 };
+function compareProspectRows(a: ProspectApi, b: ProspectApi): number {
+  const sa = a.fit_score ?? -1;
+  const sb = b.fit_score ?? -1;
+  if (sb !== sa) return sb - sa;
+  return (STATUS_SORT[a.status] ?? 2) - (STATUS_SORT[b.status] ?? 2);
+}
 const BATCH_STATUS_CLS: Record<string, string> = {
   Approved: "badge-ok",
   Rejected: "badge-danger",
@@ -2181,13 +2190,17 @@ export default function Workspace() {
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [fFit, setFFit] = useState("");
+  const [fStatus, setFStatus] = useState(""); // "" all · "found" · "scored" (Enriched)
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
   const [newBatchName, setNewBatchName] = useState("");
   // Fit-rubric settings (the versioned scoring rubric), edited in a modal.
   const [showSourcing, setShowSourcing] = useState(false);
   const [docs, setDocs] = useState<SourcingDocList | null>(null);
   const [rubricDraft, setRubricDraft] = useState("");
-  const [savingDoc, setSavingDoc] = useState<"fit_scoring" | null>(null);
+  const [savingDoc, setSavingDoc] = useState<FitStage | null>(null);
+  // Which rubric the Fit-rubric modal is editing — `company_fit` on the Step-1 tab, `prospect_fit`
+  // on Step-2 — set when the modal opens so its body/preview/badges all target the same stage.
+  const [rubricStage, setRubricStage] = useState<FitStage>("company_fit");
   // The real fit-score prompt for one sample company (system rubric + the live targeting context
   // built from this client's brief + research spec + ICP docs), fetched when the modal opens.
   const [fitPrompt, setFitPrompt] = useState<FitPrompt | null>(null);
@@ -2199,6 +2212,9 @@ export default function Workspace() {
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
   const [companies, setCompanies] = useState<CompanyApi[]>([]);
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
+  // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
+  // set → collapsed, so the list opens with every company collapsed to its one-line summary.
+  const [expandedCos, setExpandedCos] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
   const [coFit, setCoFit] = useState("");
   // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
@@ -2247,7 +2263,6 @@ export default function Workspace() {
   // across the selected Step-2 companies). Null until a probe runs; departments come from here too.
   const [pplFacets, setPplFacets] = useState<PeopleFacets | null>(null);
   const [pplFacetsLoading, setPplFacetsLoading] = useState(false);
-  const [deptOpen, setDeptOpen] = useState<Set<string>>(new Set()); // expanded master departments
   const blankPerson = {
     full_name: "",
     company: "",
@@ -2338,7 +2353,7 @@ export default function Workspace() {
         setProspects(ps);
         setCompanies(cs);
         setDocs(dl);
-        setRubricDraft(dl?.fit_scoring?.body ?? "");
+        setRubricDraft(dl?.company_fit?.body ?? "");
         setMasterDepts(depts);
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
@@ -2364,18 +2379,6 @@ export default function Workspace() {
     };
   }, [client]);
 
-  // Step 2 is company-centric: the pursued companies (staged into Step 2 as `selected`, or already
-  // searched → `people_found`) are the rows; each company's found people nest beneath it. `search`
-  // filters the companies; `fFit` filters the people shown within them.
-  const pursued = useMemo(
-    () =>
-      companies.filter(
-        (c) =>
-          (c.status === "selected" || c.status === "people_found") &&
-          (!search || `${c.name} ${c.domain}`.toLowerCase().includes(search.toLowerCase()))
-      ),
-    [companies, search]
-  );
   // Prospects grouped by their company id (robust — the company label can drift; the id can't).
   const prospectsByCompany = useMemo(() => {
     const m = new Map<string, ProspectApi[]>();
@@ -2387,17 +2390,50 @@ export default function Workspace() {
     }
     return m;
   }, [prospects]);
+  // Step 2 is company-centric: the pursued companies (staged into Step 2 as `selected`, or already
+  // searched → `people_found`) are the rows; each company's found people nest beneath it. `search`
+  // filters the companies; `fFit` filters the people shown within them. Ordered by enriched count,
+  // then total people — both descending — so the most-progressed companies surface first.
+  const pursued = useMemo(
+    () =>
+      companies
+        .filter(
+          (c) =>
+            (c.status === "selected" || c.status === "people_found") &&
+            (!search || `${c.name} ${c.domain}`.toLowerCase().includes(search.toLowerCase()))
+        )
+        .sort((a, b) => {
+          const pa = prospectsByCompany.get(a.id) ?? [];
+          const pb = prospectsByCompany.get(b.id) ?? [];
+          const ea = pa.filter((p) => p.status === ENRICHED_STATUS).length;
+          const eb = pb.filter((p) => p.status === ENRICHED_STATUS).length;
+          if (eb !== ea) return eb - ea;
+          return pb.length - pa.length;
+        }),
+    [companies, search, prospectsByCompany]
+  );
+  // The pool a manually-added person can attach to: companies accepted into Step 2 (with a domain,
+  // since the backend resolves the person's company by domain). Drives the Add-person dropdown.
+  const step2Companies = useMemo(
+    () =>
+      companies.filter(
+        (c) => (c.status === "selected" || c.status === "people_found") && c.domain
+      ),
+    [companies]
+  );
   // Rows of a pursued company that pass the fit filter — the per-company nested list.
   const rowsForCompany = (id: string) =>
-    (prospectsByCompany.get(id) ?? []).filter((p) => !fFit || p.fit_tier === fFit);
+    (prospectsByCompany.get(id) ?? [])
+      .filter((p) => !fFit || p.fit_tier === fFit)
+      .filter((p) => !fStatus || p.status === fStatus)
+      .sort(compareProspectRows);
   // People in view across all pursued companies = the unit of selection for score / enrich / batch.
   const visible = useMemo(
     () => pursued.flatMap((c) => rowsForCompany(c.id)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pursued, prospectsByCompany, fFit]
+    [pursued, prospectsByCompany, fFit, fStatus]
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
-  const allChecked = visible.length > 0 && selCount === visible.length;
   // Step-2 companies that are ticked — the unit of selection for Find People.
   const pplCoSel = pursued.filter((c) => companyChecked.has(c.id));
   // Step-2 dock: enrich and batch are mutually exclusive — find before enrich, enrich before
@@ -2420,14 +2456,6 @@ export default function Workspace() {
       const n = new Set(s);
       if (n.has(id)) n.delete(id);
       else n.add(id);
-      return n;
-    });
-  }
-  function toggleAll(on: boolean) {
-    const ids = visible.map((p) => p.id);
-    setChecked((s) => {
-      const n = new Set(s);
-      for (const id of ids) on ? n.add(id) : n.delete(id);
       return n;
     });
   }
@@ -2454,10 +2482,16 @@ export default function Workspace() {
   const scoringPeopleActive = scoringPersonIds.size > 0;
   const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
   // Sample company for the Fit-rubric preview: the first ticked row, else the first one in view. Its
-  // id is sent to GET /companies/fit-prompt so the modal shows that row's real input prompt.
+  // id is sent to GET /fit-prompt?stage=company_fit so the modal shows that row's real input prompt.
   const rubricSample = useMemo(
     () => coVisible.find((c) => companyChecked.has(c.id)) ?? coVisible[0] ?? companies[0] ?? null,
     [coVisible, companyChecked, companies]
+  );
+  // Sample prospect for the Step-2 (prospect_fit) preview: first ticked person, else first in view.
+  // Its id is sent to GET /fit-prompt so the modal shows that person's real input prompt.
+  const prospectSample = useMemo(
+    () => visible.find((p) => checked.has(p.id)) ?? visible[0] ?? prospects[0] ?? null,
+    [visible, checked, prospects]
   );
   // List is "fetching" during initial hydrate, an Apollo find, or a re-score — show the overlay
   // spinner over the table for the whole period, whether or not rows already exist.
@@ -2477,6 +2511,13 @@ export default function Workspace() {
   );
   function toggleCo(id: string) {
     setCompanyChecked((s) => {
+      const n = new Set(s);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+  function toggleCoCollapse(id: string) {
+    setExpandedCos((s) => {
       const n = new Set(s);
       n.has(id) ? n.delete(id) : n.add(id);
       return n;
@@ -2796,7 +2837,6 @@ export default function Workspace() {
   function openPeopleScopeSettings() {
     setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec)));
     setPplFacets(null);
-    setDeptOpen(new Set());
     setPeopleScopeOpen(true);
     void loadPeopleFacets();
   }
@@ -2898,12 +2938,20 @@ export default function Workspace() {
   // ticked row, else the first in view) — the backend builds it from this client's brief + research
   // spec + ICP docs, so the Input-prompt pane shows exactly what reaches the model.
   async function openRubric() {
+    // Step-2 tab → the people rubric; Step-1 tab → the company rubric. The modal's body, preview,
+    // and badges all key off this stage.
+    const stage: FitStage = listStage === "people" ? "prospect_fit" : "company_fit";
+    setRubricStage(stage);
+    setRubricDraft(
+      (stage === "prospect_fit" ? docs?.prospect_fit?.body : docs?.company_fit?.body) ?? ""
+    );
     setShowSourcing(true);
     setFitPrompt(null);
     setFitPromptErr(null);
     setFitPromptLoading(true);
     try {
-      const fp = await getFitPrompt(client, rubricSample?.id);
+      const sampleId = stage === "prospect_fit" ? prospectSample?.id : rubricSample?.id;
+      const fp = await getFitPrompt(client, stage, sampleId);
       setFitPrompt(fp);
     } catch (e) {
       setFitPromptErr(e instanceof Error ? e.message : "Could not load the input prompt");
@@ -2913,7 +2961,7 @@ export default function Workspace() {
   }
 
   // Save the founder's edit as the next version of the fit rubric (append-only vN+1).
-  async function saveDoc(stage: "fit_scoring") {
+  async function saveDoc(stage: FitStage) {
     const body = rubricDraft.trim();
     if (!body) return toast("Nothing to save", "warn");
     setSavingDoc(stage);
@@ -2921,7 +2969,8 @@ export default function Workspace() {
       await saveSourcingDoc(client, stage, body);
       const dl = await getSourcingDocs(client);
       setDocs(dl);
-      toast(`Saved fit rubric v${dl.fit_scoring?.version}`);
+      const v = stage === "prospect_fit" ? dl.prospect_fit?.version : dl.company_fit?.version;
+      toast(`Saved ${stage === "prospect_fit" ? "prospect" : "company"} fit rubric v${v}`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Save failed", "warn");
     } finally {
@@ -4277,8 +4326,8 @@ export default function Workspace() {
                     {enriching
                       ? "Confirming…"
                       : toEnrich.length
-                        ? `Confirm enrich ${toEnrich.length}`
-                        : "Confirm enrich"}
+                        ? `Enrichment ${toEnrich.length}`
+                        : "Enrichment"}
                   </button>
                   <button
                     className="btn btn-ghost btn-sm"
@@ -4305,6 +4354,15 @@ export default function Workspace() {
                     onChange={(e) => setSearch(e.target.value)}
                   />
                 </div>
+                <select
+                  className="select"
+                  value={fStatus}
+                  onChange={(e) => setFStatus(e.target.value)}
+                >
+                  <option value="">All status</option>
+                  <option value="found">Found</option>
+                  <option value="scored">Enriched</option>
+                </select>
                 <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
                   <option value="">Any fit</option>
                   <option value="Strong">Strong fit</option>
@@ -4331,20 +4389,13 @@ export default function Workspace() {
                 <table className="tbl">
                   <thead>
                     <tr>
-                      <th style={{ width: 34 }}>
-                        <input
-                          type="checkbox"
-                          className="tbl-check"
-                          checked={allChecked}
-                          onChange={(e) => toggleAll(e.target.checked)}
-                        />
-                      </th>
                       <th>Company</th>
+                      <th style={{ width: 34 }} />
                       <th>Prospect</th>
-                      <th>LinkedIn</th>
                       <th>Title</th>
-                      <th>AI Score</th>
                       <th>Status</th>
+                      <th>LinkedIn</th>
+                      <th>AI Score</th>
                     </tr>
                   </thead>
                   {pursued.length > 0 && (
@@ -4353,57 +4404,98 @@ export default function Workspace() {
                         const rows = rowsForCompany(c.id);
                         const finding = findingPplIds.has(c.id);
                         const searched = c.status === "people_found";
-                        return (
-                          <Fragment key={c.id}>
-                            <tr className="grp-row">
-                              <td>
+                        // The per-company count/status indicator — sits on top of the company name.
+                        const countBadge = finding ? (
+                          <span className="fit-scoring">
+                            <span className="hs-spinner" aria-hidden="true" />
+                            Finding…
+                          </span>
+                        ) : !searched ? (
+                          <span className="badge badge-warn">
+                            <span className="bdot" />
+                            Pending
+                          </span>
+                        ) : rows.length === 0 ? (
+                          <span className="badge badge-neutral">
+                            <span className="bdot" />0 people
+                          </span>
+                        ) : (
+                          <span className="badge badge-info">
+                            <span className="bdot" />
+                            {rows.length} {rows.length === 1 ? "person" : "people"}
+                          </span>
+                        );
+                        const collapsed = !expandedCos.has(c.id);
+                        const expandable = rows.length > 0;
+                        const enrichedCount = rows.filter(
+                          (p) => p.status === ENRICHED_STATUS
+                        ).length;
+                        // Company cell — count badge atop the name; spans the company's people rows.
+                        // When the company has people, clicking the cell collapses/expands that list
+                        // (the select checkbox stops propagation so ticking doesn't toggle it).
+                        const companyCell = (rowSpan: number) => (
+                          <td
+                            className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
+                            rowSpan={rowSpan}
+                            onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
+                            title={
+                              expandable
+                                ? collapsed
+                                  ? "Expand people"
+                                  : "Collapse people"
+                                : undefined
+                            }
+                          >
+                            <div className="grp-co">
+                              <span className="grp-co-top">
                                 <input
                                   type="checkbox"
                                   className="tbl-check"
                                   checked={companyChecked.has(c.id)}
                                   onChange={() => toggleCo(c.id)}
+                                  onClick={(e) => e.stopPropagation()}
                                   title="Select this company to find people"
                                 />
-                              </td>
-                              <td>
-                                <div className="grp-co">
-                                  <span className="nm">{c.name || c.domain}</span>
-                                  {c.domain ? <span className="domain">{c.domain}</span> : null}
-                                </div>
-                              </td>
-                              <td className="muted grp-hint" colSpan={4}>
+                                {countBadge}
+                              </span>
+                              <span className="nm">{c.name || c.domain}</span>
+                              {c.domain ? <span className="domain">{c.domain}</span> : null}
+                            </div>
+                          </td>
+                        );
+                        // No people yet (pending · finding · searched-empty) — a single standalone row.
+                        if (rows.length === 0) {
+                          return (
+                            <tr key={c.id} className="co-start">
+                              {companyCell(1)}
+                              <td />
+                              <td className="muted grp-hint" colSpan={5}>
                                 {finding
                                   ? "Finding people…"
                                   : !searched
                                     ? "Tick this company, then Find People"
-                                    : rows.length === 0
-                                      ? "No people found · loosen Find Settings, then Find People again"
-                                      : null}
-                              </td>
-                              <td>
-                                {finding ? (
-                                  <span className="fit-scoring">
-                                    <span className="hs-spinner" aria-hidden="true" />
-                                    Finding…
-                                  </span>
-                                ) : !searched ? (
-                                  <span className="badge badge-warn">
-                                    <span className="bdot" />
-                                    Pending
-                                  </span>
-                                ) : rows.length === 0 ? (
-                                  <span className="badge badge-neutral">
-                                    <span className="bdot" />0 people
-                                  </span>
-                                ) : (
-                                  <span className="badge badge-info">
-                                    <span className="bdot" />
-                                    {rows.length} {rows.length === 1 ? "person" : "people"}
-                                  </span>
-                                )}
+                                    : "No people found · loosen Find Settings, then Find People again"}
                               </td>
                             </tr>
-                            {rows.map((p) => {
+                          );
+                        }
+                        // Collapsed — hide the people rows, keep one company row with a count hint.
+                        if (collapsed) {
+                          return (
+                            <tr key={c.id} className="co-start">
+                              {companyCell(1)}
+                              <td />
+                              <td className="muted grp-hint" colSpan={5}>
+                                {enrichedCount} enriched · {rows.length}{" "}
+                                {rows.length === 1 ? "person" : "people"} hidden · click company cell
+                                to expand viewing
+                              </td>
+                            </tr>
+                          );
+                        }
+                        return (
+                          <Fragment key={c.id}>
+                            {rows.map((p, i) => {
                               const enriched = p.status === ENRICHED_STATUS;
                               const stClass = enriched
                                 ? "st--enriched"
@@ -4420,7 +4512,11 @@ export default function Workspace() {
                                       ? "no Apollo match"
                                       : "no email yet";
                               return (
-                                <tr key={p.id} className={clsx(checked.has(p.id) && "row-sel")}>
+                                <tr
+                                  key={p.id}
+                                  className={clsx(i === 0 && "co-start", checked.has(p.id) && "row-sel")}
+                                >
+                                  {i === 0 ? companyCell(rows.length) : null}
                                   <td>
                                     <input
                                       type="checkbox"
@@ -4429,24 +4525,27 @@ export default function Workspace() {
                                       onChange={() => toggleRow(p.id)}
                                     />
                                   </td>
-                                  <td />
                                   <td>
                                     <div className="who-cell">
-                                      <div className="av-sm">
-                                        {(p.full_name || p.company || "?")
-                                          .slice(0, 2)
-                                          .toUpperCase()}
-                                      </div>
                                       <div>
                                         <div className="nm">{p.full_name || "—"}</div>
                                         <div className="sub">{p.email || "no email yet"}</div>
                                       </div>
                                     </div>
                                   </td>
+                                  <td className="muted">{p.title || "—"}</td>
+                                  <td>
+                                    <div className="st2">
+                                      <span className={clsx("st", stClass)}>
+                                        <span className="st-dot" />
+                                        {STATUS_LABEL[p.status] ?? p.status}
+                                      </span>
+                                      <span className="st-meta">{stMeta}</span>
+                                    </div>
+                                  </td>
                                   <td>
                                     <LinkedInLink url={p.linkedin_url} />
                                   </td>
-                                  <td className="muted">{p.title || "—"}</td>
                                   <td>
                                     {scoringPersonIds.has(p.id) ? (
                                       <span className="fit-scoring" title="AI fit-scoring in progress">
@@ -4460,15 +4559,6 @@ export default function Workspace() {
                                         reason={p.fit_reason}
                                       />
                                     )}
-                                  </td>
-                                  <td>
-                                    <div className="st2">
-                                      <span className={clsx("st", stClass)}>
-                                        <span className="st-dot" />
-                                        {STATUS_LABEL[p.status] ?? p.status}
-                                      </span>
-                                      <span className="st-meta">{stMeta}</span>
-                                    </div>
                                   </td>
                                 </tr>
                               );
@@ -4523,7 +4613,7 @@ export default function Workspace() {
                   <input
                     className="input dock-name"
                     type="text"
-                    placeholder="Name this batch"
+                    placeholder="Batch Name"
                     value={newBatchName}
                     onChange={(e) => setNewBatchName(e.target.value)}
                     disabled={!canBatch}
@@ -4552,8 +4642,10 @@ export default function Workspace() {
         <Modal
           open={showSourcing}
           onClose={() => setShowSourcing(false)}
-          title={`Fit rubric · ${clientName}`}
-          subtitle="The exact system + input prompt sent to the model to score each company."
+          title={`Fit rubric · ${rubricStage === "prospect_fit" ? "Step 2 · People" : "Step 1 · Companies"}`}
+          subtitle={`The exact system + input prompt sent to the model to score each ${
+            rubricStage === "prospect_fit" ? "prospect" : "company"
+          }.`}
           className="modal-lg"
           footer={
             <button className="btn btn-primary btn-sm" onClick={() => setShowSourcing(false)}>
@@ -4565,27 +4657,27 @@ export default function Workspace() {
             {fitPrompt && (
               <span className="badge badge-info">model · {fitPrompt.model.join(" → ")}</span>
             )}
+            <span className="badge badge-neutral">purpose · {fitPrompt?.purpose ?? rubricStage}</span>
             <span className="badge badge-neutral">
-              purpose · {fitPrompt?.purpose ?? "company_fit"}
+              rubric v{docs?.[rubricStage]?.version ?? "—"}
             </span>
-            <span className="badge badge-neutral">rubric v{docs?.fit_scoring?.version ?? "—"}</span>
           </div>
           <div className="prompt-cols">
-            {/* LEFT — System prompt: the rubric, editable + saved as the next version. */}
+            {/* LEFT — System prompt: the active stage's rubric, editable + saved as the next version. */}
             <div className="prompt-col">
               <div className="prompt-col-head">
                 <label>
                   System prompt{" "}
-                  <span className="badge badge-neutral">v{docs?.fit_scoring?.version ?? "—"}</span>
+                  <span className="badge badge-neutral">v{docs?.[rubricStage]?.version ?? "—"}</span>
                 </label>
                 <div className="row" style={{ gap: 8, alignItems: "center" }}>
                   <button
                     type="button"
                     className="btn btn-accent btn-xs"
-                    onClick={() => saveDoc("fit_scoring")}
-                    disabled={savingDoc === "fit_scoring"}
+                    onClick={() => saveDoc(rubricStage)}
+                    disabled={savingDoc === rubricStage}
                   >
-                    {savingDoc === "fit_scoring" ? "Saving…" : "Save as new version"}
+                    {savingDoc === rubricStage ? "Saving…" : "Save as new version"}
                   </button>
                 </div>
               </div>
@@ -4597,7 +4689,7 @@ export default function Workspace() {
               />
             </div>
             {/* RIGHT — Input prompt: the REAL message the model receives, fetched from the API
-                (targeting context = this client's brief + research spec + ICP docs + sample co). */}
+                (targeting context = this client's brief + research spec + ICP docs + sample row). */}
             <div className="prompt-col">
               <div className="prompt-col-head">
                 <label>Input prompt</label>
@@ -4606,7 +4698,7 @@ export default function Workspace() {
                     ? "loading…"
                     : fitPrompt?.company
                       ? `read-only · sample: ${fitPrompt.company}`
-                      : "read-only · no company yet"}
+                      : `read-only · no ${rubricStage === "prospect_fit" ? "prospect" : "company"} yet`}
                 </span>
               </div>
               <pre className="prompt-pre">
@@ -4614,13 +4706,19 @@ export default function Workspace() {
                   ? "Loading the input prompt…"
                   : fitPromptErr
                     ? fitPromptErr
-                    : fitPrompt?.user || "Find a company first to preview its input prompt."}
+                    : fitPrompt?.user ||
+                      `${
+                        rubricStage === "prospect_fit"
+                          ? "Find people first to preview a prospect's"
+                          : "Find a company first to preview its"
+                      } input prompt.`}
               </pre>
             </div>
           </div>
           <div className="ph-sub prompt-hint">
-            Edits are saved for this client and used on the next re-score. Each company is scored
-            against this rubric with the input prompt shown on the right.
+            Edits are saved for this client and used on the next re-score. Each{" "}
+            {rubricStage === "prospect_fit" ? "prospect" : "company"} is scored against this rubric
+            with the input prompt shown on the right.
           </div>
         </Modal>
 
@@ -4811,10 +4909,9 @@ export default function Workspace() {
                 )}
               </div>
               <p className="ph-sub" style={{ marginTop: 0 }}>
-                Apollo AND&apos;s the two facets and OR&apos;s within each, so a tight Level ∩
-                Department combo can be small — Find People auto-widens (department-only, then
-                level-only) if a strict combo returns nobody. Leave a facet empty to not constrain on
-                it.
+                Management Level AND Department · OR within each. A strict combo can return few or
+                none, so Find People auto-widens (department-only, then level-only); leave a facet
+                empty to skip it.
               </p>
               {pplCoSel.length === 0 && (
                 <p className="ph-sub" style={{ color: "var(--warn)" }}>
@@ -4831,6 +4928,7 @@ export default function Workspace() {
                     <label key={o.value} className="facet-row">
                       <input
                         type="checkbox"
+                        className="tbl-check"
                         checked={peopleScopeForm.seniorities.includes(o.value)}
                         onChange={() => toggleFacet("seniorities", o.value)}
                       />
@@ -4843,54 +4941,31 @@ export default function Workspace() {
 
               <SpecHead>Departments &amp; Job Function</SpecHead>
               {pplFacets ? (
-                <div className="facet-depts">
-                  {pplFacets.departments.map((d) => {
-                    const open = deptOpen.has(d.value);
-                    return (
-                      <div key={d.value} className="facet-dept">
-                        <div className="facet-row facet-dept-head">
-                          <input
-                            type="checkbox"
-                            checked={peopleScopeForm.departments.includes(d.value)}
-                            onChange={() => toggleFacet("departments", d.value)}
-                          />
-                          <span className="facet-label">{d.label}</span>
-                          <span className="facet-count">{d.count}</span>
-                          {d.subs.length > 0 && (
-                            <button
-                              type="button"
-                              className="facet-expand"
-                              aria-label={open ? "Collapse subdepartments" : "Expand subdepartments"}
-                              onClick={() =>
-                                setDeptOpen((s) => {
-                                  const n = new Set(s);
-                                  if (n.has(d.value)) n.delete(d.value);
-                                  else n.add(d.value);
-                                  return n;
-                                })
-                              }
-                            >
-                              {open ? "▾" : "▸"}
-                            </button>
-                          )}
-                        </div>
-                        {open && (
-                          <div className="facet-subs">
-                            {d.subs.map((s) => (
-                              <label key={s.value} className="facet-row">
-                                <input
-                                  type="checkbox"
-                                  checked={peopleScopeForm.departments.includes(s.value)}
-                                  onChange={() => toggleFacet("departments", s.value)}
-                                />
-                                <span className="facet-label">{s.label}</span>
-                              </label>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+                // Top-level departments only (no subdepartment drill-down) — the master facet plus
+                // its live count is enough to target; any selected non-master value is appended so a
+                // prior sub-selection stays visible and uncheckable.
+                <div className="facet-grid">
+                  {[
+                    ...pplFacets.departments.map((d) => ({
+                      value: d.value,
+                      label: d.label,
+                      count: d.count as number | undefined,
+                    })),
+                    ...peopleScopeForm.departments
+                      .filter((v) => !pplFacets.departments.some((d) => d.value === v))
+                      .map((value) => ({ value, label: humanizeFacet(value), count: undefined })),
+                  ].map((d) => (
+                    <label key={d.value} className="facet-row">
+                      <input
+                        type="checkbox"
+                        className="tbl-check"
+                        checked={peopleScopeForm.departments.includes(d.value)}
+                        onChange={() => toggleFacet("departments", d.value)}
+                      />
+                      <span className="facet-label">{d.label}</span>
+                      {d.count != null && <span className="facet-count">{d.count}</span>}
+                    </label>
+                  ))}
                 </div>
               ) : (
                 <>
@@ -4907,6 +4982,7 @@ export default function Workspace() {
                       <label key={o.value} className="facet-row">
                         <input
                           type="checkbox"
+                          className="tbl-check"
                           checked={peopleScopeForm.departments.includes(o.value)}
                           onChange={() => toggleFacet("departments", o.value)}
                         />
@@ -5073,26 +5149,30 @@ export default function Workspace() {
               />
             </div>
           </div>
-          <div className="sourcing-cols">
-            <div className="field">
-              <label>Company</label>
-              <input
-                className="input"
-                type="text"
-                value={personForm.company}
-                onChange={(e) => setPersonForm({ ...personForm, company: e.target.value })}
-              />
-            </div>
-            <div className="field">
-              <label>Company domain</label>
-              <input
-                className="input"
-                type="text"
-                placeholder="acme.com"
-                value={personForm.domain}
-                onChange={(e) => setPersonForm({ ...personForm, domain: e.target.value })}
-              />
-            </div>
+          <div className="field">
+            <label>Company</label>
+            <select
+              className="select"
+              value={personForm.domain}
+              onChange={(e) => {
+                const co = step2Companies.find((c) => c.domain === e.target.value);
+                setPersonForm({
+                  ...personForm,
+                  domain: co?.domain ?? "",
+                  company: co?.name ?? "",
+                });
+              }}
+            >
+              <option value="">
+                {step2Companies.length ? "Select a company…" : "No accepted companies yet"}
+              </option>
+              {step2Companies.map((c) => (
+                <option key={c.id} value={c.domain}>
+                  {c.name || c.domain}
+                  {c.domain ? ` · ${c.domain}` : ""}
+                </option>
+              ))}
+            </select>
           </div>
           <div className="field">
             <label>LinkedIn URL</label>

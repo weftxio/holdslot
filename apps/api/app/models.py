@@ -477,10 +477,13 @@ class Prompt(Base):
 
     One row per (tenant, `stage`, version); the latest version is active. `stage` is the
     pipeline step the prompt drives: `briefing` (Brief→ResearchSpec scoping), `sourcing` (legacy
-    Clay loop, retired), `fit_scoring` (the fit rubric). Seed v1 of each lands in a migration from
-    `docs/prompts/*.md`; the founder edits it → a new (stage, version). `research_run` records
-    which `fit_scoring` version it scored against. (Renamed from `sourcing_doc`/`kind` once it grew
-    past sourcing into the single home for every client-editable prompt.)
+    Clay loop, retired), `company_fit` + `prospect_fit` (the two fit rubrics — Step-1 company
+    buying-intent and Step-2 people reply-potential/decision-power, split from one `fit_scoring` doc
+    in migration 0013). Seed v1 of each lands in a migration from `docs/prompts/*.md`; the founder
+    edits it → a new (stage, version). `research_run` records which rubric version it scored
+    against.
+    (Renamed from `sourcing_doc`/`kind` once it grew past sourcing into the single home for every
+    client-editable prompt.)
     """
 
     __tablename__ = "prompt"
@@ -493,7 +496,7 @@ class Prompt(Base):
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
-    stage: Mapped[str] = mapped_column(String(32), nullable=False)  # briefing·sourcing·fit_scoring
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)  # see docstring for stage names
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     body: Mapped[str] = mapped_column(String, nullable=False)
     created_at: Mapped[datetime] = _created_at()
