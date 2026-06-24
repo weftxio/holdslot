@@ -1,6 +1,12 @@
 # HoldSlot Modularization Plan
 
-> **Status:** PLAN ONLY — no code written. Authored 2026-06-24.
+> **Execution status (2026-06-24): A–E EXECUTED** on branch `refactor/modularize-frontend`
+> (off `dev`, not pushed — no auto-deploy). Commits: A `dbbcc40` · B `a084a4f` · C `49e8a0d` ·
+> D1 `36acb3f` · D2 `0102dfc` · E `ecd42cc`. Gate: typecheck + build clean, **11/11 Playwright
+> e2e green**, no new lint errors. Deferred per Rule #1 (need your go-ahead + dev QA): the full
+> `lib/api.ts`→openapi-fetch swap (D2, foundation done), Modal→Radix, date-fns, and `React.memo`.
+>
+> **Status (original plan below):** authored 2026-06-24.
 > **Stack (verified):** Next.js 16.2.9 (App Router) · React 19 · pnpm workspace. Installed deps:
 > `clsx`, `date-fns`, `react-big-calendar`. ESLint 9 + `eslint-config-next`; **no** dead-code
 > tooling yet.
