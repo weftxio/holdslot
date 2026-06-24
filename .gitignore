@@ -7,6 +7,13 @@ node_modules/
 out/
 next-env.d.ts
 
+# playwright (e2e) — artifacts only; the suite + config ARE committed
+test-results/
+playwright-report/
+.playwright/
+blob-report/
+playwright/.cache/
+
 # build / cache
 dist/
 *.tsbuildinfo
