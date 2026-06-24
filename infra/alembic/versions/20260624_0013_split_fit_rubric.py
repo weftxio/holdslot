@@ -8,7 +8,14 @@ The fit rubric lived under one stage (`fit_scoring`) shared by both scoring door
 buying-intent and Step-2 people reply-potential / decision-power. They now want independent system +
 input prompts per stage, so this renames the existing rubric to `company_fit` and seeds a
 `prospect_fit` rubric per tenant from the same latest body (the founder tunes the people rubric
-separately from there). Append-only store, so the seed is the prospect rubric's v1. Up/down clean.
+separately from there). Append-only store, so the seed is the prospect rubric's v1.
+
+**Up/down is fully LOSSLESS.** The split is a one-way semantic change — `company_fit` and
+`prospect_fit` are intentionally different prompts, so there is no correct way to *merge* them back
+into one stage. Rather than destroy the founder's `prospect_fit` edits on downgrade, the downgrade
+**parks** them under an inert stage (`__prospect_fit_archived`) that the pre-0013 app never reads,
+and the upgrade **restores** them before falling back to the seed. So a downgrade → re-upgrade
+roundtrip preserves every `prospect_fit` version byte-for-byte; a fresh upgrade seeds v1 as before.
 """
 
 from collections.abc import Sequence
@@ -20,12 +27,19 @@ down_revision: str | None = "0012_scope_override"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+# Inert stage the pre-0013 app never queries; downgrade parks prospect_fit here, upgrade restores.
+_ARCHIVED = "__prospect_fit_archived"
+
 
 def upgrade() -> None:
     # Rename the single rubric → the Step-1 company rubric.
     op.execute("UPDATE prompt SET stage = 'company_fit' WHERE stage = 'fit_scoring'")
-    # Seed the Step-2 people rubric v1 from each tenant's latest company rubric body. ON CONFLICT
-    # keeps it idempotent (re-run safe); a tenant with no rubric yet simply gets no seed.
+    # Restore any prospect_fit parked by a previous downgrade — this is what makes the roundtrip
+    # lossless (a re-upgrade gets the founder's edits back verbatim, not a fresh re-seed).
+    op.execute(f"UPDATE prompt SET stage = 'prospect_fit' WHERE stage = '{_ARCHIVED}'")
+    # Seed the Step-2 people rubric v1 from each tenant's latest company rubric body — but ONLY
+    # where no prospect_fit exists yet (a fresh install). ON CONFLICT DO NOTHING makes it idempotent
+    # AND means the restore above always wins over a re-seed, so an edited rubric is never lost.
     op.execute(
         """
         INSERT INTO prompt (tenant_id, stage, version, body)
@@ -42,5 +56,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DELETE FROM prompt WHERE stage = 'prospect_fit'")
+    # LOSSLESS reverse (see module docstring). Collapse company_fit back to the single `fit_scoring`
+    # stage, and PARK prospect_fit under an inert stage instead of deleting it — the pre-0013 app
+    # reads stage by exact match (`fit_scoring`), so the parked rows are invisible yet recoverable.
+    # upgrade() restores them, so no founder edit is ever lost on a rollback.
     op.execute("UPDATE prompt SET stage = 'fit_scoring' WHERE stage = 'company_fit'")
+    op.execute(f"UPDATE prompt SET stage = '{_ARCHIVED}' WHERE stage = 'prospect_fit'")
