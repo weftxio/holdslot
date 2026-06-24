@@ -166,19 +166,15 @@ const STATUS_LABEL: Record<string, string> = {
   score_error: "Score error",
   enrich_failed: "No match",
 };
-// Origin chip (not transport): where the row came from. (clay/ai_loop are legacy values still
-// shown on pre-Apollo rows in dev; new rows are apollo | manual.)
+// Origin chip (not transport): where the row came from. New rows are apollo | manual; any other
+// value falls back to a neutral chip showing the raw source.
 const SOURCE_CLS: Record<string, string> = {
   apollo: "badge-info",
   manual: "badge-warn",
-  clay: "badge-neutral",
-  ai_loop: "badge-info",
 };
 const SOURCE_LABEL: Record<string, string> = {
   apollo: "Apollo",
   manual: "Manual",
-  clay: "Clay",
-  ai_loop: "AI",
 };
 // People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
 const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
@@ -226,7 +222,11 @@ async function pollClearScored(
   stillCurrent: () => boolean,
 ) {
   if (!ids.length) return;
-  const deadline = Date.now() + 150_000; // ~2.5 min ceiling
+  // ~4 min ceiling: a full 15-row selection is ceil(15/3)=5 sequential chunks of up to ~30s each
+  // (~150s of driver), and a 503'd chunk's Lambda can commit ~20s after the gateway gives up. The
+  // ceiling must clear that worst case, or the safety-net clear would flash a still-scoring row to
+  // "Pending" before its score lands. A genuine hard failure clears to Pending after the ceiling.
+  const deadline = Date.now() + 240_000;
   const remaining = new Set(ids);
   while (remaining.size && stillCurrent() && Date.now() < deadline) {
     await sleep(3000);
@@ -2057,10 +2057,13 @@ export default function Workspace() {
   async function pollStructuring(job: ResearchJob, startClient: string) {
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const deadline = Date.now() + 4 * 60 * 1000; // generous cap; worker keeps running server-side
+    const stillCurrent = () => clientRef.current === startClient;
     while ((job.status === "queued" || job.status === "running") && Date.now() < deadline) {
       await sleep(3000);
+      if (!stillCurrent()) return; // client switched away — stop polling, don't write a stale spec/toast
       job = await getStructureStatus(startClient);
     }
+    if (!stillCurrent()) return;
     if (job.status === "done") {
       const rs = await getResearchSpec(startClient);
       setSpec(rs.latest);
@@ -2281,6 +2284,11 @@ export default function Workspace() {
   const [findingPplIds, setFindingPplIds] = useState<Set<string>>(new Set());
   // Prospect rows whose AI fit-score is being computed in the background (Step-2 'Get AI score').
   const [scoringPersonIds, setScoringPersonIds] = useState<Set<string>>(new Set());
+  // Synchronous re-score guards: the button `disabled` only flips after a re-render, so a fast
+  // double-click could dispatch two paid scoring passes before the flag lands. These ref guards
+  // block the second click in the same tick (a paid-spend race).
+  const rescoringCoRef = useRef(false);
+  const rescoringPplRef = useRef(false);
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
     domain: "",
@@ -2373,6 +2381,12 @@ export default function Workspace() {
     clientRef.current = client;
     setChecked(new Set());
     setCompanyChecked(new Set());
+    // Clear any in-flight "Scoring…" flags from the previous client (the background loop bails on the
+    // client switch, but its safety-net clear is gated on the old client — these would otherwise leak).
+    setScoringCoIds(new Set());
+    setScoringPersonIds(new Set());
+    rescoringCoRef.current = false;
+    rescoringPplRef.current = false;
     setSearch("");
     setCoSearch("");
     setFIcp("");
@@ -2523,12 +2537,14 @@ export default function Workspace() {
             statusOk
           );
         })
-        // Accepted (people_found) rows float to the top; the sort is stable, so within each group
-        // the existing order (backend: fit_score desc, nulls last) is preserved.
+        // Accepted (people_found) rows float to the top; within each group, highest fit_score first
+        // (nulls last). Sorting explicitly here makes the order self-sufficient rather than relying
+        // on the backend list endpoint's ORDER BY (defense-in-depth, matching compareProspectRows).
         .sort((a, b) => {
           const aa = a.status === "people_found" ? 0 : 1;
           const ba = b.status === "people_found" ? 0 : 1;
-          return aa - ba;
+          if (aa !== ba) return aa - ba;
+          return (b.fit_score ?? -1) - (a.fit_score ?? -1);
         }),
     [companies, coSearch, coFit, coStatus]
   );
@@ -2592,11 +2608,14 @@ export default function Workspace() {
     if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
     setSavingCo(true);
     try {
-      await addCompany(client, { ...coForm, icp_id: fIcp || null });
-      toast(`Added ${coForm.name || coForm.domain}`);
+      const co = await addCompany(client, { ...coForm, icp_id: fIcp || null });
+      toast(`Added ${coForm.name || coForm.domain} · scoring…`);
       setAddCoOpen(false);
       setCoForm({ ...blankCo });
       await reloadCompanies();
+      // The row lands UNSCORED (scoring is off the request path) — score it in the background,
+      // exactly like an Apollo-found row, so a slow reasoning call never blocks the add.
+      void scoreInBackground([co.id], new Set());
     } catch (e) {
       toast(e instanceof Error ? e.message : "Add failed", "warn");
     } finally {
@@ -2645,6 +2664,7 @@ export default function Workspace() {
   // Runs in the BACKGROUND (chunked, per-row "Scoring…" status) so the UI never blocks and a slow
   // LLM call can never time the request out.
   function runRescore() {
+    if (rescoringCoRef.current) return; // block a double-click before the button disables
     const ids = [...companyChecked];
     if (!ids.length) return toast("Select companies to re-score", "warn");
     toast(`Re-scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
@@ -2653,7 +2673,10 @@ export default function Workspace() {
     const baselineScored = new Set(
       companies.filter((c) => companyChecked.has(c.id) && c.fit_tier != null).map((c) => c.id)
     );
-    void scoreInBackground(ids, baselineScored);
+    rescoringCoRef.current = true;
+    void scoreInBackground(ids, baselineScored).finally(() => {
+      rescoringCoRef.current = false;
+    });
   }
 
   // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
@@ -2859,16 +2882,20 @@ export default function Workspace() {
   // Step-2 'Get AI score' — re-score the checked people in the background (chunked, per-row
   // "Scoring…"), mirroring the Step-1 company scorer. Each call is a paid LLM request.
   function runScorePeople() {
+    if (rescoringPplRef.current) return; // block a double-click before the button disables
     const picked = selectedProspects;
     if (!picked.length) return toast("Select people to score", "warn");
     toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
     // Already-scored rows are reconciled by the driver (on success); the poll only tracks the
     // Pending → scored transition (a row that "now has a score").
     const baselineScored = new Set(picked.filter((p) => p.fit_tier != null).map((p) => p.id));
+    rescoringPplRef.current = true;
     void scorePeopleInBackground(
       picked.map((p) => ({ id: p.id, key: p.identity_key })),
       baselineScored
-    );
+    ).finally(() => {
+      rescoringPplRef.current = false;
+    });
   }
 
   // Mirrors the company scorer: a person shows "Scoring…" until the DB shows a score, surviving the
@@ -2996,11 +3023,13 @@ export default function Workspace() {
     }
     setSavingPerson(true);
     try {
-      await addProspect(client, { ...personForm, icp_id: fIcp || null });
-      toast(`Added ${personForm.full_name || personForm.email}`);
+      const p = await addProspect(client, { ...personForm, icp_id: fIcp || null });
+      toast(`Added ${personForm.full_name || personForm.email} · scoring…`);
       setAddPersonOpen(false);
       setPersonForm({ ...blankPerson });
       await Promise.all([reloadProspects(), reloadCompanies()]);
+      // Lands UNSCORED (scoring off the request path) — background-score it like a found row.
+      void scorePeopleInBackground([{ id: p.id, key: p.identity_key }], new Set());
     } catch (e) {
       toast(e instanceof Error ? e.message : "Add failed", "warn");
     } finally {
@@ -3015,15 +3044,31 @@ export default function Workspace() {
     const keys = toEnrich.map((p) => p.identity_key);
     if (!keys.length) return toast("Select found people to confirm for enrichment", "warn");
     setEnriching(true);
+    // Chunk under the server's MAX_ENRICH_PER_REQUEST (15): each request is the credit spend, so a
+    // small chunk keeps every call well under the 30s gateway cap and bounds per-request spend. The
+    // server returns spend counts per chunk (even on partial Apollo failure), so totals are exact.
+    const CHUNK = 10;
+    let confirmed = 0,
+      enriched = 0,
+      credits = 0,
+      failed = 0;
     try {
-      const res = await enrichProspects(client, keys);
+      for (let i = 0; i < keys.length; i += CHUNK) {
+        const res = await enrichProspects(client, keys.slice(i, i + CHUNK));
+        confirmed += res.confirmed;
+        enriched += res.enriched;
+        credits += res.credits_spent;
+        failed += res.failed;
+        await reloadProspects(); // reflect each chunk as it lands
+      }
+      const spent = `${credits} credit${credits === 1 ? "" : "s"} spent`;
+      const failTail = failed ? ` · ${failed} failed` : "";
       toast(
-        res.enriched
-          ? `Enriched ${res.enriched} · ${res.credits_spent} credit${res.credits_spent === 1 ? "" : "s"} spent`
-          : `Confirmed ${res.confirmed}`
+        enriched ? `Enriched ${enriched} · ${spent}${failTail}` : `Confirmed ${confirmed}${failTail}`,
+        failed ? "warn" : undefined
       );
-      await reloadProspects();
     } catch (e) {
+      await reloadProspects(); // surface whatever earlier chunks already committed
       toast(e instanceof Error ? e.message : "Confirm failed", "warn");
     } finally {
       setEnriching(false);
@@ -4599,7 +4644,9 @@ export default function Workspace() {
                                   ? "st--error"
                                   : "st--found";
                               const stMeta = enriched
-                                ? "email verified"
+                                ? p.email_valid
+                                  ? "email verified"
+                                  : "email · unverified"
                                 : p.status === "confirmed"
                                   ? "awaiting enrichment"
                                   : p.status === "score_error"

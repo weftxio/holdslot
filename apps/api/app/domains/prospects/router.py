@@ -4,7 +4,7 @@ One suppression gate and one scoring door (`fit.py`). Tenant scope × role is en
 central guard, so every query is scoped to the caller's client. The heavy lifting lives in the
 pure modules; this layer is orchestration + persistence.
 
-The Clay seed/CSV-import/AI-sourcing loop was removed in the Apollo-only teardown. The two-stage
+The legacy seed/CSV-import/AI-sourcing loop was removed in the Apollo-only teardown. The two-stage
 company→people loop is live: find-company / find-people return rows UNSCORED, fit scoring is an
 explicit step (`/companies/rescore`, `/prospects/rescore`), and `confirm_enrich` spends the Apollo
 `people/match` credit to reveal verified emails (the only credit spend in this surface).
@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_, select
@@ -92,6 +92,8 @@ MAX_COMPANIES_PER_FIND = 15  # company-search rows scored per find-company reque
 MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apollo call each)
 MAX_PEOPLE_PER_FIND = 15  # LLM-scored people per RESCORE request (30s sync cap; the spend)
 MAX_PEOPLE_PER_FIND_RUN = 250  # unscored people landed per find-people request (free, no LLM)
+MAX_ENRICH_PER_REQUEST = 15  # people/match (paid) per enrich request — bounds spend + the 30s cap
+_ENRICH_WORKERS = 8  # concurrent Apollo people/match calls (HTTP-bound, like the score fan-out)
 LOOKALIKE_LIMIT = 10  # peers fetched per Lookalike find (seeds drop via domain dedupe → ≤10 net)
 
 
@@ -304,19 +306,6 @@ def _apply_company_score(c: Company, scored: dict) -> float:
     return float(scored.get("cost_usd") or 0.0)
 
 
-def _score_company(c: Company, *, tenant_id, rubric_body: str, targeting: dict) -> float:
-    """Score one company in place (LLM). Returns the call's cost_usd. Raises LlmError."""
-    return _apply_company_score(
-        c,
-        fit.score_company(
-            tenant_id=tenant_id,
-            rubric_body=rubric_body,
-            company=_company_payload(c),
-            targeting=targeting,
-        ),
-    )
-
-
 # A full find can score up to MAX_*_PER_FIND rows; a *sequential* LLM call per row overruns the 30s
 # API Gateway sync cap (→ 503). The LLM client is stdlib-urllib with its own telemetry session per
 # call, so the calls are thread-safe — we fan them out, then apply each result on the main thread
@@ -375,10 +364,6 @@ def add_company(
             raise HTTPException(status.HTTP_409_CONFLICT, "company is on the exclusion list")
 
     icp = uuid.UUID(body.icp_id) if body.icp_id else None
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
-    rubric = _latest_doc(db, ctx.tenant.id, COMPANY_STAGE)
-    rubric_body = rubric.body if rubric else ""
 
     company = db.execute(
         select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == domain)
@@ -395,12 +380,9 @@ def add_company(
     company.country = body.country or company.country
     if icp:
         company.icp_id = icp
-    try:
-        _score_company(
-            company, tenant_id=ctx.tenant.id, rubric_body=rubric_body, targeting=targeting
-        )
-    except LlmError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"scoring failed: {e}") from e
+    # Land UNSCORED. Fit scoring is a ~15-25s reasoning call (+retry) that can exceed the 30s API
+    # Gateway sync cap on the request path — the web app scores the new row in the background
+    # (chunked /companies/rescore), like an Apollo-found row. A re-add keeps the prior score.
     db.commit()
     db.refresh(company)
     return _company_out(company)
@@ -414,7 +396,7 @@ def _apollo_run_id() -> str:
 
 
 def _enrich_survivors(survivors: list[dict]) -> None:
-    """Enrich the surviving search rows in place via `organizations/bulk_enrich` — promote real
+    """Enrich the surviving search rows via per-domain `organizations/enrich` — promote real
     industry/size/country onto each row and merge buying-intent evidence (tech, keywords, headcount
     growth, description) so the scorer judges firmographics instead of nulls. Best-effort: an Apollo
     failure logs and leaves the sparse search rows untouched rather than failing the whole find.
@@ -1168,11 +1150,6 @@ def add_prospect(
         raise HTTPException(status.HTTP_409_CONFLICT, f"person is excluded ({reason})")
 
     icp = uuid.UUID(body.icp_id) if body.icp_id else None
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    targeting = _build_targeting(brief, spec, icp_docs(db, ctx.tenant.id, icp))
-    rubric = _latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)
-    rubric_body = rubric.body if rubric else ""
-
     domain = normalize_domain(body.domain)
     enrichment = {
         "full_name": body.full_name,
@@ -1205,18 +1182,10 @@ def add_prospect(
         prospect.company_id = comp.id
         if comp.status in ("discovered", "selected"):
             comp.status = "people_found"
-    try:
-        scored_row = fit.score(
-            tenant_id=ctx.tenant.id,
-            rubric_body=rubric_body,
-            enrichment=_prospect_payload(enrichment, comp),
-            targeting=targeting,
-        )
-    except LlmError as e:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"scoring failed: {e}") from e
-    prospect.fit_score = scored_row["fit_score"]
-    prospect.fit_tier = scored_row["fit_tier"]
-    prospect.fit_components = scored_row["fit_components"]
+    # Land UNSCORED (see add_company) — the web app background-scores the new row (chunked
+    # /prospects/rescore), keeping the ~15-25s reasoning call off the 30s-capped request path.
+    # `scored` here is the lifecycle state (has contact data), NOT a fit score: a manual email is
+    # operator-provided, not Apollo-verified, so `email_valid` stays False until people/match.
     prospect.status = "scored" if enrichment["email"] else "found"
     db.commit()
     db.refresh(prospect)
@@ -1694,11 +1663,20 @@ def confirm_enrich(
     linkedin / departments, and moves to `scored`. Rows already enriched (email on file) or with no
     `apollo_person_id` (manual) are confirmed without a match call, so a re-submit never re-spends.
 
-    Each row is committed independently, so a mid-batch Apollo failure can't roll back — and lose
-    the DB record of — credits already charged for earlier rows.
+    **Bounded + concurrent (the credit-safety contract):** at most `MAX_ENRICH_PER_REQUEST` keys per
+    request (rejected, not truncated), so a single call can never run away with the credit pool or
+    overrun the 30s cap. The paid `people/match` calls fan out on a thread pool (HTTP-only; ORM
+    writes stay single-threaded), then results are applied + committed once. A per-row Apollo error
+    is counted in `failed` and the row marked `enrich_failed` — the spend counts are always returned
+    (never lost to a mid-batch 502), so the caller can reconcile exactly what was charged.
     """
     if not body.identity_keys:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
+    if len(body.identity_keys) > MAX_ENRICH_PER_REQUEST:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"enrich at most {MAX_ENRICH_PER_REQUEST} people per request",
+        )
     rows = (
         db.execute(
             select(Prospect).where(
@@ -1710,26 +1688,46 @@ def confirm_enrich(
         .scalars()
         .all()
     )
-    enriched = credits = 0
+    # Partition: rows that need a paid match call vs rows that confirm without spending (manual rows
+    # with no apollo_person_id, or rows already enriched).
+    to_match: list[Prospect] = []
     for p in rows:
         already_enriched = bool(p.email_valid or (p.enrichment or {}).get("email"))
         if not p.apollo_person_id or already_enriched:
-            # Manual row (nothing to match) or already enriched — confirm without spending.
             if p.status == "found":
                 p.status = "confirmed"
-            db.commit()  # persist this row before moving on
             continue
-        try:
-            person = apollo.match_person(p.apollo_person_id, reveal_email=True, reveal_phone=False)
-        except apollo.ApolloError as e:
-            # Earlier rows are already committed; surface the failure without losing their spend.
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"apollo enrich failed: {e}"
-            ) from e
-        matched = apollo_map.parse_match(person)
+        to_match.append(p)
+
+    # Fan out the slow Apollo match calls concurrently (HTTP-bound, thread-safe); collect results
+    # before touching the ORM so DB writes stay single-threaded.
+    matched_by_pid: dict[str, dict | Exception] = {}
+    if to_match:
+        with ThreadPoolExecutor(max_workers=min(_ENRICH_WORKERS, len(to_match))) as ex:
+            futs = {
+                ex.submit(
+                    apollo.match_person, p.apollo_person_id, reveal_email=True, reveal_phone=False
+                ): p
+                for p in to_match
+            }
+            for fut in as_completed(futs):
+                p = futs[fut]
+                try:
+                    matched_by_pid[p.apollo_person_id] = fut.result()
+                except apollo.ApolloError as exc:  # counted as `failed`, never a lost-spend 502
+                    matched_by_pid[p.apollo_person_id] = exc
+
+    enriched = credits = failed = 0
+    for p in to_match:
+        res = matched_by_pid.get(p.apollo_person_id)
+        if isinstance(res, Exception):
+            p.status = "enrich_failed"
+            failed += 1
+            continue
+        matched = apollo_map.parse_match(res)
         if not matched.get("apollo_person_id"):
             p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
-            db.commit()
+            failed += 1
             continue
         credits += 1  # one reveal_personal_emails credit
         e = dict(p.enrichment or {})
@@ -1744,5 +1742,7 @@ def confirm_enrich(
         p.last_enriched_at = func.now()
         p.status = "scored"
         enriched += 1
-        db.commit()  # durable per row — bounds any Apollo spend to committed work
-    return EnrichResult(confirmed=len(rows), enriched=enriched, credits_spent=credits)
+    db.commit()  # one commit; the cap bounds any crash-window re-spend to ≤ MAX_ENRICH_PER_REQUEST
+    return EnrichResult(
+        confirmed=len(rows), enriched=enriched, credits_spent=credits, failed=failed
+    )

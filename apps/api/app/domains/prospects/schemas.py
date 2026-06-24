@@ -213,11 +213,16 @@ class EnrichIn(BaseModel):
 
 
 class EnrichResult(BaseModel):
-    """Enrich-gate result — how many rows were enriched (Apollo people/match) + credits spent."""
+    """Enrich-gate result — how many rows were enriched (Apollo people/match) + credits spent.
+
+    `failed` counts rows whose match call errored or had no Apollo match; the spend counts are
+    always returned (never lost to a mid-batch failure) so the caller can reconcile the charge.
+    """
 
     confirmed: int
     enriched: int = 0
     credits_spent: int = 0
+    failed: int = 0
 
 
 class ProspectOut(BaseModel):

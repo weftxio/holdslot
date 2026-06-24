@@ -413,6 +413,7 @@ export type EnrichResult = {
   confirmed: number;
   enriched: number;
   credits_spent: number;
+  failed: number; // rows whose Apollo match errored / had no match (spend counts are still returned)
 };
 // Result of an Apollo find run (Flow A companies or Flow B people).
 export type FindResult = {
