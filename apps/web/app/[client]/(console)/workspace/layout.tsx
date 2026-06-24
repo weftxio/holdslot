@@ -1,8 +1,9 @@
 "use client";
 import { useContext } from "react";
 import { createPortal } from "react-dom";
-import { useParams, usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import clsx from "clsx";
+import { useClient } from "@/lib/nav";
 import { TopbarSlotCtx } from "@/components/console/ConsoleShell";
 import { WorkspaceProvider, useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { TABS } from "@/lib/workspace/constants";
@@ -15,7 +16,7 @@ import "./workspace.css";
 // router.push so each tab is a history entry. The count pips read the cross-tab state that lives in
 // WorkspaceProvider, so the tab bar is rendered inside it (WorkspaceTabBar).
 function WorkspaceTabBar() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const pathname = usePathname();
   const router = useRouter();
   const tabSlot = useContext(TopbarSlotCtx);

@@ -1,6 +1,6 @@
 "use client";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
@@ -77,7 +77,7 @@ import {
 } from "@/components/workspace";
 
 export default function ListPage() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const toast = useToast();
   // Batch creation from selection writes the shared cross-tab batches state (and reads the current
   // count for the default batch name).

@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
@@ -9,7 +9,7 @@ import { highlightTokens } from "@/lib/tmpl";
 import { A_LOG } from "@/lib/fixtures/client-status";
 
 export default function ApprovalPage() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const toast = useToast();
   const [approvalBatch, setApprovalBatch] = useState("");
 
@@ -244,7 +244,7 @@ export default function ApprovalPage() {
                       </td>
                       <td style={{ textAlign: "right" }}>
                         <Link
-                          href={`/${client}/workspace?batch=${encodeURIComponent(r.name)}#batches`}
+                          href={`/${client}/workspace/batches?batch=${encodeURIComponent(r.name)}`}
                           className="btn btn-ghost btn-2xs"
                         >
                           View batch

@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { type RowError, mergeExclusionText, parseExclusionCsv } from "@/lib/csv";
@@ -35,6 +35,7 @@ import {
   blankFields,
   blankIcp,
   icpToApi,
+  sleep,
 } from "@/lib/workspace/constants";
 import {
   CsvErrors,
@@ -47,7 +48,7 @@ import {
 } from "@/components/workspace";
 
 export default function BriefPage() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const toast = useToast();
   // Tracks the live client so an async poll that resolves *after* a client switch can bail before
   // writing the previous client's spec into the new client's view (used by pollStructuring).
@@ -343,7 +344,6 @@ export default function BriefPage() {
   // resume (a job can still be running after a refresh). `startClient` pins the call to the client
   // that launched it, so a mid-run client switch never writes another client's spec.
   async function pollStructuring(job: ResearchJob, startClient: string) {
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const deadline = Date.now() + 4 * 60 * 1000; // generous cap; worker keeps running server-side
     const stillCurrent = () => clientRef.current === startClient;
     while ((job.status === "queued" || job.status === "running") && Date.now() < deadline) {

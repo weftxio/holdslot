@@ -1,20 +1,12 @@
 "use client";
-import { useEffect } from "react";
-import { useParams, useRouter } from "next/navigation";
-import type { StatusTabKey } from "@/components/console/StatusTab";
+import { useHashRedirect } from "@/lib/nav";
 
-const VALID: StatusTabKey[] = ["approval", "booking", "feedback"];
+const VALID = ["approval", "booking", "feedback"] as const;
 
 // The Client Action tabs are now real routes (./approval, ./booking, ./feedback). This index
-// redirects to the default tab, and translates legacy hash links (/client-status#booking) that may
-// live in old emails/bookmarks to the matching route.
+// redirects to the default tab, translating legacy hash links (/client-status#booking) that may
+// live in old emails/bookmarks. The query string is preserved for symmetry with the workspace index.
 export default function ClientStatusIndex() {
-  const { client } = useParams<{ client: string }>();
-  const router = useRouter();
-  useEffect(() => {
-    const h = location.hash.slice(1) as StatusTabKey;
-    const target = VALID.includes(h) ? h : "approval";
-    router.replace(`/${client}/client-status/${target}`);
-  }, [client, router]);
+  useHashRedirect("client-status", VALID, "approval", true);
   return null;
 }

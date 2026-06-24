@@ -16,7 +16,7 @@ export const STATUS_LABEL: Record<StatusTabKey, string> = {
 };
 // Per-tab "back to <workspace tab>" target, rendered in the topbar-right by ConsoleShell.
 export const STATUS_BACK: Record<StatusTabKey, [string, string]> = {
-  approval: ["workspace#batches", "Back to Approval Batches"],
-  booking: ["workspace#campaign", "Back to Outreach Campaigns"],
-  feedback: ["workspace#summaries", "Back to Meeting Recaps"],
+  approval: ["workspace/batches", "Back to Approval Batches"],
+  booking: ["workspace/campaign", "Back to Outreach Campaigns"],
+  feedback: ["workspace/summaries", "Back to Meeting Recaps"],
 };

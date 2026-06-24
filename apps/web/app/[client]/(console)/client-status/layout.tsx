@@ -1,8 +1,9 @@
 "use client";
 import { useContext } from "react";
 import { createPortal } from "react-dom";
-import { useParams, usePathname, useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import clsx from "clsx";
+import { useClient } from "@/lib/nav";
 import { TopbarSlotCtx } from "@/components/console/ConsoleShell";
 import { STATUS_TABS, type StatusTabKey } from "@/components/console/StatusTab";
 import "./client-status.css";
@@ -13,7 +14,7 @@ import "./client-status.css";
 // URL — no shared context needed. Tabs stay <button>s (not <Link>s) so the `.tab` styling is
 // byte-identical to the design; navigation is via router.push so each tab is a history entry.
 export default function ClientStatusLayout({ children }: { children: React.ReactNode }) {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const pathname = usePathname();
   const router = useRouter();
   const active = (pathname.split("/")[3] || "approval") as StatusTabKey;

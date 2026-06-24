@@ -1,7 +1,7 @@
 "use client";
 import { Fragment, useEffect, useState } from "react";
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
@@ -22,7 +22,7 @@ import {
 } from "@/lib/workspace/fixtures";
 
 export default function BatchesPage() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
   const toast = useToast();
   const { batches, setBatches } = useWorkspace();
   const pendingBatches = batches.filter((b) => b.status === "Pending").length;
@@ -112,7 +112,7 @@ export default function BatchesPage() {
           Batches sent for client approval · status updates as the client responds
         </div>
         <div className="row" style={{ gap: 10, alignItems: "center" }}>
-          <Link href={`/${client}/client-status#approval`} className="btn btn-ghost btn-2xs">
+          <Link href={`/${client}/client-status/approval`} className="btn btn-ghost btn-2xs">
             Edit approval email
           </Link>
           <span className="badge badge-warn">

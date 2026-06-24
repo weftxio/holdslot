@@ -2,7 +2,7 @@
 import { useEffect } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
 import { Sample } from "@/components/Sample";
 import "./performance-summary.css";
 
@@ -26,7 +26,7 @@ const FUNNEL: { label: string; color: string; n: number }[] = [
 const FUNNEL_TOP = FUNNEL[0].n;
 
 export default function PerformanceSummary() {
-  const { client } = useParams<{ client: string }>();
+  const client = useClient();
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -37,7 +37,7 @@ export default function PerformanceSummary() {
     return () => clearTimeout(t);
   }, []);
 
-  const status = (anchor: string) => `/${client}/client-status#${anchor}`;
+  const status = (anchor: string) => `/${client}/client-status/${anchor}`;
 
   return (
     <>
@@ -162,7 +162,7 @@ export default function PerformanceSummary() {
                 Replies awaiting review
               </span>
               <Link
-                href={`/${client}/workspace#replies`}
+                href={`/${client}/workspace/replies`}
                 style={{ color: "var(--danger)", fontWeight: 700, fontSize: 13.5 }}
               >
                 3
