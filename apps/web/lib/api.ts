@@ -7,7 +7,7 @@ const API_BASE =
 const ACCESS_KEY = "holdslot_access";
 const REFRESH_KEY = "holdslot_refresh";
 
-export type ApiClient = { slug: string; name: string; role: string };
+type ApiClient = { slug: string; name: string; role: string };
 export type Me = { id: string; email: string; full_name: string | null; clients: ApiClient[] };
 export type LoginResult = {
   access_token: string;
@@ -174,7 +174,7 @@ export type IcpApi = {
   updated_at: string | null;
 };
 // Apollo company-search params (a subset of mixed_companies/search), emitted verbatim by the LLM.
-export type ApolloCompanyParams = {
+type ApolloCompanyParams = {
   q_organization_keyword_tags: string[];
   organization_num_employees_ranges: string[];
   organization_locations: string[];
@@ -183,7 +183,7 @@ export type ApolloCompanyParams = {
 // Apollo people-search params (a subset of mixed_people/api_search). Personas are Apollo's two
 // native facets — Management Level (person_seniorities) × Department/Job Function — never free-text
 // titles (exact-title matching AND's to zero against orgs with different title wording).
-export type ApolloPeopleParams = {
+type ApolloPeopleParams = {
   person_seniorities: string[];
   person_department_or_subdepartments: string[];
   q_keywords: string;
@@ -613,8 +613,8 @@ export async function findPeople(
 // Find-Settings facet sidebar — live per Management-Level / Department people counts across the
 // selected Step-2 companies (free, 0 credits). One probe per facet value, server-side.
 export type FacetOption = { value: string; label: string };
-export type FacetCount = FacetOption & { count: number };
-export type DepartmentFacet = FacetCount & { subs: FacetOption[] };
+type FacetCount = FacetOption & { count: number };
+type DepartmentFacet = FacetCount & { subs: FacetOption[] };
 export type PeopleFacets = {
   total: number;
   seniorities: FacetCount[];

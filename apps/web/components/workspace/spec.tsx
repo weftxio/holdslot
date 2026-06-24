@@ -26,10 +26,10 @@ import {
 // Read-only chips for a ResearchSpec value list (— when empty). Reuses the ICP card grammar.
 // Quiet em-dash for an empty value (NOT the hatched `.ph` sample marker — a data field that
 // the AI left blank is a normal state, so it reads as a muted dash, not a placeholder box).
-export function Dash() {
+function Dash() {
   return <span className="muted">—</span>;
 }
-export function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
+function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
   if (!items || !items.length) return <Dash />;
   return (
     <div className="icp-chips">
@@ -43,7 +43,7 @@ export function SpecChips({ items, warn }: { items?: string[]; warn?: boolean })
 }
 
 // One labeled cell in the spec-review grid (reuses the .icp-cell grammar). Value is any JSX.
-export function SpecCell({ label, children }: { label: string; children: ReactNode }) {
+function SpecCell({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="icp-cell">
       <div className="k">{label}</div>
@@ -70,7 +70,7 @@ export function SpecHead({ children }: { children: ReactNode }) {
   );
 }
 // A plain text value, or the quiet muted dash when empty (0 and false are real values).
-export function Val({ children }: { children: ReactNode }) {
+function Val({ children }: { children: ReactNode }) {
   return children == null || children === "" ? <Dash /> : <>{children}</>;
 }
 

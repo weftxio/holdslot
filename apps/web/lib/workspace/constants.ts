@@ -57,7 +57,7 @@ export const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
 export const ENRICHED_STATUS = "scored";
 // Prospect-list ordering: Enriched (status `scored`) first, then AI Score (highest → lowest,
 // unscored sink), then remaining status (Found before anything else).
-export const STATUS_SORT: Record<string, number> = { scored: 0, found: 1 };
+const STATUS_SORT: Record<string, number> = { scored: 0, found: 1 };
 export function compareProspectRows(a: ProspectApi, b: ProspectApi): number {
   const ae = a.status === ENRICHED_STATUS ? 0 : 1;
   const be = b.status === ENRICHED_STATUS ? 0 : 1;
@@ -124,8 +124,8 @@ export const PER_MEETING_USD = 500;
 
 // reply dates relative to the app's current date (fixed for the mock)
 export const TODAY_ISO = "2026-06-03";
-export const REPLY_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
-export const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const REPLY_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export function fmtShortDate(iso: string) {
   const [, m, d] = iso.split("-").map(Number);
   return MONTHS[m - 1] + " " + d;

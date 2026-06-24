@@ -22,7 +22,7 @@ const FAKE_JWT = `${b64url({ alg: "none", typ: "JWT" })}.${b64url({ sub: "u", ex
 
 // Seed the tokens BEFORE any app code runs (addInitScript runs on every navigation, before the
 // bundle), so MeProvider's getAccess() check and SessionGuard's arm() both see a valid session.
-export async function seedAuth(page: Page): Promise<void> {
+async function seedAuth(page: Page): Promise<void> {
   await page.addInitScript(
     ([access, refresh]) => {
       localStorage.setItem("holdslot_access", access);
@@ -84,7 +84,7 @@ function jsonFor(method: string, path: string): unknown {
 // Install the interceptor. Glob covers every method + path under the dead base. Any request that
 // somehow targets a different (real) host will simply not match and — because the base is a dead
 // port — fail locally rather than hit prod; failOnUnmocked() (below) makes that loud in tests.
-export async function mockApi(page: Page): Promise<void> {
+async function mockApi(page: Page): Promise<void> {
   await page.route(`${API_BASE}/**`, (route: Route) => {
     const req = route.request();
     const url = new URL(req.url());
@@ -99,7 +99,7 @@ export async function mockApi(page: Page): Promise<void> {
 // Hard safety net: fail the test if ANY request is ever issued to a host that is not the local dev
 // server (127.0.0.1:3100) or the mocked dead API base (127.0.0.1:9876). This guarantees no request
 // reaches api.tryholdslot.com or any other real host.
-export function failOnExternalRequests(page: Page): string[] {
+function failOnExternalRequests(page: Page): string[] {
   const offenders: string[] = [];
   page.on("request", (req) => {
     const u = new URL(req.url());
