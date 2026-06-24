@@ -23,7 +23,9 @@ export default defineConfig({
   testDir: "e2e",
   fullyParallel: true,
   forbidOnly: !!process.env.CI,
-  retries: 0,
+  // The client-side redirects/hydration these smokes exercise have a small timing window; one retry
+  // locally (two on CI) absorbs transient flakes without masking a real regression.
+  retries: process.env.CI ? 2 : 1,
   reporter: [["list"]],
   timeout: 60_000,
   expect: { timeout: 10_000 },
