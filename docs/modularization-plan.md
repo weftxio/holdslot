@@ -218,26 +218,41 @@ Modularization (A–C) is P0; D1/D2 are P2 and must not delay or destabilize the
 - **Pure refactor discipline** — no copy, token (`·` middot), or class-name changes; the design
   stays the spec.
 
-### 1.7 Typed API client — investigation result (Phase D2)
+### 1.7 Typed API client (Phase D2) — foundation DONE; migration scoped
 
-**Feasible and low-risk.** The live `https://api.tryholdslot.com/openapi.json` returns a complete,
-codegen-ready spec: **OpenAPI 3.1.0 · 32 paths / 41 operations · every operation has an
-`operationId` · 49 component schemas** (FastAPI serves it by default; `main.py` doesn't disable it).
-The `{client}` path param is standard templating, fully supported by the generators.
+**Delivered (committed, zero runtime risk):**
+- `lib/api-types.ts` — **generated from the live `https://api.tryholdslot.com/openapi.json`**
+  (OpenAPI 3.1.0 · 32 paths / 41 operations · 47 schemas; 2,786 lines). Types only — erased at
+  build, no runtime cost, not yet imported (knip-ignored until the migration consumes it).
+- `pnpm gen:api` script to regenerate the types when the API changes.
 
-**Approach (behaviour-preserving):**
-- `openapi-typescript` generates a committed `lib/api-types.ts` from the schema (build-time, no
-  runtime cost). Regenerate when the API changes.
-- `openapi-fetch` (~2.8K) replaces the ~70 hand-written wrappers with typed
-  `client.GET("/{client}/brief", { params })` calls keyed by path+method.
-- **Preserve the app-specific auth logic** — token storage, refresh-before-401, single-flight
-  refresh, and the `holdslot:tokens` / `holdslot:auth-expired` custom events move into an
-  `openapi-fetch` `onRequest`/`onResponse` **middleware**, so behaviour is identical.
+**Why the 70-function rewrite was NOT done in this pass (deliberate, per Rule #1).** `lib/api.ts`
+is the **production** data layer: it owns auth-token storage, refresh-before-401, single-flight
+refresh, and the `holdslot:tokens`/`holdslot:auth-expired` session events, and it drives the
+**paid** Apollo find/enrich/score endpoints. A rip-and-replace of all ~70 functions can only be
+verified here by `typecheck` + review — the auth-refresh middleware cannot be exercised against a
+live authenticated session in this environment. Big-banging un-QA'able auth/billing code conflicts
+with Rule #1, so the swap is staged, not forced.
 
-**Risk / why it's D2 (after the split):** the only real risk is response-shape drift at the ~30 call
-sites that consume massaged data — each must be checked. Doing it *after* the structural split keeps
-the two axes (structure vs data-layer) independent and each independently verifiable. Net: −~20K
-bundle, ~70 fewer hand-written functions, full end-to-end types.
+**Scoped migration (do as a focused, dev-QA'd follow-up):**
+1. Add `openapi-fetch` (~2.8K runtime). Create `lib/api-client.ts`:
+   `createClient<paths>({ baseUrl })` + an `onRequest`/`onResponse` **middleware** that calls the
+   *existing* `lib/api.ts` token helpers (get/refresh/clear + the events) so auth behaviour is
+   byte-for-byte the same.
+2. Migrate **read-only GETs first** (lowest risk): `getMe`, `getBrief`, `listIcps`,
+   `getResearchSpec`, `listProspects`, `listCompanies`, `getSourcingDocs`,
+   `get*ScopeOverride`/`departments`, prompt previews. Keep each exported function's **signature and
+   return shape identical** (typecheck guards the ~30 call sites).
+3. Then mutations (icp CRUD, brief put/structure, company/people select/find), each verified on the
+   dev site.
+4. **Paid endpoints last, one at a time, with manual dev-site QA**: `enrich` (the only credit
+   spend), `find-company`/`find-people`/`find-lookalikes`, `rescore*`, `update-fields`.
+5. Delete the hand-written `authFetch` wrapper only once every function is migrated. Net: −~20K
+   bundle, ~70 fewer hand-written functions, full end-to-end types.
+
+This honours the chosen "investigate now → scope the swap": the schema is proven codegen-ready, the
+type foundation is in place, and the migration is a safe, ordered, independently-verifiable sequence
+rather than a single risky cut over live revenue code.
 
 ---
 
