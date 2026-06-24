@@ -14,6 +14,7 @@ import { slugToTitle } from "@/lib/client";
 import {
   type CompanyApi,
   type CompanyEnrichment,
+  type FacetOption,
   type IcpApi,
   type IcpSuggestion,
   type PeopleFacets,
@@ -38,6 +39,7 @@ import {
   getPeopleScopeOverride,
   putPeopleScopeOverride,
   deletePeopleScopeOverride,
+  getPeopleDepartments,
   getBrief,
   getResearchSpec,
   getStructureStatus,
@@ -1638,25 +1640,10 @@ const SENIORITY_OPTIONS: { value: string; label: string }[] = [
   "entry",
   "intern",
 ].map((value) => ({ value, label: humanizeFacet(value) }));
-// The 14 master Department & Job Function values (Apollo's order). Static so the panel can render
-// the AI-scope departments before the live facet probe loads — the ~245-value subdepartment tree
-// (incl. counts + expandable subs) still comes from the probe once companies are ticked.
-const MASTER_DEPARTMENT_OPTIONS: { value: string; label: string }[] = [
-  "c_suite",
-  "product_management",
-  "master_engineering_technical",
-  "design",
-  "education",
-  "master_finance",
-  "master_human_resources",
-  "master_information_technology",
-  "master_legal",
-  "master_marketing",
-  "medical_health",
-  "master_operations",
-  "master_sales",
-  "consulting",
-].map((value) => ({ value, label: humanizeFacet(value) }));
+// The 14 master Department & Job Function options are fetched from the backend (getPeopleDepartments)
+// — the single source of truth is Apollo's taxonomy in research_spec.py, never duplicated here — so
+// the panel can render the AI-scope departments before the live facet probe loads; the ~245-value
+// subdepartment tree (counts + expandable subs) still comes from the probe once companies are ticked.
 // The Step-2 people scope override is persisted SERVER-SIDE (per tenant), not in localStorage, so a
 // saved tuning follows the operator across browsers and a schema change can't leave a stale local
 // entry shadowing the AI scope. Load/save/reset go through the API (get/put/deletePeopleScopeOverride).
@@ -2249,8 +2236,13 @@ export default function Workspace() {
   const [scopeForm, setScopeForm] = useState<ScopeForm | null>(null);
   // Same, for the Step-2 Apollo people-search filters.
   const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
+  // The saved override is hydrated from the server on mount; until it resolves we don't yet know the
+  // real scope, so the Find-Settings gear stays disabled to avoid showing (or saving over) the wrong
+  // scope. On a load failure it stays false and a warning is surfaced — never a silent AI-scope view.
+  const [pplScopeLoaded, setPplScopeLoaded] = useState(false);
   const [peopleScopeOpen, setPeopleScopeOpen] = useState(false);
   const [peopleScopeForm, setPeopleScopeForm] = useState<PeopleScopeForm | null>(null);
+  const [masterDepts, setMasterDepts] = useState<FacetOption[]>([]); // 14 masters, from the backend
   // Live facet sidebar for the Find-Settings modal (per Management-Level / Department people counts
   // across the selected Step-2 companies). Null until a probe runs; departments come from here too.
   const [pplFacets, setPplFacets] = useState<PeopleFacets | null>(null);
@@ -2326,23 +2318,28 @@ export default function Workspace() {
     setCoStatus("");
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
+    setPplScopeLoaded(false); // gate the Find-Settings gear until the saved scope is known
     let alive = true;
     setCompaniesLoading(true);
     setProspectsLoading(true);
+    // The saved people-scope override is fetched on its own track: unlike the lists (a failure there
+    // just warns), a failed/slow override fetch must NOT silently present the AI scope — find_people
+    // still applies the saved DB row, so we keep the gear disabled and surface a warning instead.
+    const ovP = getPeopleScopeOverride(client);
     (async () => {
       try {
-        const [ps, cs, dl, pplOv] = await Promise.all([
+        const [ps, cs, dl, depts] = await Promise.all([
           listProspects(client),
           listCompanies(client),
           getSourcingDocs(client),
-          getPeopleScopeOverride(client).catch(() => null), // non-fatal: fall back to AI scope
+          getPeopleDepartments(client).catch(() => [] as FacetOption[]), // non-fatal: subs-only view
         ]);
         if (!alive) return;
         setProspects(ps);
         setCompanies(cs);
         setDocs(dl);
         setRubricDraft(dl?.fit_scoring?.body ?? "");
-        setPeopleScopeOverride(pplOv ? { people_search_params: pplOv } : null);
+        setMasterDepts(depts);
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       } finally {
@@ -2350,6 +2347,16 @@ export default function Workspace() {
           setCompaniesLoading(false);
           setProspectsLoading(false);
         }
+      }
+    })();
+    (async () => {
+      try {
+        const pplOv = await ovP;
+        if (!alive) return;
+        setPeopleScopeOverride(pplOv ? { people_search_params: pplOv } : null);
+        setPplScopeLoaded(true);
+      } catch {
+        if (alive) toast("Couldn’t load saved person filters · reload to edit them", "warn");
       }
     })();
     return () => {
@@ -2699,10 +2706,12 @@ export default function Workspace() {
     setFindingPpl(true);
     setFindingPplIds(new Set(ids));
     try {
+      // The saved override is NOT sent in the body: the server reads it from the DB (the single
+      // source of truth), so a stale in-memory copy in one tab can't shadow a save/reset done in
+      // another. find_people falls back to the DB override → AI spec when no body override is given.
       const res = await findPeople(client, {
         company_ids: ids,
         icp_id: fIcp || null,
-        ...(peopleScopeOverride ?? {}),
       });
       await Promise.all([reloadProspects(), reloadCompanies()]);
       if (res.found) {
@@ -2805,12 +2814,20 @@ export default function Workspace() {
     const ov = formToPeopleOverride(peopleScopeForm);
     setSavingPplScope(true);
     try {
-      await putPeopleScopeOverride(client, ov.people_search_params);
-      setPeopleScopeOverride(ov); // persisted server-side — survives a reload / another browser
+      // The server reflects what it stored: null when an all-empty selection was treated as a revert
+      // to the AI scope, else the saved params. Mirror that exactly so the UI never disagrees.
+      const saved = await putPeopleScopeOverride(client, ov.people_search_params);
+      if (clientRef.current !== client) return; // client switched mid-save — drop the stale write
+      setPeopleScopeOverride(saved ? { people_search_params: saved } : null);
       setPeopleScopeOpen(false);
-      toast("Person filters saved · used on the next Find People");
+      toast(
+        saved
+          ? "Person filters saved · used on the next Find People"
+          : "No filters selected · reverted to the AI-generated person scope"
+      );
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Couldn’t save person filters", "warn");
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Couldn’t save person filters", "warn");
     } finally {
       setSavingPplScope(false);
     }
@@ -2820,11 +2837,13 @@ export default function Workspace() {
     setSavingPplScope(true);
     try {
       await deletePeopleScopeOverride(client);
+      if (clientRef.current !== client) return; // client switched mid-reset — drop the stale write
       setPeopleScopeOverride(null);
       setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
       toast("Reverted to the AI-generated person scope");
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Couldn’t reset person filters", "warn");
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Couldn’t reset person filters", "warn");
     } finally {
       setSavingPplScope(false);
     }
@@ -4224,7 +4243,12 @@ export default function Workspace() {
                   <button
                     className="btn btn-primary btn-sm"
                     onClick={openPeopleScopeSettings}
-                    title="Edit the Apollo people-search filters used by Find People"
+                    disabled={!pplScopeLoaded}
+                    title={
+                      pplScopeLoaded
+                        ? "Edit the Apollo people-search filters used by Find People"
+                        : "Loading your saved person filters…"
+                    }
                   >
                     Find Settings
                   </button>
@@ -4875,9 +4899,9 @@ export default function Workspace() {
                       the master list is appended so it isn't hidden until the probe loads. */}
                   <div className="facet-grid">
                     {[
-                      ...MASTER_DEPARTMENT_OPTIONS,
+                      ...masterDepts,
                       ...peopleScopeForm.departments
-                        .filter((v) => !MASTER_DEPARTMENT_OPTIONS.some((o) => o.value === v))
+                        .filter((v) => !masterDepts.some((o) => o.value === v))
                         .map((value) => ({ value, label: humanizeFacet(value) })),
                     ].map((o) => (
                       <label key={o.value} className="facet-row">

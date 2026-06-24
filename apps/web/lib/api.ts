@@ -632,20 +632,32 @@ export async function getPeopleScopeOverride(
   const j = (await r.json()) as { people_search_params: Record<string, unknown> | null };
   return j.people_search_params;
 }
+// Returns the persisted scope after the save: `null` when the server treated an empty payload as a
+// revert (no facets chosen → fall back to the AI scope), else the saved params. Callers reflect
+// this so the UI never disagrees with what the server stored.
 export async function putPeopleScopeOverride(
   client: string,
   peopleSearchParams: Record<string, unknown>
-): Promise<void> {
+): Promise<Record<string, unknown> | null> {
   const r = await authFetch(`/${client}/people/scope-override`, {
     method: "PUT",
     json: true,
     body: JSON.stringify({ people_search_params: peopleSearchParams }),
   });
   if (!r.ok) throw new Error(await detail(r));
+  const j = (await r.json()) as { people_search_params: Record<string, unknown> | null };
+  return j.people_search_params;
 }
 export async function deletePeopleScopeOverride(client: string): Promise<void> {
   const r = await authFetch(`/${client}/people/scope-override`, { method: "DELETE" });
   if (!r.ok) throw new Error(await detail(r));
+}
+// The 14 master Department & Job Function options (value + label) — server-owned (Apollo's taxonomy),
+// so the Find-Settings panel renders the master list before live counts load without hardcoding it.
+export async function getPeopleDepartments(client: string): Promise<FacetOption[]> {
+  const r = await authFetch(`/${client}/people/departments`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
 }
 
 // Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (by identity

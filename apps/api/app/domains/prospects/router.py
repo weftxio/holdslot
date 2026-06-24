@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
@@ -1434,17 +1435,43 @@ def save_people_scope_override(
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> PeopleScopeOverrideOut:
-    """Save the Step-2 Find Settings as the tenant's people-scope override (single-row UPSERT). It
-    then wins over the AI spec on every Find People until reset. DELETE reverts to the AI scope."""
-    row = _people_scope_override(db, ctx.tenant.id)
+    """Save the Step-2 Find Settings as the tenant's people-scope override. It then wins over the AI
+    spec on every Find People until reset.
+
+    An EMPTY payload (no seniority/department chosen) is a revert, not a save: it deletes any saved
+    row so the next Find People falls back to the AI scope — same as the 'Reset to AI scope' button.
+    Persisting an all-empty override would otherwise silently widen every search to the whole org.
+    A non-empty payload is UPSERTed atomically (ON CONFLICT) so concurrent saves can't race the
+    unique (tenant, kind) constraint into a 500."""
+    psp = body.people_search_params or {}
+    if not any(psp.values()):
+        row = _people_scope_override(db, ctx.tenant.id)
+        if row is not None:
+            db.delete(row)
+            db.commit()
+        return PeopleScopeOverrideOut(people_search_params=None)
     payload = {"people_search_params": body.people_search_params}
-    if row is None:
-        row = ScopeOverride(tenant_id=ctx.tenant.id, kind=SCOPE_KIND_PEOPLE, params=payload)
-        db.add(row)
-    else:
-        row.params = payload
+    stmt = (
+        pg_insert(ScopeOverride)
+        .values(tenant_id=ctx.tenant.id, kind=SCOPE_KIND_PEOPLE, params=payload)
+        .on_conflict_do_update(
+            constraint="uq_scope_override_tenant_kind",
+            set_={"params": payload, "updated_at": func.now()},
+        )
+    )
+    db.execute(stmt)
     db.commit()
     return PeopleScopeOverrideOut(people_search_params=body.people_search_params)
+
+
+@router.get("/{client}/people/departments", response_model=list[FacetOption])
+def people_departments(
+    ctx: AccessContext = Depends(require_membership()),
+) -> list[FacetOption]:
+    """The 14 master Department & Job Function options (value + label) — the single source of truth
+    for the Find-Settings department list before live counts load. Static (Apollo's taxonomy), no
+    Apollo call, no spend; the frontend renders these so it never hardcodes the master list."""
+    return [FacetOption(value=d, label=_facet_label(d)) for d in MASTER_DEPARTMENTS]
 
 
 @router.delete("/{client}/people/scope-override", status_code=status.HTTP_204_NO_CONTENT)
