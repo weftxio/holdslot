@@ -6,7 +6,7 @@ Create Date: 2026-06-12
 
 Tenant-scoped JSONB documents (brief/icp) + append-only telemetry (llm_call) and the
 versioned ResearchSpec contract. Brief/icp `data` is opaque JSONB so form-field changes
-never need a migration; the ResearchSpec is the locked v1 Clay contract.
+never need a migration; the ResearchSpec is the locked v1 targeting contract.
 """
 
 from collections.abc import Sequence

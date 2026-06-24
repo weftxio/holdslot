@@ -4,10 +4,10 @@ Revision ID: 0005_phase_c
 Revises: 0004_icp_suggestions
 Create Date: 2026-06-19
 
-The three MVP tables for the Clay seed + AI sourcing loop. All tenant-scoped (the A4 guard
+The three MVP tables for the Apollo find→enrich loop. All tenant-scoped (the A4 guard
 scopes them); `prospect` carries `identity_key` + `last_enriched_at` as the future `person`
-enrich-once seam. Seeds `sourcing_doc` v1 of BOTH the sourcing prompt and the fit rubric for
-HoldSlot tenant #0 from `docs/prompts/*-v1.md`, so a fresh DB can run a round immediately.
+enrich-once seam. Seeds `sourcing_doc` v1 of the fit rubric for HoldSlot tenant #0 from
+`docs/prompts/*-v1.md`, so a fresh DB can run a round immediately.
 
 `person`/`enrichment_request` (the SCALE enrich-once cache) are deliberately NOT built here.
 """
@@ -32,9 +32,11 @@ EMPTY_OBJ = sa.text("'{}'::jsonb")
 
 # repo root: versions/ -> alembic/ -> infra/ -> root
 _PROMPTS = Path(__file__).resolve().parents[3] / "docs" / "prompts"
-# kind -> seed file (the data-schema `sourcing_doc.kind` values)
+# kind -> seed file (the data-schema `sourcing_doc.kind` values).
+# The retired legacy `sourcing_prompt` seed was removed (the `sourcing` stage is dead under the
+# Apollo-only rebuild); only the fit rubric is seeded. Fresh DBs no longer need the sourcing-prompt
+# file.
 SEED_DOCS = {
-    "sourcing_prompt": "sourcing-prompt-v1.md",
     "fit_rubric": "fit-scoring-rubric-v1.md",
 }
 
@@ -104,11 +106,11 @@ def upgrade() -> None:
 
 
 def _seed_sourcing_docs() -> None:
-    """Seed v1 of the sourcing prompt + fit rubric for HoldSlot tenant #0 from docs/prompts/.
+    """Seed v1 of the fit rubric for HoldSlot tenant #0 from docs/prompts/.
 
     Idempotent (ON CONFLICT DO NOTHING on the unique (tenant, kind, version)). If the tenant
     isn't present yet (a DB seeded out of order) the seed is skipped — the founder can save v1
-    through the UI instead; the round endpoint requires a sourcing_doc to exist regardless.
+    through the UI instead; the round endpoint requires a fit rubric to exist anyway.
     """
     bind = op.get_bind()
     tenant_id = bind.execute(

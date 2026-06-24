@@ -5,26 +5,24 @@ Reads each secret from AWS Secrets Manager via the `aws` CLI (no boto3), then ru
 the minimal read/auth call each build-plan phase actually needs, and prints a
 PASS/FAIL/PEND table. Secret VALUES are never printed.
 
-The check is PHASE-AWARE: fields a later phase provisions (e.g. Clay's table +
-webhook at Phase C, Smartlead's webhook secret + sending accounts at Phase E) are
-reported as PEND ("pending"), not FAIL, so a clean run today exits 0. Pass
---strict to treat PEND rows as failures once you reach the phase that needs them.
+The check is PHASE-AWARE: fields a later phase provisions (e.g. Smartlead's webhook
+secret + sending accounts at Phase E) are reported as PEND ("pending"), not FAIL, so
+a clean run today exits 0. Pass --strict to treat PEND rows as failures once you
+reach the phase that needs them.
 
 Scope (only what docs/initial-build-plan.md uses):
   - app        : JWT signing/refresh keys present, strong, distinct          (Phase A)
                  (Aurora master credential is a separate RDS-managed secret, tested later)
   - openrouter : key valid + spend cap set; optional default_model reachable (Phase B)
-  - clay       : api_key present now; table/webhook fields PEND until        (Phase C)
+  - apollo     : api_key present (Search/Match used by the in-app find→enrich loop) (Phase C)
   - smartlead  : api key valid; sending accounts + webhook secret PEND until (Phase E)
   - google     : service-account key + domain-wide delegation + Calendar + Meet scopes (Phase F)
 
-Cost: every check is FREE except the Clay row push (~1 credit), which only runs
-with --clay-push. Delete that test row from the Clay table afterward.
+Cost: every check is FREE.
 
 Usage:
   python3 verify_keys.py                 # all free checks (PEND for future-phase fields)
   python3 verify_keys.py --strict        # PEND counts as failure (use at the field's phase)
-  python3 verify_keys.py --clay-push     # also push one Clay test row (~1 credit)
   python3 verify_keys.py --only google   # run a single platform
   AWS_PROFILE / --profile, --region override the defaults below.
 """
@@ -217,54 +215,16 @@ def check_openrouter(sec: dict) -> None:
                want if want in ids else f"{want} NOT in model list")
 
 
-# ---- clay --------------------------------------------------------------------
+# ---- apollo ------------------------------------------------------------------
 
 
-def check_clay(sec: dict, do_push: bool) -> None:
-    print("\nholdslot/prod/clay")
-    # api_key is the only field present today. (We can't cheaply auth it against
-    # Clay's API without a credit, so this attests "stored", not "valid".)
-    record("clay", "api_key present", bool(sec.get("api_key")),
-           "stored" if sec.get("api_key") else "missing")
-
-    # table + webhook fields are provisioned at Phase C - PEND until then.
-    for field in ("table_id", "inbound_webhook_url", "inbound_webhook_secret"):
-        if sec.get(field):
-            record("clay", f"{field} present", True)
-        else:
-            pending("clay", f"{field} present", "added at Phase C")
-
-    url = sec.get("inbound_webhook_url")
-    if not url:
-        pending("clay", "webhook reachable", "no inbound_webhook_url yet (Phase C)")
-        return
-
-    if not do_push:
-        # reachability only - OPTIONS so we don't create a row
-        try:
-            status, _ = http("OPTIONS", url)
-            record("clay", "webhook reachable (no push)", status < 500,
-                   f"HTTP {status} (use --clay-push for a real 1-credit row test)")
-        except Exception as e:
-            record("clay", "webhook reachable", False, f"network error: {type(e).__name__}")
-        return
-
-    # real 1-credit push of a clearly-marked test row
-    payload = json.dumps({
-        "_holdslot_test": True,
-        "company": "HoldSlot Verify",
-        "note": "delete me - verify_keys.py connection test",
-    }).encode()
-    headers = {"Content-Type": "application/json"}
-    secret = sec.get("inbound_webhook_secret")
-    if secret:
-        headers["Authorization"] = f"Bearer {secret}"
-    try:
-        status, _ = http("POST", url, headers, payload)
-        record("clay", "webhook push (~1 credit)", 200 <= status < 300,
-               f"HTTP {status} - DELETE the 'HoldSlot Verify' row from the Clay table")
-    except Exception as e:
-        record("clay", "webhook push", False, f"network error: {type(e).__name__}")
+def check_apollo(sec: dict) -> None:
+    print("\nholdslot/prod/apollo")
+    # `key` is the master API key (header X-Api-Key) the in-app find→enrich loop uses for
+    # mixed_companies/search, mixed_people/api_search, and people/match. We attest it is stored;
+    # a live auth call is skipped here because company search consumes plan credits.
+    record("apollo", "key present", bool(sec.get("key")),
+           "stored" if sec.get("key") else "missing")
 
 
 # ---- smartlead ---------------------------------------------------------------
@@ -405,7 +365,7 @@ def check_google(sec: dict) -> None:
 CHECKS = {
     "app": lambda sec, args: check_app(sec),
     "openrouter": lambda sec, args: check_openrouter(sec),
-    "clay": lambda sec, args: check_clay(sec, args.clay_push),
+    "apollo": lambda sec, args: check_apollo(sec),
     "smartlead": lambda sec, args: check_smartlead(sec),
     "google": lambda sec, args: check_google(sec),
 }
@@ -417,8 +377,6 @@ def main() -> int:
     ap.add_argument("--profile", default=DEFAULT_PROFILE)
     ap.add_argument("--region", default=DEFAULT_REGION)
     ap.add_argument("--only", choices=list(CHECKS), help="run a single platform")
-    ap.add_argument("--clay-push", action="store_true",
-                    help="push one Clay test row (~1 credit); off by default")
     ap.add_argument("--strict", action="store_true",
                     help="treat PEND (not-yet-provisioned phase fields) as failures")
     args = ap.parse_args()
@@ -430,7 +388,8 @@ def main() -> int:
         try:
             sec = get_secret(f"holdslot/prod/{name}", args.profile, args.region)
         except Exception as e:
-            record(name, "read secret", False, (str(e).splitlines() or [""])[-1][:200] or type(e).__name__)
+            msg = (str(e).splitlines() or [""])[-1][:200] or type(e).__name__
+            record(name, "read secret", False, msg)
             continue
         try:
             CHECKS[name](sec, args)
@@ -443,8 +402,12 @@ def main() -> int:
     n_fail = sum(1 for r in ROWS if r[2] == FAIL)
     n_pend = sum(1 for r in ROWS if r[2] == PEND)
     print("\n" + "=" * 60)
-    print(f"SUMMARY: {n_pass} passed, {n_fail} failed, {n_pend} pending"
-          + (" (pending = future-phase fields; --strict to fail on them)" if n_pend and not args.strict else ""))
+    pend_note = (
+        " (pending = future-phase fields; --strict to fail on them)"
+        if n_pend and not args.strict
+        else ""
+    )
+    print(f"SUMMARY: {n_pass} passed, {n_fail} failed, {n_pend} pending" + pend_note)
     for p, c, status, _d in ROWS:
         print(f"  {status}  {p:11} {c}")
     print("=" * 60)

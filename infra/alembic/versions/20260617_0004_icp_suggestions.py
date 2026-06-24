@@ -7,7 +7,7 @@ Create Date: 2026-06-17
 Adds the `icp_suggestions` JSONB column to `research_spec`: proposed ICPs the structuring
 LLM infers from the client's existing-customer list (the realest proof of who pays) when the
 paying customers diverge from every stated ICP. Stored alongside `gaps`, never inside the
-Clay-bound `spec`. Defaults to an empty array so existing rows stay valid.
+targeting `spec`. Defaults to an empty array so existing rows stay valid.
 """
 
 from collections.abc import Sequence

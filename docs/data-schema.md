@@ -6,10 +6,9 @@
 > [`backend-development-plan.md`](backend-development-plan.md)) shows a table or column differently, **this
 > doc wins**, and schema changes are recorded **here first**.
 >
-> **A & B are built** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
-> Alembic migrations); **C is an Apollo-only rebuild — planned** (see
-> [`initial-build-plan.md`](initial-build-plan.md) → Phase C). The Clay-based Phase C was built then
-> superseded; the Clay table contract below is retired (kept only in git history).
+> **A, B & C are built** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
+> Alembic migrations through `0013`); C is the **Apollo-only** find → score → select → enrich loop (see
+> [`initial-build-plan.md`](initial-build-plan.md) → Phase C).
 
 ## The governing boundary
 
@@ -288,7 +287,7 @@ One in-flight job per tenant (a queued/running job is returned as-is) so a doubl
 | `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | the call that produced the spec |
 | `created_at`, `updated_at` | timestamptz | |
 
-## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ⏳ APOLLO REBUILD
+## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ✅ BUILT & LIVE (Lambda v44)
 Follows the same conventions; all carry `tenant_id` (= `client_id`), scoped by the A4 guard. **Built today:
 `prospect` + `research_run` + `prompt` (created as `sourcing_doc` in `0005`, renamed `0010`), `company`
 + `prospect.company_id` (`0007`), `company.website` (`0008`), `research_job` async-structuring tracker
@@ -376,7 +375,7 @@ apply DB-side on every search.
 | `spec_version` | int nullable | |
 | `icp_id` | uuid FK → `icp` nullable | |
 | `source` | varchar | `apollo` |
-| `prompt_version`, `rubric_version` | varchar nullable | which spec (`brief-structure`) / `fit_rubric` versions ran |
+| `prompt_version`, `rubric_version` | varchar nullable | which spec (`brief-structure`) / fit-rubric (`company_fit`/`prospect_fit`) versions ran |
 | `rows_pushed`, `rows_accepted` | int | the run's scoreboard (found / scored) |
 | `cost_usd` | numeric nullable | LLM spend → per-run $/accepted (Apollo enrich-credit cost not stored — reconcile from the Apollo dashboard) |
 | `created_at` | timestamptz | |
@@ -388,9 +387,9 @@ version is active. (Was `sourcing_doc` with a `kind` column — renamed once it 
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | idx |
-| `stage` | varchar(32) | `briefing` (Brief→ResearchSpec scoping) · `sourcing` (legacy, retired) · `fit_scoring` (fit rubric) |
+| `stage` | varchar(32) | `briefing` (Brief→ResearchSpec scoping) · `sourcing` (legacy, retired) · **`company_fit`** (Step-1 company rubric) · **`prospect_fit`** (Step-2 people rubric) — split from `fit_scoring` in `0013` |
 | `version` | int | **unique(`tenant_id`,`stage`,`version`)**; append-only |
-| `body` | text | seed v1 from `docs/prompts/*.md` in the migration (`briefing`←`brief-structure-v5.md`, `fit_scoring`←`fit-scoring-rubric-v1.md`) |
+| `body` | text | seed v1 from `docs/prompts/*.md` in the migration (`briefing`←`brief-structure-v5.md`; `company_fit`/`prospect_fit`←`fit-scoring-rubric-v1.md` via the `0005`→`0010`→`0013` chain) |
 | `created_at` | timestamptz | |
 
 The briefing prompt is read DB-first by the scoping worker; if absent it falls back to the code
@@ -429,11 +428,17 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260611_0002_seed` | A | seed HoldSlot tenant #0 + two founder owners |
 | `20260612_0003_phase_b_targeting` | B | `brief`, `icp`, `llm_call`, `research_spec` |
 | `20260617_0004_icp_suggestions` | B | `research_spec.icp_suggestions` column |
-| `20260619_0005_phase_c_prospects` ✅ | C | `prospect`, `research_run`, `sourcing_doc` (MVP) + seed `sourcing_doc` v1 (sourcing prompt + fit rubric) for tenant #0 from `docs/prompts/*-v1.md` |
+| `20260619_0005_phase_c_prospects` ✅ | C | `prospect`, `research_run`, `sourcing_doc` (MVP) + seed `sourcing_doc` v1 (fit rubric only; the retired sourcing-prompt seed was dropped) for tenant #0 from `docs/prompts/*-v1.md` |
 | `20260620_0006_tenant_seed_limit` ✅ | C | `tenant.seed_limit` — **dropped in `0011`** (AI-loop seed anchoring, retired) |
 | `20260620_0007_phase_c_companies` ✅ | C | `company` (stage-1 discovery) + `prospect.company_id` (applied to dev) |
 | `20260621_0008_company_website` ✅ | C | `company.website` (raw URL alongside the normalized `domain`) |
 | `20260622_0009_research_job` | B | `research_job` (async Brief→ResearchSpec structuring tracker) |
 | `20260622_0010_prompt_table` | B | rename `sourcing_doc`→`prompt`, `kind`→`stage` (`sourcing_prompt`→`sourcing`, `fit_rubric`→`fit_scoring`); seed `briefing` v1 from `brief-structure-v5.md` |
-| *(planned)* `0011_phase_c_apollo` | C | `company.apollo_org_id`, `prospect.apollo_person_id`; **drop** `tenant.seed_limit` |
+| `20260622_0011_apollo_ids` ✅ | C | `company.apollo_org_id`, `prospect.apollo_person_id`; **drop** `tenant.seed_limit` |
+| `20260624_0012_scope_override` ✅ | C | persisted Step-2 people-scope override (Find Settings saved server-side per tenant — see Phase C → C9) |
+| `20260624_0013_split_fit_rubric` ✅ | C | split `prompt` stage `fit_scoring` → **`company_fit`** (Step 1) + **`prospect_fit`** (Step 2); rename existing rows to `company_fit`, seed `prospect_fit` from the same body (append-only, up/down clean — see Phase C → C10) |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
+
+> **`prompt.stage` vocabulary (current):** `briefing` (Brief→spec, B) · **`company_fit`** (Step-1 company
+> scoring) · **`prospect_fit`** (Step-2 person scoring). The old single `fit_scoring` stage was split in `0013`;
+> the `sourcing` stage is a retired legacy sourcing prompt (unused).

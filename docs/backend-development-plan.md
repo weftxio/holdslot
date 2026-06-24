@@ -3,7 +3,7 @@
 > Planning only. No backend code is written yet. Requirements are derived from the product
 > (done-for-you, billed-per-qualified-meeting) and the eight mock pages in `apps/web`.
 > v2 incorporated confirmed architecture decisions and per-stage direction.
-> v3 folded in three founder revenue-protection directives: anti-burn Clay quota (S1/S2/S7),
+> v3 folded in three founder revenue-protection directives: anti-burn enrichment quota (S1/S2/S7),
 > anti-theft tiered masking on client approval (S3), and client-approved SmartSenders lookalike-domain
 > provisioning (S4).
 > **v4 adopts the new tiered pricing model (USD): Free / Launch ($800/mo) / Growth ($1,600/mo),
@@ -15,9 +15,9 @@
 
 ## 0. Status & how to use this doc (read first)
 
-**This document is the backend spec and build order. S0 (Phase A) and S1 (Phase B) are BUILT & live on
-the `dev` environment; the current front is S2 (Phase C — Clay). See `initial-build-plan.md` for the
-consolidated as-built record and the step-by-step Phase C task list.**
+**This document is the backend spec and build order. S0 (Phase A), S1 (Phase B) and S2 (Phase C — Apollo)
+are BUILT & live on the `dev` environment; the current front is S3 (Phase D — batch + client approval).
+See `initial-build-plan.md` for the consolidated as-built record and the step-by-step task lists.**
 
 **What is already built and live (Phase 1):**
 - The full mock UI in `apps/web` (Next.js 15, App Router) — all 8 pages, ported pixel-faithfully
@@ -49,7 +49,7 @@ Brief → ICP → Prospect research → Sendout batch → Client approval
 ```
 
 - **Human-in-the-loop first.** HoldSlot is *done-for-you*: operators can run the hardest steps
-  (Clay research, Smartlead sending) by hand while the backend records state. Build the **data
+  (Apollo research, Smartlead sending) by hand while the backend records state. Build the **data
   spine + console API first**, automate integrations later.
 - **One billable event = a qualified meeting.** Qualified = the prospect was **client-approved**
   (S3 record) **and** the meeting actually happened with **duration ≥ 10 min** (S6 Google Meet
@@ -58,7 +58,7 @@ Brief → ICP → Prospect research → Sendout batch → Client approval
 
 **Launch mode (confirmed): operator-assisted MVP → `S0 → S1 → S3 → S6 → S7`.** This reaches the
 billable event with minimal integration surface. S2/S4/S5 (research + outreach + reply automation)
-follow as Milestone 2; during the MVP, operators run Clay/Smartlead manually and the backend
+follow as Milestone 2; during the MVP, operators run Apollo/Smartlead manually and the backend
 stores the results.
 
 ---
@@ -78,7 +78,7 @@ stores the results.
 | Secrets | **AWS Secrets Manager** | One JSON secret per platform (`holdslot/<env>/<platform>`); native rotation + resource policies; fetched post-SnapStart-restore. ~$0.40/secret/mo |
 | Non-secret config | **SSM Parameter Store (SecureString)** | Free tier; env/feature flags that aren't credentials |
 | Transactional email | **Amazon SES** | Approval/booking/feedback emails, reminders |
-| AI / LLM | **OpenRouter (Claude + others) — sole AI billing point**, behind one adapter | Chosen over Bedrock for reliable model access from Hong Kong. All HoldSlot-invoked LLM goes through OpenRouter: brief structuring, reply labeling/drafting, meeting summaries. We do **not** use Google smartNotes/Gemini for summaries (Meet transcript → OpenRouter instead). Clay's internal AI is part of Clay's product cost, separate category. One client adapter so the provider can be swapped without touching domains |
+| AI / LLM | **OpenRouter (Claude + others) — sole AI billing point**, behind one adapter | Chosen over Bedrock for reliable model access from Hong Kong. All HoldSlot-invoked LLM goes through OpenRouter: brief structuring, fit scoring, reply labeling/drafting, meeting summaries. We do **not** use Google smartNotes/Gemini for summaries (Meet transcript → OpenRouter instead). One client adapter so the provider can be swapped without touching domains |
 | Auth | **FastAPI + JWT** (argon2, refresh tokens) | Matches the email+pw login mock |
 | Frontend | **Amplify** (already live, dev+prod, $0) | CI/CD proven |
 | Observability | **CloudWatch** (+ optional Sentry) | |
@@ -87,8 +87,8 @@ stores the results.
 
 | Capability | Vendor | Integration pattern |
 |---|---|---|
-| Prospect research/enrichment | **Clay** | Push structured ICP/search spec → Clay table **webhook-in**; Clay waterfall + Claygent enrich; Clay **HTTP API action** POSTs enriched prospects back to a HoldSlot callback. Operator-run table in MVP |
-| Cold-email outreach | **Smartlead** | REST: create campaign, add leads, sequences, reply-to-thread; webhooks `EMAIL_*`, `LEAD_CATEGORY_UPDATED` |
+| Prospect research/enrichment | **Apollo.io** | Headless REST: `mixed_companies/search` + `mixed_people/api_search` (discovery) → `people/match` (enrich), one static `X-Api-Key`. Company search consumes plan credits, people search is free, `people/match` is the per-email spend. In-app, no CSV, no callback |
+| Cold-email outreach | **Smartlead** | REST: create campaign, add leads, sequences, reply-to-thread; campaign webhooks `LEAD_REPLIED`/`LEAD_OPENED`/`LEAD_CLICKED`/`LEAD_BOUNCED`/`LEAD_UNSUBSCRIBED` |
 | Calendar + meeting | **Google Workspace: Calendar API + Google Meet REST API v2** | Calendar creates the event + Meet link and invites buyer + client; Meet API returns `conferenceRecords`, `participants` (duration), `transcripts` |
 | Payments | **Stripe** | per-plan **subscription** (Launch/Growth) + one-time **activation** + **metered** per-qualified-meeting + **metered** enrichment overage (§7) |
 
@@ -128,12 +128,12 @@ by `client_id`.
 > **development spec**: the objective, the task list, and the **test cases** that define done.
 
 **Objective.** Turn a client's free-text **Business Brief** + **ICP** profiles into a research-ready,
-Clay-aligned **`ResearchSpec`** — and make the whole loop observable. The LLM (OpenRouter/Claude) sits
-at exactly one seam — *Brief (+ICPs) in → `ResearchSpec` + gap prompts out* — maximizing the Clay target
-list's quality while gap prompts protect Clay credits *before* they're spent. It does **not** score fit
-(S2), draft email (S4/S5), or converse. Everything is tenant-scoped via the A4 central guard.
+Apollo-native **`ResearchSpec`** — and make the whole loop observable. The LLM (OpenRouter/Claude) sits
+at exactly one seam — *Brief (+ICPs) in → `ResearchSpec` + gap prompts out* — maximizing the Apollo target
+list's quality while gap prompts protect Apollo enrich credits *before* they're spent. It does **not** score
+fit (S2), draft email (S4/S5), or converse. Everything is tenant-scoped via the A4 central guard.
 
-**Role of the LLM + the value loop.** Free-text business language → machine-actionable Clay search
+**Role of the LLM + the value loop.** Free-text business language → machine-actionable Apollo search
 parameters is otherwise per-client, per-revision operator labour that a done-for-you margin can't
 afford, and that rules can't do (they can't read prose). The *same* completion returns **gap prompts**
 (what's missing/too vague for good targeting), and specs are **versioned** so targeting quality is
@@ -143,17 +143,19 @@ full loop.
 **Design rule — the form churns, the backend doesn't care.** Brief/ICP fields are stored as **JSONB
 documents** (no per-field columns); their only consumers are the form (opaque round-trip) and the LLM
 prompt (schema-tolerant). A form change = a frontend edit + maybe one rubric-list entry — **zero
-migrations, zero API churn**. The **`ResearchSpec` v1 is the opposite: a locked contract** (the interface
-to Clay), stable even while the form churns; the LLM is the shock absorber between them. Promote a JSONB
-field to a typed column only when backend *logic* needs it (S2 consumes exclusions → promote then).
+migrations, zero API churn**. The **`ResearchSpec` is the opposite: a versioned contract** (the interface
+to Apollo, now **v3** — emits exact Apollo request fields), stable even while the form churns; the LLM is
+the shock absorber between them. Promote a JSONB field to a typed column only when backend *logic* needs it
+(S2 consumes exclusions → promote then).
 
-**Clay alignment (researched, locked 2026-06-12).** Clay has **no public API** to create tables or
-configure Find Companies/Find People searches (in-app only); the programmable surface is webhook sources
-(rows in) + the HTTP API column (results out). So the spec splits: `company_search` (operator transcribes
-once into a Clay template), `people_search`/`exclusions` (programmatic per-row). The LLM emits
-**targeting only**; the **credit policy** (waterfall order, "only run if" gates, test-batch-of-10, caps)
-is **deterministic server config merged at save time**, never LLM-inferred. Field-level format + enums in
-`initial-build-plan.md`.
+**Apollo alignment (v3, locked 2026-06-22).** Apollo is a headless REST search + enrichment API
+(`mixed_companies/search`, `mixed_people/api_search`, `people/match`, one static `X-Api-Key`). The
+**`ResearchSpec` v3 emits the exact Apollo request fields by name** (`q_organization_keyword_tags`,
+`organization_num_employees_ranges`, `person_seniorities`, `latest_funding_date_range`, …) split into
+`company_search_params` / `people_search_params` / `intent_filters`, so the B→C mapping (`apollo_map`) is a
+deterministic near pass-through — no second LLM. The LLM emits **targeting only**; the **credit policy**
+(email-status gate, phone off, hard caps) is **deterministic server config merged at save time**, never
+LLM-inferred. Field-level format + enums in `initial-build-plan.md` / `data-schema.md`.
 
 **LLM observability (built into the one seam).** Every call goes through the B3 adapter, which writes an
 append-only `llm_call` row (purpose, model, **prompt_version**, tokens, **cost_usd**, latency, status,
@@ -164,9 +166,10 @@ retries, **raw completion**) + a structured CloudWatch line; each `research_spec
 queryable table + CloudWatch wins at dogfood volume.
 
 **Anti-burn quota (plan-derived; init here, enforced at S2).** `Subscription.enrichment_cap` is set by
-plan tier — **Free: 10 prospects one-time · Launch: 150/mo · Growth: 400/mo** (§7). Launch's 150 ≈ ~6,000
-Clay credits at ~40 each, keeping worst-case (zero-meeting) Clay COGS a small fraction of the $800/mo on a
-volume rate (~$0.016–0.02/credit). `icp_limit` is plan-derived (Launch 1, Growth 3). Beyond the cap,
+plan tier — **Free: 10 prospects one-time · Launch: 150/mo · Growth: 400/mo** (§7). Under Apollo the cap
+bounds **`people/match` enrich credits** (1 credit/email, the only per-prospect spend — people search is
+free, company search draws the shared plan pool), keeping worst-case (zero-meeting) enrichment COGS a small
+fraction of the $800/mo. `icp_limit` is plan-derived (Launch 1, Growth 3). Beyond the cap,
 enrichment is **billed as $3/prospect overage** (S7), never silently absorbed. *Dogfood note:* tenant #0
 runs effectively uncapped; **fields are seeded but not enforced here** — enforcement + monthly reset live
 in S2 where credits are actually spent.
@@ -217,45 +220,44 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
     none.
   - **versioning:** structuring twice appends v2, **v1 row is unchanged**, and `research_spec.llm_call_id`
     resolves to a real `llm_call`.
-- **Schema validation (unit):** the v1 `ResearchSpec` Pydantic model **rejects** a spec missing a
-  required group and **accepts** the canonical example from `initial-build-plan.md` (guards the Clay
+- **Schema validation (unit):** the `ResearchSpec` Pydantic model **rejects** a spec missing a
+  required group and **accepts** the canonical example from `initial-build-plan.md` (guards the Apollo
   contract against drift).
 - **Phase-B acceptance (mirrors `test_acceptance.py`):** a founder, end-to-end against dev — `PUT` brief +
   create ICP → `structure` → `GET` brief returns a spec with a version, gaps, and resolvable telemetry;
   an **ephemeral second tenant** cannot read/structure tenant #0's brief (404). Green = tick **S1**.
 
 **UI wired:** Workspace → *Business brief* (form + completeness ring + spec review panel + gap callout),
-*ICP* profiles. **Tools/access:** **OpenRouter** only (no Clay credit spent in S1) —
+*ICP* profiles. **Tools/access:** **OpenRouter** only (no Apollo credit spent in S1) —
 `default_model = google/gemini-2.5-flash-lite`, fallback `openai/gpt-5-mini`, both native strict
 `json_schema`; swappable behind the B3 adapter via one config change.
 
-### S2 — Prospect research via Clay · **P1 (Milestone 2)** · ◀ CURRENT FRONT (Phase C — task list in `initial-build-plan.md`)
-- **Features:** `Research prospects from ICP` → send `ResearchSpec` to a **Clay** table (webhook-in)
-  → Clay enrichment waterfall + Claygent → Clay HTTP API **POSTs enriched prospects back** to a
-  HoldSlot callback → store `Prospect` rows with fit score + **enrichment detail rich enough for the
-  client to decide in S3**; filter/search/select.
-- **UI wired:** Workspace → *Prospect list* (filters, Source ICP column, select).
-- **Anti-burn enforcement (quota seeded in S1):** the research orchestration wrapper checks
-  `current_month_usage >= enrichment_cap` **before dispatching any batch to Clay**. At the cap it does
-  **not** hard-fail by default — it **meters the excess as $3/prospect overage** (`LedgerEntry`, §7) and
-  continues; a hard stop (`403 CreditQuotaExceeded`) applies only when overage is disabled for the tenant
-  or `admin_quota_override` is off and a tenant-specific ceiling is hit. An **EventBridge Scheduler**
-  monthly job resets `current_month_usage` (reuses the §4 billing-close cadence). *MVP note:* S2 is
-  operator-run, so automated metering/suspension only bites once Clay is automated (Milestone 2); the
-  cap + usage fields still ship early so usage is tracked from day one.
-- **Tools/access:** **Clay** (webhook-in + HTTP API out), SQS worker (callback ingest), OpenRouter
-  (fit scoring/dedupe), EventBridge (usage reset). *MVP:* operator runs the Clay table; results flow
-  back via webhook.
-- **AWS:** + SQS, worker Lambda, API Gateway callback route, S3 (raw payloads), EventBridge.
-- **Phase C remark (2026-06-14):** S2 is finalized as **Clay seed + AI sourcing loop**, built **MVP-first
-  on Clay's FREE tier**. Probed 2026-06-14: Clay has **no API to create tables/sources on any tier**
-  (the stored key is a webhook auth token, not a REST key) → a one-time in-app generic enrichment table
-  is unavoidable but reused for all clients. **Rows IN are programmatic** (push to the webhook source,
-  works on free); only **results OUT** differ — free lacks the HTTP API output column (Growth-gated) and
-  caps ~200 rows, so MVP exports CSV → `POST …/prospects/import`. **No SQS, no callback, no signature
-  verification, no new AWS resources**; application code + one migration.
-  The Growth-tier **callback + SQS + programmatic push + BYOK** path is a documented **drop-in upgrade
-  that swaps only the ingest transport** — suppression, dedupe, fit-scoring, schema, and UI are identical.
+### S2 — Prospect research via Apollo · **P1** · ✅ BUILT & LIVE (Phase C — task list in `initial-build-plan.md`)
+- **Features:** a two-gate, company-first **Apollo find → score → select → enrich** loop, **fully in-app,
+  no CSV, no operator hand-off**. Flow A — `mixed_companies/search` → DB-side suppression/dedupe → upsert
+  `Company` rows (fit-scored in the background); Gate 1 = select. Flow B — `mixed_people/api_search` per
+  selected org (free, obfuscated rows) → upsert `Prospect` rows (fit-scored); Gate 2 = `people/match`
+  enrich on the **selected set only** (the per-email credit spend) → fill email/phone with **enrichment
+  detail rich enough for the client to decide in S3**. `apollo_map` (pure, fixture-tested) builds the
+  requests deterministically from `ResearchSpec` v3; the LLM only scores rows.
+- **UI wired:** Workspace → *Prospect list* (Step-1 Companies + Step-2 People, persona facets, filters,
+  Source ICP, select).
+- **Anti-burn enforcement (quota seeded in S1):** the enrich orchestration checks
+  `current_month_usage >= enrichment_cap` **before dispatching any `people/match` batch**. At the cap it
+  does **not** hard-fail by default — it **meters the excess as $3/prospect overage** (`LedgerEntry`, §7)
+  and continues; a hard stop (`403 CreditQuotaExceeded`) applies only when overage is disabled for the
+  tenant or `admin_quota_override` is off and a tenant-specific ceiling is hit. An **EventBridge Scheduler**
+  monthly job resets `current_month_usage` (reuses the §4 billing-close cadence). The cap + usage fields
+  ship early so usage is tracked from day one.
+- **Tools/access:** **Apollo** (REST `X-Api-Key`: company search, people search, `people/match`),
+  OpenRouter (background fit scoring), EventBridge (usage reset). **No webhook callback, no CSV** — Apollo
+  is synchronous REST (only phone enrich is async, off at MVP via `PHONE_ENABLED=false`).
+- **AWS:** none added — `find-company` / `find-people` / `enrich` / `rescore` are routes on the existing
+  `$default` proxy; no SQS, no callback route, no new resources.
+- **Credit model:** **people search = 0 credits · company search = plan credits · `people/match` = 1
+  credit/email** (8/phone, off at MVP), human-gated at Gate 2 — the only per-prospect spend. Cap company
+  search with `max_results`; reuse cached rows. See `initial-build-plan.md` → Phase C for the full
+  per-step build (C0–C10) and the Apollo parameter contract.
   The fit rubric + sourcing prompt v1 are **authored and locked** (`docs/prompts/`); the LLM loop uses
   OpenRouter `:online` (no separate web-research provider). `source` / `source_lineage` /
   `outreach_outcome` land in the schema now so S4/S5 responses close the self-improve loop with no
@@ -376,8 +378,8 @@ without the OpenRouter key, exactly like `tests/test_acceptance.py` and the `--s
 - **AWS:** + Stripe-webhook route, EventBridge.
 
 ### Cross-cutting
-- **Webhooks** (Clay callback, Smartlead, Google/Pub-Sub, Stripe, SES events) → API Gateway →
-  idempotent Lambda handlers.
+- **Webhooks** (Smartlead, Google/Pub-Sub, Stripe, SES events) → API Gateway →
+  idempotent Lambda handlers. *(Apollo is synchronous REST — no inbound webhook.)*
 - **One SQS+Lambda worker pattern** reused everywhere.
 - **AuditLog + status logs** feed Client Action Status logs and the Performance Summary needs-attention strip.
 - **Security**: per-tenant row scoping, signed expiring tokens on all external links, Secrets Manager,
@@ -398,40 +400,43 @@ what feed the §11 Tech COGS line, so the two sections reconcile.
 |---|--:|---|
 | AWS (Lambda+API GW · Aurora SLv2+Data API · SQS/EventBridge/SSM · Secrets Manager · S3 · SES · CloudWatch · Route53) | ~$80–150 | Scale-to-zero; Aurora 0-ACU idle + Data API (no NAT) is the floor's main driver. SnapStart cache <$4; Secrets Manager ~$2–3 (5 platform secrets) |
 | Smartlead — **one** platform account | ~$39–94 | Single account for all tenants; per-client isolation is the SmartSenders domains, not separate accounts |
+| Apollo — **one** Professional account (master key) | ~$99 | Flat plan shared across tenants; company search draws this pool, so most Apollo cost is fixed-floor, not per-tenant |
 | Google Workspace — **pooled** operator host seats (~2–3, not per-tenant) | ~$36–54 | Meetings hosted under HoldSlot seats so Meet REST yields duration/transcript; pooling keeps this fixed |
-| **Shared floor** | **~$155–300** | Amortizes toward ~$0/tenant as the book grows |
+| **Shared floor** | **~$254–399** | Amortizes toward ~$0/tenant as the book grows |
 
 **B. Per-tenant variable cost** (per active tenant / month, by plan):
 
 | Driver | Launch (150 prospects) | Growth (400 prospects) | Note |
 |---|--:|--:|---|
-| **Clay enrichment** | ~$100 | ~$270 | ~40 credits/prospect at ~$0.017/cr (volume tier) — **70%+ of variable cost** |
+| **Apollo enrichment** (`people/match`) | ~$15–40 | ~$40–110 | 1 credit/email on the selected set; people search free, company search draws the flat Professional pool (a shared-floor item) — **re-cost at C0 from the live credit page** |
 | LLM via OpenRouter (cheap models, one adapter) | ~$8–15 | ~$12–20 | Brief structuring, fit scoring, reply drafts, summaries |
 | Smartlead sending (marginal) | ~$5–10 | ~$10–20 | Within the single platform account |
 | Stripe (2.9% + $0.30) | ~$23 (churn) → ~$96 (adopter) | scales with plan + meetings | On plan fee + $500 meetings |
-| **Per-tenant tech, ex-Stripe** | **~$115–125** | **~$290–310** | **≈ 15% of $800 / ≈ 19% of $1,600** |
+| **Per-tenant tech, ex-Stripe** | **~$28–65** | **~$62–150** | **≈ 4–8% of $800 / ≈ 4–9% of $1,600** (Apollo flat plan moved to the floor; re-cost at C0) |
 
 **Reconciliation to §11:** §5 is bottom-up (floor + per-tenant); §11 is a blended ~9–12% of
 revenue. They agree **at scale (H3–H4)**, where the fixed floor amortizes to near-zero per tenant
 (H4 Tech COGS ≈ $6.2k/mo incl. the +30% buffer). In **H1–H2** bottom-up per-tenant runs *higher*
-than §11's blended rate because the fixed floor is spread over only a handful of tenants — the floor,
-not Clay, dominates at low tenant counts; Clay dominates once the book grows.
+than §11's blended rate because the fixed floor is spread over only a handful of tenants — under Apollo
+the **fixed floor dominates** (the flat Professional plan + Smartlead + Workspace), and per-tenant enrich
+credits stay small at every tenant count.
 
-**Why Clay is the cost story:** Clay credits are spent **per prospect sourced** (for *every* tenant,
-including churn that never books) — not **per meeting billed** (winners only). That asymmetry is
-exactly what the plan-derived enrichment cap guards (§6 #7: 150/400, $3 overage past it).
+**Why enrichment is the per-tenant cost story:** `people/match` credits are spent **per prospect enriched**
+(for *every* tenant, including churn that never books) — not **per meeting billed** (winners only). That
+asymmetry is exactly what the plan-derived enrichment cap guards (§6 #7: 150/400, $3 overage past it).
+Apollo's per-email rate keeps blended $/prospect low, so the cap is a comfortable bound rather than the
+single biggest cost lever.
 
-> **Re-pricing remark (2026-06-13, affects Phase C):** Clay's 2026-03-11 overhaul supersedes the legacy
-> credit math in table B ("~40 credits/prospect at ~$0.017/cr"): dual currency (Data Credits ~$0.05 +
-> Actions <$0.01), **failed lookups free**, the **HTTP API column reportedly Growth-plan-gated**
-> (~$446–495/mo platform fee — a shared-floor item, not per-tenant), and **BYOK = 0 Data Credits**
-> (~$0.03–0.10/verified email floor). The Phase C AI sourcing loop further lowers blended $/prospect by
-> enriching only fit-passed candidates. **Re-cost this section at C0 from Clay's in-app cost preview.**
+> **Re-cost remark (affects Phase C):** the table-B figures are the **Apollo basis** — 1 credit/email at
+> `people/match`, people search free, company search drawing the flat Professional pool. The exact per-call
+> company-search cost + included monthly credits are **confirmed at C0 from Apollo's live credit page** (the
+> one open measurement; enrich = 1 cr/email is empirically confirmed). Enriching only fit-passed,
+> human-selected candidates keeps blended $/prospect low.
 
 **Cost-minimization decisions (full feature, least spend):**
-1. **Clay cap + wave sourcing** — the cap bounds worst-case burn; source in waves (partial first
+1. **Enrichment cap + wave sourcing** — the cap bounds worst-case burn; enrich in waves (partial first
    batch, top up only on approval traction) so a churn client that quits in month 2–3 never burns the
-   full ~6,000 credits up front. Single biggest margin lever.
+   full monthly enrich allowance up front. Cap company search with `max_results` and reuse cached rows.
 2. **Pooled Workspace host seats** (operator-hosted meetings), not one seat per client → a fixed cost
    stays fixed.
 3. **One Smartlead account**; isolated deliverability via SmartSenders domains funded by the **$400
@@ -476,9 +481,9 @@ exactly what the plan-derived enrichment cap guards (§6 #7: 150/400, $3 overage
 - **Milestone 1 — MVP to revenue:** S0 → S1 → S3 → S6 → S7. Brief in (Claude-structured),
   approve a batch, book a Meet call (buyer+client), capture Meet metadata, bill ≥10-min approved
   meetings ($500 after the 48-h dispute window) on top of the plan subscription + $400 activation.
-  Research/outreach/replies operator-run via Clay + Smartlead.
-- **Milestone 2 — efficiency:** S2 (Clay automation) → S4 (Smartlead campaign engine) →
-  S5 (reply labeling + drafting).
+  Research/outreach/replies operator-run via Apollo + Smartlead.
+- **Milestone 2 — efficiency:** S2 (Apollo find→enrich automation, ✅ built) → S4 (Smartlead campaign
+  engine) → S5 (reply labeling + drafting).
 - **Milestone 3 — scale/polish:** full webhook automation, dashboards, deliverability tuning,
   multi-operator roles.
 
@@ -496,7 +501,7 @@ backend surface to build. Replace the page's co-located mock consts with these o
 | `/login` | `login.html` | **S0** | `POST /auth/login`, `/auth/forgot`, `/auth/reset` |
 | client switcher (all console) | `lib/client.ts` | **S0** | `GET/POST /clients`, slug uniqueness |
 | `/[client]/workspace` · Business brief + ICP | `workspace/page.tsx` | **S1** | `GET/PUT /clients/{c}/brief`, `POST /brief/structure` (Claude), `CRUD /icps` |
-| `/[client]/workspace` · Prospect list | `workspace/page.tsx` | **S2** | `POST /icps/{id}/research` (→Clay), `GET /prospects`, Clay callback webhook |
+| `/[client]/workspace` · Prospect list | `workspace/page.tsx` | **S2** | `POST /companies/find-company` · `/companies/find-lookalikes` · `/people/find-people` · `/prospects/enrich` · `/rescore` (all Apollo, in-app), `GET /companies` · `/prospects` |
 | `/[client]/workspace` · Sendout Batch | `workspace/page.tsx` | **S3** | `CRUD /batches`, `POST /batches/{id}/send`, batch status |
 | `/[client]/approve/[token]` | `approve/[token]` | **S3** | `GET /approval/{token}` (**masked, tiered-reveal payload**), `POST /approval/{token}/decide` (per-prospect) |
 | `/[client]/client-status` · List approval | `client-status/page.tsx` | **S3** | `GET /clients/{c}/approvals`, templates, status log |
@@ -525,9 +530,9 @@ apps/api/                 FastAPI service (managed outside the pnpm JS workspace
     domains/              one package per domain: clients, briefs, icps, prospects,
                           batches, approvals, campaigns, replies, bookings, meetings,
                           feedback, billing
-    integrations/         openrouter, clay, smartlead, google (calendar+meet), stripe, ses
-    workers/              SQS-triggered handlers (research callback, smartlead sync, summaries)
-    webhooks/             clay, smartlead, google/pubsub, stripe, ses (signature-verified)
+    integrations/         openrouter, apollo, smartlead, google (calendar+meet), stripe, ses
+    workers/              SQS-triggered handlers (smartlead sync, summaries)
+    webhooks/             smartlead, google/pubsub, stripe, ses (signature-verified)
   pyproject.toml
 infra/
   alembic/                migrations (schema source of truth)
@@ -542,32 +547,31 @@ infra/
 
 ## 10. Next action (start of next session)
 
-**S0 (Phase A) + S1 (Phase B) are built & live on `dev`** — auth + clients + console on live data, and
-the Brief/ICP → `ResearchSpec` targeting loop (backend on Lambda v8, Workspace web on Amplify `dev`). The
-consolidated Phase B as-built record and the **finalized Phase C build order (C0–C6, 2026-06-13)** both
-live in `initial-build-plan.md`. **Current front = S2 / Phase C (Clay seed + AI sourcing loop).**
+**S0 (Phase A) + S1 (Phase B) + S2 (Phase C — Apollo) are built & live on `dev`** — auth + clients +
+console, the Brief/ICP → `ResearchSpec` v3 targeting loop, and the **Apollo find → score → select → enrich
+loop** (backend on Lambda **v44**, Workspace web on Amplify `dev`; DB at migration `0013`). The consolidated
+as-built record (Phase B + Phase C C0–C10) and the **Phase D information block** live in
+`initial-build-plan.md`. **Current front = S3 / Phase D (Sendout batch + client approval).**
 
-1. **Founder acceptance test (S1 close-out, no code):** on dev, fill Brief+ICP → Generate Scope →
-   confirm the spec grid + gaps render and survive reload. This is S1's only open item.
-2. **Clear C0 gates (MVP, no code):** create the Clay **FREE** account + build the template workbook
-   (CSV-export ingest — confirm the HTTP API column is absent), capture `table_id` into
-   `holdslot/prod/clay`; promote the exclusion fields (incl. `doNotContact`). The **fit-scoring rubric v1
-   and sourcing prompt v1 are already authored & locked** (`docs/prompts/`). *(SCALE gates — Growth plan,
-   HTTP API verify, BYOK, `verify_keys --strict clay` — defer to the Growth move.)*
-3. **Code C1 → C2 [MVP]:** schema + migration with `source`/`source_lineage`/`outreach_outcome` lineage,
-   `fit_components`, and `sourcing_doc` versions (seed v1 from the prompt files; raw CSV row in JSONB —
-   no S3 at MVP); the suppression+dedupe gate as a pure, unit-tested function.
-4. **Code C3 → C4 [MVP]:** the `POST …/prospects/import` CSV ingest → suppression → `prospect_fit`
-   scoring (B3 adapter, default model; synchronous, no SQS); usage tracking + the per-source
-   $/accepted-prospect scoreboard. *(SCALE: swap to `POST /clay/results` callback + SQS + S3; enforce the
-   cap → $3/prospect overage → EventBridge reset.)*
-5. **Code C5 → C6 [MVP]:** the AI sourcing loop v1 (`POST …/sourcing-rounds`, human-in-the-loop,
-   sonnet-4.6 **`:online`** — adds per-purpose model routing); wire the Workspace *Prospect list* + CSV
-   import + Sourcing controls panel; run the Phase-C acceptance; **tick S2 here.** Then proceed
-   S3 → S6 → S7 (MVP), wiring each screen as its stage completes.
+1. **Founder acceptance rounds (no code):** S1 — fill Brief+ICP → Generate Scope → spec grid + gaps render
+   and survive reload. S2 — a live Apollo round (Find Companies → score → select → Find People → score →
+   confirm-enrich) end-to-end in-app. These tick S1/S2.
+2. **Phase D gates (no code):** decide the approval-link lifetime/reminder cadence, the approval email
+   template, the masking tier field set, and whether D builds the real `batches`/`prospect_approval`/
+   `approval_link` tables now (see `initial-build-plan.md` → *Phase D — information required*). The SES
+   sandbox-exit + custom MAIL FROM (Phase A follow-up #1) gates the client-facing approval email — schedule
+   it ahead of D1.
+3. **Code S3 (Phase D):** `Batch` from selected prospects; per-prospect `ProspectApproval` (the billable
+   agreement S7 bills against); tokenized expiring `ApprovalLink`; the masked, tiered-reveal
+   `GET /approval/{token}` serializer (field-level transform, never regex over the blob); editable sendout
+   template; "Send to client" via SES. Replace the mock *Sendout Batch* / external *approve* / *List
+   approval* surfaces.
+4. **Then S4 → S5 (Phase E):** Smartlead campaign engine + reply queue (UI→API map + integration risks
+   already documented in `initial-build-plan.md` → Phase E), then **S6 → S7** (book/meeting + billing),
+   wiring each screen as its stage completes.
 
 Architecture and product decisions are locked (§6 1–11), including the USD tiered pricing model (#11) and
-the `ResearchSpec` v1 Clay contract (§S1). **Build-time check still pending (does not block S2):** §6 #9 —
+the `ResearchSpec` v3 Apollo contract (§S1). **Build-time check still pending (does not block S3):** §6 #9 —
 *verify the Smartlead SmartSenders API surface before building S4*. Keep this file the single source of
 truth: tick stages and note any decision changes with a short rationale.
 
@@ -593,7 +597,7 @@ Every signup is one of two cohorts:
 - **Signups** ramp organically (not reverse-engineered to a target): 6 / 12 / 24 / 40.
 - **Operator labour** (the dominant real COGS) scales with active client load on a stepped ratio as
   automation comes online: H1 founder-run **$0** → H2 **1:6** → H3–H4 **1:10**, @ ~$4,000/mo loaded.
-- **Tech COGS** (Clay/Smartlead/AWS/LLM + Stripe 2.9%) carries a **+30% buffer**.
+- **Tech COGS** (Apollo/Smartlead/AWS/LLM + Stripe 2.9%) carries a **+30% buffer**.
 - **Marketing Spend** is tuned so H4 lands at a **5.0× LTV/CAC** operating target.
 - **ARR** = durable run-rate of the active adopter book (churn excluded — it's transient).
 - **Indicative valuation** uses **~4× ARR** (tech-enabled B2B services / services-as-software comp;
@@ -613,7 +617,7 @@ Every signup is one of two cohorts:
 | Slow Fails Churn 50% (~$2.5k LTV) | $5.0k | $12.5k | $25.0k | $42.5k | $85.0k |
 | **Total revenue (period)** | **$25.8k** | **$78.7k** | **$174.2k** | **$302.9k** | **$581.6k** |
 | *Costs* | | | | | |
-| Tech COGS (Clay/Smartlead/AWS/Stripe, +30% buffer) | $3.7k | $9.8k | $21.5k | $37.0k | $72.1k |
+| Tech COGS (Apollo/Smartlead/AWS/Stripe, +30% buffer) | $3.7k | $9.8k | $21.5k | $37.0k | $72.1k |
 | Operator ratio | founder | 1:6 | 1:10 | 1:10 | — |
 | Operator labour | $0k | $22.0k | $28.8k | $49.2k | $100.0k |
 | Marketing Spend | $5.0k | $15.0k | $50.0k | $84.6k | $154.6k |

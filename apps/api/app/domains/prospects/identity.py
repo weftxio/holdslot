@@ -1,4 +1,4 @@
-"""The `identity_key` — the single dedupe key HoldSlot and Clay both share (C1/C2).
+"""The `identity_key` — HoldSlot's single per-person dedupe key (C1/C2).
 
 One normalized string per person so that "enrich once, reuse across N tenants" is free and a
 re-import is idempotent. Precedence (most → least stable identity):

@@ -26,7 +26,7 @@ tests/             pytest (unit: no AWS; acceptance: live Aurora, auto-skipped w
 scripts/           verify_keys.py · dev-env.sh · build-and-deploy.sh
 pyproject.toml     deps + ruff/black/pytest config (Python >=3.12)
 ```
-Integrations (OpenRouter / Clay / Smartlead / Google / Stripe) arrive from Phase B.
+Integrations (OpenRouter / Apollo / Smartlead / Google / Stripe) arrive from Phase B.
 
 ## Local dev
 Requires Python 3.12+ (Lambda runtime is `python3.12`). Uses the dev Aurora over the Data

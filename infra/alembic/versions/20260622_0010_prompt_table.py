@@ -29,7 +29,7 @@ def _seed_briefing() -> None:
     """Seed `briefing` v1 from docs/prompts/ for the HoldSlot tenant (mirrors 0005's seed).
 
     Skipped if the tenant isn't present yet (out-of-order DB) or a v1 already exists — the founder
-    can save v1 through the UI instead; the scoping worker falls back to the code default regardless.
+    can save v1 through the UI instead; the scoping worker falls back to the code default anyway.
     """
     bind = op.get_bind()
     tenant_id = bind.execute(

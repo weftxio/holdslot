@@ -196,8 +196,8 @@ class PasswordReset(Base):
 # Churn-proof by design (see docs/initial-build-plan.md → Phase B): Brief/ICP form
 # fields live in opaque JSONB `data` documents — their only consumers are the form
 # (round-trip) and the LLM prompt (schema-tolerant), so a form change is a frontend
-# edit, never a migration. The `ResearchSpec` is the opposite — a locked v1 contract
-# to Clay — stored append-only (versioned), each linked to the `LlmCall` that produced
+# edit, never a migration. The `ResearchSpec` is the opposite — a versioned contract
+# to Apollo — stored append-only, each linked to the `LlmCall` that produced
 # it. `LlmCall` is the one-seam telemetry every LLM feature writes through.
 # ---------------------------------------------------------------------------
 
@@ -331,7 +331,7 @@ class ResearchJob(Base):
 # lineage all live here. The MVP ships these three tenant-scoped tables; the
 # `person`/`enrichment_request` enrich-once cache is the additive SCALE step (2nd tenant), not
 # built. `identity_key` + `last_enriched_at` on `prospect` are that future `person` FK seam.
-# (The Clay seed/CSV/AI-sourcing loop these tables originally served was removed in the
+# (The legacy seed/CSV/AI-sourcing loop these tables originally served was removed in the
 # Apollo-only teardown; `apollo_org_id`/`apollo_person_id` are added in C1's migration 0009.)
 # ---------------------------------------------------------------------------
 
@@ -390,7 +390,7 @@ class Company(Base):
 class Prospect(Base):
     """One targeting record per (identity × tenant) — enriched, fit-scored, lineage-tracked.
 
-    `enrichment` holds the raw Clay/callback row (no S3 at MVP volume); `fit_components` holds
+    `enrichment` holds the raw Apollo enrichment row (no S3 at MVP volume); `fit_components` holds
     the 12 rubric line-items + reason tags (the moat — three consumers, one structure). Re-import
     of the same `identity_key` for a tenant is idempotent (the unique constraint makes it an
     upsert), which is what makes a re-export safe to ingest twice.
@@ -476,10 +476,10 @@ class Prompt(Base):
     """Append-only per-client prompt store — versioned text, never overwritten.
 
     One row per (tenant, `stage`, version); the latest version is active. `stage` is the
-    pipeline step the prompt drives: `briefing` (Brief→ResearchSpec scoping), `sourcing` (legacy
-    Clay loop, retired), `company_fit` + `prospect_fit` (the two fit rubrics — Step-1 company
-    buying-intent and Step-2 people reply-potential/decision-power, split from one `fit_scoring` doc
-    in migration 0013). Seed v1 of each lands in a migration from `docs/prompts/*.md`; the founder
+    pipeline step the prompt drives: `briefing` (Brief→ResearchSpec scoping), `sourcing` (legacy,
+    retired), `company_fit` + `prospect_fit` (the two fit rubrics — Step-1 company buying-intent and
+    Step-2 people reply-potential/decision-power, split from the original single fit rubric in
+    migration 0013). Seed v1 of each lands in a migration from `docs/prompts/*.md`; the founder
     edits it → a new (stage, version). `research_run` records which rubric version it scored
     against.
     (Renamed from `sourcing_doc`/`kind` once it grew past sourcing into the single home for every

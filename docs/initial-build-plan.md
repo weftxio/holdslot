@@ -1,33 +1,40 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status (2026-06-23):** Phases **A (S0)** + **B (S1)** + **C (S2)** **built, reviewed & live on `dev`** —
-> backend on the `dev` API (alias `live`, **Lambda v37**), Workspace web on Amplify `dev`. The single-tenant
-> **Apollo find → score → select → enrich loop is a live functional MVP**: Apollo does discovery *and*
-> enrichment (company search, people search, `people/match`, static key); the LLM only scores rows (the
-> Brief→targeting LLM ran in B; the B→C param mapping is **deterministic**). No Clay, no CSV. **C7 (Find
-> Lookalike) + background fit-scoring shipped this session** (see Phase C). Schema deltas in
-> [`data-schema.md`](data-schema.md). Phase D (batch) is next. **S2 ticks once the founder runs one live
-> end-to-end round** (the one operational gate left).
+> **Status (2026-06-24):** Phases **A (S0)** + **B (S1)** + **C (S2)** **built, reviewed & live on `dev`** —
+> backend on the `dev` API (alias `live`, **Lambda v44**, commit `723ae68`), Workspace web on Amplify `dev`.
+> The single-tenant **Apollo find → score → select → enrich loop is a live functional MVP**: Apollo does
+> discovery *and* enrichment (company search, people search, `people/match`, static key); the LLM only scores
+> rows (the Brief→targeting LLM ran in B; the B→C param mapping is **deterministic**). No CSV.
+> **Since v37** the Step-2 surface was rebuilt **company-centric** with **persona facets** (Management Level ×
+> Department + live Apollo facet sidebar), a **persisted people-scope override** (`0012`), the **fit rubric
+> split** into `company_fit` + `prospect_fit` (`0013`), an **Enrichment column + on-demand Update Field**, and
+> two UX fixes (the async "Scoring…" reconciliation — no Pending flash — and the Accepted/Enriched sort rules).
+> See Phase C → **C8–C10**. Schema deltas in [`data-schema.md`](data-schema.md). Phase D (batch) is next.
+> **S2 ticks once the founder runs one live end-to-end round** (the one operational gate left).
 
 > ## ▶ NEXT SESSION — START HERE
-> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP on Lambda v37.** C0–C7 built, deployed, and
-> proven end-to-end on the cloud stack (ephemeral-tenant smoke: find-company → select → find-people →
-> `people/match` returned a verified email, **1 credit**; full per-step detail in the Phase C task list).
-> Migration `0011` is applied (DB at head); all 59 tests pass on Aurora.
+> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP on Lambda v44** (commit `723ae68`, all pushed
+> to `origin/dev`). C0–C10 built, deployed, and proven end-to-end on the cloud stack (ephemeral-tenant smoke:
+> find-company → select → find-people → `people/match` returned a verified email, **1 credit**). Migrations
+> through `0013` applied (DB at head).
 >
-> **Shipped this session (2026-06-23) — C7 + async scoring** (all green: backend tests + ruff, web tsc +
-> build): **Find Lookalike** (deterministic peer synthesis off selected rows — Apollo has no lookalike API)
-> and **background fit-scoring** across Find Company / Find Lookalike / Update AI Score (find returns rows
-> unscored fast; the web app scores in the background via chunked `/rescore` with a per-row "Scoring…"
-> status — fixes the 30s-gateway timeout that synchronous reasoning-model scoring was hitting). See **Phase C
-> → C7** for the architecture.
+> **Shipped since v37 — Step-2 rebuild (C8–C10) + UX fixes** (all green: backend tests + ruff, web tsc +
+> build):
+> - **C8 · company-centric Step-2 + persona facets** — find/score/enrich people *per company*; persona
+>   targeting by **Management Level × Department** with a **live Apollo facet sidebar** (free people-search
+>   counts); row/column alignment + 0-people over-constraint fix + Remove action.
+> - **C9 · persisted people-scope override** (migration `0012`) — Find Settings saved server-side per tenant.
+> - **C10 · fit rubric split** (migration `0013`) — `fit_scoring` → **`company_fit`** (Step 1) + **`prospect_fit`**
+>   (Step 2), each its own system + input prompt; stage-aware Fit-rubric modal (`purpose · prospect_fit` on Step 2).
+> - **Enrichment column + on-demand Update Field** (credit-frugal single-org `organizations/enrich`); company
+>   score is verdict-only (`fit_score`+reason, tier derived).
+> - **UX fixes** — async "Scoring…" now reconciles from the DB (no Pending flash, Step-1 *and* Step-2); sort
+>   rules: Step-1 Accepted-on-top, Step-2 Enriched-first.
 >
-> **Next:** Phase D (batch), then the loop is ready for real outreach (Phase E warm-up is the gating long
-> pole). The one operational gate left to tick **S2** is a founder live end-to-end round (below). Optionally
-> revisit the *⚠️ Post-C review* deferred ICP inputs (`avoidTitles` first).
->
-> **Uncommitted:** the C7 + async-scoring work is deployed to dev (v37) but not yet committed; last commit on
-> `origin/dev` is `023be68`.
+> **Next:** Phase D (batch) — see the enriched **Phase C → Operational sign-off** and the **Open items across
+> A–C** + **Phase D — information required** blocks below. Then the loop is ready for real outreach (Phase E
+> warm-up is the gating long pole). The one operational gate left to tick **S2** is a founder live
+> end-to-end round (below). Optionally revisit the *⚠️ Post-C review* deferred ICP inputs.
 >
 > **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
 > - **OpenRouter HK geo-block.** OpenAI / Anthropic / Google providers return **403 ToS** for this account
@@ -316,41 +323,37 @@ frontend edit + a rubric entry — no migration. **Cost:** ~$5–20/mo LLM; **no
 
 ---
 
-## Phase C — Prospects: Apollo find + enrich (S2) ✅ BUILT & LIVE (Apollo-only, Lambda v37 · superseded the Clay build)
+## Phase C — Prospects: Apollo find + enrich (S2) ✅ BUILT & LIVE (Apollo-only, Lambda v44)
 
-> **Direction change (locked 2026-06-21):** the Clay-based Phase C (seed push + CSV ingest + AI sourcing
-> loop) was built and ran on `dev`, but **Clay has no programmatic Find Company / Find People API on any
-> tier** — discovery stayed operator-run in Clay's UI with a CSV bridge. **Apollo.io is a true headless
-> REST search + enrichment API** (company search, people search, `people/match`, one static key), so
-> Phase C is rebuilt **Apollo-only**: Apollo does discovery **and** enrichment; the LLM only (a) scopes the
-> Apollo filter and (b) scores rows. No Clay, no webhooks, no CSV import/export, no AI row-generation. All
-> tables in [`data-schema.md`](data-schema.md). **No code until C0's gate clears (the plan upgrade).**
+> **Architecture (locked 2026-06-21):** Phase C is **Apollo-only**. **Apollo.io is a true headless REST
+> search + enrichment API** (company search, people search, `people/match`, one static key), so the whole
+> find → score → select → enrich loop runs **in-app**: Apollo does discovery **and** enrichment; the LLM only
+> (a) scopes the Apollo filter and (b) scores rows. No CSV import/export, no AI row-generation, no operator
+> hand-off. All tables in [`data-schema.md`](data-schema.md).
 
 ### The one idea that drives everything
 
 > **Apollo is headless discovery + enrichment compute. The HoldSlot DB is the only system of record.**
 
 Apollo returns rows on a REST call; tenant ownership, dedup, suppression, fit scoring, lineage, and
-outreach status all live in Postgres — exactly as before. The only thing that changes is the *source*: a
-programmatic Apollo call replaces the operator's Clay UI + CSV round-trip. The suppression gate, the
-`fit.py` scoring door, `identity_key` dedupe, and the one central tenant guard are **reused unchanged**.
+outreach status all live in Postgres. The `suppression` gate, the `fit.py` scoring door, `identity_key`
+dedupe, and the one central tenant guard are **reused across both flows unchanged**.
 
-### Why Apollo replaces Clay
-- **Clay:** no Find API on any tier → discovery was operator labour in the UI, bridged by manual CSV import.
-- **Apollo:** `mixed_companies/search` + `mixed_people/api_search` are **programmatic REST** with one static
-  key (`X-Api-Key`) — the whole find → score → select → enrich loop becomes in-app, no CSV, no operator.
+### Why Apollo
+- **Programmatic REST.** `mixed_companies/search` + `mixed_people/api_search` use one static key
+  (`X-Api-Key`) — the whole find → score → select → enrich loop is in-app, no CSV, no operator hand-off.
 - **⚠️ Credit model (corrected 2026-06-21, deep research):** **People search (`mixed_people/api_search`) is
   0-credit** and returns no email/phone. **Company search (`mixed_companies/search`) is listed as
   credit-consuming in Apollo's current docs** (the old "search is free" model is retired) — *confirm the
   exact cost against the live plan's credit page at C0.* `people/match` is the heavy paid step (1
   credit/email · 8/phone, phone async via webhook).
-- **Cost:** Apollo Professional (master key) replaces Clay Launch; net MVP cost still drops vs Clay (see
-  *MVP running cost*), but **company-search credits are a real line item** — budget + monitor.
+- **Cost:** Apollo Professional (master key) — **company-search credits are a real line item** (budget +
+  monitor); see *MVP running cost*.
 
 ### Locked decisions (founder, 2026-06-21)
 | Decision | Choice | Why |
 |---|---|---|
-| Discovery + enrichment engine | **Apollo only** (replaces Clay entirely) | Clay has no Find API; Apollo is headless REST |
+| Discovery + enrichment engine | **Apollo only** | Headless programmatic REST search + enrichment (one static key) |
 | Plan | **Professional + master API key**, upgraded *once this plan is ready to execute* | Search/Match are paid-plan-gated (free key 403s) |
 | AI sourcing loop | **Killed.** The LLM never generates rows | Apollo generates rows; LLM only scopes the filter + scores |
 | LLM scoring | Per-row fit scorer on `deepseek/deepseek-v4-pro`, **run in the background** (chunked `/rescore`), never on the find request | Reasoning scorer is ~15–25s/call → a synchronous batch blows the 30s gateway cap (see *Step-1 scoring is async*, C7) |
@@ -519,7 +522,7 @@ write `email` / `email_valid` / `phone` / `provider`, `status=scored` (the only 
 B.4 sets selection/status; no `batches` table (Phase D). **DoD:** find → score → select → enrich runs end
 to end on live Apollo; only selected people cost credits.
 
-**C6 — Frontend wiring + Clay/AI-loop teardown. ✅ BUILT** (wiring done; teardown done earlier). *(The teardown half — all the **Delete** items below —
+**C6 — Frontend wiring + legacy AI-loop teardown. ✅ BUILT** (wiring done; teardown done earlier). *(The teardown half — all the **Delete** items below —
 was executed 2026-06-22 ahead of the rebuild; see the NEXT SESSION banner. What remains for C6 is the
 **wiring** half: add the real Apollo client calls and turn the two disabled "Find" stub buttons into live
 fetches.)*
@@ -530,11 +533,11 @@ fetches.)*
   buttons → API fetch → table populates (layout/columns unchanged — the **AI Score** column already
   exists). Delete the **"copy seeds"** clipboard bridge (selection scopes Find People server-side) and the
   **enrich-export modal** (enrich is a real Apollo call now). Create-batch stays mock until Phase D.
-- **Delete (dead under Apollo-only):** backend `clay.py`, `sourcing.py`; endpoints
+- **Delete (dead under Apollo-only):** backend `sourcing.py` + the CSV/AI-loop transport; endpoints
   `POST /icps/{id}/research`, `/prospects/import`, `/companies/import`, `/sourcing-rounds`,
   `/prospects/accept`, `PUT /sourcing-settings`; `SourcingDoc` kind `sourcing_prompt`; `Tenant.seed_limit`
   + the Sourcing-settings modal; schemas `SourcingRound*` / `AcceptIn` / `*ImportResult` / `EnrichExportRow`
-  / `SourcingSettings*`. Founder retires the `holdslot/prod/clay` secret.
+  / `SourcingSettings*`. Retire the now-unused CSV-import sourcing secret.
 
 **C7 — Find Lookalike (find similar companies). ✅ BUILT & LIVE (Lambda v37, 2026-06-23).** A second discovery
 door on Flow A: instead of scoping from the v3 spec, **the operator selects ≥1 row in the Step-1 table and
@@ -602,7 +605,46 @@ the list": CloudWatch showed a 95s Lambda → gateway 503 — not an empty resul
   scoring step, matching the async model. `/rescore` is capped at `MAX_COMPANIES_PER_FIND` (15) per request and
   rejects (not truncates) a larger selection.
 
-**Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6 (→ **C7 additive**, no dependency past C4). **C1/C2/C3 can be built in parallel against the C0
+**C8 — Company-centric Step-2 + persona facets. ✅ BUILT & LIVE (Lambda v44, 2026-06-24).** Step-2 (Find
+People) was reworked from a flat people list into a **company-centric** flow — find / score / enrich people
+**per company** — and gained a **persona-targeting** layer over Apollo's people search:
+- **Persona targeting by Management Level × Department.** The Find Settings modal exposes Apollo's
+  `person_seniorities` (11-value enum, "Management Level") × `person_department_or_subdepartments` (14 master
+  departments + subs) as the operator's persona selector. A **live facet sidebar** shows per-value people
+  counts in scope (`POST /{client}/people/facets`, `PeopleFacetsIn/Out`) — counts come from Apollo people
+  search, which is **0 credits**, so the sidebar refreshes freely (one `organization_ids` array across the
+  selected orgs; 11 seniority + 14 department probes, subs are selection-only/no count to bound the calls).
+- **Fixes folded in:** row/column alignment in the company-grouped table; a **0-people over-constraint** fix
+  (settings that returned nobody); a **Remove** action; band-button order → Find Settings · Find People ·
+  Confirm enrich · Remove.
+- **DoD (met):** operator scopes a persona, sees live counts, runs Find People per selected company, scores +
+  enriches in-app; no credit spend until `people/match`.
+
+**C9 — Persisted people-scope override (migration `0012`). ✅ BUILT & LIVE.** The Step-2 Find Settings persist
+**server-side per tenant** as a people-scope override, so the persona scope survives reloads and is reused on
+the next find — exactly mirroring the Step-1 Settings override, but stored (not per-call). `PeopleScopeOverrideIn/Out`;
+`GET/PUT/DELETE /{client}/people/scope-override` (empty/`DELETE` reverts to the AI scope from the v3 spec).
+Hardened in a code-review follow-up (`d26dc55`). **DoD (met):** saved scope reloads and drives the next
+people search; clearing it reverts to the spec scope.
+
+**C10 — Fit rubric split: `company_fit` + `prospect_fit` (migration `0013`). ✅ BUILT & LIVE.** The single
+`fit_scoring` prompt stage was split into **two editable rubrics** so each LLM purpose has its own system +
+input prompt:
+- **`company_fit` (Step 1)** — scores a company's *buying intent* (verdict-only: `fit_score` + reason, tier
+  derived; `build_company_messages`/`score_company`).
+- **`prospect_fit` (Step 2)** — scores a *person's* reply potential × decision-making power, fed the selected
+  prospect's metadata (`_prospect_payload`: name/title/seniority/departments/email + the parent company's
+  firmographics and its stage-1 `company_fit` verdict) alongside the client brief (`build_messages`/`score`).
+- **Frontend:** the Fit-rubric modal is **stage-aware** — Step 1 shows "Fit rubric · Step 1 · Companies" /
+  `purpose · company_fit`, Step 2 shows "… Step 2 · People" / `purpose · prospect_fit`; each saves its own
+  versioned doc. Unified preview route `GET /{client}/fit-prompt?stage=…&sample_id=…`; `getFitPrompt(client,
+  stage, sampleId)` / `saveSourcingDoc(client, stage, body)`; `SourcingDocList{company_fit, prospect_fit}`.
+- **Migration `0013`** renamed the existing `fit_scoring` prompt rows to `company_fit` and seeded
+  `prospect_fit` from the same body (append-only; up/down clean). **DoD (met):** two independently-editable
+  rubrics; Step-2 scoring receives prospect metadata; modal badge reads the correct purpose per step.
+
+**Critical path:** C0 → C1 → C2 → C3 → C4 → C5 → C6 (→ **C7/C8/C9/C10 additive**, no dependency past C5).
+**C1/C2/C3 can be built in parallel against the C0
 fixtures** before the live key is integration-ready; only C0's smoke test + C4/C5 end-to-end need the
 upgraded plan. **Depends on B6** (the v3 spec `apollo_map` consumes — built). **MVP cost:** Apollo Professional
 (master key — see *MVP running cost*) + LLM <$10/mo; **people search is 0 credits**, but **company search
@@ -666,6 +708,88 @@ person's `company_id`.
 
 ---
 
+## Open items across A–C (the pending register, 2026-06-24)
+
+A consolidated list of everything still open in the **built** phases. None block forward progress to D; the
+two ⏳ acceptance rounds are the only gates that tick S1/S2. Code is current at **Lambda v44 / `723ae68`**,
+DB at migration `0013`.
+
+**Phase A — Foundation (7 known follow-ups; all non-blocking):**
+1. **SES** — DKIM/DMARC verified + reset flow live; *deferred:* custom MAIL FROM + sandbox-exit (needed for
+   **client-facing** mail at D+ — the approval/booking emails go out in D, so this is now D's gating SES item).
+2. **Prod env** — true isolation deferred until after A→G; Amplify `main` points at **dev** API/DB until cutover.
+3. **CI/CD** — manual `apps/api/scripts/build-and-deploy.sh`; add a pipeline when churn justifies it.
+4. **Aurora scale-to-zero vs 30s Lambda timeout** — cold resume can near the timeout; prod sets min ACU ≥ 0.5.
+5. **S3 state bucket** public-access-block — add at prod hardening.
+6. **Refresh-token rotation** doesn't re-check `UserStatus` — harmless today (no deactivation flow).
+7. **OpenRouter `default_model`** — set (B0). *(Resolved; listed for completeness.)*
+
+**Phase B — Targeting (1 open):**
+- ⏳ **Founder end-to-end acceptance test on dev** — the only gate to tick **S1**. (Brief → Generate Scope →
+  v3 spec saved → ICPs exist.)
+
+**Phase C — Prospects (1 gate + confirms + deferred ICP inputs):**
+- ⏳ **Founder live end-to-end round on Apollo** — the one operational gate to tick **S2** (see *Operational
+  sign-off* above).
+- ⚠️ **Apollo credit-cost dashboard glance** — confirm company search doesn't draw the monthly pool.
+- **Deferred ICP inputs (search-side only — each is already leveraged for *scoring* via Post-C review GAP 0):**
+  - `ICP.technologies[]` → `currently_using_any_of_technology_uids[]` needs Apollo's fixed tech-UID resolver
+    (we don't have one). Post-MVP.
+  - `ICP.departments[]` *search-side* — C8 now exposes Apollo's native `person_department_or_subdepartments[]`
+    in the persona facet sidebar, so the operator can refine by department at search time; the old "drop the
+    pre-enrich departments filter" caveat applies only to the *DB-side post-filter*, not the facet selector.
+  - **`revenue_range`** — no ICP form field feeds it → LLM-guessed/null. Add a revenue band to the ICP form, or
+    accept null (employee bands already constrain size). Low priority.
+- **Funding-stage filter key** — still unverified (needs a funding-scoped Apollo query); non-blocking.
+
+**Cross-cutting:**
+- **Doc/schema drift** — kept current as of this consolidation: plan banner + Phase C C8–C10 + this register
+  are now in sync with `723ae68`; `data-schema.md` migration history extended through `0013`. Re-sync on the
+  next schema change.
+
+---
+
+## Phase D — information required (read before building S3 batch + approval)
+
+Phase D = **S3 · Sendout batch & client approval** — the revenue precondition (the `ProspectApproval` record
+is what S7 bills against). This block consolidates what's **locked**, what's **mock today**, and the
+**decisions needed** before the C→D build. *(Plan-only: no D code yet.)*
+
+**Locked source material** (authoritative in [`backend-development-plan.md`](backend-development-plan.md) §S3):
+- **Tables:** `Batch` (from selected prospects; pending/approved/rejected + approved/total) · `ProspectApproval`
+  (per-prospect, the billable agreement) · `ApprovalLink` (tokenized, expiring). All tenant-scoped. **The real
+  `batches` table is built here — C deliberately deferred it (B.4 set selection/status only).**
+- **Anti-theft tiered masking** (a field-level transform in the client-facing `GET /approval/{token}`
+  serializer, *not* regex over the blob):
+  - **Pre-approval (fit only, no way to contact/uniquely-identify):** first name + last *initial* ("Sarah K."),
+    a **company descriptor** ("Series-B fintech · 200–500 · SG") *not* the exact company, title/seniority/function,
+    industry/size/region, fit reason, intent signal, enrichment highlights. Raw vectors withheld → email =
+    `verified business email ✓`, phone = `direct dial verified ✓`, LinkedIn → `has_verified_linkedin: true`.
+  - **Post-booking/qualified:** reveal full name, exact company, LinkedIn (the $500 is now billable).
+  - **Clear-text contact data never reaches the client** — once `APPROVED` it routes backend-only into Smartlead (E).
+- **Infra:** SES (approval request email), signed-token service, EventBridge Scheduler (expiry + reminders).
+  **MVP adds ZERO new AWS resources** — routes on the existing `$default` proxy + the scheduler.
+
+**Mock state to replace (audited 2026-06-24 — all three D surfaces are in-memory fixtures, no API):**
+- **Workspace → *Sendout Batch / Approval Batches*** ([workspace/page.tsx](../apps/web/app/[client]/(console)/workspace/page.tsx)) —
+  `batches` is `useState([Batch 1/2/3])`; per-prospect enrichment rows are mock (comment: "wired in Phase C/E").
+- **External → *approve/[token]*** ([approve/[token]/page.tsx](../apps/web/app/[client]/(external)/approve/[token]/page.tsx)) —
+  `useState` removed/done + `<Sample>` placeholder copy, no token fetch / decide call.
+- **Console → *client-status · List approval*** ([client-status/page.tsx](../apps/web/app/[client]/(console)/client-status/page.tsx)) —
+  `A_LOG` mock array; "Send to client" is `toast(…)` only, no API.
+
+**Decisions needed from the founder before C→D build (open):**
+1. **Approval-link lifetime/expiry + reminder cadence** — drives the EventBridge schedule (e.g. 7-day expiry, one reminder at 48h?).
+2. **Sendout/approval email template** — the editable copy the client receives (token grammar matches the UI preview).
+3. **Masking tier field set** — confirm the exact pre-approval fields vs the post-booking reveal (the §S3 list above is the proposed default).
+4. **Batch model** — confirm D builds the real `batches`/`prospect_approval`/`approval_link` tables now and
+   replaces the three mock surfaces above (vs. a thinner first cut).
+
+**Gating dependency from A:** the **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) is required
+for the client-facing approval email — schedule it ahead of or alongside D1.
+
+---
+
 ## Phase E — Outreach + Smartlead (S4/S5): the campaign funnel made real
 
 Turns an **approved batch** (D) into a **live Smartlead cold-email campaign** and makes the rebuilt
@@ -683,13 +807,18 @@ E0's gates clear — the real gate is warmed inboxes.**
 
 ### Funnel ↔ Smartlead mapping
 
-| Stage (`Stage.id`) | Enters when | Smartlead source |
+| Stage (`Stage.id`) | Enters when | Smartlead source (verified event names) |
 |---|---|---|
-| Initial outreach (`contacted`) | batch locked → leads added, sequence started | `lead added` + `EMAIL_SENT` |
-| Follow-up (`followup`) | step ≥2 sent, no reply | `EMAIL_SENT` (step n) |
-| Positive reply (`replied`) | reply arrives **and founder classifies positive** | `EMAIL_REPLY` → manual move |
-| Drop/DNC (`drop`) | negative/unsub reply, bounce, manual drop | `EMAIL_REPLY`(neg) · `LEAD_UNSUBSCRIBED` · `EMAIL_BOUNCE` |
-| Meeting / No show / Qualified billable | **Phase F** | — |
+| Initial outreach (`contacted`) | batch locked → leads added, sequence started | lead-add response + sequence start (Smartlead has **no `EMAIL_SENT` campaign-webhook** — see risk R3; "sent" is inferred from the lead-add 200 + the sequence schedule, or polled via the message-history endpoint) |
+| Follow-up (`followup`) | step ≥2 sent, no reply | derived server-side from elapsed sequence steps (same R3 caveat) |
+| Positive reply (`replied`) | reply arrives **and founder classifies positive** | **`LEAD_REPLIED`** → manual move |
+| Drop/DNC (`drop`) | negative/unsub reply, bounce, manual drop | `LEAD_REPLIED`(neg) · **`LEAD_UNSUBSCRIBED`** · **`LEAD_BOUNCED`** |
+| Meeting / No show / Qualified billable | **Phase F** (entry into `meeting` fires the Google Meet invite — see *Meeting-schedule hook* below) | — |
+
+> **Verified Smartlead campaign-webhook events** (`POST /api/v1/campaigns/{id}/webhooks`, 2026-06-24):
+> **`LEAD_REPLIED` · `LEAD_OPENED` · `LEAD_CLICKED` · `LEAD_BOUNCED` · `LEAD_UNSUBSCRIBED`**. There is **no
+> per-send (`EMAIL_SENT`) event** in the campaign-webhook set (R3). Open → `LEAD_OPENED` rolls the variant
+> open-rate; reply → `LEAD_REPLIED` drives the Reply Queue + drop.
 
 **MVP line: reply classification is human, not LLM.** A reply lands as an `OutreachEvent`, shows in the
 prospect's conversation log **and** the **Reply Queue** (cross-campaign triage). Founder reads it and uses
@@ -699,6 +828,87 @@ the **stage-move control**. AI drafting/classification stays **[SKIP] until payi
 **Variant fidelity:** campaign variants map 1:1 to Smartlead **sequence-step** A/B/C variants; per-variant
 open/reply syncs back; the per-prospect selector assigns at lead-add time and **locks once sent**. Editing
 after send creates the next version (append-only).
+
+### UI → feature → Smartlead API map (the built UI is the spec)
+
+The Campaign tab ([`CampaignTab.tsx`](../apps/web/app/[client]/(console)/workspace/CampaignTab.tsx)), Reply
+Queue + Meeting Recaps ([`workspace/page.tsx`](../apps/web/app/[client]/(console)/workspace/page.tsx)) are
+already built as fully-interactive **client-side mock**. Phase E replaces the mock state with these live
+calls — layout/classes unchanged. **Smartlead auth is `?api_key=…` (query param) on every call; no
+OAuth/Bearer** (R1). All paths are V1 (`/api/v1/...`).
+
+| UI affordance (current mock) | HoldSlot endpoint | Smartlead call |
+|---|---|---|
+| **"Confirm & lock"** (top bar, draft campaign) | `POST /{client}/campaigns` (idempotent on `batch_id`) | `POST /api/v1/campaigns/create` `{name, client_id}` → `POST /api/v1/campaigns/{id}/schedule` `{timezone, days_of_the_week, start_hour, end_hour, min_time_btw_emails, max_leads_per_day}` → `POST /api/v1/campaigns/{id}/settings` |
+| **A/B/C variant panel** (per stage: copy + Leading) | folded into campaign create | `POST /api/v1/campaigns/{id}/sequences` — array of `{seq_number, seq_delay_details, variant_distribution_type, variants:[{subject, email_body, variant_label}]}`; HoldSlot `{{token}}` grammar → Smartlead merge tags |
+| **Company cards → people → variant select + Send** | leads pushed at lock | `POST /api/v1/campaigns/{id}/leads` `{lead_list:[{email, first_name, last_name, company_name, linkedin_profile, custom_fields}], settings:{ignore duplicates}}` — chosen variant is the lead's sequence assignment |
+| **Funnel rail counts** (Prospects/Replies/Meetings/Billable KPIs) | `GET /{client}/campaigns/{id}/funnel` (read over `campaign_lead.stage`) | none — derived from `outreach_event` rows (webhook-fed), not a Smartlead read |
+| **Stage-move dropdown** (forward/back/Drop) | `PATCH /{client}/campaign-leads/{id}/stage` | none for back-moves; `replied→meeting` triggers the Meet invite (Phase F); `→drop` may call pause/remove-lead |
+| **Send controls** (implicit: start/pause/resume) | `POST /{client}/campaigns/{id}/{start\|pause\|resume}` | `PATCH /api/v1/campaigns/{id}/status` `{status: START\|PAUSED\|STOPPED}` |
+| **Conversation Log** (per-person thread: out/in/Email/LinkedIn/Calendar) | read over `outreach_event` | fed by webhooks; LinkedIn/Calendar rows are HoldSlot-authored (Smartlead is email-only) |
+| **Reply Queue** (cross-campaign; classify; Edit/Send draft) | `GET /{client}/replies` + `POST /{client}/replies/{id}/send` | inbound = `LEAD_REPLIED` webhook; send = `POST /api/v1/campaigns/{id}/reply-email-thread` `{lead_id, email_body, reply_message_id, reply_email_time}` (**reply-to-thread, master inbox**) |
+| **Variant open/reply % + "Leading"** | `GET /{client}/campaigns/{id}/variants` | `LEAD_OPENED`/`LEAD_REPLIED` counts per variant; `is_winner` computed HoldSlot-side |
+| **Webhook registration** (per campaign at lock) | internal, on campaign create | `POST /api/v1/campaigns/{id}/webhooks` `{name, webhook_url, event_types:[LEAD_REPLIED, LEAD_OPENED, LEAD_CLICKED, LEAD_BOUNCED, LEAD_UNSUBSCRIBED]}` |
+
+### Meeting-schedule hook + Recaps = future meetings + summaries (NEW requirement, 2026-06-24)
+
+Two requirements that bridge the Campaign funnel into the booking/meeting surface (the E→F seam):
+
+1. **Every move into "Meeting schedule" (`replied → meeting`) provisions a Google Meet invitation.** The
+   stage-move is not just a status change — entering `meeting` calls the **Google Calendar API**
+   `events.insert` with `conferenceDataVersion=1` + `conferenceData.createRequest{conferenceSolutionKey:
+   "hangoutsMeet"}` to mint a Meet link, sets `attendees[]` (prospect + host), and `sendUpdates=all` to email
+   the invite. The returned `hangoutLink`/`conferenceData` + `google_event_id` persist on the `meeting` row
+   (Phase F `F2`/`F3`). *(Built in F; the funnel's stage-move control is the trigger — wire the hook in F3 so
+   the Campaign tab's "Move → Meeting schedule" is the single entry point.)* The conversation Log already
+   renders a `Calendar` channel row for this.
+2. **The "Meeting Recaps" tab shows BOTH future meetings AND past summaries** (today it renders past
+   summaries only — `RECAPS`). Reshape the tab into two groups:
+   - **Upcoming meetings** — scheduled, not-yet-held `meeting` rows: prospect, company, `scheduled_at`, the
+     **Meet link** (join), attendees, stage = *Meeting schedule*. Source: `meeting` rows where
+     `held IS NULL AND scheduled_at >= now`.
+   - **Meeting summaries** (existing) — held meetings: recording link, attendees, discussed, next step,
+     sentiment, final conversion (Deal won / No deal). Source: `held = true` rows; the LLM `meeting_summary`
+     stays **[SKIP→later]** (placeholder copy until paying signups), but the **future-meeting list, Meet
+     link, attendees, and held/duration are real** from Calendar + Meet REST v2.
+   - **New read:** `GET /{client}/meetings?when=upcoming|past`. Held/duration/attendees for the past group
+     come from **Meet REST v2** `conferenceRecords` + `conferenceRecords.participants` (duration derived from
+     the record's start/end + participant sessions) — the same source `F4` uses to qualify.
+
+### Integration risks (flag before E build)
+
+- **R1 · Smartlead auth is query-param `api_key` only** — no OAuth/Bearer. The key rides in the URL on every
+  call → keep it out of logs/CloudWatch (the request-path logger must redact `api_key`), and it can't be
+  scoped per-campaign. Lazy-load from `holdslot/prod/smartlead`, never interpolate into a logged URL.
+- **R2 · Webhook authenticity is not a documented HMAC signature.** Smartlead's campaign-webhook docs expose
+  `webhook_url` + `event_types` but **no signing-secret/signature scheme** was found. The plan's
+  `webhook_signing_secret` assumption (E0) may not exist. **Mitigation:** treat the webhook as
+  unauthenticated and defend with (a) a **high-entropy secret path token** (`/smartlead/webhook/{random}`),
+  (b) optional Smartlead source-IP allowlist, (c) **idempotency + re-validation** — on any event, re-fetch the
+  lead/campaign state from Smartlead before mutating, so a spoofed payload can't move a stage. Confirm the
+  real mechanism with Smartlead support at E0; do **not** assume HMAC.
+- **R3 · No `EMAIL_SENT` campaign-webhook event.** The verified event set is `LEAD_REPLIED/OPENED/CLICKED/
+  BOUNCED/UNSUBSCRIBED` only. "Sent" and per-step follow-up progress can't be driven by a send-webhook →
+  **derive `contacted`/`followup` server-side** from the lead-add 200 + the sequence schedule (elapsed
+  steps), or poll the message-history endpoint. The funnel's Initial-outreach/Follow-up counts are
+  HoldSlot-computed, not Smartlead-pushed.
+- **R4 · Reply-to-thread needs `reply_message_id`.** `reply-email-thread` requires the original message id to
+  thread correctly; that id must be captured from the inbound `LEAD_REPLIED` payload (or message history) and
+  stored on the `outreach_event`, or the booking reply starts a new thread (hurts deliverability + breaks the
+  master-inbox conversation).
+- **R5 · A/B variant fidelity is sequence-step-scoped, not stage-scoped.** Smartlead variants live on a
+  **sequence step**, but the UI shows variants **per funnel stage** (outreach, follow-up, booking, re-book,
+  drop). Only the *sending* stages (contacted/followup) map cleanly to Smartlead steps; the booking/re-book/
+  drop messages are **manual threaded replies** (`reply-email-thread`), not sequence steps — their "variants"
+  + open/reply metrics are HoldSlot-tracked, not Smartlead-synced. Don't promise Smartlead A/B stats on the
+  reply-driven stages.
+- **R6 · LinkedIn / Calendar / Stripe log rows are not Smartlead.** The conversation Log renders Email +
+  LinkedIn + Calendar + Stripe channels; **only Email is Smartlead-fed.** LinkedIn is out of scope at MVP
+  (the mock shows it — don't wire it), Calendar comes from Phase F (Google), Stripe from G. Scope the live
+  Log to Email + Calendar; leave LinkedIn as a [SKIP] visual.
+- **R7 · Daily send caps vs warm-up ramp.** Start respects the 15/day campaign cap + the warm-up ramp
+  (5–10→25/inbox/day). Pushing all leads at lock then `START` is fine (Smartlead throttles), but the funnel's
+  "Prospects ready" count ≠ "sent today" — surface the schedule, don't imply instant send.
 
 ### Tasks (`[MVP]` now; `[SCALE]` at volume)
 
@@ -721,10 +931,14 @@ leads · set A/B/C sequence · start/pause/resume · **reply-to-thread** (master
 (idempotent on batch_id) → create Smartlead campaign → add leads (chosen variant) → push A/B/C sequence →
 start (respecting daily caps). Leads land in Initial outreach (`stage=contacted`). Pause/resume proxy to E2.
 
-**E4 — [MVP] Webhook ingest → events → stages ⭐.** `POST /smartlead/webhook` (signature-verified, fast
-2xx, idempotent) → write `outreach_event` → advance stage: `EMAIL_SENT` → contacted/followup; `EMAIL_OPEN`
-→ variant count; `EMAIL_REPLY` → log + flag for review (no auto-classify); unsub/bounce/negative → drop.
-Founder moves positives to `replied`. **[SCALE]** API-GW→SQS→worker + `reply_classify`/`reply_draft` suggestions.
+**E4 — [MVP] Webhook ingest → events → stages ⭐.** `POST /smartlead/webhook/{secret-path-token}` (R2: no
+documented HMAC — defend with the high-entropy path token + re-fetch-before-mutate; **confirm the real
+mechanism at E0**), fast 2xx, idempotent on Smartlead event id → write `outreach_event` → advance stage:
+`LEAD_OPENED` → variant open count; `LEAD_REPLIED` → log + flag for review (no auto-classify);
+`LEAD_UNSUBSCRIBED`/`LEAD_BOUNCED`/negative reply → drop. **No `EMAIL_SENT` event (R3)** → `contacted`/
+`followup` are **derived server-side** from the lead-add + sequence schedule, not webhook-driven. Capture the
+inbound `reply_message_id` for E6 threading (R4). Founder moves positives to `replied`. **[SCALE]**
+API-GW→SQS→worker + `reply_classify`/`reply_draft` suggestions.
 
 **E5 — [MVP] Reply Queue — cross-campaign triage inbox ⭐.** Aggregates **every replied conversation
 across all the tenant's campaigns** into one inbox (a read over E1's `outreach_event` + `campaign_lead`, no
@@ -739,8 +953,10 @@ classify → move lead to Positive reply or Drop → approve/edit/send the threa
 **E7 — [MVP] Wire Campaign tab + Reply Queue + acceptance.** Live campaigns, funnel stages + counts,
 per-stage variants (live metrics), conversation log + stage-move, KPIs (Prospects=contacted ·
 Replies=replied · Meetings/Billable=F), cross-campaign Reply Queue — exact class names, no new CSS. Replace
-the mocks; "Confirm & lock" calls E3. **DoD:** founder locks a batch, watches real sends, triages a reply
-from the Reply Queue, advances to Positive reply, sends a threaded booking message — all live; tick **S4/S5**.
+the mocks (`SAMPLE_FUNNEL`, `INITIAL_REPLIES`, `RECAPS`); "Confirm & lock" calls E3. The `replied → meeting`
+stage-move calls the Phase F Meet-invite hook (F3). **DoD:** founder locks a batch, watches real sends,
+triages a reply from the Reply Queue, advances to Positive reply, sends a threaded booking message — all
+live; tick **S4/S5**.
 
 **Critical path:** E0(inboxes) → E1 → E2 → E3 → E4 → {E5 · E6} → E7. **E0 is the schedule risk** (warm-up,
 running); **E3/E4 is the highest-leverage code**; **E5 is where the founder works the replies.** **Cost:**
@@ -768,7 +984,7 @@ Meet metadata shows held ≥ 10 minutes** — else **No show**. **No code until 
 |---|---|---|
 | Campaign funnel (Meeting / No show / Qualified billable) | `scheduled_at`, `held`, `duration_min`, `qualified` → `campaign_lead.stage` | YES |
 | Billing ledger tab | `qualified`, `amount`, `held`, `duration_min`, `conference_record_id` (→ UI `recId`), won/lost | rows YES · Stripe push [SKIP→later] |
-| Meeting recaps tab | `meet_link`, `conference_record_id`, attendees, transcript ref | scaffold YES · LLM summary [SKIP→later] |
+| Meeting recaps tab (**upcoming** + past) | upcoming: `scheduled_at`, `meet_link`, attendees · past: `conference_record_id`, attendees, transcript ref | **upcoming list + Meet link YES** · LLM summary [SKIP→later] |
 
 ### Tasks
 
@@ -788,16 +1004,25 @@ read Meet REST v2 conference records for held/duration/attendees. SnapStart-safe
 
 **F3 — Booking link → event → Meeting schedule.** The tokenized external booking page exists; on confirm →
 F2 creates the event → lead → `stage=meeting`. EventBridge schedules a pre-meeting reminder + the
-post-meeting poll (F4).
+post-meeting poll (F4). **The Campaign tab's stage-move into "Meeting schedule" is the same trigger** (see
+Phase E → *Meeting-schedule hook*): moving `replied → meeting` calls Calendar `events.insert`
+(`conferenceDataVersion=1`, `conferenceData.createRequest{hangoutsMeet}`, `attendees[]`, `sendUpdates=all`) →
+mints the **Google Meet** link + invite, persists `google_event_id`/`hangoutLink` on the `meeting` row. Wire
+this hook once here so both the external booking page **and** the funnel stage-move are one code path.
 
 **F4 — Held + duration → qualify (the billing trigger) ⭐.** EventBridge poll reads the conference record →
 set held/duration/attendees → apply the rule: **approved AND duration ≥10 → `qualified=true`,
 `stage=billable`** + compute `amount` (§7); else → `stage=noshow`. Idempotent on re-poll.
 
 **F5 — Ledger + Recaps seam (rows now, engines later).** Read endpoints serve `meeting`-derived rows to the
-Billing ledger (qualified/no-show, held/duration, `recId`, amount, won/lost) and Meeting recaps (Meet link,
-conference id, attendees, won/lost toggle). **[SKIP→later]:** Stripe invoice push + LLM `meeting_summary`.
-**DoD:** both tabs render real rows; won/lost persists; no Stripe/LLM call.
+Billing ledger (qualified/no-show, held/duration, `recId`, amount, won/lost) and Meeting recaps. **The
+Recaps tab renders TWO groups** (NEW — see Phase E → *Meeting-schedule hook*): **Upcoming meetings**
+(`held IS NULL AND scheduled_at >= now` → prospect, company, `scheduled_at`, Meet **join** link, attendees)
++ **Meeting summaries** (`held = true` → recording, attendees, discussed, next step, sentiment, won/lost).
+Read: `GET /{client}/meetings?when=upcoming|past`. **[SKIP→later]:** Stripe invoice push + LLM
+`meeting_summary` (placeholder summary copy); the **future-meeting list, Meet link, attendees, held/duration
+are real** (Calendar + Meet REST v2 `conferenceRecords`). **DoD:** Recaps shows upcoming + past; won/lost
+persists; no Stripe/LLM call.
 
 **F6 — Wire Workspace + acceptance.** Drive Meeting/No show/Qualified billable stages + Meetings/Billable
 KPIs from real `meeting` rows; external booking, Ledger, Recaps tabs on live data. **DoD:** a founder
@@ -865,7 +1090,7 @@ fields show `PEND`, not `FAIL`; use `--strict` at the phase that needs them).
 |---|---|---|
 | `holdslot/prod/app` | ✅ | JWT signing+refresh present, ≥32 chars, distinct |
 | `holdslot/prod/openrouter` | ✅ | Key valid; $50 spend cap. **`models` must be non-US providers** — gemini/gpt are geo-blocked (403 ToS) for HK. The secret `models` is only the default fallback now: each call site pins its own list in code — **scoping** = `SCOPING_MODELS` (`deepseek/deepseek-v4-pro`, async path), **fit** = `FIT_MODELS` (`deepseek/deepseek-v4-pro`, reasoning `medium`, background-scored); Qwen/Llama dropped 2026-06-23 |
-| `holdslot/prod/apollo` | ◑ | `key` stored but **free-tier** (Search/Match 403) — upgrade to Professional + master key → C0. (`holdslot/prod/clay` retired) |
+| `holdslot/prod/apollo` | ◑ | `key` stored but **free-tier** (Search/Match 403) — upgrade to Professional + master key → C0. |
 | `holdslot/prod/smartlead` | ◑ | `api_key` valid; sending accounts + `webhook_signing_secret` → E |
 | `holdslot/prod/google` | ✅ | SA + domain-wide delegation + Calendar + Meet REST all 200, one seat (`info@tryholdslot.com`) |
 

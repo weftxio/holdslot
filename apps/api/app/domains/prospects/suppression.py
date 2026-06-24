@@ -1,4 +1,4 @@
-"""Suppression — the pure gate every candidate passes before any paid Clay push (C0.4 + C2).
+"""Suppression — the pure gate every candidate passes before any paid Apollo call (C0.4 + C2).
 
 Two halves, both pure functions (no I/O), so the safeguard is unit-tested independently of
 transport (the C2 DoD):
@@ -8,8 +8,8 @@ transport (the C2 DoD):
     entry per line, typically `domain, name, website`); `extract_exclusions` normalizes that into
     domain / email / linkedin-slug sets plus the spec's structured `exclusions`.
   * **C2 — suppress** a candidate set against the exclusions + already-seen identity keys. A row
-    never created costs zero credits, so this is the primary credit safeguard (Clay auto-dedupe is
-    only the backstop). Every drop carries a reason for audit.
+    never created costs zero credits, so this is the primary credit safeguard (the DB-side
+    domain/identity dedupe is the backstop). Every drop carries a reason for audit.
 
 The boundary (locked, see fit-rubric §1): *no contact path at all* is a gate handled downstream
 on enrichment; here we gate on **who they are** (exclusion membership) and **dedupe**.
