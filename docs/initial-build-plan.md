@@ -1,7 +1,7 @@
 # HoldSlot — Initial Build Plan (dogfood MVP)
 
-> **Status (2026-06-24):** Phases **A (S0)** + **B (S1)** + **C (S2)** **built, reviewed & live on `dev`** —
-> backend on the `dev` API (alias `live`, **Lambda v44**, commit `723ae68`), Workspace web on Amplify `dev`.
+> **Status (2026-06-25):** Phases **A (S0)** + **B (S1)** + **C (S2)** **built, reviewed & live on `dev`** —
+> backend on the `dev` API (alias `live`, **Lambda v46**, commit `196a31e`), web on Amplify `dev` (build #38).
 > The single-tenant **Apollo find → score → select → enrich loop is a live functional MVP**: Apollo does
 > discovery *and* enrichment (company search, people search, `people/match`, static key); the LLM only scores
 > rows (the Brief→targeting LLM ran in B; the B→C param mapping is **deterministic**). No CSV.
@@ -9,14 +9,21 @@
 > Department + live Apollo facet sidebar), a **persisted people-scope override** (`0012`), the **fit rubric
 > split** into `company_fit` + `prospect_fit` (`0013`), an **Enrichment column + on-demand Update Field**, and
 > two UX fixes (the async "Scoring…" reconciliation — no Pending flash — and the Accepted/Enriched sort rules).
-> See Phase C → **C8–C10**. Schema deltas in [`data-schema.md`](data-schema.md). Phase D (batch) is next.
+> See Phase C → **C8–C10**. Schema deltas in [`data-schema.md`](data-schema.md).
+> **Latest (2026-06-25) — frontend modularization + W0–W8 backend hardening shipped to `dev`** (full record in
+> [`modularization-plan.md`](modularization-plan.md)): the workspace/client-status monoliths split into **7 + 3
+> nested routes**; the backend gained the enrich double-spend fix, perf indexes (`0014`), **async scoring**
+> (`scoring_job`, `0015`, all 5 surfaces), cursor pagination, login cold-start retry, an LLM token trim,
+> request-id logging, and warm-container caching → **47 endpoints · 16 tables · head `0015`**. See
+> *Modularization + W0–W8 (landed 2026-06-25)* below + the per-phase **Δ** table. **Phase D (batch) is next.**
 > **S2 ticks once the founder runs one live end-to-end round** (the one operational gate left).
 
 > ## ▶ NEXT SESSION — START HERE
-> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP on Lambda v44** (commit `723ae68`, all pushed
+> **Phase C (Apollo find→enrich loop) is a LIVE FUNCTIONAL MVP on Lambda v46** (commit `196a31e`, all pushed
 > to `origin/dev`). C0–C10 built, deployed, and proven end-to-end on the cloud stack (ephemeral-tenant smoke:
 > find-company → select → find-people → `people/match` returned a verified email, **1 credit**). Migrations
-> through `0013` applied (DB at head).
+> through `0015` applied (DB at head). **Frontend modularization + W0–W8 backend hardening landed on `dev`
+> 2026-06-25** (Lambda v46) — see *Modularization + W0–W8* below and the per-phase **Δ** table.
 >
 > **Shipped since v37 — Step-2 rebuild (C8–C10) + UX fixes** (all green: backend tests + ruff, web tsc +
 > build):
@@ -151,6 +158,49 @@ tenants, memberships → Aurora.
 workspace-parameterised → prod is a new workspace, not a rewrite); one modular FastAPI service; manual
 one-command deploy; JWT auth. The two things never shortcut (expensive to retrofit): `tenant_id` on every
 row + a single central access guard.
+
+---
+
+## Modularization + W0–W8 backend hardening (landed 2026-06-25)
+
+> A cross-phase hardening pass on the **built** stack (A–C), planned + executed in
+> [`modularization-plan.md`](modularization-plan.md) and consolidated here. **Two tracks, both merged to `dev`
+> and deployed:** **(1) frontend modularization** (its PART 1) — the workspace + client-status monoliths split
+> into real nested App-Router routes; **(2) W0–W8 backend simplification** (its PART 4) — nine waves from a
+> money-bug fix to async scoring + caching. Live: backend **Lambda v46** (`196a31e`), frontend **Amplify dev
+> build #38**, DB **head `0015`**. Gate green (backend `ruff` + 89 pass / 9 skip; FE typecheck + knip + build +
+> 11 Playwright e2e). **No new product scope — this hardens what A–C already shipped; Phase D is still next.**
+
+**Frontend modularization (PART 1).** Workspace → **7 nested routes**
+(`brief`/`list`/`batches`/`campaign`/`replies`/`summaries`/`billing`) under a `WorkspaceProvider` layout
+(cross-tab mock state preserved); client-status → **3 routes** (`approval`/`booking`/`feedback`). The hash-tab
+apparatus is deleted; sidebar highlight + breadcrumb + back-button are now `usePathname()`-derived. A
+**typed-API foundation** (`openapi-typescript` + `pnpm gen:api`) is in place — the full
+`lib/api.ts`→`openapi-fetch` swap is **deferred** (staged, dev-QA'd, paid endpoints last; §1.7 there). First FE
+test harness added (**Playwright route-smoke**). Rule #1 held: no copy / CSS / behaviour change.
+
+**W0–W8 backend (PART 4), per wave.** W0 enrich double-spend fix · W1 perf composite indexes + `prospect.fit_reason`
+(`0014`) · W2 dead-code removal + `fit_reason` populated · W3 request-id + access/exception logging + auth audit
+(hashed email) + email redaction · W4 **async scoring** (`scoring_job` `0015`; 5 `*-async` kick-offs + poll;
+`ASYNC_BATCH_MAX=20`) · W5 cursor pagination + auto-load (≤250) · W6 login cold-start retry (Aurora resume→**503**
+under the 30s cap + FE backoff) · W7 LLM token trim (8 fit fields, PII dropped) · W8 warm-container `TTLCache`
+(facet sidebar 300s, company search 90s).
+
+**Per-phase Δ — what each phase's surface gained:**
+
+| Phase | Δ from modularization + W0–W8 | Net effect |
+|---|---|---|
+| **A · Foundation** | W3 request-id middleware + access/exception/auth-audit logging (hashed email, body redaction); W6 Aurora cold-start retry (`ensure_awake`→503 under the 30s cap + FE backoff) — **partly closes A-follow-up #4** (scale-to-zero vs timeout). FE gained `SessionGuard` (pre-existing; 2 known ESLint warns, build unaffected). | Foundation now observable + cold-start-resilient |
+| **B · Targeting** | W7 trims the **fit**-scoring prompt to the 8 fit-relevant brief fields (+ spec − `credit_policy` + ICP profiles); 13 operational/PII fields no longer reach the paid scorer. *Scoping (Brief→spec) still gets the full brief.* FE: brief tab is its own route. | Cheaper, PII-safe fit scoring — **founder score-diff QA owed** before relying on the trim |
+| **C · Prospects/Apollo** | W0 enrich double-spend money-bug fixed (gate on `last_enriched_at`); W1 hot-path indexes + `fit_reason`; W4 **async scoring supersedes the C7 chunked `/rescore`** (now `scoring_job` + poll, 5 surfaces, ≤20/batch); W5 cursor pagination + auto-load on `/prospects`+`/companies`; W8 caches the facet sidebar + company search. FE: list tab is its own route. | Find→score→enrich is faster, credit-safe, off the 30s gateway cap |
+| **D · Batch** | No backend yet. FE: the *Sendout/Approval Batches* surface is now `workspace/batches` (its own route); the 3 mock D surfaces still need replacing (audit unchanged). | Build target unchanged; cleaner FE seam to wire |
+| **E · Outreach** | No backend yet. FE: campaign/replies/summaries are their own routes. **R1 (Smartlead `api_key` must stay out of logs) now has a home** — W3's request-path logger + redaction is where to enforce it. | Logging/redaction framework ready for E |
+| **F · Book/meeting** | Unaffected (no FE/BE touched). | — |
+| **G · Run & close** | Unaffected (human). | — |
+
+**Still owed (founder dev-QA — needs paid runs):** W4 async-scoring click-throughs on all 5 surfaces · W7
+score-diff validation · the C live end-to-end round (the S2 gate). **Doc drift:** `data-schema.md` still stops
+at `0013` — extend through `0014`/`0015` on the next schema pass.
 
 ---
 
@@ -323,7 +373,7 @@ frontend edit + a rubric entry — no migration. **Cost:** ~$5–20/mo LLM; **no
 
 ---
 
-## Phase C — Prospects: Apollo find + enrich (S2) ✅ BUILT & LIVE (Apollo-only, Lambda v44)
+## Phase C — Prospects: Apollo find + enrich (S2) ✅ BUILT & LIVE (Apollo-only, Lambda v46)
 
 > **Architecture (locked 2026-06-21):** Phase C is **Apollo-only**. **Apollo.io is a true headless REST
 > search + enrichment API** (company search, people search, `people/match`, one static key), so the whole
@@ -584,6 +634,11 @@ that flag any request crossing the 30s gateway cap. The seeds drop out because F
   `research_run.source="lookalike"`; scored in the background; aggregator unit-tested (no network).
 
 #### Step-1 scoring is async — fit scoring never blocks the find request (2026-06-23)
+> **⚠️ Superseded 2026-06-25 (W4).** The chunked client-driven `/rescore` described below was replaced by a
+> server-side **async scoring job** (`scoring_job` table, `0015`) + poll across all 5 scoring surfaces — see
+> *Modularization + W0–W8* and [`modularization-plan.md`](modularization-plan.md) §4.1 (W4). The "never blocks
+> the find request" intent is unchanged; the mechanism is now a real job, not 3-row chunks.
+
 Built this session across **all three Step-1 buttons** (Find Company, Find Lookalike, Update AI Score). The
 driver: fit scoring is **`deepseek/deepseek-v4-pro`** (reasoning effort `medium`, `temp=0`, no web-search;
 [`fit.FIT_MODELS`/`FIT_EXTRA_BODY`](../apps/api/app/domains/prospects/fit.py)) — deep reasoning at ~15–25s/call
@@ -711,8 +766,8 @@ person's `company_id`.
 ## Open items across A–C (the pending register, 2026-06-24)
 
 A consolidated list of everything still open in the **built** phases. None block forward progress to D; the
-two ⏳ acceptance rounds are the only gates that tick S1/S2. Code is current at **Lambda v44 / `723ae68`**,
-DB at migration `0013`.
+two ⏳ acceptance rounds are the only gates that tick S1/S2. Code is current at **Lambda v46 / `196a31e`**
+(dev), DB at migration `0015` — modularization + W0–W8 hardening landed (see that section).
 
 **Phase A — Foundation (7 known follow-ups; all non-blocking):**
 1. **SES** — DKIM/DMARC verified + reset flow live; *deferred:* custom MAIL FROM + sandbox-exit (needed for
@@ -743,9 +798,10 @@ DB at migration `0013`.
 - **Funding-stage filter key** — still unverified (needs a funding-scoped Apollo query); non-blocking.
 
 **Cross-cutting:**
-- **Doc/schema drift** — kept current as of this consolidation: plan banner + Phase C C8–C10 + this register
-  are now in sync with `723ae68`; `data-schema.md` migration history extended through `0013`. Re-sync on the
-  next schema change.
+- **Doc/schema drift** — plan banner + Phase C + this register are now in sync with `196a31e` (Lambda v46,
+  DB head `0015`); the modularization + W0–W8 record lives in [`modularization-plan.md`](modularization-plan.md),
+  consolidated into this plan 2026-06-25. **⚠️ `data-schema.md` still stops at `0013`** — extend it through
+  `0014` (perf indexes + `prospect.fit_reason`) + `0015` (`scoring_job`) on the next schema pass.
 
 ---
 
@@ -771,11 +827,11 @@ is what S7 bills against). This block consolidates what's **locked**, what's **m
   **MVP adds ZERO new AWS resources** — routes on the existing `$default` proxy + the scheduler.
 
 **Mock state to replace (audited 2026-06-24 — all three D surfaces are in-memory fixtures, no API):**
-- **Workspace → *Sendout Batch / Approval Batches*** ([workspace/page.tsx](../apps/web/app/[client]/(console)/workspace/page.tsx)) —
-  `batches` is `useState([Batch 1/2/3])`; per-prospect enrichment rows are mock (comment: "wired in Phase C/E").
+- **Workspace → *Sendout Batch / Approval Batches*** ([workspace/batches/page.tsx](../apps/web/app/[client]/(console)/workspace/batches/page.tsx), state in `WorkspaceProvider`) —
+  `batches` is mock (`Batch 1/2/3`); per-prospect enrichment rows are mock (comment: "wired in Phase C/E").
 - **External → *approve/[token]*** ([approve/[token]/page.tsx](../apps/web/app/[client]/(external)/approve/[token]/page.tsx)) —
   `useState` removed/done + `<Sample>` placeholder copy, no token fetch / decide call.
-- **Console → *client-status · List approval*** ([client-status/page.tsx](../apps/web/app/[client]/(console)/client-status/page.tsx)) —
+- **Console → *client-status · List approval*** ([client-status/approval/page.tsx](../apps/web/app/[client]/(console)/client-status/approval/page.tsx)) —
   `A_LOG` mock array; "Send to client" is `toast(…)` only, no API.
 
 **Decisions needed from the founder before C→D build (open):**
