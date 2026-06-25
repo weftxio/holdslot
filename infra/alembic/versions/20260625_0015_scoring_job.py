@@ -7,7 +7,7 @@ Create Date: 2026-06-25
 The five scoring-bearing surfaces (find-company, find-lookalikes, company/prospect rescore, company
 field refresh) fan out one fit-scoring LLM call per row; a large batch exceeds the API Gateway 30s
 cap, and the prior client-driven chunk loop dies if the tab closes. So scoring moves async (W4,
-docs/modularization-plan.md): a kick-off endpoint inserts a `queued` row here and fires a background
+docs/initial-build-plan.md -> Modularization + W0-W8): a kick-off endpoint inserts a `queued` row here and fires a background
 worker (Lambda self async-invoke; a thread locally), which flips it `running`→`done`/`error` and
 records per-run counts on `result`. `kind` names the surface; `params` is the original request body.
 Mirrors `research_job` (0009); `updated_at` is kept fresh by the ORM `onupdate`, no trigger needed.

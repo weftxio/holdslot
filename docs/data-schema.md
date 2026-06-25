@@ -7,8 +7,11 @@
 > doc wins**, and schema changes are recorded **here first**.
 >
 > **A, B & C are built** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
-> Alembic migrations through `0013`); C is the **Apollo-only** find → score → select → enrich loop (see
-> [`initial-build-plan.md`](initial-build-plan.md) → Phase C).
+> Alembic migrations **through `0015`**, the current Aurora head — Lambda **v46** / commit `196a31e`); C is
+> the **Apollo-only** find → score → select → enrich loop (see
+> [`initial-build-plan.md`](initial-build-plan.md) → Phase C). The 2026-06-25 modularization + W0–W8 hardening
+> pass added the perf indexes + `prospect.fit_reason` (`0014`) and the `scoring_job` async ledger (`0015`);
+> the `scope_override` table (`0012`) is also defined below. **16 tables.**
 
 ## The governing boundary
 
@@ -135,6 +138,65 @@ the sync response — off at MVP, so the sync email path is all we wire:
 ---
 
 # Part 2 — Internal database
+
+## Entity-relationship overview (16 tables · head `0015`)
+
+Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, plus the W4
+async-scoring `scoring_job` ledger and the `scope_override` Find-Settings store. The ORM
+([`apps/api/app/models.py`](../apps/api/app/models.py)) matches the migrations — **no drift**.
+
+```mermaid
+erDiagram
+    app_user      ||--o{ membership      : "has"
+    tenant        ||--o{ membership      : "has"
+    app_user      ||--o{ refresh_token   : "issues"
+    app_user      ||--o{ password_reset  : "issues"
+    tenant        ||--|| brief           : "1:1"
+    tenant        ||--o{ icp             : ""
+    tenant        ||--o{ llm_call        : ""
+    tenant        ||--o{ research_spec   : "versioned"
+    tenant        ||--o{ research_job    : ""
+    tenant        ||--o{ company         : ""
+    tenant        ||--o{ prospect        : ""
+    tenant        ||--o{ research_run    : ""
+    tenant        ||--o{ prompt          : "versioned"
+    tenant        ||--o{ scope_override  : "1 per kind"
+    tenant        ||--o{ scoring_job     : "1 in-flight/kind"
+    icp           ||--o{ company         : "SET NULL"
+    icp           ||--o{ prospect        : "SET NULL"
+    icp           ||--o{ research_run    : "SET NULL"
+    llm_call      ||--o{ research_spec   : "SET NULL"
+    llm_call      ||--o{ research_job    : "SET NULL"
+    company       ||--o{ prospect        : "Stage1→2, SET NULL"
+    tenant { uuid id PK }
+    app_user { uuid id PK }
+    membership { uuid id PK }
+    brief { uuid id PK }
+    icp { uuid id PK }
+    llm_call { uuid id PK }
+    research_spec { uuid id PK }
+    research_job { uuid id PK }
+    company { uuid id PK }
+    prospect { uuid id PK }
+    research_run { uuid id PK }
+    prompt { uuid id PK }
+    scope_override { uuid id PK }
+    scoring_job { uuid id PK }
+    refresh_token { uuid id PK }
+    password_reset { uuid id PK }
+```
+
+**Relationship notes:**
+- **`tenant` is the spine** — every business table `ON DELETE CASCADE`s from it.
+- Identity is global — `app_user` ↔ `tenant` is many-to-many via `membership`;
+  `refresh_token`/`password_reset` hang off the user.
+- `icp` and `llm_call` are soft refs (`SET NULL`) — deleting them orphans but doesn't destroy.
+- **Two-stage flow** — `company` (Stage 1, dedup `domain`, Apollo via `apollo_org_id`) →
+  `prospect` (Stage 2, dedup `identity_key`, via `company_id` + `apollo_person_id`).
+  `prospect.last_enriched_at` is the seam for a future shared `person`/enrichment cache.
+- Versioned config — `research_spec`, `prompt` (per tenant×stage), `research_run` (cost ledger) — append-only.
+- `scope_override` (`0012`) and `scoring_job` (`0015`) are **operational ledgers**, not business entities:
+  one `scope_override` per (tenant, kind); one in-flight `scoring_job` per (tenant, kind).
 
 ## Phase A (S0) — Identity & tenancy core ✅ BUILT
 Migration `20260611_0001_baseline` (+ `0002_seed`). Identity tables are **global**; a user joins tenants
@@ -287,13 +349,22 @@ One in-flight job per tenant (a queued/running job is returned as-is) so a doubl
 | `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | the call that produced the spec |
 | `created_at`, `updated_at` | timestamptz | |
 
-## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ✅ BUILT & LIVE (Lambda v44)
+## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ✅ BUILT & LIVE (Lambda v46)
 Follows the same conventions; all carry `tenant_id` (= `client_id`), scoped by the A4 guard. **Built today:
 `prospect` + `research_run` + `prompt` (created as `sourcing_doc` in `0005`, renamed `0010`), `company`
 + `prospect.company_id` (`0007`), `company.website` (`0008`), `research_job` async-structuring tracker
 (`0009`, Phase B). The Apollo rebuild adds `0011`: `company.apollo_org_id` + `prospect.apollo_person_id`, and **drops**
-`tenant.seed_limit` (`0006`, AI-loop seed anchoring — removed).
+`tenant.seed_limit` (`0006`, AI-loop seed anchoring — removed). The C8–C10 + W0–W8 deltas add `scope_override`
+(`0012`), the `company_fit`/`prospect_fit` rubric split (`0013`), the hot-read composite indexes +
+`prospect.fit_reason` (`0014`), and the `scoring_job` async ledger (`0015`).
 The two SCALE tables (`person` / `enrichment_request`) are the additive multi-tenant step, not built.**
+
+> **Hot-read indexes (`0014`, W1):** `prospect` and `company` each carry a composite
+> `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` index (`ix_prospect_tenant_fit` /
+> `ix_company_tenant_fit`) matching the exact `ORDER BY` of the `/{client}/prospects` + `/{client}/companies`
+> list feeds, so the hottest read returns rows pre-ordered (W5 cursor pagination adds an `id` tiebreaker). Four
+> now-redundant single-column indexes were dropped (`ix_company_domain`, `ix_prospect_identity_key`,
+> `ix_brief_tenant_id`, `ix_scope_override_tenant_id` — each covered by a UNIQUE constraint's index).
 
 ### Phase C end-to-end flow (Apollo, programmatic — two gates, no CSV)
 The objective is two gates: **(1) find companies likely to buy, (2) find the right person at each.**
@@ -357,7 +428,8 @@ apply DB-side on every search.
 | `email_valid` | bool | |
 | `fit_score` | int nullable | |
 | `fit_tier` | varchar | Strong/Good/Moderate/Below |
-| `fit_components` | JSONB | the 12 rubric line-items + reason tags; `fit_reason` is client-facing copy (→ Phase D) |
+| `fit_components` | JSONB | the 12 rubric line-items + reason tags |
+| `fit_reason` | text nullable | "why a fit" client-facing copy (→ Phase D); a real column (`0014`, parity with `company.fit_reason`) — populated on next rescore, no backfill |
 | `source` | varchar | `apollo` \| `manual` (origin, not transport) |
 | `source_lineage` | JSONB | run + rubric version |
 | `status` | varchar | `found`→`confirmed`(to enrich)→`scored`; `suppressed`/`score_error` (string, not enum) |
@@ -395,6 +467,39 @@ version is active. (Was `sourcing_doc` with a `kind` column — renamed once it 
 The briefing prompt is read DB-first by the scoping worker; if absent it falls back to the code
 default (`DEFAULT_SYSTEM_PROMPT`, the Lambda bundle has no `docs/`). Saving in the UI appends the
 next `briefing` version; an empty save resets to the default text.
+
+### `scope_override` ✅ MVP (`0012`) — persisted Find-Settings override, one row per (tenant, kind)
+The Step-2 *Find People · who to target* facets (Management Level × Department) were a per-browser
+localStorage override; this moves them server-side so a saved tuning survives reloads/devices and a stale
+local entry can't silently shadow the AI scope. Single-row **UPSERT**; deleting the row reverts to the
+`research_spec` scope. `kind='people'` today (the facet override); `company` (Step-1) can reuse the same
+table later. See [`initial-build-plan.md`](initial-build-plan.md) → Phase C → C9.
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | **unique(`tenant_id`,`kind`)** (`uq_scope_override_tenant_kind`) |
+| `kind` | varchar(16) | `people` (Step-2 facets) · `company` (Step-1, reserved) |
+| `params` | JSONB (default `{}`) | the opaque override merged over `research_spec` at find time |
+| `created_at`, `updated_at` | timestamptz | `updated_at` kept fresh by the `set_updated_at()` trigger (attached in `0014`) under raw UPSERT |
+
+### `scoring_job` ✅ MVP (`0015`, W4) — async fit-scoring job ledger, one in-flight per (tenant, kind)
+The five scoring-bearing surfaces (find-company, find-lookalikes, company/prospect rescore, company
+field-refresh) fan out one fit LLM call per row; a large batch exceeds the API Gateway 30s cap and the
+prior client-driven chunk loop died if the tab closed. So scoring moved **async**: a `…-async` kick-off
+endpoint inserts a `queued` row and fires a background worker (Lambda self async-invoke; a thread locally)
+that flips it `running`→`done`/`error` and records per-run counts on `result`. Mirrors `research_job`
+(`0009`); a **job ledger**, not a business entity. `ASYNC_BATCH_MAX = 20`. Poll `GET /{client}/scoring-jobs/{job_id}`.
+See [`initial-build-plan.md`](initial-build-plan.md) → *Modularization + W0–W8* (W4).
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx `ix_scoring_job_tenant_kind` on (`tenant_id`,`kind`); single in-flight per kind |
+| `kind` | varchar(32) | which scoring surface (`find_company`/`find_lookalikes`/`company_rescore`/`prospect_rescore`/`update_fields`) |
+| `params` | JSONB (default `{}`) | the original request body |
+| `status` | varchar(16) (default `queued`) | `queued`→`running`→`done`\|`error` (string, not enum) |
+| `result` | JSONB (default `{}`) | per-run counts (scored/failed) |
+| `error` | text nullable | set on `error` |
+| `created_at`, `updated_at` | timestamptz | `updated_at` via ORM `onupdate` (no trigger needed) |
 
 ### `person` ⬜ SCALE — tenant-AGNOSTIC enrichment cache (the enrich-once seam)
 Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched once (one Apollo
@@ -435,9 +540,14 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260622_0009_research_job` | B | `research_job` (async Brief→ResearchSpec structuring tracker) |
 | `20260622_0010_prompt_table` | B | rename `sourcing_doc`→`prompt`, `kind`→`stage` (`sourcing_prompt`→`sourcing`, `fit_rubric`→`fit_scoring`); seed `briefing` v1 from `brief-structure-v5.md` |
 | `20260622_0011_apollo_ids` ✅ | C | `company.apollo_org_id`, `prospect.apollo_person_id`; **drop** `tenant.seed_limit` |
-| `20260624_0012_scope_override` ✅ | C | persisted Step-2 people-scope override (Find Settings saved server-side per tenant — see Phase C → C9) |
+| `20260624_0012_scope_override` ✅ | C | `scope_override` — persisted Step-2 people-scope override (Find Settings saved server-side per tenant — see Phase C → C9) |
 | `20260624_0013_split_fit_rubric` ✅ | C | split `prompt` stage `fit_scoring` → **`company_fit`** (Step 1) + **`prospect_fit`** (Step 2); rename existing rows to `company_fit`, seed `prospect_fit` from the same body (append-only, up/down clean — see Phase C → C10) |
+| `20260625_0014_perf_indexes_fit_reason` ✅ | C (W1) | composite `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` indexes on `prospect`+`company`; **drop** 4 UNIQUE-covered single-col indexes; add `prospect.fit_reason`; attach `scope_override.updated_at` trigger. Reversible. |
+| `20260625_0015_scoring_job` ✅ | C (W4) | `scoring_job` async fit-scoring job ledger + `ix_scoring_job_tenant_kind`; one in-flight per (tenant, kind) |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
+
+**Current Aurora head: `0015`** (Lambda v46 / `196a31e`). W6/W7/W8 (login cold-start retry, LLM token trim,
+warm-container caching) are **code-only — no migration.**
 
 > **`prompt.stage` vocabulary (current):** `briefing` (Brief→spec, B) · **`company_fit`** (Step-1 company
 > scoring) · **`prospect_fit`** (Step-2 person scoring). The old single `fit_scoring` stage was split in `0013`;

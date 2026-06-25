@@ -11,11 +11,12 @@
 > two UX fixes (the async "Scoring…" reconciliation — no Pending flash — and the Accepted/Enriched sort rules).
 > See Phase C → **C8–C10**. Schema deltas in [`data-schema.md`](data-schema.md).
 > **Latest (2026-06-25) — frontend modularization + W0–W8 backend hardening shipped to `dev`** (full record in
-> [`modularization-plan.md`](modularization-plan.md)): the workspace/client-status monoliths split into **7 + 3
+> *Modularization + W0–W8* below): the workspace/client-status monoliths split into **7 + 3
 > nested routes**; the backend gained the enrich double-spend fix, perf indexes (`0014`), **async scoring**
 > (`scoring_job`, `0015`, all 5 surfaces), cursor pagination, login cold-start retry, an LLM token trim,
 > request-id logging, and warm-container caching → **47 endpoints · 16 tables · head `0015`**. See
-> *Modularization + W0–W8 (landed 2026-06-25)* below + the per-phase **Δ** table. **Phase D (batch) is next.**
+> *Modularization + W0–W8 (landed 2026-06-25)* below + the per-phase **Δ** table. **Phase D (batch + approval) is
+> next — build plan finalized 2026-06-25 (D0–D6, all decisions confirmed).**
 > **S2 ticks once the founder runs one live end-to-end round** (the one operational gate left).
 
 > ## ▶ NEXT SESSION — START HERE
@@ -38,9 +39,9 @@
 > - **UX fixes** — async "Scoring…" now reconciles from the DB (no Pending flash, Step-1 *and* Step-2); sort
 >   rules: Step-1 Accepted-on-top, Step-2 Enriched-first.
 >
-> **Next:** Phase D (batch) — see the enriched **Phase C → Operational sign-off** and the **Open items across
-> A–C** + **Phase D — information required** blocks below. Then the loop is ready for real outreach (Phase E
-> warm-up is the gating long pole). The one operational gate left to tick **S2** is a founder live
+> **Next:** Phase D (batch + client approval) — **build plan finalized** (see *Phase D — Sendout Batch + Client
+> Approval*, all decisions founder-confirmed; D0–D6, ready to build). Then the loop is ready for real outreach
+> (Phase E warm-up is the gating long pole). The one operational gate left to tick **S2** is a founder live
 > end-to-end round (below). Optionally revisit the *⚠️ Post-C review* deferred ICP inputs.
 >
 > **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
@@ -145,7 +146,7 @@ tenants, memberships → Aurora.
 | **A** | Foundation (S0) | Founder login; seed tenant #0; multi-tenant + role-aware schema; Aurora + deploy; console on live data | — | P0 | Both founders log in (full access); schema admits a 2nd tenant/non-owner role w/o migration |
 | **B** | Targeting (S1) | Brief → OpenRouter `ResearchSpec`; ICP record | A | P0 | ResearchSpec saved, search-ready |
 | **C** | Prospects + Apollo (S2) | design filter → Apollo search → fit-scored `Company`/`Prospect` rows; select → enrich | B · Apollo | P0 | Find→score→select→enrich runs in-app (no CSV) |
-| **D** | Batch (S3 min) | Batch from selected prospects, mark approved internally | C | P1 | Approved batch ready to send |
+| **D** | Batch + approval (S3 min) | Batch from enriched prospects → tokenized **masked** client-approval link → record per-prospect decision; approved set ready for E | C | P1 | Client approves a masked batch; `prospect_approval` rows exist (the S7 billing precondition) |
 | **E** | Outreach + Smartlead (S4/S5) | Batch → campaign; A/B/C; send controls; webhook sync; cross-campaign Reply Queue; reply-to-thread | D · warm domains · Smartlead | P0 | Live sending; replies triaged in one queue |
 | **F** | Book + meeting (S6 min) | Booking link → Calendar/Meet event + invites; capture held + duration | E · Google | P0 | Prospect self-books; held/duration recorded |
 | **G** | Run & close (human) | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | P0 | **6 signups over H1** |
@@ -163,10 +164,10 @@ row + a single central access guard.
 
 ## Modularization + W0–W8 backend hardening (landed 2026-06-25)
 
-> A cross-phase hardening pass on the **built** stack (A–C), planned + executed in
-> [`modularization-plan.md`](modularization-plan.md) and consolidated here. **Two tracks, both merged to `dev`
-> and deployed:** **(1) frontend modularization** (its PART 1) — the workspace + client-status monoliths split
-> into real nested App-Router routes; **(2) W0–W8 backend simplification** (its PART 4) — nine waves from a
+> A cross-phase hardening pass on the **built** stack (A–C), planned + executed 2026-06-25 (full as-built
+> record below — formerly the standalone `modularization-plan.md`, now consolidated into this plan). **Two
+> tracks, both merged to `dev` and deployed:** **(1) frontend modularization** — the workspace + client-status
+> monoliths split into real nested App-Router routes; **(2) W0–W8 backend simplification** — nine waves from a
 > money-bug fix to async scoring + caching. Live: backend **Lambda v46** (`196a31e`), frontend **Amplify dev
 > build #38**, DB **head `0015`**. Gate green (backend `ruff` + 89 pass / 9 skip; FE typecheck + knip + build +
 > 11 Playwright e2e). **No new product scope — this hardens what A–C already shipped; Phase D is still next.**
@@ -199,8 +200,88 @@ under the 30s cap + FE backoff) · W7 LLM token trim (8 fit fields, PII dropped)
 | **G · Run & close** | Unaffected (human). | — |
 
 **Still owed (founder dev-QA — needs paid runs):** W4 async-scoring click-throughs on all 5 surfaces · W7
-score-diff validation · the C live end-to-end round (the S2 gate). **Doc drift:** `data-schema.md` still stops
-at `0013` — extend through `0014`/`0015` on the next schema pass.
+score-diff validation · the C live end-to-end round (the S2 gate). *(Doc drift closed 2026-06-25:
+[`data-schema.md`](data-schema.md) now extends through `0014`/`0015`.)*
+
+### W0–W8 as-built (per wave)
+
+The authoritative as-built record of the backend hardening (was `modularization-plan.md` PART 4; folded here
+2026-06-25). Final pre-deploy gate: backend `ruff` clean · **89 passed + 9 skipped**; FE typecheck + knip +
+build + 11 Playwright e2e green.
+
+| Wave | Delivered (as-built) | DB | Verified |
+|---|---|---|---|
+| **W0** Stop the bleeding | Enrich gate now keys on `p.last_enriched_at is not None` (was `email_valid`/`email` — the active Apollo double-spend on a matched-but-no-email row); interim spend logging in `confirm_enrich` | — | unit |
+| **W1** Schema migration | `(tenant_id, fit_score↓ NULLS LAST, created_at↓)` composite on `prospect`+`company`; 4 redundant single-col indexes dropped; `scope_override` `updated_at` trigger; `prospect.fit_reason` column | **`0014`** | applied + introspected on dev |
+| **W2** Backend consolidation | Dead code removed (`suppress()`/`SuppressionResult`, `to/from_enrichment`, `configured_models`, `c_suite` collapse); `fit_reason` populated on score; `_parse_ids` bad-UUID→400 | — | ruff + unit |
+| **W3** Logging framework | Request-id middleware (`X-Request-ID`) + access + global exception logging; `%(asctime)s` + `request_id` formatter; auth/authz audit at WARNING (hashed email); email-body redaction | — | middleware test |
+| **W4** Async scoring (5 surfaces) | `scoring_job` table + `scoring.py` job infra (enqueue / env-aware dispatch / worker, single-in-flight per tenant×kind); 5 reusable cores shared by the kept **sync** endpoints (additive) + worker handlers; `SCORING_HANDLERS` registry; 5 kick-offs (`…-async`, 202) + poll `GET /scoring-jobs/{job_id}`; **`ASYNC_BATCH_MAX = 20`**. FE: `awaitScoringJob` poll + 5 `*Async` kick-offs, shared `runScoringJob`; >20 selection refused with a message | **`0015`** | applied; live empty-batch worker round-trip (zero spend) |
+| **W5** Cursor pagination + auto-load | Opaque offset-cursor codec (`core/pagination.py`); `ProspectPage`/`CompanyPage` envelopes; `/prospects`+`/companies` take `?cursor`+`?limit` (default 100, ≤250) ordered by the W1 index **+ `id` tiebreaker** (a find batch shares one `created_at`). FE auto-loads to `LIST_CEILING=250` + "showing first 250" notice | — | live two-page dev smoke (overlap=none) |
+| **W6** Login cold-start retry | BE: `get_db` wakes Aurora on a ~18s budget (`ensure_awake` attempts=3, delay=6s) under the 30s gateway cap; global `DBAPIError` handler maps Aurora-resume → retryable **503**, else logged 500. FE: `login()` retries only 503/502/504/network (never 401), backoff 2→6s to a 45s cap, "Waking the database…" button + `.hint` | — | resuming→503 / other→500 tests |
+| **W7** LLM token trim | `_build_targeting` ships only the **8 fit-relevant** brief fields + spec **minus `credit_policy`** + ICP profiles; 13 operational/messaging/exclusion fields dropped; PII (emails/contact) no longer reaches the prompt. Scoping still gets the full brief; `/fit-prompt` preview reflects it | — | pure-fn tests |
+| **W8** Caching | `core/cache.py` `TTLCache` (warm-container memo, bounded+TTL): people-facet sidebar memoized per (tenant, org-set) **300s** (~26 free Apollo probes → 1); company search cached **90s** by filter so a re-run of the same scope doesn't re-spend; find log marks `(cached)` | — | get/set/expiry/eviction tests |
+
+**Folded, not skipped.** W2's structural moves (a `prospects/service.py` module, `_record_run`, the `db.refresh`
+N+1, load-brief-once) and W3's integration-client failure logging (Apollo `_request`, OpenRouter `_execute`)
+were **absorbed into W4** — those same endpoints were restructured into jobs there. `rows_accepted` /
+`cost_per_accepted` stays **deferred** (dormant column): no meetings/billing domain yet to source a
+qualified-meeting count. **Behaviour preserved:** find/lookalike still land rows **unscored** (no auto-trigger);
+the worker scores in waves; the 20-row cap keeps a worst-case batch well under the Lambda timeout. **Back-compat:**
+the legacy **sync** scoring endpoints (`/companies/{rescore,find-company,find-lookalikes,update-fields}`,
+`/prospects/rescore`) are kept but unused by the web app — removable once async is dev-QA'd.
+
+**Founder decisions that gated this work (all executed 2026-06-25):**
+
+| # | Decision | Built as |
+|---|---|---|
+| #1 | `rows_accepted` | **Deferred** (dormant column) — no billing domain yet; `cost_per_accepted` wired tenant-level when it lands |
+| #2 | Rescore slow path | **Full async** — background job + poll, all 5 scoring surfaces (W4) |
+| #3 | `sourcing` value + `outreach_outcome` seams | **Kept** (cheap Phase-E seams) |
+| #4 | `suppress()` primitive | **Deleted** (W2; revivable from git) |
+| #5 | `fit_reason` shape | **`prospect.fit_reason` column** (W1) + populated on score (W2) |
+| #6 | List endpoints | **Cursor pagination + auto-load-all** to a 250-row ceiling (W5) |
+| #7 | LLM token trim | **Trimmed** to 8 fit fields + spec−`credit_policy` (W7); founder score-diff QA owed |
+| #8 | Request-id + global exception handler | **Adopted** — `X-Request-ID` echoed to the client (W3) |
+| #9 | Auth audit + login cold-start | **WARNING + hashed email** (W3) + retry-on-503 login, 45s cap (W6) |
+| #10 | Log format | **Prose + fixed context keys** + `asctime` / `request_id` (W3) |
+| #11 | Email body in non-prod | **Redacted** body, kept to/subject (W3) |
+
+**Preserve (already good — don't "fix"):** `_new_survivors` new-only enrich dedup (credit safeguard) ·
+single-in-flight structuring job · caps that **reject not truncate** · OpenRouter geo-routing (no US providers;
+HK 403) · JSONB-as-opaque document (no path queries → no index pressure) · `llm_call`/`research_run`/`research_job`
+are genuinely distinct (don't merge) · no schema↔ORM drift · clean `print()`-only-in-`scripts/` split.
+
+### Frontend modularization — route map + deferred follow-ups
+
+**Routes as built** (`apps/web/app/[client]/(console)/`): **workspace** → `brief` · `list` · `batches` ·
+`campaign` · `replies` · `summaries` · `billing` (7), under a `WorkspaceProvider` layout that holds the
+cross-tab **mock** state (`batches`/`campaigns`/`replies`) so the batch→campaign demo reactivity survives
+sub-route navigation; the two API-backed tabs (`brief`/`list`) refetch on mount (no shared state).
+**client-status** → `approval` · `booking` · `feedback` (3). Each `layout.tsx` renders its tab bar into the
+topbar slot and derives highlight/breadcrumb/back-link from `usePathname()`. The hash-tab apparatus
+(`useStatusTab`, `popstate`/`hashchange` effects, manual `pushState`) is **deleted**; legacy `#hash` links
+redirect from the shrunk base `page.tsx`. CSS split by class-prefix into per-route files (class-selectors-only
+→ zero leakage). Rule #1 held: no copy / token / CSS-class / behaviour change.
+
+**Deferred follow-ups (planned, NOT yet built — the modularization backlog):**
+- **Typed-API migration.** The foundation shipped (`lib/api-types.ts` generated from the live `openapi.json`;
+  `pnpm gen:api`). The **full `lib/api.ts` → `openapi-fetch` swap is deferred** — it owns auth-token storage,
+  refresh-before-401, single-flight refresh, the session events, and drives the **paid** Apollo endpoints, so
+  the ~70-fn rewrite can't be safely big-banged here. Staged order when resumed: (1) add `openapi-fetch` +
+  `lib/api-client.ts` middleware that calls the *existing* token helpers (auth byte-for-byte identical); (2)
+  read-only GETs first; (3) mutations (icp/brief/company-people), each dev-QA'd; (4) **paid endpoints last, one
+  at a time, manual dev-site QA** (`enrich` is the only credit spend); (5) delete the hand-written `authFetch`.
+  Net: −~20K bundle, ~70 fewer hand-written fns, full end-to-end types.
+- **Safe package swaps (founder-gated, behaviour-equivalent):** `components/Modal.tsx` → `@radix-ui/react-dialog`
+  (keep all CSS classes; better focus-trap; +~4K); the `fmtShortDate`/`daysAgoLabel`/`MONTHS` helpers →
+  `date-fns` (already installed, 0 bundle). **Keep (don't swap):** `Toast`, `useCountUp`, `tmpl.tsx`,
+  `csv.ts` tokenizer (each ships own CSS or is tighter than the package).
+- **Pure perf (zero behaviour risk):** memoize `toEnrich`/`enrichedSel`/`canBatch`/`rowsForCompany` + the
+  People-Scope facet-options array; `React.memo` `FitScore`/`CompanyStudy`/`SpecChips`. **Parallelization
+  (founder sign-off — changes error/ordering semantics):** initial 6-`reload*` load → `Promise.all`;
+  `persist()` ICP updates/deletes; `confirmEnrich()` enrich+reload (preserve create-then-assign-id).
+- **Dead-code:** un-export the 6 module-private `lib/csv.ts` helpers (`parseCsv`/`isDomain`/`normalizeDomain`/
+  `normalizeUrl`/`rowsToText`/`ExclParseResult`); `knip` is in CI to catch future cruft.
 
 ---
 
@@ -636,8 +717,8 @@ that flag any request crossing the 30s gateway cap. The seeds drop out because F
 #### Step-1 scoring is async — fit scoring never blocks the find request (2026-06-23)
 > **⚠️ Superseded 2026-06-25 (W4).** The chunked client-driven `/rescore` described below was replaced by a
 > server-side **async scoring job** (`scoring_job` table, `0015`) + poll across all 5 scoring surfaces — see
-> *Modularization + W0–W8* and [`modularization-plan.md`](modularization-plan.md) §4.1 (W4). The "never blocks
-> the find request" intent is unchanged; the mechanism is now a real job, not 3-row chunks.
+> *Modularization + W0–W8* → **W4** above. The "never blocks the find request" intent is unchanged; the
+> mechanism is now a real job, not 3-row chunks.
 
 Built this session across **all three Step-1 buttons** (Find Company, Find Lookalike, Update AI Score). The
 driver: fit scoring is **`deepseek/deepseek-v4-pro`** (reasoning effort `medium`, `temp=0`, no web-search;
@@ -798,51 +879,200 @@ two ⏳ acceptance rounds are the only gates that tick S1/S2. Code is current at
 - **Funding-stage filter key** — still unverified (needs a funding-scoped Apollo query); non-blocking.
 
 **Cross-cutting:**
-- **Doc/schema drift** — plan banner + Phase C + this register are now in sync with `196a31e` (Lambda v46,
-  DB head `0015`); the modularization + W0–W8 record lives in [`modularization-plan.md`](modularization-plan.md),
-  consolidated into this plan 2026-06-25. **⚠️ `data-schema.md` still stops at `0013`** — extend it through
-  `0014` (perf indexes + `prospect.fit_reason`) + `0015` (`scoring_job`) on the next schema pass.
+- **Doc/schema drift — closed (2026-06-25).** Plan banner + Phase C + this register are in sync with `196a31e`
+  (Lambda v46, DB head `0015`); the modularization + W0–W8 record is consolidated into this plan (see
+  *Modularization + W0–W8* — `modularization-plan.md` retired), and [`data-schema.md`](data-schema.md) now
+  extends through `0014` (perf indexes + `prospect.fit_reason`) + `0015` (`scoring_job`).
 
 ---
 
-## Phase D — information required (read before building S3 batch + approval)
+## Phase D — Sendout Batch + Client Approval (S3): the revenue precondition 🔲 PLAN FINALIZED — ready to build (next)
 
-Phase D = **S3 · Sendout batch & client approval** — the revenue precondition (the `ProspectApproval` record
-is what S7 bills against). This block consolidates what's **locked**, what's **mock today**, and the
-**decisions needed** before the C→D build. *(Plan-only: no D code yet.)*
+> **Plan finalized 2026-06-25** — all five decisions founder-confirmed (see *Locked decisions*); scope = exactly
+> the three surfaces in *Surfaces covered* (Sendout Batch · List approval · external approve/[token]). No code yet.
 
-**Locked source material** (authoritative in [`backend-development-plan.md`](backend-development-plan.md) §S3):
-- **Tables:** `Batch` (from selected prospects; pending/approved/rejected + approved/total) · `ProspectApproval`
-  (per-prospect, the billable agreement) · `ApprovalLink` (tokenized, expiring). All tenant-scoped. **The real
-  `batches` table is built here — C deliberately deferred it (B.4 set selection/status only).**
-- **Anti-theft tiered masking** (a field-level transform in the client-facing `GET /approval/{token}`
-  serializer, *not* regex over the blob):
-  - **Pre-approval (fit only, no way to contact/uniquely-identify):** first name + last *initial* ("Sarah K."),
-    a **company descriptor** ("Series-B fintech · 200–500 · SG") *not* the exact company, title/seniority/function,
-    industry/size/region, fit reason, intent signal, enrichment highlights. Raw vectors withheld → email =
-    `verified business email ✓`, phone = `direct dial verified ✓`, LinkedIn → `has_verified_linkedin: true`.
-  - **Post-booking/qualified:** reveal full name, exact company, LinkedIn (the $500 is now billable).
-  - **Clear-text contact data never reaches the client** — once `APPROVED` it routes backend-only into Smartlead (E).
-- **Infra:** SES (approval request email), signed-token service, EventBridge Scheduler (expiry + reminders).
-  **MVP adds ZERO new AWS resources** — routes on the existing `$default` proxy + the scheduler.
+Phase D = **S3 · Sendout batch & client approval** — the **revenue precondition**: a `prospect_approval` row is
+the billable agreement S7 charges against. It groups the enriched Phase-C prospects into a **batch**, sends the
+client a **tokenized, expiring approval link** showing each prospect with enough *fit context* to approve in one
+click **but with identity + contact vectors masked**, records the per-prospect decision, and hands the approved
+set to Phase E. Builds the **real `batches` table** C deliberately deferred (B.4 set selection/status only), and
+replaces all three mock D surfaces with live API. Source of truth: [`backend-development-plan.md`](backend-development-plan.md) §S3.
 
-**Mock state to replace (audited 2026-06-24 — all three D surfaces are in-memory fixtures, no API):**
-- **Workspace → *Sendout Batch / Approval Batches*** ([workspace/batches/page.tsx](../apps/web/app/[client]/(console)/workspace/batches/page.tsx), state in `WorkspaceProvider`) —
-  `batches` is mock (`Batch 1/2/3`); per-prospect enrichment rows are mock (comment: "wired in Phase C/E").
-- **External → *approve/[token]*** ([approve/[token]/page.tsx](../apps/web/app/[client]/(external)/approve/[token]/page.tsx)) —
-  `useState` removed/done + `<Sample>` placeholder copy, no token fetch / decide call.
-- **Console → *client-status · List approval*** ([client-status/approval/page.tsx](../apps/web/app/[client]/(console)/client-status/approval/page.tsx)) —
-  `A_LOG` mock array; "Send to client" is `toast(…)` only, no API.
+> **★ Posture: simplest full function — reuse what A/B/C already shipped; add NO new infrastructure.** The four
+> primitives D needs already exist: the **password-reset opaque-token pattern** (mint `secrets.token_urlsafe` →
+> store SHA-256 hash → single-use `used_at` → **expiry checked on read**), the **SES `send_email()` adapter**, the
+> **`require_membership` guard**, and **ad-hoc `_out()` serializers**. So D needs **NO EventBridge** (expiry is a
+> read-time check, not a scheduled flip — the established pattern), **NO async worker** (a batch send is one SES
+> call, well under the 30s cap), **NO new "signed-token service"** (the opaque-hash token is it), and **NO new AWS
+> resources** — every route rides the existing `$default` proxy. The §S3 "EventBridge (expiry/reminders)" line is
+> the one place this plan **simplifies the spec**: expiry-on-read + **operator-driven** reminders (the UI's
+> *Follow-Up Approval* button resends the live link); automated reminder scheduling is **[SCALE]**.
 
-**Decisions needed from the founder before C→D build (open):**
-1. **Approval-link lifetime/expiry + reminder cadence** — drives the EventBridge schedule (e.g. 7-day expiry, one reminder at 48h?).
-2. **Sendout/approval email template** — the editable copy the client receives (token grammar matches the UI preview).
-3. **Masking tier field set** — confirm the exact pre-approval fields vs the post-booking reveal (the §S3 list above is the proposed default).
-4. **Batch model** — confirm D builds the real `batches`/`prospect_approval`/`approval_link` tables now and
-   replaces the three mock surfaces above (vs. a thinner first cut).
+### The one idea that drives everything
 
-**Gating dependency from A:** the **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) is required
-for the client-facing approval email — schedule it ahead of or alongside D1.
+> **Approved prospects are the billable agreement; the client never sees clear-text contact data.** Masking is an
+> **allow-list** serializer on the *public* approval endpoint (emit only the pre-approval fields, never the row) —
+> not a deny-list or a regex over the blob. Once a prospect is `approved`, its clear-text email/phone routes
+> **backend-only** into Smartlead (E). `prospect_approval` is **append-only billing evidence** — "removed" is a
+> decision value, never a delete.
+
+### Locked decisions (all founder-confirmed 2026-06-25)
+
+| # | Decision (was open) | Resolved as | Why |
+|---|---|---|---|
+| 1 | Link lifetime + reminders | **3-step escalation ladder, all expiry-on-read (no scheduler):** (1) link live **7 days** → (2) operator *Follow-Up Approval* **resends for another 7 days** (mints a fresh 7-day link once the first lapses) → (3) still no response → **human manual follow-up**: the operator records the decision by hand in-console (`POST /{client}/batches/{id}/decide`, owner) / contacts the client offline. Automated reminders = [SCALE] | Mirrors `password_reset` expiry-on-read; **no EventBridge**; the human step needs no infra |
+| 2 | Sendout email template | **Seed the default from the existing *Sendout template*** already authored on the **List approval** page (`client-status/approval` — subject/body/cta with `{{client_name}}`/`{{count}}`); per-tenant **editable override** (`approval_template`, one JSONB row, mirrors `brief`). **No founder copy owed** — the live UI template *is* the copy; D1/D3 lift it verbatim | The editor + copy already exist; reuse, don't re-author |
+| 3 | Masking field set | **Hide ALL prospect enrichment / contact data** (LinkedIn URL, email, phone) — emit **fit context only** (name + initial, company *descriptor*, title/seniority, fit reason); **no raw vectors and no verified-presence badges** (matches `design/client-approval.html`). Post-booking reveal **deferred to F** | Founder "hide all enrich data"; also the design-faithful set |
+| 4 | Batch model scope | **Build the real three tables now** (`batch` + `prospect_approval` + `approval_link`) + the tiny `approval_template`. Counts derived, not stored | The mock surfaces need all three; deriving counts avoids drift |
+| 5 | Async send? | **No** — synchronous SES call per batch send (low volume, <30s). No `research_job`-style worker | Simpler than B/C; a send is one email |
+
+### Schema (inline context — canonical defs land in [`data-schema.md`](data-schema.md) at D1)
+
+All tenant-scoped, same conventions (uuid PK, `tenant_id` CASCADE, `timestamptz`, string status — no DB enum).
+
+- **`batch`** — `id` · `tenant_id` · `name` · `icp_id?` (SET NULL) · `status` (`draft`→`sent`→`approved` |
+  `changes_requested`) · `created_at` · `sent_at?` · `decided_at?`. *(total/approved counts are **derived** from
+  `prospect_approval`, not stored.)*
+- **`prospect_approval`** ⭐ **the billable record** — `id` · `tenant_id` · `batch_id` (CASCADE) · `prospect_id`
+  (CASCADE) · `decision` (`pending`→`approved` | `removed`; `request_changes` is a batch-level state) ·
+  `created_at` · `decided_at?`. **Append-only** (one per prospect-in-batch); `unique(batch_id, prospect_id)`.
+- **`approval_link`** — mirrors `password_reset` — `id` · `tenant_id` · `batch_id` (CASCADE) · `recipient_email`
+  · `token_hash` (SHA-256, unique; raw token only in the emailed link) · `expires_at` · `used_at?` · `created_at`.
+- **`approval_template`** — one JSONB doc per tenant (mirrors `brief`) — `id` · `tenant_id` (unique) ·
+  `data` (`{subject, body, cta}` with `{{client_name}}`/`{{count}}` tokens) · `updated_at`. *(Thinnest slice — a
+  code default serves until the founder edits it.)*
+
+### Tiered masking — the security-critical serializer (`GET /approve/{token}` `_out`)
+
+**Allow-list only** — the external serializer emits exactly these and nothing else (a deny-list would leak on a
+new field). Per founder direction ("hide all enrich data"), it emits **fit context only — zero enrichment/contact
+vectors**:
+
+| Client sees (pre-approval — fit context ONLY) | Derived from |
+|---|---|
+| First name + last initial — "Sarah K." | `enrichment.full_name` |
+| Company **descriptor** — "SaaS · 200–500 · US" (*not* the exact company) | `company.industry`/`size`/`country` |
+| Title · seniority | `enrichment.title`/`seniority` |
+| Fit tier + `fit_reason` (already client-facing copy) | `prospect.fit_tier`/`fit_reason` |
+
+Plus batch name, live count, client name, and an `expires_at`/state (`valid`/`expired`/`used`) so the page picks
+its pane. **Withheld — ALL enrichment / contact data:** email, phone, **LinkedIn URL**, full last name, exact
+company `name` + `domain`, `fit_components` internals — **and no verified-presence badges** (the design shows
+none). This is byte-for-byte what `design/client-approval.html` renders (name · title·company · why — nothing
+else). **Post-booking reveal (full name + exact company + LinkedIn) is Phase F** — the serializer gains a `tier`
+param then; D ships pre-approval only.
+
+### End-to-end flow (two surfaces · one tokenized gate · no clear-text to the client)
+```
+CONSOLE (operator, JWT + owner)
+  POST /{client}/batches {prospect_ids[]}  ─▶ batch(status=draft) + prospect_approval(pending) per prospect
+  PUT  /{client}/approval-template          ─▶ edit the sendout copy (seeded from the List-approval template)
+  POST /{client}/batches/{id}/send {email}  ─▶ mint approval_link (token+hash, 7d expiry), status=sent, sent_at,
+                                               send_email() via SES with {{token}} link
+  POST /{client}/batches/{id}/send  (again) ─▶ STEP 2: Follow-Up resends; if the link lapsed, mint a fresh 7d link
+  POST /{client}/batches/{id}/decide {...}  ─▶ STEP 3: human fallback — operator records the decision by hand
+EXTERNAL (client, token only — NO auth)
+  GET  /approve/{token}                      ─▶ verify (valid | expired | used) ─▶ MASKED batch + prospect list
+  POST /approve/{token}/decide {approved_ids[] | removed_ids[] | request_changes}
+        ─▶ write prospect_approval decisions, approval_link.used_at, batch.status=approved|changes_requested, decided_at
+APPROVED SET ─▶ Phase E reads approved prospect_approval rows; clear-text email routes backend-only into Smartlead
+```
+
+### Reuse (what already exists — copy, don't rebuild)
+- **Token:** `core/security.py` `new_opaque_token()` + `hash_token()` (the password-reset pattern) — verbatim.
+- **Email:** `core/email.py` `send_email(to, subject, body_text)` (SES v2, `no-reply@tryholdslot.com`).
+- **Guard:** `require_membership(MembershipRole.owner)` on console mutations; external routes take **no guard** —
+  the token is the only credential (return a uniform expired/invalid state; never leak tenant existence).
+- **Models/migrations:** `_uuid_pk()`/`_tenant_fk()`/`_created_at()` helpers in `models.py`; `YYYYMMDD_NNNN_*` Alembic files (next: `0016`+).
+- **Serializer:** the per-router `_out()` convention (e.g. `icps/router.py`) — the masking `_out` is just an allow-list one.
+
+### Tasks (by dependency; all `[MVP]`)
+
+**D0 — Gate (no code).** ⭐ **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) — the approval email
+goes to an **external** client address, so SES must leave the sandbox (or verify the recipient). The one remaining
+external gate; schedule ahead of D3. *(Expiry ladder, template seed, and masking are all founder-confirmed —
+see Locked decisions; nothing else is owed.)*
+
+**D1 — Schema (Alembic `0016`+).** `batch`, `prospect_approval`, `approval_link`, `approval_template` — tenant-scoped,
+helpers + indexes per the existing pattern; add the four models to `models.py`; record canonical defs in
+[`data-schema.md`](data-schema.md). **DoD:** `0015 → 0016+` head, up/down clean on dev; ORM matches.
+
+**D2 — Batches domain (internal, JWT).** New `domains/batches/` (router + thin service + schemas). `POST
+/{client}/batches` (owner) builds a batch + `prospect_approval(pending)` rows from the posted enriched
+`prospect_ids`; `GET /{client}/batches` lists with **derived** total/approved counts + status; `GET
+/{client}/batches/{id}` returns the company-grouped prospect detail; **`POST /{client}/batches/{id}/decide`**
+(owner) is the **STEP-3 human fallback** — the operator records approve/remove decisions by hand when the link
+route is exhausted (same `prospect_approval` write path as the external decide). **DoD:** create from selected →
+list/detail feed the Sendout Batch tab; counts reconcile from `prospect_approval`; manual decide works.
+
+**D3 — Template + send (the resend ladder).** `GET/PUT /{client}/approval-template` — the override seeded
+**verbatim from the existing List-approval *Sendout template*** (subject/body/cta). `POST /{client}/batches/{id}/send`
+(owner): mint `approval_link` (7-day expiry), set `status=sent`/`sent_at`, render the template, `send_email()` the
+`{{token}}` link. **Resend ladder:** a second send while the link is **live** resends the same token; once it has
+**lapsed**, it mints a **fresh 7-day link** (STEP 2). **DoD:** "Send to client" emails a real link; the template
+editor saves; Follow-Up resends/renews correctly without orphaning tokens.
+
+**D4 — External approval (public, tokenized) ⭐.** New `domains/approvals/` (**no auth**). `GET /approve/{token}`
+→ verify (valid/expired/used) → the **masked allow-list serializer** (D's security core). `POST
+/approve/{token}/decide` → record per-prospect decisions, `used_at` (single-use, no replay), roll up
+`batch.status` + `decided_at`. **DoD:** the masked page renders valid/expired/used; approve/remove writes
+`prospect_approval`; **no clear-text vector is ever in the response** (asserted by test).
+
+**D5 — Frontend wiring.** Replace the three mocks with live calls (exact classes, no new CSS): *Sendout Batch* tab
+(`workspace/batches`) ← D2/D3; external *approve/[token]* (valid/success/expired panes) ← D4; *client-status ·
+List approval* (summary chips + template editor + status log) ← D2/D3. Add `lib/api.ts` fns (`listBatches`,
+`createBatch`, `sendApproval`, `decideBatch`, `getApprovalTemplate`/`saveApprovalTemplate`, `getApproval`,
+`decideApproval`); **drop the `WorkspaceProvider` mock `batches`** and **re-point the Campaign tab's
+approved-batch selector at live `listBatches`** (read-only; the rest of Campaign stays mock until E). **DoD:** all
+three surfaces live; the external link round-trips; the Campaign selector lists real approved batches.
+
+**D6 — Acceptance (tick S3).** Founder: enrich a set in C → **Create batch** → edit/send the approval email →
+open the masked external link → remove one + **Approve** → approved rows show in *List approval* and are queryable
+by Phase E; an expired link shows the expired pane. **DoD:** one real batch approved end-to-end; `prospect_approval`
+rows exist as the S7 billing precondition.
+
+**Critical path:** D0(SES) → D1 → {D2 · D3} → D4 → D5 → D6. **D4 is the highest-leverage + highest-risk code**
+(the masking serializer is the anti-theft control). **Cost:** **~$0** — no new AWS resources; SES is fractions of
+a cent per approval email.
+
+### Cross-phase
+- **From C:** reads the enriched `prospect` rows (status `scored`) + their `company` firmographics (for the
+  descriptor) + `fit_tier`/`fit_reason`. The central guard scopes every batch; **MVP adds ZERO AWS resources**.
+- **To E:** Phase E reads `prospect_approval.decision = approved` rows; clear-text contact data routes
+  backend-only into Smartlead (E3's lead-add) — **never** through D's external serializer.
+- **S7 billing:** `prospect_approval` is leg (a) of the qualified-meeting rule (approved **AND** held ≥10 min
+  **AND** cleared the 48h dispute window — F4 + S7). D writes the approval; F/G close the loop.
+
+### Surfaces covered + cross-page impact (which pages Phase D touches)
+
+**Fully built in Phase D** (mock removed → live API):
+
+| Page | Source | Built by | Coverage |
+|---|---|---|---|
+| **`/{client}/workspace/batches`** *(Sendout Batch)* | [workspace/batches/page.tsx](../apps/web/app/[client]/(console)/workspace/batches/page.tsx) (`batches` in `WorkspaceProvider`: mock `Batch 1/2/3` + per-company rows + pinned exclusion list) | D2 (list/detail) · D3 (send) · D5 | ✅ **fully covered** |
+| **`/{client}/client-status/approval`** *(List approval)* | [client-status/approval/page.tsx](../apps/web/app/[client]/(console)/client-status/approval/page.tsx) (`A_LOG` mock + `tmpl`/`draft` editor; "Send to client" = `toast` only) | D2 (status log/chips) · D3 (template + send) · D5 | ✅ **fully covered** |
+| **`/{client}/approve/[token]`** *(external, client-facing)* | [approve/[token]/page.tsx](../apps/web/app/[client]/(external)/approve/[token]/page.tsx) (`removed`/`done` `useState` + `<Sample>` copy; valid/success/expired panes mock) | D4 (masked GET + decide) · D5 | ✅ **fully covered** (the client half — not a console URL, but core to D) |
+
+> ⤷ **Both pages you named are fully covered**, plus the external `approve/[token]` page (D's client-facing half).
+
+**Lightly touched (bounded — not rebuilt):**
+- **`/{client}/workspace/campaign`** *(Campaign tab)* — its **"select an approved batch" dropdown** reads the mock
+  `batches` from `WorkspaceProvider`. D5 removes that mock, so the selector re-points at the live `listBatches`
+  (a read-only GET). **The rest of the Campaign tab stays mock until Phase E.** This is the only ripple from
+  dropping the provider's mock `batches`.
+
+**Out of scope / NOT affected by Phase D:**
+- **`/{client}/performance-summary`** *(overview)* — **explicitly excluded from Phase D** (founder, 2026-06-25);
+  its approval-related counts stay placeholder until a later pass. Phase D is **exactly the three pages above**.
+- `workspace/replies` + `workspace/summaries` — read mock `campaigns` (untouched; Phase E).
+- `client-status/booking` (Phase F) · `client-status/feedback` ([SKIP]) — the other two client-status tabs.
+- external `book/[token]` (Phase F) · `feedback/[token]` ([SKIP]).
+
+**`WorkspaceProvider`:** D5 removes the mock `batches`; keeps `campaigns`/`replies` (still mock until E). The
+**only** cross-tab consumer of `batches` is the Campaign batch selector (lightly-touched, above).
+
+**Gating dependency from A:** the **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) is required for
+the client-facing approval email — the D0 gate, scheduled ahead of D3.
 
 ---
 
@@ -1220,3 +1450,68 @@ model in `backend-development-plan.md` Tables 2/4 remains authoritative for Grow
   native Meet recording); **Stripe = $0** until a signup pays (G).
 - **Honest floor before Apollo Professional** (warm-up phase, no live sourcing yet): Smartlead $32 +
   Workspace ~$15 + AWS/LLM/domain ~$10 ≈ **$55–65/mo.** Once dogfood sourcing starts (Apollo on): **~$195/mo.**
+
+---
+
+## Appendix — API surface (47 endpoints, as built · Lambda v46)
+
+> The live FastAPI inventory (was `modularization-plan.md` PART 2; folded here 2026-06-25). Auth = JWT Bearer
+> (`HTTPBearer`); tenant scope via `require_membership()` on every `/{client}/…` route (non-members → **404**,
+> not 403). `+Owner` = owner-role-gated. Swagger at `/docs`, ReDoc at `/redoc`. CORS via `HOLDSLOT_CORS_ORIGINS`.
+> **Routers:** `auth`, `clients`, `briefs`, `icps`, `prospects` (largest, ~29 routes) in
+> `apps/api/app/domains/<x>/router.py`. **FE coverage:** the API serves only the workspace **Brief + List**
+> tabs today — batches/campaign/replies/summaries/billing + all of client-status are still mock (where the
+> backend grows next: Phases D–F).
+
+| Feature | Method | Path | Purpose | Auth |
+|---|---|---|---|---|
+| Health | GET | `/health` | Liveness | Public |
+| Auth | POST | `/auth/login` | Email/pw → access+refresh | Public |
+| Auth | POST | `/auth/refresh` | Rotate access token | Public |
+| Auth | POST | `/auth/forgot` | Begin pw reset (202) | Public |
+| Auth | POST | `/auth/reset` | Complete pw reset | Public |
+| Clients | GET | `/me` | Current user + memberships | JWT |
+| Clients | GET | `/clients` | Tenants user belongs to | JWT |
+| Clients | POST | `/clients` | Create tenant (→ owner) | JWT |
+| Clients | GET | `/{client}/context` | Resolve + authorize tenant | +Member |
+| Brief | GET | `/{client}/brief` | Get brief | +Member |
+| Brief | PUT | `/{client}/brief` | Upsert brief | +Member |
+| Brief | GET | `/{client}/brief/structure/preview` | Preview structuring prompt (free) | +Member |
+| Brief | PUT | `/{client}/brief/structure/system-prompt` | Edit scoping prompt | +Member |
+| Brief | POST | `/{client}/brief/structure` | Kick async structuring (LLM) | +Member |
+| Brief | GET | `/{client}/brief/structure/status` | Poll structuring job | +Member |
+| Brief | GET | `/{client}/research-spec` | Latest ResearchSpec + history | +Member |
+| ICP | GET | `/{client}/icps` | List ICPs | +Member |
+| ICP | POST | `/{client}/icps` | Create ICP | +Member |
+| ICP | PUT | `/{client}/icps/{icp_id}` | Update ICP | +Member |
+| ICP | DELETE | `/{client}/icps/{icp_id}` | Delete ICP | +Member |
+| List (read) | GET | `/{client}/prospects` | People, sorted by fit (cursor, ≤250) | +Member |
+| List (read) | GET | `/{client}/companies` | Companies (Stage 1), by fit (cursor, ≤250) | +Member |
+| Companies | POST | `/{client}/companies` | Manually add one | +Owner |
+| Companies | POST | `/{client}/companies/find-company` | Flow A: Apollo search→suppress→enrich→score | +Owner |
+| Companies | POST | `/{client}/companies/find-lookalikes` | Lookalike peers (≤10 net-new) | +Owner |
+| Companies | PATCH | `/{client}/companies/select` | Stage into Step 2 / remove | +Owner |
+| Companies | POST | `/{client}/companies/rescore` | Re-run fit (≤15/req) | +Owner |
+| Companies | POST | `/{client}/companies/update-fields` | Re-enrich firmographics (≤15/req) | +Owner |
+| Companies | GET | `/{client}/fit-prompt` | Preview fit rubric prompt (free) | +Member |
+| People | POST | `/{client}/people/find-people` | Flow B: people across orgs (free, ≤250) | +Owner |
+| People | POST | `/{client}/people/facets` | Live seniority/dept counts (free) | +Owner |
+| People | GET | `/{client}/people/scope-override` | Get saved Find Settings | +Member |
+| People | PUT | `/{client}/people/scope-override` | Save Find Settings | +Owner |
+| People | DELETE | `/{client}/people/scope-override` | Reset Find Settings | +Owner |
+| People | GET | `/{client}/people/departments` | 14 master departments (static) | +Member |
+| Prospects | POST | `/{client}/prospects` | Manually add one person | +Owner |
+| Prospects | POST | `/{client}/prospects/rescore` | AI score people (≤15/req) | +Owner |
+| Prospects | POST | `/{client}/prospects/enrich` | **Only credit spend**: Apollo people/match (≤15/req) | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/find-company-async` | Async kick-off → 202 + job | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/find-lookalikes-async` | Async kick-off → 202 + job | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/rescore-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/update-fields-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | POST | `/{client}/prospects/rescore-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | GET | `/{client}/scoring-jobs/{job_id}` | Poll an async scoring job | +Member |
+| Research | GET | `/{client}/research-runs` | Cost/credit scoreboard | +Member |
+| Research | GET | `/{client}/sourcing-docs` | Get rubrics (company_fit + prospect_fit) | +Member |
+| Research | POST | `/{client}/sourcing-docs` | Save rubric edit (append-only) | +Owner |
+
+**W4 added 6 async-scoring endpoints** (5 kick-offs → 202 + 1 poll); the matching **sync** endpoints are kept
+for back-compat but are no longer called by the web app.

@@ -4,8 +4,8 @@ Revision ID: 0014_perf_indexes_fit_reason
 Revises: 0013_split_fit_rubric
 Create Date: 2026-06-25
 
-Backend simplification plan (docs/modularization-plan.md sections 4.2/4.3, wave W1). Four
-behaviour-neutral schema changes:
+Backend simplification plan (docs/initial-build-plan.md -> Modularization + W0-W8, wave W1; schema
+recorded in docs/data-schema.md). Four behaviour-neutral schema changes:
 
 1. Composite list-sort indexes on `prospect` and `company`:
    `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` — matches the exact ORDER BY of the
