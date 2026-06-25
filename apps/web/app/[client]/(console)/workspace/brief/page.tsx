@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
@@ -47,8 +48,32 @@ import {
   TagInput,
 } from "@/components/workspace";
 
+// Coerce a stored brief document into the form's Brief shape (defensive on multi-value fields + the
+// meetingsLand→attendeeEmails read-migration). Shared by the cache lazy-init and the loader so a
+// cached tab-return seeds the exact same form state a fresh load would.
+function briefFromDoc(b: Awaited<ReturnType<typeof getBrief>> | null): Brief {
+  const d = (b?.data ?? {}) as Partial<Brief>;
+  return {
+    ...blankBrief(),
+    ...d,
+    valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
+    languages: Array.isArray(d.languages) ? d.languages : [],
+    attendeeEmails:
+      d.attendeeEmails ||
+      (typeof (d as Record<string, unknown>).meetingsLand === "string"
+        ? ((d as Record<string, unknown>).meetingsLand as string)
+        : ""),
+    noExcludeCustomers: !!d.noExcludeCustomers,
+    noExcludeDeals: !!d.noExcludeDeals,
+    noDoNotContact: !!d.noDoNotContact,
+  };
+}
+
 export default function BriefPage() {
   const client = useClient();
+  // Cross-navigation cache for this page's API reads (brief/icps/spec). Keyed by client so a tab
+  // switch returns instantly from cache (see app/providers.tsx); writes below sync the cache.
+  const qc = useQueryClient();
   const toast = useToast();
   // Tracks the live client so an async poll that resolves *after* a client switch can bail before
   // writing the previous client's spec into the new client's view (used by pollStructuring).
@@ -60,7 +85,10 @@ export default function BriefPage() {
   // ICPs
   // Starts with one empty profile so `icps[icpSel]` is always defined; the live ICPs from
   // the API replace this on load (or it stays as the first, unsaved profile).
-  const [icps, setIcps] = useState<Icp[]>([blankIcp()]);
+  const [icps, setIcps] = useState<Icp[]>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof listIcps>>>(["icps", client]);
+    return cached && cached.length ? cached.map(apiToIcp) : [blankIcp()];
+  });
   const [icpSel, setIcpSel] = useState(0);
   function newIcp() {
     // Functional append so two rapid clicks can't collide on the same letter/length;
@@ -124,7 +152,10 @@ export default function BriefPage() {
     );
 
   // Business brief (global sections)
-  const [brief, setBrief] = useState<Brief>(blankBrief);
+  const [brief, setBrief] = useState<Brief>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof getBrief>>>(["brief", client]);
+    return cached ? briefFromDoc(cached) : blankBrief();
+  });
   const [submitted, setSubmitted] = useState(false);
   // CSV attachment name per exclusion field (keyed: "customers", "deals")
   const [csvNames, setCsvNames] = useState<Record<string, string>>({});
@@ -236,8 +267,14 @@ export default function BriefPage() {
   const [saving, setSaving] = useState(false);
   const [structuring, setStructuring] = useState(false);
   // True while the brief/ICP/spec are hydrating for this client (initial load + client switch).
-  const [loading, setLoading] = useState(true);
-  const [spec, setSpec] = useState<ResearchSpecResult | null>(null);
+  const [loading, setLoading] = useState(() => !qc.getQueryData(["brief", client]));
+  const [spec, setSpec] = useState<ResearchSpecResult | null>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof getResearchSpec>>>([
+      "research-spec",
+      client,
+    ]);
+    return cached?.latest ?? null;
+  });
   // IDs of saved ICPs the operator has deleted; flushed to the API on the next save.
   const [deletedIcpIds, setDeletedIcpIds] = useState<string[]>([]);
   // Guards against concurrent persist() runs (rapid section saves / save-during-structure).
@@ -250,35 +287,26 @@ export default function BriefPage() {
   useEffect(() => {
     if (!client) return;
     let alive = true;
-    setLoading(true);
     autoOpenedRef.current = false; // re-pick the earliest-incomplete section for this client
     (async () => {
-      // Load independently so one failing endpoint doesn't blank the others.
-      const b = await getBrief(client).catch(() => null);
-      const ics = await listIcps(client).catch(() => null);
-      const rs = await getResearchSpec(client).catch(() => null);
+      // Only show the full-page spinner when there's nothing cached to show; a tab-return with a warm
+      // cache renders the form immediately (the fetchQuery calls below resolve from cache, no network).
+      setLoading(!qc.getQueryData(["brief", client]));
+      // Load independently so one failing endpoint doesn't blank the others. fetchQuery serves the
+      // cached payload when fresh (instant, no request) and refetches in the background when stale.
+      const b = await qc
+        .fetchQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) })
+        .catch(() => null);
+      const ics = await qc
+        .fetchQuery({ queryKey: ["icps", client], queryFn: () => listIcps(client) })
+        .catch(() => null);
+      const rs = await qc
+        .fetchQuery({ queryKey: ["research-spec", client], queryFn: () => getResearchSpec(client) })
+        .catch(() => null);
       if (!alive) return;
-      if (b) {
-        const d = (b.data ?? {}) as Partial<Brief>;
-        // Coerce the multi-value fields to arrays so the controlled inputs never crash on a
-        // malformed document (the form always writes arrays, but be defensive on read).
-        setBrief({
-          ...blankBrief(),
-          ...d,
-          valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
-          languages: Array.isArray(d.languages) ? d.languages : [],
-          // Read-migration: the handoff target was renamed `meetingsLand` → `attendeeEmails`.
-          // Salvage the old value so a previously-complete §5 isn't silently blanked on load.
-          attendeeEmails:
-            d.attendeeEmails ||
-            (typeof (d as Record<string, unknown>).meetingsLand === "string"
-              ? ((d as Record<string, unknown>).meetingsLand as string)
-              : ""),
-          noExcludeCustomers: !!d.noExcludeCustomers,
-          noExcludeDeals: !!d.noExcludeDeals,
-          noDoNotContact: !!d.noDoNotContact,
-        });
-      }
+      // Coerce the multi-value fields to arrays so the controlled inputs never crash on a malformed
+      // document (the form always writes arrays, but be defensive on read) — see briefFromDoc.
+      if (b) setBrief(briefFromDoc(b));
       if (ics) {
         setIcps(ics.length ? ics.map(apiToIcp) : [blankIcp()]);
         setIcpSel(0);
@@ -301,6 +329,9 @@ export default function BriefPage() {
     return () => {
       alive = false;
     };
+    // Re-runs only on client change: pollStructuring captures its client via startClient/clientRef
+    // and qc is a stable QueryClient, so neither is a real dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client]);
 
   // Persist the brief + sync every ICP (create new, update existing, delete removed).
@@ -315,7 +346,9 @@ export default function BriefPage() {
     savingRef.current = true;
     setSaving(true);
     try {
-      await putBrief(client, briefSnapshot as unknown as Record<string, unknown>);
+      const saved = await putBrief(client, briefSnapshot as unknown as Record<string, unknown>);
+      // Keep the nav cache in sync so a tab-return after saving shows the saved brief, not a stale one.
+      qc.setQueryData(["brief", client], saved);
       for (const icp of icps) {
         if (icp.id) {
           await apiUpdateIcp(client, icp.id, icpToApi(icp));
@@ -327,6 +360,8 @@ export default function BriefPage() {
       }
       for (const id of deletedIcpIds) await apiDeleteIcp(client, id);
       setDeletedIcpIds([]);
+      // ICPs changed — drop the cached list so the next read (here or on the List tab) refetches.
+      qc.invalidateQueries({ queryKey: ["icps", client] });
     } finally {
       savingRef.current = false;
       setSaving(false);
@@ -355,6 +390,7 @@ export default function BriefPage() {
     if (job.status === "done") {
       const rs = await getResearchSpec(startClient);
       setSpec(rs.latest);
+      qc.setQueryData(["research-spec", startClient], rs); // new spec → refresh the nav cache
       toast("Prospect scope v" + (job.spec_version ?? rs.latest?.version ?? "") + " generated");
     } else if (job.status === "error") {
       toast(job.error || "Structuring failed", "warn");

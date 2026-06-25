@@ -1,5 +1,6 @@
 "use client";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { Modal } from "@/components/Modal";
@@ -81,6 +82,10 @@ import {
 
 export default function ListPage() {
   const client = useClient();
+  // Cross-navigation cache for this page's API reads (companies/prospects/docs/depts/icps/spec/
+  // people-scope). Keyed by client so a tab switch returns instantly from cache (app/providers.tsx);
+  // the reloads + scope/doc writes below sync the cache so a return after a paid find shows fresh rows.
+  const qc = useQueryClient();
   const toast = useToast();
   // Batch creation from selection writes the shared cross-tab batches state (and reads the current
   // count for the default batch name).
@@ -88,15 +93,32 @@ export default function ListPage() {
 
   // ICPs + research spec — loaded locally on mount: icpNameById/the fIcp filter/ICP labels need
   // `icps`, and the scope-override `effectiveScope` needs `spec`. Additive to the list load below.
-  const [icps, setIcps] = useState<Icp[]>([]);
-  const [spec, setSpec] = useState<ResearchSpecResult | null>(null);
+  const [icps, setIcps] = useState<Icp[]>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof listIcps>>>(["icps", client]);
+    return cached ? cached.map(apiToIcp) : [];
+  });
+  const [spec, setSpec] = useState<ResearchSpecResult | null>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof getResearchSpec>>>([
+      "research-spec",
+      client,
+    ]);
+    return cached?.latest ?? null;
+  });
 
   // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
   // are loaded from the API; selection is by prospect id. Batch creation stays client-side until
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
-  const [prospects, setProspects] = useState<ProspectApi[]>([]);
-  const [prospectsLoading, setProspectsLoading] = useState(false);
-  const [companiesLoading, setCompaniesLoading] = useState(false);
+  const [prospects, setProspects] = useState<ProspectApi[]>(
+    () =>
+      qc.getQueryData<{ items: ProspectApi[]; truncated: boolean }>(["prospects", client])?.items ??
+      []
+  );
+  const [prospectsLoading, setProspectsLoading] = useState(
+    () => !qc.getQueryData(["prospects", client])
+  );
+  const [companiesLoading, setCompaniesLoading] = useState(
+    () => !qc.getQueryData(["companies", client])
+  );
   // W5 — true when the feed has more rows than the LIST_CEILING we auto-load (drives the notice).
   const [prospectsTruncated, setProspectsTruncated] = useState(false);
   const [companiesTruncated, setCompaniesTruncated] = useState(false);
@@ -126,7 +148,11 @@ export default function ListPage() {
   // Two-stage prospecting (company-first): step 1 finds companies, step 2 finds people at the
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
-  const [companies, setCompanies] = useState<CompanyApi[]>([]);
+  const [companies, setCompanies] = useState<CompanyApi[]>(
+    () =>
+      qc.getQueryData<{ items: CompanyApi[]; truncated: boolean }>(["companies", client])?.items ??
+      []
+  );
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
   // set → collapsed, so the list opens with every company collapsed to its one-line summary.
@@ -213,6 +239,7 @@ export default function ListPage() {
       setProspects(ps);
       setProspectsTruncated(truncated);
       setChecked(new Set());
+      qc.setQueryData(["prospects", client], { items: ps, truncated }); // keep the nav cache fresh
     } catch (e) {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh prospects", "warn");
@@ -229,6 +256,7 @@ export default function ListPage() {
       if (clientRef.current !== client) return;
       setCompanies(cs);
       setCompaniesTruncated(truncated);
+      qc.setQueryData(["companies", client], { items: cs, truncated }); // keep the nav cache fresh
     } catch (e) {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
@@ -244,7 +272,10 @@ export default function ListPage() {
   // checked ids feed accept/createBatch). Load errors surface as a toast and never blank the
   // list silently (that reads as "no prospects" and tempts a re-import / re-spend).
   // ICPs + the latest research spec are also loaded here (additive): the list owns its own copy
-  // since the brief route no longer renders alongside it.
+  // since the brief route no longer renders alongside it. The synchronous setState calls below
+  // intentionally reset per-client UI state on a client switch (the App Router can't remount this
+  // page on the [client] param), then kick the cached load — hence the scoped disable.
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!client) return;
     clientRef.current = client;
@@ -268,21 +299,44 @@ export default function ListPage() {
     setProspectsTruncated(false); // cleared until the new client's feed reports its own cap
     setCompaniesTruncated(false);
     let alive = true;
-    setCompaniesLoading(true);
-    setProspectsLoading(true);
+    // Show the list spinner only when there's nothing cached for this client; a warm tab-return
+    // renders the cached rows immediately (the fetchQuery calls below resolve from cache, no request).
+    setCompaniesLoading(!qc.getQueryData(["companies", client]));
+    setProspectsLoading(!qc.getQueryData(["prospects", client]));
     // The saved people-scope override is fetched on its own track: unlike the lists (a failure there
     // just warns), a failed/slow override fetch must NOT silently present the AI scope — find_people
     // still applies the saved DB row, so we keep the gear disabled and surface a warning instead.
-    const ovP = getPeopleScopeOverride(client);
+    const ovP = qc.fetchQuery({
+      queryKey: ["people-scope-override", client],
+      queryFn: () => getPeopleScopeOverride(client),
+    });
     (async () => {
       try {
+        // fetchQuery serves the cached payload when fresh (instant, no request) and refetches in the
+        // background when stale; the cache lives above the routes, so this is what frees a tab-switch
+        // from a full reload. The lists' free DB reads are safe to background-revalidate (no credits).
         const [ps, cs, dl, depts, ics, rs] = await Promise.all([
-          listProspects(client),
-          listCompanies(client),
-          getSourcingDocs(client),
-          getPeopleDepartments(client).catch(() => [] as FacetOption[]), // non-fatal: subs-only view
-          listIcps(client).catch(() => null),
-          getResearchSpec(client).catch(() => null),
+          qc.fetchQuery({ queryKey: ["prospects", client], queryFn: () => listProspects(client) }),
+          qc.fetchQuery({ queryKey: ["companies", client], queryFn: () => listCompanies(client) }),
+          qc.fetchQuery({
+            queryKey: ["sourcing-docs", client],
+            queryFn: () => getSourcingDocs(client),
+          }),
+          qc
+            .fetchQuery({
+              queryKey: ["people-departments", client],
+              queryFn: () => getPeopleDepartments(client),
+            })
+            .catch(() => [] as FacetOption[]), // non-fatal: subs-only view
+          qc
+            .fetchQuery({ queryKey: ["icps", client], queryFn: () => listIcps(client) })
+            .catch(() => null),
+          qc
+            .fetchQuery({
+              queryKey: ["research-spec", client],
+              queryFn: () => getResearchSpec(client),
+            })
+            .catch(() => null),
         ]);
         if (!alive) return;
         setProspects(ps.items);
@@ -316,7 +370,10 @@ export default function ListPage() {
     return () => {
       alive = false;
     };
-  }, [client]);
+    // qc (QueryClient) and toast (useCallback) are stable, so the effect still only re-runs on a
+    // client change.
+  }, [client, qc, toast]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   // Prospects grouped by their company id (robust — the company label can drift; the id can't).
   const prospectsByCompany = useMemo(() => {
@@ -873,6 +930,7 @@ export default function ListPage() {
       const saved = await putPeopleScopeOverride(client, ov.people_search_params);
       if (clientRef.current !== client) return; // client switched mid-save — drop the stale write
       setPeopleScopeOverride(saved ? { people_search_params: saved } : null);
+      qc.setQueryData(["people-scope-override", client], saved); // sync the nav cache
       setPeopleScopeOpen(false);
       toast(
         saved
@@ -893,6 +951,7 @@ export default function ListPage() {
       await deletePeopleScopeOverride(client);
       if (clientRef.current !== client) return; // client switched mid-reset — drop the stale write
       setPeopleScopeOverride(null);
+      qc.setQueryData(["people-scope-override", client], null); // sync the nav cache
       setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
       toast("Reverted to the AI-generated person scope");
     } catch (e) {
@@ -1001,6 +1060,7 @@ export default function ListPage() {
       await saveSourcingDoc(client, stage, body);
       const dl = await getSourcingDocs(client);
       setDocs(dl);
+      qc.setQueryData(["sourcing-docs", client], dl); // sync the nav cache
       const v = stage === "prospect_fit" ? dl.prospect_fit?.version : dl.company_fit?.version;
       toast(`Saved ${stage === "prospect_fit" ? "prospect" : "company"} fit rubric v${v}`);
     } catch (e) {

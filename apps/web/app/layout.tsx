@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Source_Serif_4, Archivo } from "next/font/google";
 import "./globals.css";
+import { Providers } from "./providers";
 
 // Display serif. Source Serif 4 reads cleaner than Fraunces (notably the "f");
 // keep the --font-fraunces variable name so existing CSS consumers are unchanged.
@@ -26,7 +27,9 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${fraunces.variable} ${archivo.variable}`}>
-      <body>{children}</body>
+      <body>
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }
