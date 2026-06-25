@@ -83,41 +83,6 @@ export function clearScoring(setScoring: ScoringSetter, ids: string[]) {
   });
 }
 
-// Reconcile a background re-score from the DB, not the HTTP response. A re-score can exceed the 30s
-// API-Gateway sync cap: the request 503s while the Lambda keeps scoring and commits out of band, so
-// trusting the response would flash a row back to "Pending" before its score lands. Instead we poll
-// the list and keep each row's "Scoring…" status until it actually shows a score. Bounded by a
-// ceiling so a hard LLM failure can't spin forever. `fetchScored` returns the ids that now score.
-export async function pollClearScored(
-  ids: string[],
-  fetchScored: () => Promise<Set<string>>,
-  setScoring: ScoringSetter,
-  stillCurrent: () => boolean,
-) {
-  if (!ids.length) return;
-  // ~4 min ceiling: a full 15-row selection is ceil(15/3)=5 sequential chunks of up to ~30s each
-  // (~150s of driver), and a 503'd chunk's Lambda can commit ~20s after the gateway gives up. The
-  // ceiling must clear that worst case, or the safety-net clear would flash a still-scoring row to
-  // "Pending" before its score lands. A genuine hard failure clears to Pending after the ceiling.
-  const deadline = Date.now() + 240_000;
-  const remaining = new Set(ids);
-  while (remaining.size && stillCurrent() && Date.now() < deadline) {
-    await sleep(3000);
-    if (!stillCurrent()) return;
-    let scored: Set<string>;
-    try {
-      scored = await fetchScored();
-    } catch {
-      continue; // transient list error — keep "Scoring…" and retry on the next tick
-    }
-    const done = [...remaining].filter((id) => scored.has(id));
-    if (done.length) {
-      clearScoring(setScoring, done);
-      done.forEach((id) => remaining.delete(id));
-    }
-  }
-}
-
 // Locked pricing constant (USD) — backend-development-plan §6.11 / §7. Supersedes the old
 // HKD 6,000 + HKD 4,000 model. The rate is a fixed business rule, not per-client data.
 export const PER_MEETING_USD = 500;

@@ -87,16 +87,6 @@ def reset_config() -> None:
     _config.cache_clear()
 
 
-def configured_models() -> list[str]:
-    """The model fallback list a default (no-override) completion would route through. Falls back
-    to the locked list if the secret can't be read, so a caller never errors on config. (The scoping
-    preview reports SCOPING_MODELS directly — pinned to V4 Pro regardless of this default.)"""
-    try:
-        return list(_config().models)
-    except Exception:
-        return list(FALLBACK_MODELS)
-
-
 @dataclass
 class CallOutcome:
     status: str  # ok | parse_error | timeout | error

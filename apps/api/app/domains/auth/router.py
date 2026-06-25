@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import logging
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
@@ -34,8 +36,16 @@ from app.models import AppUser, PasswordReset, RefreshToken, UserStatus
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+log = logging.getLogger("holdslot.auth")
+
+
 def _norm(email: str) -> str:
     return email.strip().lower()
+
+
+def _email_digest(email: str) -> str:
+    """Short stable digest for audit logs — never log the raw address (PII)."""
+    return hashlib.sha256(_norm(email).encode()).hexdigest()[:8]
 
 
 @router.post("/login", response_model=LoginOut)
@@ -49,8 +59,10 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> LoginOut:
         or user.status != UserStatus.active
         or not verify_password(user.password_hash, body.password)
     ):
+        log.warning("auth: login failed email=%s", _email_digest(body.email))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid email or password")
     user.last_login_at = datetime.now(UTC)
+    log.info("auth: login ok user=%s", user.id)
     pair = issue_tokens(db, user)
     return LoginOut(
         **pair.model_dump(),
@@ -62,6 +74,7 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> LoginOut:
 def refresh(body: RefreshIn, db: Session = Depends(get_db)) -> TokenPair:
     result = rotate_refresh(db, body.refresh_token)
     if result is None:
+        log.warning("auth: refresh rejected")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid refresh token")
     _user, pair = result
     return pair
@@ -102,6 +115,7 @@ def reset(body: ResetIn, db: Session = Depends(get_db)) -> dict[str, str]:
     ).scalar_one_or_none()
     now = datetime.now(UTC)
     if row is None or row.used_at is not None or as_utc(row.expires_at) < now:
+        log.warning("auth: reset rejected (invalid/expired token)")
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
     user = db.get(AppUser, row.user_id)
     if user is None:

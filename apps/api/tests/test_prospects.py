@@ -9,12 +9,7 @@ from __future__ import annotations
 
 from app.domains.prospects import fit
 from app.domains.prospects.identity import identity_key, normalize_domain
-from app.domains.prospects.suppression import (
-    Candidate,
-    ExclusionSet,
-    extract_exclusions,
-    suppress,
-)
+from app.domains.prospects.suppression import extract_exclusions
 
 # --------------------------------------------------------------------------- identity
 
@@ -66,37 +61,6 @@ def test_extract_exclusions_from_brief_text_and_spec():
     assert "blocked-person" in ex.linkedin_slugs
     # A bare company name (no dot) is NOT treated as a domain.
     assert all("." in d for d in ex.domains)
-
-
-# --------------------------------------------------------------------------- suppression (C2)
-
-
-def test_suppress_drops_excluded_dupes_and_unkeyable():
-    ex = ExclusionSet(domains={"acme.com"}, emails={"vip@beta.io"}, linkedin_slugs={"blocked"})
-    cands = [
-        Candidate(full_name="A One", domain="acme.com"),  # excluded_domain
-        Candidate(full_name="B Two", domain="good.com", email="vip@beta.io"),  # excluded_email
-        Candidate(full_name="C Three", linkedin_url="linkedin.com/in/blocked"),  # excluded_linkedin
-        Candidate(full_name="D Four", domain="good.com"),  # survivor
-        Candidate(full_name="D Four", domain="good.com"),  # duplicate of prev
-        Candidate(company="No Identity"),  # no_identity_key
-    ]
-    res = suppress(cands, ex)
-    assert [c.full_name for c in res.survivors] == ["D Four"]
-    reasons = sorted(r for _c, r in res.dropped)
-    assert reasons == [
-        "duplicate",
-        "excluded_domain",
-        "excluded_email",
-        "excluded_linkedin",
-        "no_identity_key",
-    ]
-
-
-def test_suppress_respects_already_seen_keys():
-    cand = Candidate(full_name="Jane Doe", domain="acme.com")
-    res = suppress([cand], ExclusionSet(), seen_identity_keys={cand.identity_key})
-    assert res.survivors == [] and res.dropped[0][1] == "duplicate"
 
 
 # --------------------------------------------------------------- company fit collapse (stage 1)

@@ -35,6 +35,7 @@ export default function Login() {
   const [banner, setBanner] = useState(false);
   const [expired, setExpired] = useState(false);
   const [signing, setSigning] = useState(false);
+  const [waking, setWaking] = useState(false); // cold-start retry in flight (W6)
 
   const [resetEmail, setResetEmail] = useState("");
   const [resetErr, setResetErr] = useState("");
@@ -98,8 +99,11 @@ export default function Login() {
     if (!ok) return;
     setSigning(true);
     setBanner(false);
+    setWaking(false);
     try {
-      const res = await apiLogin(email.trim(), pw);
+      // onWaking fires when the API answers 503 mid-cold-start (Aurora resuming); we keep retrying
+      // behind a "waking the database…" message rather than mistaking it for bad credentials (W6).
+      const res = await apiLogin(email.trim(), pw, () => setWaking(true));
       setTokens(res.access_token, res.refresh_token);
       // Land on the caller's first tenant (HoldSlot today); fall back to the default slug.
       const me = await getMe().catch(() => null);
@@ -109,6 +113,7 @@ export default function Login() {
       setPwErr("Invalid email or password.");
       setBanner(true);
       setSigning(false);
+      setWaking(false);
     }
   }
 
@@ -244,8 +249,15 @@ export default function Login() {
               </div>
 
               <button type="submit" className="btn btn-primary" disabled={signing}>
-                {signing ? "Signing in…" : "Sign in"}
+                {waking ? "Waking the database…" : signing ? "Signing in…" : "Sign in"}
               </button>
+
+              {waking && (
+                <p className="hint" role="status" aria-live="polite">
+                  The server was asleep — waking it up. This can take up to a minute on the first
+                  sign-in; we&rsquo;ll log you in automatically.
+                </p>
+              )}
 
               <p className="alt">
                 New to HoldSlot? <Link href="/#start">Get Leads</Link>

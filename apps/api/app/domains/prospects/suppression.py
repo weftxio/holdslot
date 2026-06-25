@@ -7,12 +7,13 @@ transport (the C2 DoD):
     The founder types customers / active deals / competitors / do-not-contact as free text (one
     entry per line, typically `domain, name, website`); `extract_exclusions` normalizes that into
     domain / email / linkedin-slug sets plus the spec's structured `exclusions`.
-  * **C2 — suppress** a candidate set against the exclusions + already-seen identity keys. A row
-    never created costs zero credits, so this is the primary credit safeguard (the DB-side
-    domain/identity dedupe is the backstop). Every drop carries a reason for audit.
+  * **C2 — the exclusion gate**: `ExclusionSet.blocks(candidate)` returns the suppression reason
+    (or None) for one candidate. Callers (find.py, the manual-add path) apply it inline before any
+    paid Apollo call — a row never created costs zero credits, so this is the primary credit
+    safeguard (the DB-side domain/identity dedupe is the backstop).
 
 The boundary (locked, see fit-rubric §1): *no contact path at all* is a gate handled downstream
-on enrichment; here we gate on **who they are** (exclusion membership) and **dedupe**.
+on enrichment; here we gate on **who they are** (exclusion membership).
 """
 
 from __future__ import annotations
@@ -52,34 +53,6 @@ class Candidate:
             last_name=self.last_name,
             email=self.email,
             full_name=self.full_name,
-        )
-
-    def to_enrichment(self) -> dict:
-        """The Prospect.enrichment shape this candidate lands as (C2 push / C5 sourcing). One
-        mapper so push, sourcing, and accept agree on the key set (`title` ← target_titles)."""
-        return {
-            "full_name": self.full_name,
-            "company": self.company,
-            "domain": self.domain,
-            "linkedin_url": self.linkedin_url,
-            "email": self.email,
-            "company_industry": self.company_industry,
-            "title": self.target_titles,
-        }
-
-    @classmethod
-    def from_enrichment(cls, enrichment: dict | None) -> Candidate:
-        """Rebuild a Candidate from a stored Prospect.enrichment (C5 accept) — the inverse of
-        `to_enrichment`, so the round-trip is symmetric (accept reads back what push wrote)."""
-        e = enrichment or {}
-        return cls(
-            full_name=e.get("full_name", ""),
-            company=e.get("company", ""),
-            domain=e.get("domain", ""),
-            linkedin_url=e.get("linkedin_url", ""),
-            email=e.get("email", ""),
-            company_industry=e.get("company_industry", ""),
-            target_titles=e.get("title", ""),
         )
 
 
@@ -162,44 +135,3 @@ def extract_exclusions(brief_data: dict, spec: dict | None = None) -> ExclusionS
         if slug:
             ex.linkedin_slugs.add(slug)
     return ex
-
-
-@dataclass
-class SuppressionResult:
-    survivors: list[Candidate]
-    dropped: list[tuple[Candidate, str]]  # (candidate, reason)
-
-    @property
-    def survivor_keys(self) -> list[str]:
-        return [c.identity_key for c in self.survivors]
-
-
-def suppress(
-    candidates: list[Candidate],
-    exclusions: ExclusionSet,
-    seen_identity_keys: set[str] | None = None,
-) -> SuppressionResult:
-    """C2 — drop excluded, un-keyable, and duplicate candidates before any push.
-
-    `seen_identity_keys` are identities already enriched for this tenant (existing prospects);
-    a re-push of one of them would pay twice, so it is dropped. Duplicates *within* the input
-    batch are collapsed to the first occurrence.
-    """
-    seen = set(seen_identity_keys or set())
-    survivors: list[Candidate] = []
-    dropped: list[tuple[Candidate, str]] = []
-    for c in candidates:
-        reason = exclusions.blocks(c)
-        if reason:
-            dropped.append((c, reason))
-            continue
-        key = c.identity_key
-        if not key:
-            dropped.append((c, "no_identity_key"))
-            continue
-        if key in seen:
-            dropped.append((c, "duplicate"))
-            continue
-        seen.add(key)
-        survivors.append(c)
-    return SuppressionResult(survivors=survivors, dropped=dropped)

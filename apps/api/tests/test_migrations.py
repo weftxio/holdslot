@@ -12,7 +12,7 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from app.models import Company, Prospect, ScopeOverride, Tenant
+from app.models import Brief, Company, Prospect, ScopeOverride, ScoringJob, Tenant
 
 _ALEMBIC = Path(__file__).resolve().parents[3] / "infra" / "alembic"
 
@@ -25,7 +25,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0013_split_fit_rubric"]
+    assert _script_dir().get_heads() == ["0015_scoring_job"]
 
 
 def test_0011_columns_present_on_models():
@@ -43,3 +43,25 @@ def test_0012_scope_override_model_matches_migration():
     assert cols == {"id", "tenant_id", "kind", "params", "created_at", "updated_at"}
     cons = {c.name for c in ScopeOverride.__table__.constraints}
     assert "uq_scope_override_tenant_kind" in cons
+
+
+def test_0014_fit_reason_and_index_cleanup():
+    """0014 adds prospect.fit_reason (parity with company) + the composite list-sort indexes, and
+    drops the UNIQUE-covered single-column indexes — the ORM must reflect the same end state."""
+    assert "fit_reason" in Prospect.__table__.columns
+    p_idx = {i.name for i in Prospect.__table__.indexes}
+    assert "ix_prospect_tenant_fit" in p_idx
+    assert "ix_prospect_identity_key" not in p_idx
+    c_idx = {i.name for i in Company.__table__.indexes}
+    assert "ix_company_tenant_fit" in c_idx
+    assert "ix_company_domain" not in c_idx
+    assert "ix_brief_tenant_id" not in {i.name for i in Brief.__table__.indexes}
+
+
+def test_0015_scoring_job_model_matches_migration():
+    """0015 creates `scoring_job` (the W4 async-scoring tracker) — the ORM model must match the
+    columns + index the migration builds."""
+    cols = set(ScoringJob.__table__.columns.keys())
+    assert cols == {"id", "tenant_id", "kind", "params", "status", "result", "error",
+                    "created_at", "updated_at"}
+    assert "ix_scoring_job_tenant_kind" in {i.name for i in ScoringJob.__table__.indexes}

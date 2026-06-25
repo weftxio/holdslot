@@ -16,27 +16,31 @@ import {
   type SourcingDocList,
   addCompany,
   addProspect,
+  awaitScoringJob,
   deletePeopleScopeOverride,
   enrichProspects,
-  findCompanies,
-  findLookalikes,
+  findCompaniesAsync,
+  findLookalikesAsync,
   findPeople,
   getFitPrompt,
   getPeopleDepartments,
   getPeopleScopeOverride,
   getResearchSpec,
   getSourcingDocs,
+  LIST_CEILING,
   listCompanies,
   listIcps,
   listProspects,
   peopleFacets,
   putPeopleScopeOverride,
-  rescoreCompanies,
-  rescoreProspects,
+  rescoreCompaniesAsync,
+  rescoreProspectsAsync,
   saveSourcingDoc,
+  SCORE_BATCH_MAX,
   selectCompanies,
-  updateCompanyFields,
+  updateCompanyFieldsAsync,
 } from "@/lib/api";
+import type { ScoringJobApi } from "@/lib/api";
 import type {
   Icp,
   PeopleScopeForm,
@@ -63,7 +67,6 @@ import {
   loadScopeOverride,
   peopleScopeSummary,
   peopleScopeToForm,
-  pollClearScored,
   saveScopeOverride,
   scopeSummary,
   scopeToForm,
@@ -94,6 +97,9 @@ export default function ListPage() {
   const [prospects, setProspects] = useState<ProspectApi[]>([]);
   const [prospectsLoading, setProspectsLoading] = useState(false);
   const [companiesLoading, setCompaniesLoading] = useState(false);
+  // W5 — true when the feed has more rows than the LIST_CEILING we auto-load (drives the notice).
+  const [prospectsTruncated, setProspectsTruncated] = useState(false);
+  const [companiesTruncated, setCompaniesTruncated] = useState(false);
   // Tracks the live client so an async reload/handler that resolves *after* a client switch can
   // bail before writing the previous client's data into the new client's view.
   const clientRef = useRef(client);
@@ -202,9 +208,10 @@ export default function ListPage() {
     try {
       // Let errors propagate — a failed reload must surface, never silently blank the list
       // (which reads as "no prospects" and tempts a re-import / re-spend).
-      const ps = await listProspects(client);
+      const { items: ps, truncated } = await listProspects(client);
       if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
       setProspects(ps);
+      setProspectsTruncated(truncated);
       setChecked(new Set());
     } catch (e) {
       if (clientRef.current === client) {
@@ -218,9 +225,10 @@ export default function ListPage() {
   async function reloadCompanies() {
     setCompaniesLoading(true);
     try {
-      const cs = await listCompanies(client);
+      const { items: cs, truncated } = await listCompanies(client);
       if (clientRef.current !== client) return;
       setCompanies(cs);
+      setCompaniesTruncated(truncated);
     } catch (e) {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
@@ -257,6 +265,8 @@ export default function ListPage() {
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
     setPplScopeLoaded(false); // gate the Find-Settings gear until the saved scope is known
+    setProspectsTruncated(false); // cleared until the new client's feed reports its own cap
+    setCompaniesTruncated(false);
     let alive = true;
     setCompaniesLoading(true);
     setProspectsLoading(true);
@@ -275,8 +285,10 @@ export default function ListPage() {
           getResearchSpec(client).catch(() => null),
         ]);
         if (!alive) return;
-        setProspects(ps);
-        setCompanies(cs);
+        setProspects(ps.items);
+        setProspectsTruncated(ps.truncated);
+        setCompanies(cs.items);
+        setCompaniesTruncated(cs.truncated);
         setDocs(dl);
         setRubricDraft(dl?.company_fit?.body ?? "");
         setMasterDepts(depts);
@@ -487,9 +499,9 @@ export default function ListPage() {
       setAddCoOpen(false);
       setCoForm({ ...blankCo });
       await reloadCompanies();
-      // The row lands UNSCORED (scoring is off the request path) — score it in the background,
+      // The row lands UNSCORED (scoring is off the request path) — score it on a background job,
       // exactly like an Apollo-found row, so a slow reasoning call never blocks the add.
-      void scoreInBackground([co.id], new Set());
+      void scoreCompaniesJob([co.id]);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Add failed", "warn");
     } finally {
@@ -497,25 +509,53 @@ export default function ListPage() {
     }
   }
 
+  // Kick off an async scoring job (W4) and poll it to completion. Returns the terminal job, or null
+  // if the client switched away mid-flight or the job errored (the error is toasted here). Replaces
+  // the old client-driven chunk loops — the worker owns the whole batch, surviving a tab close.
+  async function runScoringJob(
+    kick: () => Promise<ScoringJobApi>,
+    failLabel: string
+  ): Promise<ScoringJobApi | null> {
+    const started = await kick();
+    if (!started.job_id) {
+      if (clientRef.current === client) toast(`${failLabel} failed`, "warn");
+      return null;
+    }
+    const job = await awaitScoringJob(client, started.job_id, () => clientRef.current === client);
+    if (clientRef.current !== client) return null;
+    if (job.status === "error") {
+      toast(typeof job.error === "string" && job.error ? job.error : `${failLabel} failed`, "warn");
+      return null;
+    }
+    return job;
+  }
+
   // Flow A — Apollo company search from the saved ResearchSpec (or the Settings override). Needs a
   // generated scope. The 0-result toast distinguishes "Apollo matched nothing" (loosen filters)
   // from "matched but all filtered out as dupes/exclusions" (`dropped`) so the cause is explainable.
+  // Async (W4): kicks a background find job, polls it, then reloads. Rows land unscored.
   async function runFindCompanies() {
     setFindingCo(true);
     try {
-      const res = await findCompanies(client, { icp_id: fIcp || null, ...(scopeOverride ?? {}) });
+      const job = await runScoringJob(
+        () => findCompaniesAsync(client, { icp_id: fIcp || null, ...(scopeOverride ?? {}) }),
+        "Find companies"
+      );
+      if (!job) return;
       await reloadCompanies();
-      if (res.found) {
-        const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
+      const found = Number(job.result?.found ?? 0);
+      const dropped = Number(job.result?.dropped ?? 0);
+      if (found) {
+        const tail = dropped ? ` · ${dropped} filtered out` : "";
         // Rows land unscored and stay that way (AI Score shows "Pending"); the operator scores on
         // demand by selecting rows and clicking Update AI Score. No auto-trigger.
         toast(
-          `Found ${res.found} ${res.found === 1 ? "company" : "companies"}${tail} · ` +
+          `Found ${found} ${found === 1 ? "company" : "companies"}${tail} · ` +
             "select rows and click Update AI Score to score them"
         );
-      } else if (res.dropped) {
+      } else if (dropped) {
         toast(
-          `Apollo returned ${res.dropped}, but all were filtered out as duplicates or exclusions. ` +
+          `Apollo returned ${dropped}, but all were filtered out as duplicates or exclusions. ` +
             "Adjust the scope in ⚙ Settings.",
           "warn"
         );
@@ -527,87 +567,74 @@ export default function ListPage() {
         );
       }
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Find companies failed", "warn");
+      if (clientRef.current === client) {
+        toast(e instanceof Error ? e.message : "Find companies failed", "warn");
+      }
     } finally {
-      setFindingCo(false);
+      if (clientRef.current === client) setFindingCo(false);
     }
   }
 
   // Re-run fit scoring for the checked companies (e.g. after the rubric / scoring prompt changed).
   // Unlike Find, this re-scores rows that already have a score — each call is a paid LLM request.
-  // Runs in the BACKGROUND (chunked, per-row "Scoring…" status) so the UI never blocks and a slow
-  // LLM call can never time the request out.
+  // Async (W4): the whole batch runs on one background job (≤ SCORE_BATCH_MAX rows); a bigger
+  // selection is refused with a message rather than silently split.
   function runRescore() {
     if (rescoringCoRef.current) return; // block a double-click before the button disables
     const ids = [...companyChecked];
     if (!ids.length) return toast("Select companies to re-score", "warn");
-    toast(`Re-scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
-    // Rows that already have a score can't be reconciled by "now has a score" — the driver clears
-    // those on the request's success; the poll only tracks Pending → scored transitions.
-    const baselineScored = new Set(
-      companies.filter((c) => companyChecked.has(c.id) && c.fit_tier != null).map((c) => c.id)
-    );
+    if (ids.length > SCORE_BATCH_MAX) {
+      return toast(`Score at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
+    }
+    toast(`Scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
     rescoringCoRef.current = true;
-    void scoreInBackground(ids, baselineScored).finally(() => {
+    void scoreCompaniesJob(ids).finally(() => {
       rescoringCoRef.current = false;
     });
   }
 
   // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
-  // credits, so it is deliberate/manual (Find Companies enriches only new rows).
+  // credits, so it is deliberate/manual (Find Companies enriches only new rows). Async (W4),
+  // capped at SCORE_BATCH_MAX rows per job.
   async function runUpdateFields() {
     const ids = [...companyChecked];
     if (!ids.length) return toast("Select companies to update", "warn");
+    if (ids.length > SCORE_BATCH_MAX) {
+      return toast(`Update at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
+    }
     setUpdatingFields(true);
     try {
-      await updateCompanyFields(client, ids);
-      await reloadCompanies();
-      toast(`Updated ${ids.length} ${ids.length === 1 ? "company" : "companies"}`);
+      const job = await runScoringJob(() => updateCompanyFieldsAsync(client, ids), "Update");
+      if (clientRef.current !== client) return;
+      if (job) {
+        await reloadCompanies();
+        const updated = Number(job.result?.updated ?? 0);
+        toast(`Updated ${updated} ${updated === 1 ? "company" : "companies"}`);
+      }
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Update failed", "warn");
+      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Update failed", "warn");
     } finally {
-      setUpdatingFields(false);
+      if (clientRef.current === client) setUpdatingFields(false);
     }
   }
 
-  // Score a set of company rows in the BACKGROUND, in small chunks so no single request nears the
-  // 30s gateway cap. A row shows "Scoring…" until it ACTUALLY shows a score in the DB — not until
-  // the HTTP call returns: a slow chunk can 503 on the gateway cap while the Lambda keeps scoring
-  // and commits a moment later, so trusting the response would flash the row back to "Pending".
-  // The driver fires the chunks (clearing each on success, the fast path); the poll reconciles any
-  // row that 503'd from the list, so it never reverts to Pending. A hard LLM failure is bounded by
-  // the poll ceiling, after which the safety-net clear lets the row show its real (unscored) state.
-  async function scoreInBackground(ids: string[], baselineScored: Set<string>) {
-    const CHUNK = 3; // ~3 reasoning calls per request keeps wall-clock well under 30s
+  // Score a set of company rows on one async background job (W4). The rows show "Scoring…" until the
+  // job settles; the worker owns the batch (survives a tab close), and we reload once on completion.
+  async function scoreCompaniesJob(ids: string[]) {
     setScoringCoIds((prev) => new Set([...prev, ...ids]));
-    const driver = (async () => {
-      for (let i = 0; i < ids.length; i += CHUNK) {
-        if (clientRef.current !== client) return;
-        const chunk = ids.slice(i, i + CHUNK);
-        try {
-          await rescoreCompanies(client, chunk);
-          if (clientRef.current === client) {
-            clearScoring(setScoringCoIds, chunk); // success → clear now (fast path)
-            await reloadCompanies();
-          }
-        } catch {
-          /* timeout/error: keep the flag — the poll clears each row once the DB shows its score */
-        }
+    try {
+      const job = await runScoringJob(() => rescoreCompaniesAsync(client, ids), "Scoring");
+      if (clientRef.current !== client) return;
+      if (job) {
+        await reloadCompanies();
+        const scored = Number(job.result?.scored ?? 0);
+        toast(`Scored ${scored} ${scored === 1 ? "company" : "companies"}`);
       }
-    })();
-    const poll = pollClearScored(
-      ids.filter((id) => !baselineScored.has(id)),
-      async () => {
-        const cs = await listCompanies(client);
-        if (clientRef.current === client) setCompanies(cs);
-        return new Set(cs.filter((c) => c.fit_tier != null).map((c) => c.id));
-      },
-      setScoringCoIds,
-      () => clientRef.current === client
-    );
-    await Promise.all([driver, poll]);
-    // Safety net: nothing should stay flagged once both settle (e.g. a hard LLM failure → Pending).
-    if (clientRef.current === client) clearScoring(setScoringCoIds, ids);
+    } catch (e) {
+      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Scoring failed", "warn");
+    } finally {
+      if (clientRef.current === client) clearScoring(setScoringCoIds, ids);
+    }
   }
 
   // "Find Lookalike" — find the next batch of peers of the checked rows. The seeds are the search
@@ -620,18 +647,24 @@ export default function ListPage() {
     if (!ids.length) return toast("Select companies to find lookalikes", "warn");
     setFindingLookalike(true);
     try {
-      const res = await findLookalikes(client, { company_ids: ids, icp_id: fIcp || null });
+      const job = await runScoringJob(
+        () => findLookalikesAsync(client, { company_ids: ids, icp_id: fIcp || null }),
+        "Lookalike search"
+      );
+      if (!job) return;
       await reloadCompanies();
-      if (res.found) {
-        const tail = res.dropped ? ` · ${res.dropped} already in your list` : "";
+      const found = Number(job.result?.found ?? 0);
+      const dropped = Number(job.result?.dropped ?? 0);
+      if (found) {
+        const tail = dropped ? ` · ${dropped} already in your list` : "";
         toast(
-          `Found ${res.found} new lookalike ${res.found === 1 ? "company" : "companies"}${tail} · ` +
+          `Found ${found} new lookalike ${found === 1 ? "company" : "companies"}${tail} · ` +
             "select rows and click Update AI Score to score them"
         );
-      } else if (res.dropped) {
+      } else if (dropped) {
         toast(
-          `Apollo returned ${res.dropped} similar ${res.dropped === 1 ? "company" : "companies"}, ` +
-            `but ${res.dropped === 1 ? "it is" : "all are"} already in your list — nothing new to add.`,
+          `Apollo returned ${dropped} similar ${dropped === 1 ? "company" : "companies"}, ` +
+            `but ${dropped === 1 ? "it is" : "all are"} already in your list — nothing new to add.`,
           "warn"
         );
       } else {
@@ -642,9 +675,11 @@ export default function ListPage() {
         );
       }
     } catch (e) {
-      toast(e instanceof Error ? e.message : "Lookalike search failed", "warn");
+      if (clientRef.current === client) {
+        toast(e instanceof Error ? e.message : "Lookalike search failed", "warn");
+      }
     } finally {
-      setFindingLookalike(false);
+      if (clientRef.current === client) setFindingLookalike(false);
     }
   }
 
@@ -753,62 +788,44 @@ export default function ListPage() {
     }
   }
 
-  // Step-2 'Get AI score' — re-score the checked people in the background (chunked, per-row
-  // "Scoring…"), mirroring the Step-1 company scorer. Each call is a paid LLM request.
+  // Step-2 'Get AI score' — re-score the checked people on one async background job (W4), per-row
+  // "Scoring…". Each call is a paid LLM request; capped at SCORE_BATCH_MAX rows (a bigger selection
+  // is refused with a message rather than silently split).
   function runScorePeople() {
     if (rescoringPplRef.current) return; // block a double-click before the button disables
     const picked = selectedProspects;
     if (!picked.length) return toast("Select people to score", "warn");
+    if (picked.length > SCORE_BATCH_MAX) {
+      return toast(`Score at most ${SCORE_BATCH_MAX} people at a time — narrow your selection.`, "warn");
+    }
     toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
-    // Already-scored rows are reconciled by the driver (on success); the poll only tracks the
-    // Pending → scored transition (a row that "now has a score").
-    const baselineScored = new Set(picked.filter((p) => p.fit_tier != null).map((p) => p.id));
     rescoringPplRef.current = true;
-    void scorePeopleInBackground(
-      picked.map((p) => ({ id: p.id, key: p.identity_key })),
-      baselineScored
-    ).finally(() => {
+    void scorePeopleJob(picked.map((p) => ({ id: p.id, key: p.identity_key }))).finally(() => {
       rescoringPplRef.current = false;
     });
   }
 
-  // Mirrors the company scorer: a person shows "Scoring…" until the DB shows a score, surviving the
-  // 30s gateway cap (a 503 while the Lambda finishes scoring no longer flashes the row to "Pending").
-  async function scorePeopleInBackground(
-    rows: { id: string; key: string }[],
-    baselineScored: Set<string>
-  ) {
-    const CHUNK = 3; // a few reasoning calls per request keeps wall-clock well under the 30s cap
+  // Score a set of people on one async background job (W4). Rows show "Scoring…" until it settles;
+  // the worker owns the batch (survives a tab close), and we reload once on completion.
+  async function scorePeopleJob(rows: { id: string; key: string }[]) {
     const ids = rows.map((r) => r.id);
     setScoringPersonIds((prev) => new Set([...prev, ...ids]));
-    const driver = (async () => {
-      for (let i = 0; i < rows.length; i += CHUNK) {
-        if (clientRef.current !== client) return;
-        const chunk = rows.slice(i, i + CHUNK);
-        try {
-          await rescoreProspects(client, chunk.map((r) => r.key));
-          if (clientRef.current === client) {
-            clearScoring(setScoringPersonIds, chunk.map((r) => r.id)); // success → clear now
-            await reloadProspects();
-          }
-        } catch {
-          /* timeout/error: keep the flag — the poll clears each row once the DB shows its score */
-        }
+    try {
+      const job = await runScoringJob(
+        () => rescoreProspectsAsync(client, rows.map((r) => r.key)),
+        "Scoring"
+      );
+      if (clientRef.current !== client) return;
+      if (job) {
+        await reloadProspects();
+        const scored = Number(job.result?.scored ?? 0);
+        toast(`Scored ${scored} ${scored === 1 ? "person" : "people"}`);
       }
-    })();
-    const poll = pollClearScored(
-      ids.filter((id) => !baselineScored.has(id)),
-      async () => {
-        const ps = await listProspects(client);
-        if (clientRef.current === client) setProspects(ps);
-        return new Set(ps.filter((p) => p.fit_tier != null).map((p) => p.id));
-      },
-      setScoringPersonIds,
-      () => clientRef.current === client
-    );
-    await Promise.all([driver, poll]);
-    // Safety net: clear any row still flagged once both settle (e.g. a hard LLM failure → Pending).
-    if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
+    } catch (e) {
+      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Scoring failed", "warn");
+    } finally {
+      if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
+    }
   }
 
   // ---- Step-2 Settings (find-people scope) handlers ----
@@ -903,7 +920,7 @@ export default function ListPage() {
       setPersonForm({ ...blankPerson });
       await Promise.all([reloadProspects(), reloadCompanies()]);
       // Lands UNSCORED (scoring off the request path) — background-score it like a found row.
-      void scorePeopleInBackground([{ id: p.id, key: p.identity_key }], new Set());
+      void scorePeopleJob([{ id: p.id, key: p.identity_key }]);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Add failed", "warn");
     } finally {
@@ -1154,6 +1171,9 @@ export default function ListPage() {
             </div>
             <div className="countrow">
               <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
+              {companiesTruncated && (
+                <span className="muted">&nbsp;·&nbsp;showing first {LIST_CEILING}</span>
+              )}
             </div>
             <div className="list-body">
               {coBusy && (
@@ -1380,6 +1400,9 @@ export default function ListPage() {
             <div className="countrow">
               <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>&nbsp;people&nbsp;·&nbsp;
               <b>{selCount}</b>&nbsp;selected
+              {prospectsTruncated && (
+                <span className="muted">&nbsp;·&nbsp;showing first {LIST_CEILING}</span>
+              )}
             </div>
             <div className="list-body">
               {pplBusy && (

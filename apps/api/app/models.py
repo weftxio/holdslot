@@ -206,10 +206,9 @@ class Brief(Base):
     """One business brief per tenant. `data` is the opaque form document."""
 
     __tablename__ = "brief"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", name="uq_brief_tenant"),
-        Index("ix_brief_tenant_id", "tenant_id"),
-    )
+    # uq_brief_tenant already creates a unique index on (tenant_id) — a separate ix_brief_tenant_id
+    # would duplicate it, so it's dropped in migration 0014.
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_brief_tenant"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
@@ -322,6 +321,32 @@ class ResearchJob(Base):
     updated_at: Mapped[datetime] = _updated_at()
 
 
+class ScoringJob(Base):
+    """Async fit-scoring job — runs a scoring-bearing surface off the 30s API Gateway path (W4).
+
+    The five scoring surfaces (find-company, find-lookalikes, company/prospect rescore, company
+    field refresh) fan out one fit-scoring LLM call per row; a large batch exceeds the HTTP-API 30s
+    cap, and the prior client-driven chunk loop dies if the browser tab closes. So the work moves to
+    a background worker (Lambda self async-invoke; a thread in local dev): the kick-off endpoint
+    inserts a `queued` row and the worker flips it `running`→`done`/`error`, recording per-run
+    counts on `result`. `kind` names the surface; `params` is the original request body (ids,
+    icp_id, …). One job per tenant×kind is in flight at a time so a re-click never double-spends.
+    """
+
+    __tablename__ = "scoring_job"
+    __table_args__ = (Index("ix_scoring_job_tenant_kind", "tenant_id", "kind"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="queued")
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    error: Mapped[str | None] = mapped_column(String, nullable=True)  # set on error
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
 # ---------------------------------------------------------------------------
 # Phase C (S2) — Prospects: Apollo find + enrich.
 #
@@ -351,7 +376,14 @@ class Company(Base):
         UniqueConstraint("tenant_id", "domain", name="uq_company_tenant_domain"),
         UniqueConstraint("tenant_id", "apollo_org_id", name="uq_company_tenant_apollo_org"),
         Index("ix_company_tenant_id", "tenant_id"),
-        Index("ix_company_domain", "domain"),
+        # List feed sorts by (tenant, fit_score desc nulls last, created_at desc) — migration 0014.
+        # (ix_company_domain dropped: covered by uq_company_tenant_domain.)
+        Index(
+            "ix_company_tenant_fit",
+            "tenant_id",
+            text("fit_score DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -400,8 +432,15 @@ class Prospect(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "identity_key", name="uq_prospect_tenant_identity"),
         Index("ix_prospect_tenant_id", "tenant_id"),
-        Index("ix_prospect_identity_key", "identity_key"),
         Index("ix_prospect_apollo_person_id", "tenant_id", "apollo_person_id"),
+        # List feed sorts by (tenant, fit_score desc nulls last, created_at desc) — migration 0014.
+        # (ix_prospect_identity_key dropped: covered by uq_prospect_tenant_identity.)
+        Index(
+            "ix_prospect_tenant_fit",
+            "tenant_id",
+            text("fit_score DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -426,6 +465,9 @@ class Prospect(Base):
     email_valid: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
     fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
     fit_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Plain-text fit rationale — parity with company.fit_reason (added in migration 0014). Populated
+    # on the next rescore; the structured per-line detail still lives in fit_components.
+    fit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
@@ -513,9 +555,10 @@ class ScopeOverride(Base):
     trail; this is just the current tuning the operator last saved."""
 
     __tablename__ = "scope_override"
+    # uq_scope_override_tenant_kind (tenant_id, kind) covers tenant_id lookups via its leftmost
+    # prefix, so a separate ix_scope_override_tenant_id is redundant — dropped in migration 0014.
     __table_args__ = (
         UniqueConstraint("tenant_id", "kind", name="uq_scope_override_tenant_kind"),
-        Index("ix_scope_override_tenant_id", "tenant_id"),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()

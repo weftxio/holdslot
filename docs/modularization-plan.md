@@ -16,7 +16,8 @@
 > the current version. Every change below is either a pure file move, a behaviour-equivalent
 > refactor, or explicitly gated behind founder approval.
 
-Three parts: **(1)** frontend split (the active focus), **(2)** API inventory, **(3)** database ER.
+Four parts: **(1)** frontend split, **(2)** API inventory, **(3)** database ER, **(4)** the API + DB +
+logging simplification & consolidation — **executed W0–W8** (PART 4, 2026-06-25).
 
 The two refactor targets:
 
@@ -262,7 +263,7 @@ rather than a single risky cut over live revenue code.
 
 ---
 
-## PART 2 — API inventory (41 endpoints)
+## PART 2 — API inventory (47 endpoints)
 
 FastAPI `HoldSlot API v0.1.0`. Auth = JWT Bearer (`HTTPBearer`); tenant scope via
 `require_membership()` on every `/{client}/…` route (non-members → **404**, not 403).
@@ -308,12 +309,20 @@ FastAPI `HoldSlot API v0.1.0`. Auth = JWT Bearer (`HTTPBearer`); tenant scope vi
 | Prospects | POST | `/{client}/prospects` | Manually add one person | +Owner |
 | Prospects | POST | `/{client}/prospects/rescore` | AI score people (≤15/req) | +Owner |
 | Prospects | POST | `/{client}/prospects/enrich` | **Only credit spend**: Apollo people/match (≤15/req) | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/find-company-async` | Async kick-off → 202 + job | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/find-lookalikes-async` | Async kick-off → 202 + job | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/rescore-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | POST | `/{client}/companies/update-fields-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | POST | `/{client}/prospects/rescore-async` | Async kick-off → 202 + job (≤20) | +Owner |
+| Scoring (W4) | GET | `/{client}/scoring-jobs/{job_id}` | Poll an async scoring job | +Member |
 | Research | GET | `/{client}/research-runs` | Cost/credit scoreboard | +Member |
 | Research | GET | `/{client}/sourcing-docs` | Get rubrics (company_fit + prospect_fit) | +Member |
 | Research | POST | `/{client}/sourcing-docs` | Save rubric edit (append-only) | +Owner |
 
-**Routers:** `auth` (`/auth`), `clients`, `briefs`, `icps`, `prospects` (largest, ~23 routes) — in
-`apps/api/app/domains/<x>/router.py`.
+**Routers:** `auth` (`/auth`), `clients`, `briefs`, `icps`, `prospects` (largest, ~29 routes) — in
+`apps/api/app/domains/<x>/router.py`. **W4 added 6 async-scoring endpoints** (5 kick-offs → 202 +
+1 poll); the matching **sync** `rescore`/`find-company`/`find-lookalikes`/`update-fields` endpoints
+are kept for back-compat but are no longer called by the web app.
 
 **FE coverage gap:** the API serves **only** the workspace Brief + List tabs today. Batches,
 Campaign, Replies, Summaries, Billing, and all of client-status are still **mock fixtures** with no
@@ -323,8 +332,9 @@ endpoints — i.e. where the backend grows next.
 
 ## PART 3 — Database (Aurora Postgres) — ER + schema
 
-**15 tables**, head revision **`0013`**. Three clusters: Identity/Tenancy (global), Phase B
-Targeting, Phase C Apollo find→enrich. ORM (`apps/api/app/models.py`) matches migrations — no drift.
+**16 tables**, head revision **`0015`**. Clusters: Identity/Tenancy (global), Phase B Targeting,
+Phase C Apollo find→enrich, plus the W4 async-scoring `scoring_job` ledger. ORM
+(`apps/api/app/models.py`) matches migrations — no drift.
 
 ```mermaid
 erDiagram
@@ -342,6 +352,7 @@ erDiagram
     tenant        ||--o{ research_run    : ""
     tenant        ||--o{ prompt          : "versioned"
     tenant        ||--o{ scope_override  : "1 per kind"
+    tenant        ||--o{ scoring_job     : "1 in-flight/kind"
     icp           ||--o{ company         : "SET NULL"
     icp           ||--o{ prospect        : "SET NULL"
     icp           ||--o{ research_run    : "SET NULL"
@@ -361,6 +372,7 @@ erDiagram
     research_run { uuid id PK }
     prompt { uuid id PK }
     scope_override { uuid id PK }
+    scoring_job { uuid id PK }
     refresh_token { uuid id PK }
     password_reset { uuid id PK }
 ```
@@ -377,12 +389,107 @@ erDiagram
   `briefing`/`company_fit`/`prospect_fit`), `research_run` (cost ledger) — all append-only.
 - **Seed (tenant #0 `holdslot`)** — 2 founder owners + 3 prompt rows
   (`briefing` v1, `company_fit` v1, `prospect_fit` v1).
+- **Async scoring (W4)** — `scoring_job` is a **job ledger**, not a business entity: tracks each
+  background AI-score/find run (`queued→running→done/error`), one in-flight per tenant×kind, indexed
+  by `(tenant_id, kind)`. Cascades from `tenant`; `result`/`params` are opaque JSONB.
 
-**Migration chain (head `0013`):** `0001` baseline identity → `0002` seed → `0003` Phase B
+**Migration chain (head `0015`):** `0001` baseline identity → `0002` seed → `0003` Phase B
 (brief/icp/llm_call/research_spec) → `0004` icp_suggestions → `0005` Phase C
 (prospect/research_run/sourcing_doc) → `0006`/`0011` seed_limit add+drop → `0007` company +
 `prospect.company_id` → `0008` company.website → `0009` research_job → `0010` `sourcing_doc`→`prompt`
-rename → `0012` scope_override → `0013` `fit_scoring`→`company_fit` + seed `prospect_fit`.
+rename → `0012` scope_override → `0013` `fit_scoring`→`company_fit` + seed `prospect_fit` → **`0014`**
+perf composite indexes (prospect+company) + drop 4 redundant + `scope_override` `updated_at` trigger
++ `prospect.fit_reason` (W1) → **`0015`** `scoring_job` table + `ix_scoring_job_tenant_kind` (W4).
+
+---
+
+## PART 4 — API + Database simplification, consolidation & logging — EXECUTED (W0–W8 as-built)
+
+> Authored 2026-06-25 · **fully executed & verified 2026-06-25** on branch
+> `refactor/modularize-frontend` (uncommitted — no auto-deploy). The forward-looking planning that
+> drove this work (the original review lenses — useless-code / unoptimized / consolidation /
+> logging — the "(a) no-dependency / (b) needs-you" tables, and the founder-decision matrix) is now
+> spent and has been distilled into the as-built snapshot below. All nine waves (W0–W8) shipped.
+>
+> **Final pre-deploy gate (2026-06-25):** backend `ruff` clean · **89 passed + 9 skipped**; frontend
+> `typecheck` + `knip` + production `build` green. *(The 2 ESLint errors are pre-existing in
+> `components/console/SessionGuard.tsx` — untouched by this work; the build is unaffected.)* **Dev
+> Aurora at head `0015`** (account 138743894336 via the `holdslot` profile). Deploy backend-first,
+> then frontend (§4.2).
+
+### 4.1 What shipped, per wave
+
+| Wave | Delivered (as-built) | DB | Verified |
+|---|---|---|---|
+| **W0** Stop the bleeding | Enrich gate now keys on `p.last_enriched_at is not None` (was `email_valid`/`email` — the active Apollo double-spend on a matched-but-no-email row); interim spend logging in `confirm_enrich` | — | unit |
+| **W1** Schema migration | `(tenant_id, fit_score↓ NULLS LAST, created_at↓)` composite on `prospect`+`company`; 4 redundant single-col indexes dropped; `scope_override` `updated_at` trigger; `prospect.fit_reason` column | **0014** | applied + introspected on dev |
+| **W2** Backend consolidation | Dead code removed (`suppress()`/`SuppressionResult`, `to/from_enrichment`, `configured_models`, `c_suite` collapse); `fit_reason` populated on score; `_parse_ids` bad-UUID→400 | — | ruff + unit |
+| **W3** Logging framework | Request-id middleware (`X-Request-ID`) + access + global exception logging; `%(asctime)s` + `request_id` formatter; auth/authz audit at WARNING (hashed email); email-body redaction | — | middleware test |
+| **W4** Async scoring (5 surfaces) | `scoring_job` table + `scoring.py` job infra (enqueue / env-aware dispatch / worker, single-in-flight per tenant×kind); 5 reusable cores shared by the kept **sync** endpoints (additive) and worker handlers; `SCORING_HANDLERS` registry; 5 kick-off endpoints (`…-async`, 202) + poll `GET /scoring-jobs/{job_id}`; **`ASYNC_BATCH_MAX = 20`**. FE: `awaitScoringJob` poll + 5 `*Async` kick-offs, shared `runScoringJob`; "Get AI score" refuses a >20 selection with a message | **0015** | applied; live empty-batch worker round-trip (zero spend) |
+| **W5** Cursor pagination + auto-load | Opaque offset-cursor codec (`core/pagination.py`); `ProspectPage`/`CompanyPage` envelopes; `/prospects`+`/companies` take `?cursor`+`?limit` (default 100, ≤250) ordered by the W1 index **+ `id` tiebreaker** (a find batch shares one `created_at`). FE auto-loads to `LIST_CEILING=250` + "showing first 250" notice | — | live two-page dev smoke (overlap=none) |
+| **W6** Login cold-start retry | BE: `get_db` wakes Aurora on a ~18s budget (`ensure_awake` attempts=3, delay=6s) under the 30s gateway cap; global `DBAPIError` handler maps Aurora-resume → retryable **503**, else logged 500. FE: `login()` retries only 503/502/504/network (never 401), backoff 2→6s to a 45s cap, "Waking the database…" button + `.hint` | — | resuming→503 / other→500 tests |
+| **W7** LLM token trim | `_build_targeting` ships only the **8 fit-relevant** brief fields + spec **minus `credit_policy`** + ICP profiles; 13 operational/messaging/exclusion fields dropped; PII (emails/contact) no longer reaches the prompt. Scoping still gets the full brief; `/fit-prompt` preview reflects it | — | pure-fn tests |
+| **W8** Caching | `core/cache.py` `TTLCache` (warm-container memo, bounded+TTL): people-facet sidebar memoized per (tenant, org-set) **300s** (~26 free Apollo probes → 1); company search cached **90s** by filter so a re-run of the same scope doesn't re-spend; find log marks `(cached)` | — | get/set/expiry/eviction tests |
+
+**Folded, not skipped.** W2's structural moves (a `prospects/service.py` module, `_record_run`, the
+`db.refresh` N+1, load-brief-once) and W3's integration-client failure logging (Apollo `_request`,
+OpenRouter `_execute`) were **absorbed into W4** — those same endpoints were restructured into jobs
+there, so extracting first then rewriting twice was avoided. `rows_accepted` / `cost_per_accepted`
+stays **deferred** (dormant column): there is no meetings/billing domain yet to source a
+qualified-meeting count (§4.4 #1).
+
+**Behaviour preserved.** find/lookalike still land rows **unscored** (no auto-trigger); scoring is
+the separate AI-score action. The worker scores in waves; the 20-row cap keeps a worst-case batch
+well under the Lambda timeout.
+
+**Verdict.** Structurally clean: no Clay survivors, no schema↔ORM drift, correct OpenRouter
+geo-routing, server-enforced caps that reject (not truncate), sound opaque-JSONB design. The wins
+cluster in three places — one real **money bug**, a **1,748-line `prospects/router.py`** carrying
+orchestration every other domain delegates to a `service.py`, and **index / round-trip**
+inefficiency on the hot read paths. Logging is mechanically uniform but **blind on the money and
+auth paths**.
+
+### 4.2 Deploy notes (this branch → dev)
+
+- **Order:** backend first, then frontend (standard runbook — the FE async/cursor contracts assume
+  the new API).
+- **Migrations:** `0014` + `0015` are already applied to dev Aurora (head `0015`); **no further
+  migration ships** — W6/W7/W8 are code-only.
+- **After the API deploys**, regenerate the typed client: `pnpm gen:api` (rewrites
+  `apps/web/lib/api-types.ts` from the live `openapi.json`).
+- **Back-compat:** the legacy **sync** scoring endpoints (`/companies/{rescore,find-company,
+  find-lookalikes,update-fields}`, `/prospects/rescore`) are kept and unused by the web app —
+  removable in a later cleanup once async is dev-QA'd.
+- **Owed founder dev-QA** (needs paid runs, not done here): the W4 async-scoring click-throughs on
+  all 5 surfaces, and the **W7 score-diff validation** — the trimmed targeting ships behind that check.
+
+### 4.3 Preserve (already good — don't "fix")
+
+`_new_survivors` new-only enrich dedup (credit safeguard) · single-in-flight structuring job · caps
+that **reject not truncate** · OpenRouter geo-routing (no US providers; HK 403) · JSONB-as-opaque
+document (no path queries → no index pressure) · `llm_call` / `research_run` / `research_job` are
+genuinely distinct (don't merge) · no schema↔ORM drift · clean `print()`-only-in-`scripts/` split.
+
+### 4.4 Decisions (resolved 2026-06-25 — all executed)
+
+The 11 founder decisions that gated this work, as built:
+
+| # | Decision | Built as |
+|---|---|---|
+| #1 | `rows_accepted` | **Deferred** (dormant column) — no meetings/billing domain to source a qualified-meeting count yet; `cost_per_accepted` (= Σ `research_run.cost_usd` ÷ qualified meetings) wired tenant-level when it lands |
+| #2 | Rescore slow path | **Full async** — background job + poll, all 5 scoring surfaces (W4) |
+| #3 | `sourcing` value + `outreach_outcome` seams | **Kept** (cheap Phase-E seams) |
+| #4 | `suppress()` primitive | **Deleted** (W2; revivable from git) |
+| #5 | `fit_reason` shape | **`prospect.fit_reason` column** added (W1) + populated on score (W2) |
+| #6 | List endpoints | **Cursor pagination + auto-load-all** to a 250-row ceiling, no user action (W5) |
+| #7 | LLM token trim | **Trimmed** to 8 fit fields + spec−`credit_policy` (W7); founder score-diff QA owed |
+| #8 | Request-id + global exception handler | **Adopted** — `X-Request-ID`, echoed to the client (W3) |
+| #9 | Auth audit + login cold-start | **WARNING + hashed email** (W3) + retry-on-503 login, 45s cap (W6) |
+| #10 | Log format | **Prose + fixed context keys** + `asctime` / `request_id` (W3) |
+| #11 | Email body in non-prod | **Redacted** body, kept to/subject (W3) |
+| (A) | Schema migration on dev Aurora | **Authorized & applied** — heads `0014` + `0015` live |
+
+`prospect.fit_reason` populates on next rescore (no backfill).
 
 ---
 

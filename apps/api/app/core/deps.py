@@ -8,6 +8,7 @@ rule lives here.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -23,12 +24,17 @@ from app.core.security import decode_token
 from app.models import AppUser, Membership, MembershipRole, Tenant, UserStatus
 
 _bearer = HTTPBearer(auto_error=False)
+log = logging.getLogger("holdslot.auth")
 
 
 def get_db() -> Iterator[Session]:
     db = get_session()
     try:
-        ensure_awake(db)
+        # Request-path wake budget (~18s) stays inside the 30s API-Gateway cap, so a still-resuming
+        # Aurora raises a retryable signal that the DBAPIError handler turns into a clean 503 (W6) —
+        # rather than the gateway killing the request at 30s. The web app retries the 503 with a
+        # "waking the database…" message. Scripts/migrations keep the longer default budget.
+        ensure_awake(db, attempts=3, delay_seconds=6.0)
         yield db
     finally:
         db.close()
@@ -44,9 +50,11 @@ def get_current_user(
     try:
         payload = decode_token(creds.credentials, s.jwt_signing_key, "access")
     except jwt.PyJWTError as e:
+        log.warning("auth: invalid token")
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token") from e
     user = db.get(AppUser, payload["sub"])
     if user is None or user.status != UserStatus.active:
+        log.warning("auth: inactive or unknown user sub=%s", payload.get("sub"))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "inactive or unknown user")
     return user
 
@@ -83,9 +91,11 @@ def require_membership(min_role: MembershipRole | None = None):
             .where(Tenant.slug == slug, Membership.user_id == user.id)
         ).first()
         if row is None:
+            log.warning("authz: membership denied user=%s slug=%s", user.id, slug)
             raise HTTPException(status.HTTP_404_NOT_FOUND, "no such client")
         membership, tenant = row
         if min_role == MembershipRole.owner and membership.role != MembershipRole.owner:
+            log.warning("authz: owner role required user=%s slug=%s", user.id, slug)
             raise HTTPException(status.HTTP_403_FORBIDDEN, "owner role required")
         return AccessContext(user=user, tenant=tenant, membership=membership)
 

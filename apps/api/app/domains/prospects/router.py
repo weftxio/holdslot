@@ -12,24 +12,27 @@ explicit step (`/companies/rescore`, `/prospects/rescore`), and `confirm_enrich`
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from app.core.cache import TTLCache
 from app.core.deps import AccessContext, get_db, require_membership
+from app.core.pagination import DEFAULT_PAGE, MAX_PAGE, decode_cursor, encode_cursor
 from app.domains.briefs.research_spec import (
     DEPARTMENT_TAXONOMY,
     MASTER_DEPARTMENTS,
     SENIORITY_ENUM,
 )
 from app.domains.icps import icp_docs
-from app.domains.prospects import apollo_map, find, fit, lookalike
+from app.domains.prospects import apollo_map, find, fit, lookalike, scoring
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
     CompanyEnrichIn,
@@ -38,6 +41,7 @@ from app.domains.prospects.schemas import (
     CompanyLookalikeIn,
     CompanyManualIn,
     CompanyOut,
+    CompanyPage,
     CompanyRescoreIn,
     CompanySelectIn,
     DepartmentFacet,
@@ -54,8 +58,10 @@ from app.domains.prospects.schemas import (
     PeopleScopeOverrideOut,
     ProspectManualIn,
     ProspectOut,
+    ProspectPage,
     ProspectRescoreIn,
     ResearchRunOut,
+    ScoringJobOut,
     SourcingDocIn,
     SourcingDocList,
     SourcingDocOut,
@@ -72,10 +78,19 @@ from app.models import (
     ResearchRun,
     ResearchSpec,
     ScopeOverride,
+    ScoringJob,
 )
 
 router = APIRouter(tags=["prospects"])
 log = logging.getLogger("holdslot.prospects")
+
+# W8 caches (warm-container memo; see app/core/cache.py).
+#   * Company search is the credit-costing Apollo call — short TTL coalesces a re-run of the same
+#     scope (double-click / re-find) without spending again. Keyed by the filter alone: Apollo
+#     returns the same rows for any caller, so the key is global (raw rows, pre-suppression).
+#   * The people-facet sidebar is ~26 free Apollo probes per open — memoized per (tenant, org set).
+_COMPANY_SEARCH_CACHE = TTLCache(ttl_seconds=90)
+_PEOPLE_FACETS_CACHE = TTLCache(ttl_seconds=300)
 
 # The two editable fit rubrics — one per scoring stage. `company_fit` (Step 1) grades buying intent;
 # `prospect_fit` (Step 2) grades a person's reply potential + decision-making power. The stage names
@@ -93,6 +108,18 @@ MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apoll
 MAX_PEOPLE_PER_FIND = 15  # LLM-scored people per RESCORE request (30s sync cap; the spend)
 MAX_PEOPLE_PER_FIND_RUN = 250  # unscored people landed per find-people request (free, no LLM)
 MAX_ENRICH_PER_REQUEST = 15  # people/match (paid) per enrich request — bounds spend + the 30s cap
+
+
+def _parse_ids(raw: list[str]) -> list[uuid.UUID]:
+    """Parse a batch of client-supplied id strings into UUIDs, raising 400 on any malformed value.
+
+    A bare `uuid.UUID(bad)` raises ValueError, which would surface as an unhandled 500; this turns
+    it into a clean 400 (W2 consolidation — one parse door for every batch endpoint).
+    """
+    try:
+        return [uuid.UUID(i) for i in raw]
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid id") from exc
 _ENRICH_WORKERS = 8  # concurrent Apollo people/match calls (HTTP-bound, like the score fan-out)
 LOOKALIKE_LIMIT = 10  # peers fetched per Lookalike find (seeds drop via domain dedupe → ≤10 net)
 
@@ -138,10 +165,42 @@ def _exclusions(db: Session, tenant_id):
     return _build_exclusions(_latest_brief(db, tenant_id), _latest_spec(db, tenant_id))
 
 
+# W7 — only the FIT-relevant brief fields reach the paid scorer (founder-approved keep-list,
+# 2026-06-25). The dropped fields (logistics/handoff: attendee emails, attendees, availability,
+# channel, contact, approver, meetingsPerMonth · messaging: website, proofPoints, tone, languages ·
+# exclusions, already applied by suppression) don't inform whether a prospect FITS — cutting them
+# trims tokens on every scoring call AND keeps PII (emails / contact) out of the LLM prompt.
+_SCORING_BRIEF_FIELDS = frozenset(
+    {
+        "companyName",
+        "sell",
+        "problem",
+        "dealSize",
+        "salesCycle",
+        "valueProps",
+        "signals",
+        "qualifiedDef",
+    }
+)
+
+
+def _trim_brief_for_scoring(data: dict) -> dict:
+    """Keep only the fit-relevant brief fields (W7). Scoping (Brief→ResearchSpec) still gets the
+    full brief; this trim is fit-scoring only."""
+    return {k: v for k, v in data.items() if k in _SCORING_BRIEF_FIELDS}
+
+
+def _trim_spec_for_scoring(spec_blob: dict) -> dict:
+    """Drop the spec's `credit_policy` (operational budget caps — not a fit signal) from the scoring
+    context (W7); the search-param blocks that define the ICP stay."""
+    return {k: v for k, v in spec_blob.items() if k != "credit_policy"}
+
+
 def _build_targeting(
     brief: Brief | None, spec: ResearchSpec | None, icps: list[dict] | None = None
 ) -> dict:
-    """The fit scorer's targeting context — the SAME client documents brief scoping (B) consumes.
+    """The fit scorer's targeting context. Trimmed to the fit-relevant slice (W7): the keep-listed
+    brief fields + the spec minus `credit_policy` + the ICP persona profiles.
 
     `icps` carries the persona profiles the rubric grades maturity/department/tech/economic-buyer
     against (docs/prompts/fit-scoring-rubric-v1.md §2/§3). Without them those sub-criteria score 0
@@ -149,8 +208,8 @@ def _build_targeting(
     that are otherwise structurally unreachable.
     """
     return {
-        "brief": brief.data if brief else {},
-        "spec": spec.spec if spec else {},
+        "brief": _trim_brief_for_scoring(brief.data) if brief else {},
+        "spec": _trim_spec_for_scoring(spec.spec) if spec else {},
         "icps": icps or [],
     }
 
@@ -198,17 +257,36 @@ def _prospect_out(p: Prospect) -> ProspectOut:
 # --------------------------------------------------------------------------- prospects list
 
 
-@router.get("/{client}/prospects", response_model=list[ProspectOut])
+@router.get("/{client}/prospects", response_model=ProspectPage)
 def list_prospects(
+    cursor: str | None = None,
+    limit: int = Query(DEFAULT_PAGE, ge=1, le=MAX_PAGE),
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
-) -> list[ProspectOut]:
-    rows = db.execute(
-        select(Prospect)
-        .where(Prospect.tenant_id == ctx.tenant.id)
-        .order_by(Prospect.fit_score.desc().nullslast(), Prospect.created_at.desc())
-    ).scalars()
-    return [_prospect_out(p) for p in rows]
+) -> ProspectPage:
+    # `Prospect.id` is the deterministic tiebreaker: a whole find-run batch shares one created_at
+    # (Postgres now() is fixed per transaction), so without it offset paging could skip/duplicate
+    # rows at a page boundary. The composite index covers the first two keys; the id sort is cheap.
+    offset = decode_cursor(cursor)
+    rows = (
+        db.execute(
+            select(Prospect)
+            .where(Prospect.tenant_id == ctx.tenant.id)
+            .order_by(
+                Prospect.fit_score.desc().nullslast(),
+                Prospect.created_at.desc(),
+                Prospect.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit + 1)  # one extra row tells us whether a next page exists
+        )
+        .scalars()
+        .all()
+    )
+    has_more = len(rows) > limit
+    items = [_prospect_out(p) for p in rows[:limit]]
+    next_cursor = encode_cursor(offset + limit) if has_more else None
+    return ProspectPage(items=items, next_cursor=next_cursor)
 
 
 # ----------------------------------------------------------- Stage 1: companies (find → review)
@@ -332,18 +410,38 @@ def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
         return list(ex.map(_run, jobs))
 
 
-@router.get("/{client}/companies", response_model=list[CompanyOut])
+@router.get("/{client}/companies", response_model=CompanyPage)
 def list_companies(
+    cursor: str | None = None,
+    limit: int = Query(DEFAULT_PAGE, ge=1, le=MAX_PAGE),
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
-) -> list[CompanyOut]:
-    """Stage-1 review feed — companies for this client, best fit first."""
-    rows = db.execute(
-        select(Company)
-        .where(Company.tenant_id == ctx.tenant.id)
-        .order_by(Company.fit_score.desc().nullslast(), Company.created_at.desc())
-    ).scalars()
-    return [_company_out(c) for c in rows]
+) -> CompanyPage:
+    """Stage-1 review feed — companies for this client, best fit first (cursor-paged, W5).
+
+    `Company.id` is the deterministic tiebreaker (see `list_prospects` — a find-run batch shares
+    one created_at), so offset paging never skips or duplicates a row at a page boundary.
+    """
+    offset = decode_cursor(cursor)
+    rows = (
+        db.execute(
+            select(Company)
+            .where(Company.tenant_id == ctx.tenant.id)
+            .order_by(
+                Company.fit_score.desc().nullslast(),
+                Company.created_at.desc(),
+                Company.id.desc(),
+            )
+            .offset(offset)
+            .limit(limit + 1)  # one extra row tells us whether a next page exists
+        )
+        .scalars()
+        .all()
+    )
+    has_more = len(rows) > limit
+    items = [_company_out(c) for c in rows[:limit]]
+    next_cursor = encode_cursor(offset + limit) if has_more else None
+    return CompanyPage(items=items, next_cursor=next_cursor)
 
 
 @router.post("/{client}/companies", response_model=CompanyOut, status_code=201)
@@ -516,32 +614,33 @@ def find_company(
     blow the 30s gateway cap, so the web app fires scoring in the background (chunked `/rescore`)
     and shows a per-row "Scoring…" status. The scoring spend is then booked under `rescore` runs.
     """
-    spec = _latest_spec(db, ctx.tenant.id)
+    return _find_company_core(db, ctx.tenant.id, body.model_dump())
+
+
+def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
+    """Flow-A find from the latest spec (the sync endpoint's body — `limit`, `icp_id`, and the
+    optional `company_search_params` / `intent_filters` Settings overrides). Shared by the sync
+    `/companies/find-company` endpoint and the W4 async worker. Rows land UNSCORED."""
+    spec = _latest_spec(db, tenant_id)
     if spec is None or not (spec.spec or {}).get("company_search_params"):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "generate a research scope before finding companies"
         )
     credit = spec.spec.get("credit_policy") or {}
     hard_cap = min(MAX_COMPANIES_PER_FIND, credit.get("max_companies", 500))
-    limit = max(1, min(body.limit, hard_cap))
+    limit = max(1, min(params.get("limit") or 25, hard_cap))
     # Operator override (Settings modal) wins over the AI spec for *this call only*; an omitted
     # block falls back to the spec. `_clean` in apollo_map drops empty filters, so a cleared field
     # simply widens the search.
-    csp = (
-        body.company_search_params
-        if body.company_search_params is not None
-        else (spec.spec.get("company_search_params") or {})
-    )
-    intent = (
-        body.intent_filters
-        if body.intent_filters is not None
-        else (spec.spec.get("intent_filters") or {})
-    )
+    o_csp = params.get("company_search_params")
+    csp = o_csp if o_csp is not None else (spec.spec.get("company_search_params") or {})
+    o_intent = params.get("intent_filters")
+    intent = o_intent if o_intent is not None else (spec.spec.get("intent_filters") or {})
     filter_body = apollo_map.map_company_filter(csp, intent)
-    icp = uuid.UUID(body.icp_id) if body.icp_id else None
+    icp = uuid.UUID(params["icp_id"]) if params.get("icp_id") else None
     return _run_company_find(
         db,
-        ctx.tenant.id,
+        tenant_id,
         spec,
         filter_body=filter_body,
         limit=limit,
@@ -577,12 +676,19 @@ def _run_company_find(
     shows a per-row "Scoring…" status). Latency of each stage is logged.
     """
     t0 = time.monotonic()
-    try:
-        rows = apollo.search_companies(filter_body, max_results=limit)
-    except apollo.ApolloError as e:
-        raise HTTPException(
-            status.HTTP_502_BAD_GATEWAY, f"apollo company search failed: {e}"
-        ) from e
+    # W8 — serve a recent identical company search from the warm-container cache (the search is the
+    # Apollo credit spend), so a re-run of the same scope inside the TTL doesn't pay twice.
+    search_key = json.dumps([filter_body, limit], sort_keys=True, default=str)
+    rows = _COMPANY_SEARCH_CACHE.get(search_key)
+    cache_hit = rows is not None
+    if not cache_hit:
+        try:
+            rows = apollo.search_companies(filter_body, max_results=limit)
+        except apollo.ApolloError as e:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY, f"apollo company search failed: {e}"
+            ) from e
+        _COMPANY_SEARCH_CACHE.set(search_key, rows)
     t_search = time.monotonic() - t0
 
     parsed = [apollo_map.parse_company(r) for r in rows]
@@ -635,11 +741,12 @@ def _run_company_find(
             cost += _apply_company_score(c, scored)
     t_total = time.monotonic() - t0
     log.info(
-        "company-find[%s]: apollo=%d search=%.1fs survivors=%d enrich=%.1fs scored=%d "
+        "company-find[%s]: apollo=%d search=%.1fs%s survivors=%d enrich=%.1fs scored=%d "
         "score=%.1fs total=%.1fs%s",
         source,
         len(rows),
         t_search,
+        " (cached)" if cache_hit else "",
         len(survivors),
         t_enrich,
         len(to_score),
@@ -697,9 +804,17 @@ def find_lookalikes(
     """
     if not body.company_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
-    ids = [uuid.UUID(i) for i in body.company_ids]
+    return _lookalike_core(db, ctx.tenant.id, body.model_dump())
+
+
+def _lookalike_core(db: Session, tenant_id, params: dict) -> FindResult:
+    """Lookalike find from the seed `company_ids` (+ optional `icp_id`). Shared by the sync
+    `/companies/find-lookalikes` endpoint and the W4 async worker. Aggregates the seeds'
+    firmographics into a company-search filter, drops the tenant's existing domains, and runs the
+    Flow-A tail UNSCORED (`score=False`)."""
+    ids = _parse_ids(params.get("company_ids") or [])
     seeds = (
-        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
+        db.execute(select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(ids)))
         .scalars()
         .all()
     )
@@ -721,8 +836,8 @@ def find_lookalikes(
 
     # icp: explicit override wins; else the seeds' common ICP (only when they all share one); else
     # null (fit scores against the ICP union, exactly as Flow A does for an unscoped find).
-    if body.icp_id:
-        icp = uuid.UUID(body.icp_id)
+    if params.get("icp_id"):
+        icp = uuid.UUID(params["icp_id"])
     else:
         seed_icps = {c.icp_id for c in seeds}
         icp = next(iter(seed_icps)) if len(seed_icps) == 1 else None
@@ -731,14 +846,14 @@ def find_lookalikes(
     seen_domains = set(
         db.execute(
             select(Company.domain).where(
-                Company.tenant_id == ctx.tenant.id, Company.domain.is_not(None)
+                Company.tenant_id == tenant_id, Company.domain.is_not(None)
             )
         ).scalars()
     )
-    spec = _latest_spec(db, ctx.tenant.id)
+    spec = _latest_spec(db, tenant_id)
     return _run_company_find(
         db,
-        ctx.tenant.id,
+        tenant_id,
         spec,
         filter_body=filter_body,
         limit=LOOKALIKE_LIMIT,
@@ -765,7 +880,7 @@ def select_companies(
     """
     if not body.ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
-    ids = [uuid.UUID(i) for i in body.ids]
+    ids = _parse_ids(body.ids)
     rows = (
         db.execute(
             select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids))
@@ -896,50 +1011,24 @@ def preview_fit_prompt(
     return _company_fit_prompt(db, ctx.tenant.id, sample_id)
 
 
-@router.post("/{client}/companies/rescore", response_model=list[CompanyOut])
-def rescore_companies(
-    body: CompanyRescoreIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> list[CompanyOut]:
-    """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
-    selection), ignoring the `fit_score is None` gate that find-company uses. Run this after the
-    rubric or the scoring prompt changes so existing rows reflect the new scoring.
+def _score_companies(db: Session, tenant_id, rows: list[Company]) -> dict:
+    """Re-score the given company rows against the current rubric + per-row ICP targeting, record
+    one `research_run` (source=rescore) for cost, and return run counts (`{scored, failed,
+    cost_usd}`). Shared by the sync `/companies/rescore` endpoint and the W4 async worker — both
+    load the (tenant-scoped) rows first; this owns the scoring fan-out + persistence.
 
-    Bounded by `MAX_COMPANIES_PER_FIND` (the 30s API-Gateway sync cap) — a larger selection is
-    rejected, not silently truncated, so the caller never thinks rows were re-scored when they
-    weren't. Each row is scored against ITS OWN ICP context (targeting is memoized per icp_id, so
-    a mixed selection is scored correctly). Records one `research_run` (source=rescore) for cost.
+    ICP docs differ per row, so targeting is built once per distinct icp_id on the CALLING thread
+    (the off-thread score jobs close over plain data, never the session). Mirrors find/add scoring.
     """
-    if not body.ids:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
-    if len(body.ids) > MAX_COMPANIES_PER_FIND:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"re-score at most {MAX_COMPANIES_PER_FIND} companies per request",
-        )
-    ids = [uuid.UUID(i) for i in body.ids]
-    rows = (
-        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
-        .scalars()
-        .all()
-    )
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
-
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    rubric = _latest_doc(db, ctx.tenant.id, COMPANY_STAGE)
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
-    # ICP docs differ per row, so build targeting once per distinct icp_id on the main thread (the
-    # off-thread jobs must close over plain data, never the session). Mirrors find/add scoring.
     targeting_cache: dict[str | None, dict] = {}
 
     def _targeting_for(icp_id) -> dict:
         key = str(icp_id) if icp_id else None
         if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(
-                brief, spec, icp_docs(db, ctx.tenant.id, icp_id)
-            )
+            targeting_cache[key] = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
         return targeting_cache[key]
 
     jobs = [
@@ -948,7 +1037,7 @@ def rescore_companies(
             (
                 lambda payload=_company_payload(c), targeting=_targeting_for(c.icp_id): (
                     fit.score_company(
-                        tenant_id=ctx.tenant.id,
+                        tenant_id=tenant_id,
                         rubric_body=rubric_body,
                         company=payload,
                         targeting=targeting,
@@ -959,13 +1048,15 @@ def rescore_companies(
         for c in rows
     ]
     cost = 0.0
+    scored_n = 0
     for c, scored in _score_concurrently(jobs):
         if scored is not None:
             cost += _apply_company_score(c, scored)
+            scored_n += 1
 
     db.add(
         ResearchRun(
-            tenant_id=ctx.tenant.id,
+            tenant_id=tenant_id,
             run_id=_apollo_run_id(),
             spec_version=spec.version if spec else None,
             source="rescore",
@@ -977,8 +1068,274 @@ def rescore_companies(
     db.commit()
     for c in rows:
         db.refresh(c)
+    return {"scored": scored_n, "failed": len(rows) - scored_n, "cost_usd": round(cost, 6)}
+
+
+@router.post("/{client}/companies/rescore", response_model=list[CompanyOut])
+def rescore_companies(
+    body: CompanyRescoreIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> list[CompanyOut]:
+    """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
+    selection), ignoring the `fit_score is None` gate that find-company uses. Run this after the
+    rubric or the scoring prompt changes so existing rows reflect the new scoring.
+
+    Bounded by `MAX_COMPANIES_PER_FIND` (the 30s API-Gateway sync cap) — a larger selection is
+    rejected, not silently truncated. For an unbounded batch use the async kick-off
+    (`/companies/rescore-async`, W4), which runs the same `_score_companies` off the request path.
+    """
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    if len(body.ids) > MAX_COMPANIES_PER_FIND:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"re-score at most {MAX_COMPANIES_PER_FIND} companies per request",
+        )
+    ids = _parse_ids(body.ids)
+    rows = (
+        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
+    _score_companies(db, ctx.tenant.id, rows)
     rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
     return [_company_out(c) for c in rows]
+
+
+# --------------------------------------------------- W4: async scoring jobs (kick-off + poll)
+# A scoring batch fans out one (slow, reasoning) LLM call per row; past ~15 rows it overruns the 30s
+# API-Gateway sync cap, and the prior client-driven chunk loop dies if the tab closes. The async
+# path runs the SAME scoring on a background worker (see domains/prospects/scoring.py).
+
+# Selection-based async jobs (the "Get AI score" buttons + "Update Field") batch at most this many
+# rows per job — the FE messages when a larger selection is picked. find/lookalike keep their own
+# find limits (MAX_COMPANIES_PER_FIND / LOOKALIKE_LIMIT). The cap also keeps a worst-case batch well
+# under the Lambda timeout: the worker scores in waves of `_SCORE_WORKERS`.
+ASYNC_BATCH_MAX = 20
+
+
+def run_rescore_companies(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_RESCORE_COMPANIES`): re-score the company ids in `params`."""
+    raw = [str(x) for x in (params.get("ids") or [])][:ASYNC_BATCH_MAX]
+    ids = _parse_ids(raw)
+    if not ids:
+        return {"scored": 0, "failed": 0, "cost_usd": 0.0}
+    rows = (
+        db.execute(select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(ids)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {"scored": 0, "failed": 0, "cost_usd": 0.0}
+    return _score_companies(db, tenant_id, rows)
+
+
+def run_rescore_prospects(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_RESCORE_PROSPECTS`): re-score the people identity_keys in `params`."""
+    keys = [str(k) for k in (params.get("identity_keys") or [])][:ASYNC_BATCH_MAX]
+    if not keys:
+        return {"scored": 0, "failed": 0, "cost_usd": 0.0}
+    rows = (
+        db.execute(
+            select(Prospect).where(
+                Prospect.tenant_id == tenant_id, Prospect.identity_key.in_(keys)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {"scored": 0, "failed": 0, "cost_usd": 0.0}
+    return _score_prospects(db, tenant_id, rows)
+
+
+def run_find_company(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_FIND_COMPANY`): Apollo Flow-A find (rows land UNSCORED)."""
+    fr = _find_company_core(db, tenant_id, params)
+    return {"found": fr.found, "dropped": fr.dropped, "run_id": fr.run_id}
+
+
+def run_find_lookalikes(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_FIND_LOOKALIKES`): Apollo lookalike find (rows land UNSCORED)."""
+    fr = _lookalike_core(db, tenant_id, params)
+    return {"found": fr.found, "dropped": fr.dropped, "run_id": fr.run_id}
+
+
+def run_update_fields(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_UPDATE_FIELDS`): re-enrich Apollo firmographics for the company ids."""
+    raw = [str(x) for x in (params.get("ids") or [])][:ASYNC_BATCH_MAX]
+    ids = _parse_ids(raw)
+    if not ids:
+        return {"updated": 0, "requested": 0}
+    rows = (
+        db.execute(select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(ids)))
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return {"updated": 0, "requested": 0}
+    return _update_fields_core(db, tenant_id, rows)
+
+
+# Registry the worker dispatches on by `scoring_job.kind`. Defined here (not in scoring.py) because
+# the handlers reuse this module's scoring helpers; the worker imports this dict lazily (no cycle).
+SCORING_HANDLERS = {
+    scoring.KIND_RESCORE_COMPANIES: run_rescore_companies,
+    scoring.KIND_RESCORE_PROSPECTS: run_rescore_prospects,
+    scoring.KIND_FIND_COMPANY: run_find_company,
+    scoring.KIND_FIND_LOOKALIKES: run_find_lookalikes,
+    scoring.KIND_UPDATE_FIELDS: run_update_fields,
+}
+
+
+def _scoring_job_out(job: ScoringJob | None) -> ScoringJobOut:
+    if job is None:
+        return ScoringJobOut(status="idle")
+    return ScoringJobOut(
+        job_id=str(job.id),
+        kind=job.kind,
+        status=job.status,
+        result=job.result or {},
+        error=job.error,
+    )
+
+
+@router.post(
+    "/{client}/companies/rescore-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rescore_companies_async(
+    body: CompanyRescoreIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off a company rescore **asynchronously** (W4); returns a job to poll (202).
+
+    Removes the `MAX_COMPANIES_PER_FIND` sync cap — the same `_score_companies` runs on a background
+    worker, so the selection re-scores in one batch (the browser no longer drives a chunk loop),
+    capped at `ASYNC_BATCH_MAX`. A still-running job of this kind is returned as-is, so a re-click
+    never double-spends. Poll `GET /{client}/scoring-jobs/{job_id}` until `done`/`error`.
+    """
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    if len(body.ids) > ASYNC_BATCH_MAX:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"score at most {ASYNC_BATCH_MAX} companies at a time",
+        )
+    _parse_ids(body.ids)  # validate ids up front (bad UUID → 400) before enqueuing
+    job = scoring.enqueue_scoring(
+        db, ctx.tenant.id, scoring.KIND_RESCORE_COMPANIES, {"ids": body.ids}
+    )
+    return _scoring_job_out(job)
+
+
+@router.post(
+    "/{client}/prospects/rescore-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def rescore_prospects_async(
+    body: ProspectRescoreIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off a people rescore (Step-2 'Get AI score') **asynchronously** (W4), capped at
+    `ASYNC_BATCH_MAX`. Mirrors `rescore_companies_async`."""
+    if not body.identity_keys:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
+    if len(body.identity_keys) > ASYNC_BATCH_MAX:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"score at most {ASYNC_BATCH_MAX} people at a time",
+        )
+    job = scoring.enqueue_scoring(
+        db, ctx.tenant.id, scoring.KIND_RESCORE_PROSPECTS, {"identity_keys": body.identity_keys}
+    )
+    return _scoring_job_out(job)
+
+
+@router.post(
+    "/{client}/companies/find-company-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def find_company_async(
+    body: CompanyFindIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off an Apollo Flow-A company find **asynchronously** (W4). Rows land UNSCORED; the
+    worker surfaces deeper errors (e.g. no research scope) as the job's `error`."""
+    job = scoring.enqueue_scoring(
+        db, ctx.tenant.id, scoring.KIND_FIND_COMPANY, body.model_dump()
+    )
+    return _scoring_job_out(job)
+
+
+@router.post(
+    "/{client}/companies/find-lookalikes-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def find_lookalikes_async(
+    body: CompanyLookalikeIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off an Apollo lookalike find **asynchronously** (W4). Rows land UNSCORED."""
+    if not body.company_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
+    job = scoring.enqueue_scoring(
+        db, ctx.tenant.id, scoring.KIND_FIND_LOOKALIKES, body.model_dump()
+    )
+    return _scoring_job_out(job)
+
+
+@router.post(
+    "/{client}/companies/update-fields-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def update_fields_async(
+    body: CompanyEnrichIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off an Apollo firmographics refresh ('Update Field') **asynchronously** (W4), capped at
+    `ASYNC_BATCH_MAX`."""
+    if not body.ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
+    if len(body.ids) > ASYNC_BATCH_MAX:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"update at most {ASYNC_BATCH_MAX} companies at a time",
+        )
+    _parse_ids(body.ids)
+    job = scoring.enqueue_scoring(db, ctx.tenant.id, scoring.KIND_UPDATE_FIELDS, {"ids": body.ids})
+    return _scoring_job_out(job)
+
+
+@router.get("/{client}/scoring-jobs/{job_id}", response_model=ScoringJobOut)
+def scoring_job_status(
+    job_id: str,
+    ctx: AccessContext = Depends(require_membership()),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Poll one async scoring job (W4) — `status` runs `queued`→`running`→`done`/`error`; `result`
+    holds the run counts once `done`. 404 if the id isn't this client's job."""
+    try:
+        jid = uuid.UUID(job_id)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid job id") from exc
+    job = scoring.job_by_id(db, ctx.tenant.id, jid)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such job")
+    return _scoring_job_out(job)
 
 
 @router.post("/{client}/companies/update-fields", response_model=list[CompanyOut])
@@ -1001,7 +1358,7 @@ def update_company_fields(
             status.HTTP_400_BAD_REQUEST,
             f"update at most {MAX_COMPANIES_PER_FIND} companies per request",
         )
-    ids = [uuid.UUID(i) for i in body.ids]
+    ids = _parse_ids(body.ids)
     rows = (
         db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
         .scalars()
@@ -1009,7 +1366,17 @@ def update_company_fields(
     )
     if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
+    _update_fields_core(db, ctx.tenant.id, rows)
+    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
+    return [_company_out(c) for c in rows]
 
+
+def _update_fields_core(db: Session, tenant_id, rows: list[Company]) -> dict:
+    """Re-enrich Apollo firmographics (one `organizations/enrich` call per domain, concurrent) onto
+    the given company rows, record one `research_run` (source=enrich, no LLM cost), and return
+    counts (`{updated, requested}`). Shared by the sync `/companies/update-fields` endpoint and the
+    W4 async worker — both load the (tenant-scoped) rows first. A hard Apollo failure raises (the
+    worker turns it into a job error); a per-domain miss simply leaves that row unchanged."""
     domains = [c.domain for c in rows if c.domain]
     try:
         enriched = apollo.enrich_organizations(domains)
@@ -1018,13 +1385,15 @@ def update_company_fields(
     by_domain = {
         p["domain"]: p for o in enriched if (p := apollo_map.parse_enrich(o)).get("domain")
     }
+    updated = 0
     for c in rows:
         e = by_domain.get(c.domain)
         if e:
             _apply_enrichment(c, e)
+            updated += 1
     db.add(
         ResearchRun(
-            tenant_id=ctx.tenant.id,
+            tenant_id=tenant_id,
             run_id=_apollo_run_id(),
             source="enrich",
             rows_pushed=len(rows),
@@ -1034,8 +1403,7 @@ def update_company_fields(
     db.commit()
     for c in rows:
         db.refresh(c)
-    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
-    return [_company_out(c) for c in rows]
+    return {"updated": updated, "requested": len(rows)}
 
 
 # ----------------------------------------------------------------- research-run scoreboard
@@ -1253,7 +1621,7 @@ def find_people(
     # Driven by the explicit Step-2 selection (not a "selected" status): only rows with an Apollo
     # org id can be searched, best fit first, bounded by the 30s cap. Re-searching an already
     # people_found row is allowed — Apollo search is free and the seen-id dedupe drops repeats.
-    ids = [uuid.UUID(i) for i in body.company_ids]
+    ids = _parse_ids(body.company_ids)
     selected = (
         db.execute(
             select(Company)
@@ -1413,7 +1781,7 @@ def _humanize(value: str) -> str:
 
 
 def _facet_label(value: str) -> str:
-    return _SENIORITY_LABELS.get(value) or ("C-Suite" if value == "c_suite" else _humanize(value))
+    return _SENIORITY_LABELS.get(value) or _humanize(value)
 
 
 @router.post("/{client}/people/facets", response_model=PeopleFacetsOut)
@@ -1429,7 +1797,7 @@ def people_facets(
     searches regardless of how many companies are selected."""
     if not body.company_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
-    ids = [uuid.UUID(i) for i in body.company_ids]
+    ids = _parse_ids(body.company_ids)
     org_ids = list(
         db.execute(
             select(Company.apollo_org_id).where(
@@ -1443,6 +1811,13 @@ def people_facets(
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "the selected companies have no Apollo id to search"
         )
+    # W8 — the same org set re-opened (or re-ticked) within the TTL returns the memoized sidebar
+    # instead of re-firing ~26 Apollo probes. Keyed per (tenant, org set); counts are stable enough
+    # over a few minutes that a short TTL is invisible to the operator.
+    facets_key = (str(ctx.tenant.id), tuple(sorted(org_ids)))
+    cached = _PEOPLE_FACETS_CACHE.get(facets_key)
+    if cached is not None:
+        return cached
     base = {"organization_ids": org_ids}
     # (kind, value, extra-filter) — one free count_people probe each, fanned out concurrently.
     probes: list[tuple[str, str, dict]] = [
@@ -1456,7 +1831,7 @@ def people_facets(
     except apollo.ApolloError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"apollo facet probe failed: {e}") from e
     by_key = {(p[0], p[1]): c for p, c in zip(probes, counts, strict=True)}
-    return PeopleFacetsOut(
+    out = PeopleFacetsOut(
         total=by_key[("total", "")],
         seniorities=[
             FacetCount(value=s, label=_facet_label(s), count=by_key[("sen", s)])
@@ -1474,6 +1849,8 @@ def people_facets(
             for d in MASTER_DEPARTMENTS
         ],
     )
+    _PEOPLE_FACETS_CACHE.set(facets_key, out)
+    return out
 
 
 @router.get("/{client}/people/scope-override", response_model=PeopleScopeOverrideOut)
@@ -1547,6 +1924,81 @@ def reset_people_scope_override(
         db.commit()
 
 
+def _score_prospects(db: Session, tenant_id, rows: list[Prospect]) -> dict:
+    """Re-score the given prospect rows against the current people rubric + per-row ICP targeting,
+    record one `research_run` (source=rescore), and return counts (`{scored, failed, cost_usd}`).
+    Shared by the sync `/prospects/rescore` endpoint and the W4 async worker — both load the
+    (tenant-scoped) rows first; this owns the scoring fan-out + persistence (mirror companies).
+
+    Parent companies are loaded once so each person is scored with its account's firmographics + the
+    stage-1 fit verdict (a decision-maker INSIDE an already-qualified company). Targeting is built
+    once per distinct icp_id on the CALLING thread; the off-thread score jobs close over plain data.
+    """
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, PROSPECT_STAGE)
+    rubric_body = rubric.body if rubric else ""
+    company_ids = {p.company_id for p in rows if p.company_id}
+    companies = (
+        {
+            c.id: c
+            for c in db.execute(
+                select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(company_ids))
+            ).scalars()
+        }
+        if company_ids
+        else {}
+    )
+    targeting_cache: dict[str | None, dict] = {}
+
+    def _targeting_for(icp_id) -> dict:
+        key = str(icp_id) if icp_id else None
+        if key not in targeting_cache:
+            targeting_cache[key] = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+        return targeting_cache[key]
+
+    jobs = [
+        (
+            p,
+            (
+                lambda payload=_prospect_payload(p.enrichment, companies.get(p.company_id)),
+                targeting=_targeting_for(p.icp_id): fit.score(
+                    tenant_id=tenant_id,
+                    rubric_body=rubric_body,
+                    enrichment=payload,
+                    targeting=targeting,
+                )
+            ),
+        )
+        for p in rows
+    ]
+    cost = 0.0
+    scored_n = 0
+    for p, scored in _score_concurrently(jobs):
+        if scored is not None:
+            p.fit_score = scored["fit_score"]
+            p.fit_tier = scored["fit_tier"]
+            p.fit_reason = scored.get("fit_reason", "")  # column parity (migration 0014); see W2
+            p.fit_components = scored["fit_components"]
+            cost += float(scored.get("cost_usd") or 0.0)
+            scored_n += 1
+
+    db.add(
+        ResearchRun(
+            tenant_id=tenant_id,
+            run_id=_apollo_run_id(),
+            spec_version=spec.version if spec else None,
+            source="rescore",
+            rubric_version=fit.RUBRIC_VERSION,
+            rows_pushed=len(rows),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for p in rows:
+        db.refresh(p)
+    return {"scored": scored_n, "failed": len(rows) - scored_n, "cost_usd": round(cost, 6)}
+
+
 @router.post("/{client}/prospects/rescore", response_model=list[ProspectOut])
 def rescore_prospects(
     body: ProspectRescoreIn,
@@ -1558,8 +2010,7 @@ def rescore_prospects(
     from find, so this is how a person gets a fit tier; re-running after a rubric change re-scores.
 
     Bounded by `MAX_PEOPLE_PER_FIND` (the 30s sync cap) — a larger selection is rejected, not
-    truncated. Each row scores against ITS OWN ICP context (targeting memoized per icp_id). Records
-    one `research_run` (source=rescore) for cost.
+    truncated. For a larger batch use the async kick-off (`/prospects/rescore-async`, W4).
     """
     if not body.identity_keys:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
@@ -1580,72 +2031,7 @@ def rescore_prospects(
     )
     if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching prospects")
-
-    brief, spec = _latest_brief(db, ctx.tenant.id), _latest_spec(db, ctx.tenant.id)
-    rubric = _latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)
-    rubric_body = rubric.body if rubric else ""
-    # Parent companies, loaded once, so each person is scored with its account's firmographics + the
-    # stage-1 fit verdict (decision-maker INSIDE an already-qualified company).
-    company_ids = {p.company_id for p in rows if p.company_id}
-    companies = (
-        {
-            c.id: c
-            for c in db.execute(
-                select(Company).where(
-                    Company.tenant_id == ctx.tenant.id, Company.id.in_(company_ids)
-                )
-            ).scalars()
-        }
-        if company_ids
-        else {}
-    )
-    targeting_cache: dict[str | None, dict] = {}
-
-    def _targeting_for(icp_id) -> dict:
-        key = str(icp_id) if icp_id else None
-        if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(
-                brief, spec, icp_docs(db, ctx.tenant.id, icp_id)
-            )
-        return targeting_cache[key]
-
-    jobs = [
-        (
-            p,
-            (
-                lambda payload=_prospect_payload(p.enrichment, companies.get(p.company_id)),
-                targeting=_targeting_for(p.icp_id): fit.score(
-                    tenant_id=ctx.tenant.id,
-                    rubric_body=rubric_body,
-                    enrichment=payload,
-                    targeting=targeting,
-                )
-            ),
-        )
-        for p in rows
-    ]
-    cost = 0.0
-    for p, scored in _score_concurrently(jobs):
-        if scored is not None:
-            p.fit_score = scored["fit_score"]
-            p.fit_tier = scored["fit_tier"]
-            p.fit_components = scored["fit_components"]
-            cost += float(scored.get("cost_usd") or 0.0)
-
-    db.add(
-        ResearchRun(
-            tenant_id=ctx.tenant.id,
-            run_id=_apollo_run_id(),
-            spec_version=spec.version if spec else None,
-            source="rescore",
-            rubric_version=fit.RUBRIC_VERSION,
-            rows_pushed=len(rows),
-            cost_usd=round(cost, 6),
-        )
-    )
-    db.commit()
-    for p in rows:
-        db.refresh(p)
+    _score_prospects(db, ctx.tenant.id, rows)
     rows.sort(key=lambda p: (p.fit_score is None, -(p.fit_score or 0)))
     return [_prospect_out(p) for p in rows]
 
@@ -1692,7 +2078,13 @@ def confirm_enrich(
     # with no apollo_person_id, or rows already enriched).
     to_match: list[Prospect] = []
     for p in rows:
-        already_enriched = bool(p.email_valid or (p.enrichment or {}).get("email"))
+        # Credit-safety gate (idempotency): `last_enriched_at` is stamped on every completed
+        # Apollo match, even one that charged a credit but returned no verified email. Gate on
+        # it so a re-submit never re-charges such a row. (Gating on email presence alone silently
+        # re-spent a credit on every matched-but-no-email row when the founder re-clicked Enrich.)
+        already_enriched = p.last_enriched_at is not None or bool(
+            p.email_valid or (p.enrichment or {}).get("email")
+        )
         if not p.apollo_person_id or already_enriched:
             if p.status == "found":
                 p.status = "confirmed"
@@ -1721,11 +2113,17 @@ def confirm_enrich(
     for p in to_match:
         res = matched_by_pid.get(p.apollo_person_id)
         if isinstance(res, Exception):
+            log.warning(
+                "enrich[%s]: match errored person=%s: %s", ctx.tenant.slug, p.apollo_person_id, res
+            )
             p.status = "enrich_failed"
             failed += 1
             continue
         matched = apollo_map.parse_match(res)
         if not matched.get("apollo_person_id"):
+            log.warning(
+                "enrich[%s]: no apollo match person=%s", ctx.tenant.slug, p.apollo_person_id
+            )
             p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
             failed += 1
             continue
@@ -1743,6 +2141,17 @@ def confirm_enrich(
         p.status = "scored"
         enriched += 1
     db.commit()  # one commit; the cap bounds any crash-window re-spend to ≤ MAX_ENRICH_PER_REQUEST
+    # Credit-spend audit trail (the only place HoldSlot spends an Apollo credit) — see W3 for the
+    # standardized request-scoped logging this anticipates.
+    log.info(
+        "enrich[%s]: rows=%d to_match=%d enriched=%d credits=%d failed=%d",
+        ctx.tenant.slug,
+        len(rows),
+        len(to_match),
+        enriched,
+        credits,
+        failed,
+    )
     return EnrichResult(
         confirmed=len(rows), enriched=enriched, credits_spent=credits, failed=failed
     )

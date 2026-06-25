@@ -97,14 +97,55 @@ async function detail(r: Response): Promise<string> {
     .catch(() => `request failed (${r.status})`);
 }
 
-export async function login(email: string, password: string): Promise<LoginResult> {
-  const r = await fetch(`${API_BASE}/auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ email, password }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+// Cold-start aware login (W6). Aurora Serverless auto-pauses to 0-ACU in dev; the first login after
+// an idle period can come back 503 (the backend's "database is waking up" signal) or fail at the
+// network/gateway layer while the cluster resumes. We retry ONLY those cold-start signals — never a
+// 401 (bad credentials must fail fast) — backing off up to ~45s, calling `onWaking` so the UI can
+// show a "waking the database…" message. Resolves once the cluster is up (resume takes ~15-30s).
+const LOGIN_COLD_START_CAP_MS = 45_000;
+
+function isColdStartStatus(status: number): boolean {
+  return status === 503 || status === 504 || status === 502;
+}
+
+export async function login(
+  email: string,
+  password: string,
+  onWaking?: () => void
+): Promise<LoginResult> {
+  const deadline = Date.now() + LOGIN_COLD_START_CAP_MS;
+  for (let attempt = 1; ; attempt++) {
+    let r: Response;
+    try {
+      r = await fetch(`${API_BASE}/auth/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+    } catch (e) {
+      // Network error / gateway timeout — treat as a cold-start signal and retry within the cap.
+      if (Date.now() < deadline) {
+        onWaking?.();
+        await coldStartBackoff(attempt, deadline);
+        continue;
+      }
+      throw e instanceof Error ? e : new Error("login failed");
+    }
+    if (r.ok) return r.json();
+    if (r.status === 401) throw new Error(await detail(r)); // real auth failure — never retry
+    if (isColdStartStatus(r.status) && Date.now() < deadline) {
+      onWaking?.();
+      await coldStartBackoff(attempt, deadline);
+      continue;
+    }
+    throw new Error(await detail(r));
+  }
+}
+
+// Backoff between cold-start retries: grows 2s→6s, never sleeping past the overall deadline.
+function coldStartBackoff(attempt: number, deadline: number): Promise<void> {
+  const wait = Math.min(2000 + (attempt - 1) * 1500, 6000);
+  return new Promise((res) => setTimeout(res, Math.max(0, Math.min(wait, deadline - Date.now()))));
 }
 
 export async function forgot(email: string): Promise<void> {
@@ -434,10 +475,36 @@ export type SourcingDocList = {
   prospect_fit: SourcingDocApi | null;
 };
 
-export async function listProspects(client: string): Promise<ProspectApi[]> {
-  const r = await authFetch(`/${client}/prospects`);
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+// --- List feeds — cursor-paged (W5) ------------------------------------------
+// The server caps each response (≤ LIST_CEILING). The client auto-loads every page on mount with
+// no "load more" action, up to LIST_CEILING total. Past that we stop and flag `truncated` so the UI
+// can say "showing first N". FEED_PAGE divides LIST_CEILING so we fetch exactly the ceiling, never
+// overfetch a partial extra page.
+export const LIST_CEILING = 250;
+const FEED_PAGE = 100;
+
+type CursorPage<T> = { items: T[]; next_cursor: string | null };
+export type Feed<T> = { items: T[]; truncated: boolean };
+
+async function pageThrough<T>(path: string): Promise<Feed<T>> {
+  const items: T[] = [];
+  let cursor: string | null = null;
+  do {
+    const limit = Math.min(FEED_PAGE, LIST_CEILING - items.length);
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (cursor) qs.set("cursor", cursor);
+    const r = await authFetch(`${path}?${qs.toString()}`);
+    if (!r.ok) throw new Error(await detail(r));
+    const page = (await r.json()) as CursorPage<T>;
+    items.push(...page.items);
+    cursor = page.next_cursor;
+  } while (cursor && items.length < LIST_CEILING);
+  // cursor still set ⇒ the server has more rows than we loaded (we stopped at the ceiling).
+  return { items, truncated: cursor != null };
+}
+
+export async function listProspects(client: string): Promise<Feed<ProspectApi>> {
+  return pageThrough<ProspectApi>(`/${client}/prospects`);
 }
 
 export async function getSourcingDocs(client: string): Promise<SourcingDocList> {
@@ -462,10 +529,8 @@ export async function saveSourcingDoc(
 
 // --- Phase C stage 1 — Companies (find → review → select) --------------------
 
-export async function listCompanies(client: string): Promise<CompanyApi[]> {
-  const r = await authFetch(`/${client}/companies`);
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+export async function listCompanies(client: string): Promise<Feed<CompanyApi>> {
+  return pageThrough<CompanyApi>(`/${client}/companies`);
 }
 
 export type CompanyManual = {
@@ -489,18 +554,30 @@ export async function addCompany(client: string, body: CompanyManual): Promise<C
   return r.json();
 }
 
-// Flow A — Apollo company search from the latest ResearchSpec → suppress → upsert → score.
-export async function findCompanies(
+// --- W4 async scoring jobs (kick-off + poll) ---------------------------------
+// The scoring-bearing surfaces (find / lookalike / rescore ×2 / update-fields) run on a background
+// worker, past the 30s gateway cap. Each kick-off returns a job; the caller polls /scoring-jobs/{id}
+// until terminal, then reloads the affected list. Replaces the old client-driven chunk loops.
+export type ScoringJobApi = {
+  job_id: string | null;
+  kind: string | null;
+  status: string; // idle | queued | running | done | error
+  result: Record<string, unknown>;
+  error: string | null;
+};
+
+// "Get AI score" / "Update Field" batch ceiling — must match the backend ASYNC_BATCH_MAX.
+export const SCORE_BATCH_MAX = 20;
+
+const JOB_POLL_MS = 2000;
+const JOB_POLL_MAX = 200; // ~6.5-min ceiling; the Lambda-bounded worker terminates well before this
+
+async function kickScoringJob(
   client: string,
-  body: {
-    limit?: number;
-    icp_id?: string | null;
-    // Operator override of the saved AI scope (Settings modal); omitted → spec is used as-is.
-    company_search_params?: Record<string, unknown>;
-    intent_filters?: Record<string, unknown>;
-  } = {}
-): Promise<FindResult> {
-  const r = await authFetch(`/${client}/companies/find-company`, {
+  path: string,
+  body: unknown
+): Promise<ScoringJobApi> {
+  const r = await authFetch(`/${client}/${path}`, {
     method: "POST",
     json: true,
     body: JSON.stringify(body),
@@ -509,20 +586,47 @@ export async function findCompanies(
   return r.json();
 }
 
-// "Lookalike" — find the next batch of peers of the selected stage-1 rows. Apollo has no native
-// lookalike API; the server aggregates the seeds' firmographics into a company-search filter and
-// runs the normal Find tail (seeds drop out by domain dedupe). Returns the same FindResult shape.
-export async function findLookalikes(
-  client: string,
-  body: { company_ids: string[]; icp_id?: string | null }
-): Promise<FindResult> {
-  const r = await authFetch(`/${client}/companies/find-lookalikes`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify(body),
-  });
+async function getScoringJob(client: string, jobId: string): Promise<ScoringJobApi> {
+  const r = await authFetch(`/${client}/scoring-jobs/${jobId}`);
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
+}
+
+// Poll a kicked-off job until done/error (or `alive()` turns false, or the ceiling is hit), then
+// return the latest job. Callers reload their list on a non-error terminal and surface job.error.
+export async function awaitScoringJob(
+  client: string,
+  jobId: string,
+  alive: () => boolean = () => true
+): Promise<ScoringJobApi> {
+  for (let i = 0; i < JOB_POLL_MAX && alive(); i++) {
+    const job = await getScoringJob(client, jobId);
+    if (job.status === "done" || job.status === "error") return job;
+    await new Promise((res) => setTimeout(res, JOB_POLL_MS));
+  }
+  return getScoringJob(client, jobId);
+}
+
+// Flow A — Apollo company search from the latest ResearchSpec (async; rows land UNSCORED).
+export function findCompaniesAsync(
+  client: string,
+  body: {
+    limit?: number;
+    icp_id?: string | null;
+    // Operator override of the saved AI scope (Settings modal); omitted → spec is used as-is.
+    company_search_params?: Record<string, unknown>;
+    intent_filters?: Record<string, unknown>;
+  } = {}
+): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "companies/find-company-async", body);
+}
+
+// "Lookalike" — find the next batch of peers of the selected stage-1 rows (async; rows UNSCORED).
+export function findLookalikesAsync(
+  client: string,
+  body: { company_ids: string[]; icp_id?: string | null }
+): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "companies/find-lookalikes-async", body);
 }
 
 // Select/deselect stage-1 companies — the selected set scopes Flow B (find people).
@@ -540,28 +644,16 @@ export async function selectCompanies(
   return r.json();
 }
 
-// Re-run fit scoring for an explicit set of already-sourced companies (ignores the unscored gate).
-// Use after the rubric / scoring prompt changes. Returns the re-scored rows (best fit first).
-export async function rescoreCompanies(client: string, ids: string[]): Promise<CompanyApi[]> {
-  const r = await authFetch(`/${client}/companies/rescore`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ ids }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+// Re-run fit scoring for an explicit set of already-sourced companies (async; the "Get AI score"
+// button). Capped at SCORE_BATCH_MAX rows per job. Use after the rubric / scoring prompt changes.
+export function rescoreCompaniesAsync(client: string, ids: string[]): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "companies/rescore-async", { ids });
 }
 
-// "Update Field" — re-enrich Apollo firmographics for the selected companies (the deliberate credit
-// spend; Find Companies enriches only new rows). Returns the updated rows (best fit first).
-export async function updateCompanyFields(client: string, ids: string[]): Promise<CompanyApi[]> {
-  const r = await authFetch(`/${client}/companies/update-fields`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ ids }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+// "Update Field" — re-enrich Apollo firmographics for the selected companies (async; the deliberate
+// credit spend; Find Companies enriches only new rows). Capped at SCORE_BATCH_MAX rows per job.
+export function updateCompanyFieldsAsync(client: string, ids: string[]): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "companies/update-fields-async", { ids });
 }
 
 // --- Phase C stage 2 — People (find → review → confirm-enrich) ---------------
@@ -590,7 +682,7 @@ export async function addProspect(client: string, body: ProspectManual): Promise
 }
 
 // Flow B — find people across an explicit set of Step-2 companies (one Apollo api_search per org),
-// 0 credits. Rows land UNSCORED ("Pending"); score on demand via rescoreProspects.
+// 0 credits. Rows land UNSCORED ("Pending"); score on demand via rescoreProspectsAsync.
 export async function findPeople(
   client: string,
   body: {
@@ -671,19 +763,13 @@ export async function getPeopleDepartments(client: string): Promise<FacetOption[
   return r.json();
 }
 
-// Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (by identity
-// key) against the current rubric. Returns the re-scored rows (best fit first).
-export async function rescoreProspects(
+// Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (async; by
+// identity key) against the current rubric. Capped at SCORE_BATCH_MAX rows per job.
+export function rescoreProspectsAsync(
   client: string,
   identityKeys: string[]
-): Promise<ProspectApi[]> {
-  const r = await authFetch(`/${client}/prospects/rescore`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ identity_keys: identityKeys }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
+): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "prospects/rescore-async", { identity_keys: identityKeys });
 }
 
 // The enrich gate — Apollo people/match on the confirmed rows (the only credit spend); returns the

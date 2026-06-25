@@ -251,6 +251,34 @@ class ProspectOut(BaseModel):
     created_at: str | None = None
 
 
+class ScoringJobOut(BaseModel):
+    """Async scoring-job status (W4) — polled until `status` is `done`/`error`. `result` carries the
+    per-run counts (`{scored, failed, cost_usd}`); `status=idle` when no job of the kind has run.
+    """
+
+    job_id: str | None = None
+    kind: str | None = None
+    status: str  # idle | queued | running | done | error
+    result: dict = Field(default_factory=dict)
+    error: str | None = None
+
+
+class ProspectPage(BaseModel):
+    """One page of the prospect list feed (W5). `next_cursor` is the opaque cursor for the page
+    after this one, or `null` at the end — the web app follows it until exhausted or the ceiling.
+    """
+
+    items: list[ProspectOut] = []
+    next_cursor: str | None = None
+
+
+class CompanyPage(BaseModel):
+    """One page of the company list feed (W5) — same envelope as `ProspectPage`."""
+
+    items: list[CompanyOut] = []
+    next_cursor: str | None = None
+
+
 class FindResult(BaseModel):
     """Result of a find run: the run id + counts + the rows that landed (best fit first)."""
 
