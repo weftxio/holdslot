@@ -51,7 +51,9 @@ export default function Login() {
   const [resetting, setResetting] = useState(false);
 
   // Open the set-new-password view when arriving from the email link; show a notice when the
-  // console bounced us here on an expired session.
+  // console bounced us here on an expired session. This is necessarily a mount effect: it reads
+  // window.location and strips the token via history.replaceState (client-only side effects).
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const token = params.get("reset");
@@ -65,6 +67,7 @@ export default function Login() {
       window.history.replaceState(null, "", window.location.pathname);
     }
   }, []);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function submitNewPassword() {
     if (newPw.length < 8) {

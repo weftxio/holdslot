@@ -16,10 +16,12 @@ const IDLE_GRACE_MS = 5 * 60 * 1000;
  */
 export function SessionGuard() {
   const router = useRouter();
-  const lastActivity = useRef(Date.now());
+  // Seeded in the mount effect, not here — calling Date.now() during render is impure.
+  const lastActivity = useRef(0);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
+    lastActivity.current = Date.now(); // mounting the guard counts as the first activity
     const markActive = () => {
       lastActivity.current = Date.now();
     };

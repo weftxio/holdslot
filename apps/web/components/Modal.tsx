@@ -29,8 +29,11 @@ export function Modal({
   // Keep the latest onClose without putting it in the effect deps — callers pass a fresh arrow
   // each render, so depending on it would re-run the effect (and steal focus to the ✕ button)
   // on every keystroke inside the modal, closing it when a space/Enter "clicks" that button.
+  // Sync it in an effect (after commit), never by mutating the ref during render.
   const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;

@@ -48,6 +48,7 @@ export default function BatchesPage() {
     // unknown ?batch= value just lands on the tab instead of expanding nothing.
     const idx = batches.findIndex((x) => x.name === b);
     if (idx < 0) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time ?batch= deep-link that also scrolls
     setOpenBatch(b);
     setTimeout(
       () =>

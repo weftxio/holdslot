@@ -20,6 +20,9 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
 
+  // Hydrate the list from localStorage after mount; reading it during render would mismatch the
+  // SSR'd default list (DEFAULT_CLIENTS).
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setList(loadClients()), []);
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
