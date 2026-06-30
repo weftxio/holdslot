@@ -45,7 +45,10 @@ export type Brief = {
   qualifiedDef: string;
   first90: string;
 };
+// Live (Phase D) — `id` is the batch id used for detail/send/decide calls. `status` is the UI
+// label mapped from the API's draft/sent/approved/changes_requested (see batchFromApi).
 export type Batch = {
+  id: string;
   name: string;
   count: number;
   approved: number;

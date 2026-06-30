@@ -2,41 +2,8 @@
 // move behind an API accessor when the backend lands. One file per page-group keeps the route
 // components thin.
 
-export type ApprovalRow = {
-  name: string;
-  sent: string;
-  prospects: string;
-  responded: string;
-  status: string;
-  badge: string;
-};
-export const A_LOG: ApprovalRow[] = [
-  {
-    name: "Batch 3",
-    sent: "2 days ago",
-    prospects: "48",
-    responded: "Not yet",
-    status: "Pending",
-    badge: "badge-warn",
-  },
-  {
-    name: "Batch 2",
-    sent: "placeholder",
-    prospects: "52",
-    responded: "placeholder date",
-    status: "Approved",
-    badge: "badge-ok",
-  },
-  {
-    name: "Batch 1",
-    sent: "placeholder",
-    prospects: "40",
-    responded: "placeholder date",
-    status: "Approved",
-    badge: "badge-ok",
-  },
-];
-
+// Approval rows are now LIVE (Phase D) — built from listBatches in the approval page, so the old
+// A_LOG/ApprovalRow mock was removed. Booking + feedback stay mock until Phase E/F.
 export type BookingRow = {
   name: string;
   sent: string;

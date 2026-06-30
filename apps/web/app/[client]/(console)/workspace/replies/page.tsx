@@ -4,7 +4,7 @@ import clsx from "clsx";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { daysAgoLabel, fmtShortDate } from "@/lib/workspace/constants";
+import { MOCK_TODAY, daysAgoLabel, fmtShortDate } from "@/lib/workspace/constants";
 import { NUDGE_COPY, REPLY_COPY } from "@/lib/workspace/fixtures";
 
 export default function RepliesPage() {
@@ -83,7 +83,7 @@ export default function RepliesPage() {
                   <span className="ql">{c.qhead}</span>
                   <span className="reply-date">
                     {c.datePrefix}
-                    {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt)}
+                    {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt, MOCK_TODAY)}
                   </span>
                 </div>
                 {c.body}

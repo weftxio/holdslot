@@ -49,6 +49,30 @@ function jsonFor(method: string, path: string): unknown {
     };
   }
 
+  // Public token-only approval view (no /{client} prefix). The approve page fetches this on mount;
+  // a `state: "valid"` masked view keeps it on the live card instead of flipping to the expired pane.
+  if (path.startsWith("/approve/")) {
+    return {
+      state: "valid",
+      batch_name: "Batch 1",
+      client_name: "HoldSlot",
+      count: 1,
+      expires_at: null,
+      prospects: [
+        {
+          id: "a1",
+          name: "Sarah K.",
+          company_descriptor: "SaaS · 200-500 · US",
+          title: "VP Marketing",
+          seniority: "vp",
+          fit_tier: "Strong",
+          fit_reason: "Right seniority and category.",
+          decision: "pending",
+        },
+      ],
+    };
+  }
+
   // Strip the leading /{client} so the per-client endpoints match regardless of slug.
   const rel = path.replace(new RegExp(`^/${CLIENT}`), "");
 

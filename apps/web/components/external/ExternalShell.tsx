@@ -20,6 +20,7 @@ export function ExternalShell({
   expiredLines,
   success,
   done,
+  forceExpired,
   children,
 }: {
   secure: string;
@@ -30,10 +31,12 @@ export function ExternalShell({
   expiredLines: string[];
   success: React.ReactNode;
   done: boolean;
+  // Phase D: the live API can report the link as expired/used; OR it with the demo `?state` toggle.
+  forceExpired?: boolean;
   children: React.ReactNode;
 }) {
   const [state, setState] = useLinkState();
-  const expired = state === "expired";
+  const expired = state === "expired" || !!forceExpired;
 
   return (
     <div className="ext-body">

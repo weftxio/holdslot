@@ -1,77 +1,120 @@
 "use client";
-import { useState } from "react";
-import { Sample } from "@/components/Sample";
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
+import { decideApproval, getApproval, type ApprovalViewApi } from "@/lib/api";
 import { ExternalShell } from "@/components/external/ExternalShell";
 import "./approve.css";
 
-const ROLES = [
-  "Placeholder title",
-  "Placeholder title",
-  "Placeholder title",
-  "Placeholder title",
-  "Placeholder title",
-  "Placeholder title",
-];
-
-// One-line "why a fit" summary shown under each prospect (placeholder copy for the mock).
-const SUMMARIES = [
-  "Placeholder: matches your ICP, recently showed a buying signal.",
-  "Placeholder: right seniority and team size, active in your category.",
-  "Placeholder: fits your target industry and deal-size profile.",
-  "Placeholder: decision-maker at a company in your sweet spot.",
-  "Placeholder: strong fit on role, region, and tech stack.",
-  "Placeholder: matches your ICP, growing team with a relevant need.",
-];
-
 export default function Approve() {
-  const [removed, setRemoved] = useState<Record<number, boolean>>({});
+  const token = useParams<{ token: string }>().token;
+  const [view, setView] = useState<ApprovalViewApi | null>(null);
+  const [removed, setRemoved] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState(false);
-  const live = ROLES.length - Object.values(removed).filter(Boolean).length;
+  const [mode, setMode] = useState<"approved" | "changes">("approved");
+  const [busy, setBusy] = useState(false);
 
-  const success = (
-    <div className="success-inner">
-      <div className="tick">✓</div>
-      <h1>List approved.</h1>
-      <p className="confirm-copy">
-        Thank you.
-        <br />
-        We&apos;ll reach out to your approved prospects from warmed inboxes.
-        <br />
-        Replies are handled and qualified meetings land on your calendar.
-      </p>
-      <p className="muted" style={{ fontSize: 13, marginTop: 18 }}>
-        You can close this page. No account needed.
-      </p>
-    </div>
-  );
+  useEffect(() => {
+    getApproval(token)
+      .then(setView)
+      .catch(() =>
+        setView({ state: "expired", batch_name: "", client_name: "", count: 0, expires_at: null, prospects: [] })
+      );
+  }, [token]);
+
+  const prospects = view?.prospects ?? [];
+  const live = prospects.length - prospects.filter((p) => removed[p.id]).length;
+
+  async function approve() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const removed_ids = prospects.filter((p) => removed[p.id]).map((p) => p.id);
+      await decideApproval(token, { removed_ids });
+      setMode("approved");
+      setDone(true);
+    } catch {
+      // The link lapsed/was used between load and submit — flip to the expired pane.
+      setView((v) => (v ? { ...v, state: "used" } : v));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function requestChanges() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await decideApproval(token, { request_changes: true });
+      setMode("changes");
+      setDone(true);
+    } catch {
+      setView((v) => (v ? { ...v, state: "used" } : v));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const success =
+    mode === "changes" ? (
+      <div className="success-inner">
+        <div className="tick">✓</div>
+        <h1>Thanks — we&apos;ll revise the list.</h1>
+        <p className="confirm-copy">
+          Your HoldSlot operator has been notified and will send an updated list shortly.
+          <br />
+          Nothing is contacted until you approve.
+        </p>
+        <p className="muted" style={{ fontSize: 13, marginTop: 18 }}>
+          You can close this page. No account needed.
+        </p>
+      </div>
+    ) : (
+      <div className="success-inner">
+        <div className="tick">✓</div>
+        <h1>List approved.</h1>
+        <p className="confirm-copy">
+          Thank you.
+          <br />
+          We&apos;ll reach out to your approved prospects from warmed inboxes.
+          <br />
+          Replies are handled and qualified meetings land on your calendar.
+        </p>
+        <p className="muted" style={{ fontSize: 13, marginTop: 18 }}>
+          You can close this page. No account needed.
+        </p>
+      </div>
+    );
+
+  const forceExpired = !!view && view.state !== "valid";
 
   return (
     <ExternalShell
       secure="🔒 Secure link · for the client"
       footBy="Sent securely by HoldSlot"
       footNote="Questions? Reply to the email this came from."
-      expiredTitle="This link has expired"
+      expiredTitle={view?.state === "used" ? "This link has already been used" : "This link has expired"}
       expiredLines={[
-        "For security, approval links are valid for a limited time. This one is no longer active.",
+        "For security, approval links are valid for a limited time and can be used once.",
         "We've let your HoldSlot operator know. A fresh link is on its way to your inbox shortly.",
       ]}
       success={success}
       done={done}
+      forceExpired={forceExpired}
     >
       <div className="ext-head">
         <span className="eyebrow">Your approval needed</span>
         <h1>Approve your prospect list</h1>
         <p>
-          HoldSlot has prepared this list of prospects for <b>HoldSlot</b> <Sample>sample</Sample>{" "}
-          for your review · please approve within 5 days so we can keep your campaign on schedule.
-          Nothing is contacted until you approve. Remove anyone who isn&apos;t a fit, then approve
-          in one click.
+          HoldSlot has prepared this list of prospects for <b>{view?.client_name || "your team"}</b>{" "}
+          for your review. Nothing is contacted until you approve. Remove anyone who isn&apos;t a fit,
+          then approve in one click.
         </p>
       </div>
       <div className="ext-pad">
         <div className="summary-strip">
           <span>
-            <b>Batch 3</b> · {live} prospects · matched to your brief
+            <b>{view?.batch_name || "Your batch"}</b> · {live} prospect{live === 1 ? "" : "s"} ·
+            matched to your brief
           </span>
           <span className="badge badge-warn">
             <span className="bdot" />
@@ -79,25 +122,37 @@ export default function Approve() {
           </span>
         </div>
 
-        <div className="approve-list">
-          {ROLES.map((r, i) => (
-            <div className={"approve-row" + (removed[i] ? " removed" : "")} key={i}>
-              <div className="av-sm">P{i + 1}</div>
-              <div className="ai">
-                <div className="nm">
-                  Prospect {i + 1} <Sample>sample</Sample>
+        {!view ? (
+          <div className="ph" style={{ padding: "24px 4px" }}>
+            Loading your prospect list…
+          </div>
+        ) : (
+          <div className="approve-list">
+            {prospects.map((p, i) => (
+              <div className={"approve-row" + (removed[p.id] ? " removed" : "")} key={p.id}>
+                <div className="av-sm">P{i + 1}</div>
+                <div className="ai">
+                  <div className="nm">{p.name || "Prospect"}</div>
+                  <div className="rl">
+                    {[p.title, p.company_descriptor].filter(Boolean).join(" · ")}
+                  </div>
+                  {p.fit_reason && <div className="why">{p.fit_reason}</div>}
                 </div>
-                <div className="rl">
-                  {r} · Sample Co {i + 1}
-                </div>
-                <div className="why">{SUMMARIES[i]}</div>
+                <button
+                  className="ex"
+                  onClick={() => setRemoved((s) => ({ ...s, [p.id]: !s[p.id] }))}
+                >
+                  {removed[p.id] ? "Undo" : "Remove"}
+                </button>
               </div>
-              <button className="ex" onClick={() => setRemoved((s) => ({ ...s, [i]: !s[i] }))}>
-                {removed[i] ? "Undo" : "Remove"}
-              </button>
-            </div>
-          ))}
-        </div>
+            ))}
+            {prospects.length === 0 && (
+              <div className="ph" style={{ padding: "18px 4px" }}>
+                This batch has no prospects to review.
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="consent" style={{ marginBottom: 20 }}>
           <span className="ci">✓</span>
@@ -108,13 +163,14 @@ export default function Approve() {
         </div>
 
         <div className="cta-row">
-          <button
-            className="btn btn-ghost"
-            onClick={() => alert("Mock: opens a change-request note")}
-          >
+          <button className="btn btn-ghost" onClick={requestChanges} disabled={busy || !view}>
             Request changes
           </button>
-          <button className="btn btn-primary" onClick={() => setDone(true)} disabled={live === 0}>
+          <button
+            className="btn btn-primary"
+            onClick={approve}
+            disabled={busy || !view || live === 0}
+          >
             Approve {live} prospect{live === 1 ? "" : "s"} &amp; start outreach
           </button>
         </div>

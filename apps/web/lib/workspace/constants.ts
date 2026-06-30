@@ -1,9 +1,13 @@
 import {
+  type BatchApi,
+  type BriefDoc,
   type IcpApi,
   type ProspectApi,
   type ResearchSpecResult,
 } from "@/lib/api";
+import { type ExclRow, parseExclusionCsv } from "@/lib/csv";
 import type {
+  Batch,
   Brief,
   Icp,
   IcpFields,
@@ -73,6 +77,64 @@ export const BATCH_STATUS_CLS: Record<string, string> = {
   Pending: "badge-warn",
 };
 
+// Map the API batch status (draft·sent·approved·changes_requested) to the UI label the Sendout
+// Batch + Campaign surfaces render. draft/sent are both "Pending" (awaiting the client decision).
+export function uiBatchStatus(s: string): Batch["status"] {
+  if (s === "approved") return "Approved";
+  if (s === "changes_requested") return "Rejected";
+  return "Pending";
+}
+// API batch → the workspace `Batch` view model. ISO datetimes are trimmed to YYYY-MM-DD so the
+// existing fmtShortDate/daysAgoLabel helpers read them.
+export function batchFromApi(b: BatchApi): Batch {
+  return {
+    id: b.id,
+    name: b.name,
+    count: b.total,
+    approved: b.approved,
+    icp: b.icp || "—",
+    status: uiBatchStatus(b.status),
+    createdAt: (b.created_at ?? "").slice(0, 10),
+    sentAt: b.sent_at ? b.sent_at.slice(0, 10) : undefined,
+    // Only an *approved* batch has an approval date; a changes_requested ("Rejected") batch is
+    // decided but not approved, so it must not render "Approved <date>".
+    approvedAt: b.status === "approved" && b.decided_at ? b.decided_at.slice(0, 10) : undefined,
+  };
+}
+// Do-not-contact list, derived live from the client's Brief (§4 Exclusions & Guardrails) rather
+// than from mock fixtures. The three exclusion fields are stored as free-form text in the brief
+// doc, each row in the canonical "domain, name, website" format; `parseExclusionCsv` is the same
+// parser the brief uses, so what shows here is exactly what the brief accepted. A "we have none"
+// checkbox (noExclude*) zeroes its group. Suppressed everywhere — never in any batch or campaign.
+export type ExclusionGroup = { tag: string; cls: string; entries: ExclRow[] };
+
+const EXCLUSION_SOURCES: { key: keyof Brief; noKey: keyof Brief; tag: string; cls: string }[] = [
+  { key: "excludeCustomers", noKey: "noExcludeCustomers", tag: "Customer", cls: "badge-info" },
+  { key: "excludeDeals", noKey: "noExcludeDeals", tag: "Active deal", cls: "badge-warn" },
+  { key: "doNotContact", noKey: "noDoNotContact", tag: "Competitor / DNC", cls: "badge-danger" },
+];
+
+export function exclusionsFromBrief(doc: BriefDoc | undefined): {
+  groups: ExclusionGroup[];
+  count: number;
+} {
+  const d = (doc ?? {}) as Partial<Brief>;
+  const groups = EXCLUSION_SOURCES.map(({ key, noKey, tag, cls }) => {
+    const skip = d[noKey] === true;
+    const text = typeof d[key] === "string" ? (d[key] as string) : "";
+    return { tag, cls, entries: skip ? [] : parseExclusionCsv(text).valid };
+  });
+  return { groups, count: groups.reduce((n, g) => n + g.entries.length, 0) };
+}
+
+// Per-prospect approval decision (pending·approved·removed) → {label, badge class} for the
+// Sendout Batch detail rows.
+export const DECISION_VIEW: Record<string, { label: string; cls: string }> = {
+  approved: { label: "Approved", cls: "badge-ok" },
+  removed: { label: "Removed", cls: "badge-danger" },
+  pending: { label: "Pending", cls: "badge-warn" },
+};
+
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export function clearScoring(setScoring: ScoringSetter, ids: string[]) {
   if (!ids.length) return;
@@ -87,18 +149,17 @@ export function clearScoring(setScoring: ScoringSetter, ids: string[]) {
 // HKD 6,000 + HKD 4,000 model. The rate is a fixed business rule, not per-client data.
 export const PER_MEETING_USD = 500;
 
-// reply dates relative to the app's current date (fixed for the mock)
-export const TODAY_ISO = "2026-06-03";
-const REPLY_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
+// The mock reply fixtures are dated relative to this fixed "today"; pass it to daysAgoLabel for
+// those. Live data (e.g. Phase D batches) leaves the arg off and gets the real current date.
+const TODAY_ISO = "2026-06-03";
+export const MOCK_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export function fmtShortDate(iso: string) {
   const [, m, d] = iso.split("-").map(Number);
   return MONTHS[m - 1] + " " + d;
 }
-export function daysAgoLabel(iso: string) {
-  const diff = Math.round(
-    (REPLY_TODAY.getTime() - new Date(iso + "T00:00:00Z").getTime()) / 86400000
-  );
+export function daysAgoLabel(iso: string, now: Date = new Date()) {
+  const diff = Math.round((now.getTime() - new Date(iso + "T00:00:00Z").getTime()) / 86400000);
   return diff <= 0 ? "today" : diff === 1 ? "1 day ago" : diff + " days ago";
 }
 

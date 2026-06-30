@@ -786,3 +786,152 @@ export async function enrichProspects(
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
+
+// --- Phase D (S3) — Sendout batch + client approval --------------------------
+// Counts (total/approved/removed/pending) are DERIVED server-side from prospect_approval, never
+// stored. `status` walks draft → sent → approved | changes_requested.
+export type BatchApi = {
+  id: string;
+  name: string;
+  icp: string;
+  status: string;
+  total: number;
+  approved: number;
+  removed: number;
+  pending: number;
+  created_at: string | null;
+  sent_at: string | null;
+  decided_at: string | null;
+};
+// One prospect inside the console (FULL, operator-owned) batch detail — NOT masked.
+export type BatchProspectApi = {
+  approval_id: string;
+  prospect_id: string;
+  full_name: string;
+  title: string;
+  seniority: string;
+  fit_tier: string | null;
+  fit_reason: string;
+  decision: string; // pending | approved | removed
+};
+export type BatchCompanyGroupApi = {
+  company: string;
+  domain: string;
+  industry: string;
+  size: string;
+  country: string;
+  fit_tier: string | null;
+  fit_reason: string;
+  prospects: BatchProspectApi[];
+};
+export type BatchDetailApi = BatchApi & { companies: BatchCompanyGroupApi[] };
+export type ApprovalTemplateApi = { subject: string; body: string; cta: string };
+
+export async function listBatches(client: string): Promise<BatchApi[]> {
+  const r = await authFetch(`/${client}/batches`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function createBatch(
+  client: string,
+  body: { prospect_ids: string[]; name?: string; icp_id?: string | null }
+): Promise<BatchApi> {
+  const r = await authFetch(`/${client}/batches`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function getBatch(client: string, id: string): Promise<BatchDetailApi> {
+  const r = await authFetch(`/${client}/batches/${id}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function sendApproval(
+  client: string,
+  id: string,
+  email: string
+): Promise<BatchApi> {
+  const r = await authFetch(`/${client}/batches/${id}/send`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ email }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+// Step-3 human fallback — the operator records the client decision by hand.
+export async function decideBatch(
+  client: string,
+  id: string,
+  body: { approved_ids?: string[]; removed_ids?: string[]; request_changes?: boolean }
+): Promise<BatchApi> {
+  const r = await authFetch(`/${client}/batches/${id}/decide`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function getApprovalTemplate(client: string): Promise<ApprovalTemplateApi> {
+  const r = await authFetch(`/${client}/approval-template`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function saveApprovalTemplate(
+  client: string,
+  body: ApprovalTemplateApi
+): Promise<ApprovalTemplateApi> {
+  const r = await authFetch(`/${client}/approval-template`, {
+    method: "PUT",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+// --- Phase D external (public, token-only — NO auth) -------------------------
+// The MASKED client view: fit context only, never a clear-text identity/contact vector.
+export type ApprovalProspectApi = {
+  id: string; // the opaque decide handle (prospect_approval id)
+  name: string; // "Sarah K."
+  company_descriptor: string; // "SaaS · 200–500 · US" (not the exact company)
+  title: string;
+  seniority: string;
+  fit_tier: string | null;
+  fit_reason: string;
+  decision: string;
+};
+export type ApprovalViewApi = {
+  state: "valid" | "expired" | "used";
+  batch_name: string;
+  client_name: string;
+  count: number;
+  expires_at: string | null;
+  prospects: ApprovalProspectApi[];
+};
+export type ApprovalDecisionApi = { status: string; approved: number; removed: number };
+
+export async function getApproval(token: string): Promise<ApprovalViewApi> {
+  // No auth — the token is the credential. The endpoint always 200s with a `state` so the page
+  // can pick its pane; it never reveals tenant existence.
+  const r = await fetch(`${API_BASE}/approve/${encodeURIComponent(token)}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function decideApproval(
+  token: string,
+  body: { removed_ids?: string[]; approved_ids?: string[]; request_changes?: boolean }
+): Promise<ApprovalDecisionApi> {
+  const r = await fetch(`${API_BASE}/approve/${encodeURIComponent(token)}/decide`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r)); // 410 once expired/used/decided
+  return r.json();
+}

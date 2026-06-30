@@ -1,55 +1,79 @@
 "use client";
-import { Fragment, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { useClient } from "@/lib/nav";
 import clsx from "clsx";
+import { useQuery } from "@tanstack/react-query";
+import {
+  getBatch,
+  getBrief,
+  sendApproval as apiSendApproval,
+  type BatchDetailApi,
+} from "@/lib/api";
+import { useClient } from "@/lib/nav";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { Batch } from "@/lib/workspace/types";
 import {
   BATCH_STATUS_CLS,
-  TODAY_ISO,
+  DECISION_VIEW,
   daysAgoLabel,
+  exclusionsFromBrief,
   fmtShortDate,
 } from "@/lib/workspace/constants";
-import {
-  EXCLUSION_COUNT,
-  EXCLUSIONS,
-  SAMPLE_CONNECTIONS,
-  SAMPLE_INDUSTRIES,
-  SCORE_TIERS,
-  STAFF_ROLES,
-} from "@/lib/workspace/fixtures";
 
 export default function BatchesPage() {
   const client = useClient();
   const toast = useToast();
-  const { batches, setBatches } = useWorkspace();
+  const { batches, reloadBatches } = useWorkspace();
   const pendingBatches = batches.filter((b) => b.status === "Pending").length;
 
-  // expandable batch detail (sample prospect rows)
+  // Do-not-contact list is read live from this client's Brief (§4 Exclusions & Guardrails), not
+  // mock data. Shares the ["brief", client] cache with the Business Brief tab, so it's instant
+  // after that tab has loaded and reflects whatever exclusions the client most recently saved.
+  const { data: briefRes } = useQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) });
+  const { groups: exclusionGroups, count: exclusionCount } = exclusionsFromBrief(briefRes?.data);
+
+  // expandable batch detail — fetched live per batch id on first open
   const [openBatch, setOpenBatch] = useState<string | null>(null);
+  const [details, setDetails] = useState<Record<string, BatchDetailApi>>({});
   const [exclOpen, setExclOpen] = useState(false);
-  const toggleBatch = (name: string, id: string, open: boolean) => {
-    setOpenBatch(open ? null : name);
+  const [lastEmail, setLastEmail] = useState("");
+
+  // Refetch on every open (no stale cache): a batch's decisions can change after the client responds
+  // via the link, so the prior detail is shown only until the fresh fetch lands.
+  const loadDetail = useCallback(
+    async (id: string) => {
+      try {
+        const d = await getBatch(client, id);
+        setDetails((s) => ({ ...s, [id]: d }));
+      } catch {
+        /* leave unloaded — the row just shows no detail */
+      }
+    },
+    [client]
+  );
+
+  const toggleBatch = (b: Batch, domId: string, open: boolean) => {
+    setOpenBatch(open ? null : b.id);
     if (!open) {
+      void loadDetail(b.id);
       setTimeout(
-        () => document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        () => document.getElementById(domId)?.scrollIntoView({ behavior: "smooth", block: "start" }),
         60
       );
     }
   };
 
-  // deep-link: ?batch=<name> opens the Approval Batches tab with that batch expanded
+  // deep-link: ?batch=<id> opens this tab with that batch expanded (and its detail loaded). Keyed by
+  // id, not name — batch names aren't unique, so a name match could open the wrong batch.
   useEffect(() => {
-    const b = new URLSearchParams(location.search).get("batch");
-    if (!b) return;
-    // Only expand/scroll when the requested batch actually exists — a stale or
-    // unknown ?batch= value just lands on the tab instead of expanding nothing.
-    const idx = batches.findIndex((x) => x.name === b);
+    const id = new URLSearchParams(location.search).get("batch");
+    if (!id) return;
+    const idx = batches.findIndex((x) => x.id === id);
     if (idx < 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time ?batch= deep-link that also scrolls
-    setOpenBatch(b);
+    setOpenBatch(id);
+    void loadDetail(id);
     setTimeout(
       () =>
         document
@@ -57,53 +81,22 @@ export default function BatchesPage() {
           ?.scrollIntoView({ behavior: "smooth", block: "start" }),
       160
     );
+    // run once after batches first load; loadDetail is stable enough for this one-shot deep-link
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [batches.length]);
 
-  // batch approval action: send the approval email, or nudge if it was already sent
-  const sendApproval = (name: string) => {
-    const alreadySent = !!batches.find((x) => x.name === name)?.sentAt;
-    setBatches((s) =>
-      s.map((b) => (b.name === name ? { ...b, sentAt: b.sentAt || TODAY_ISO } : b))
-    );
-    toast(alreadySent ? "Follow-up nudge sent to client" : "Approval email sent to client");
-  };
-
-  // Group a batch's prospects under their company — company is the primary row, its related
-  // staff listed beneath. Distributes b.count people across companies of 2–3, sorted by company.
-  const batchCompanies = (b: Batch) => {
-    const groups: {
-      company: string;
-      domain: string;
-      score: (typeof SCORE_TIERS)[number];
-      industry: string;
-      connectedTo: string;
-      people: { name: string; role: string; status: string }[];
-    }[] = [];
-    let placed = 0;
-    let ci = 0;
-    while (placed < b.count) {
-      const size = Math.min((ci % 2) + 2, b.count - placed); // 2, 3, 2, 3 …
-      const people = Array.from({ length: size }, (_, k) => {
-        const idx = placed + k;
-        return {
-          name: "Prospect " + (idx + 1),
-          role: STAFF_ROLES[idx % STAFF_ROLES.length],
-          status: idx < b.approved ? "Approved" : b.status === "Rejected" ? "Rejected" : "Pending",
-        };
-      });
-      groups.push({
-        company: "Sample Co " + (ci + 1),
-        domain: "sampleco" + (ci + 1) + ".com",
-        score: SCORE_TIERS[ci % SCORE_TIERS.length],
-        industry: SAMPLE_INDUSTRIES[ci % SAMPLE_INDUSTRIES.length],
-        connectedTo: SAMPLE_CONNECTIONS[ci % SAMPLE_CONNECTIONS.length],
-        people,
-      });
-      placed += size;
-      ci++;
+  // batch approval action: send the approval link, or a follow-up nudge if it was already sent
+  const onSend = async (b: Batch) => {
+    const email = window.prompt("Send the approval link to which client email?", lastEmail);
+    if (!email || !email.trim()) return;
+    try {
+      await apiSendApproval(client, b.id, email.trim());
+      setLastEmail(email.trim());
+      await reloadBatches();
+      toast(b.sentAt ? "Follow-up nudge sent to client" : "Approval email sent to client");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Send failed", "warn");
     }
-    return groups;
   };
 
   return (
@@ -142,8 +135,14 @@ export default function BatchesPage() {
             <div className="sob-main">
               <div className="sob-name">Do-not-contact list</div>
               <div className="sob-meta">
-                <b style={{ color: "var(--danger)" }}>{EXCLUSION_COUNT}</b> suppressed contacts ·
-                never contacted · excluded from every batch &amp; campaign
+                {exclusionCount > 0 ? (
+                  <>
+                    <b style={{ color: "var(--danger)" }}>{exclusionCount}</b> suppressed contacts ·
+                    never contacted · excluded from every batch &amp; campaign
+                  </>
+                ) : (
+                  <>No exclusions in your Brief yet · add them in Business Brief → Exclusions</>
+                )}
               </div>
             </div>
             <span className="badge badge-danger">
@@ -167,9 +166,17 @@ export default function BatchesPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {EXCLUSIONS.flatMap((g) =>
+                    {exclusionCount === 0 && (
+                      <tr>
+                        <td colSpan={4} className="muted">
+                          No companies on your do-not-contact list yet · add them in your Business
+                          Brief under Exclusions &amp; Guardrails.
+                        </td>
+                      </tr>
+                    )}
+                    {exclusionGroups.flatMap((g) =>
                       g.entries.map((e) => (
-                        <tr key={g.label + e.domain}>
+                        <tr key={g.tag + e.domain}>
                           <td>
                             <span className="nm">{e.domain}</span>
                           </td>
@@ -194,20 +201,26 @@ export default function BatchesPage() {
             </div>
           )}
         </div>
+        {batches.length === 0 && (
+          <div className="ph" style={{ padding: "26px 4px" }}>
+            No batches yet · create one from the enriched prospects on the Prospect List tab.
+          </div>
+        )}
         {batches.map((b, i) => {
-          const open = openBatch === b.name;
+          const open = openBatch === b.id;
+          const detail = details[b.id];
           return (
-            <div className={clsx("sob-item", open && "open")} key={b.name} id={"sob-item-" + i}>
+            <div className={clsx("sob-item", open && "open")} key={b.id} id={"sob-item-" + i}>
               <div
                 className="sob-card"
                 role="button"
                 tabIndex={0}
                 aria-expanded={open}
-                onClick={() => toggleBatch(b.name, "sob-item-" + i, open)}
+                onClick={() => toggleBatch(b, "sob-item-" + i, open)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") {
                     e.preventDefault();
-                    toggleBatch(b.name, "sob-item-" + i, open);
+                    toggleBatch(b, "sob-item-" + i, open);
                   }
                 }}
               >
@@ -233,7 +246,9 @@ export default function BatchesPage() {
                           {label} {fmtShortDate(d)} · <b>{daysAgoLabel(d)}</b>
                         </span>
                       ))}
-                    {!b.approvedAt && <span className="sob-date warn">Not yet approved</span>}
+                    {b.status === "Pending" && (
+                      <span className="sob-date warn">Not yet approved</span>
+                    )}
                   </div>
                 </div>
                 {b.status === "Pending" && (
@@ -241,7 +256,7 @@ export default function BatchesPage() {
                     className="btn btn-accent btn-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      sendApproval(b.name);
+                      void onSend(b);
                     }}
                   >
                     {b.sentAt ? "Follow-Up Approval" : "Send approval email"}
@@ -263,62 +278,80 @@ export default function BatchesPage() {
                         <tr>
                           <th>Company</th>
                           <th>Score</th>
-                          <th>Industries</th>
-                          <th>Connected to</th>
+                          <th>Industry</th>
                           <th>Prospect</th>
                           <th>Approval</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {batchCompanies(b).map((co) => (
-                          <Fragment key={co.company}>
-                            {co.people.map((p, pj) => (
-                              <tr key={co.company + p.name}>
-                                {/* Company-level cells span the company's staff rows (first row only) */}
-                                {pj === 0 && (
-                                  <>
-                                    <td className="vtop" rowSpan={co.people.length}>
-                                      <span className="nm">{co.company}</span>
-                                      <div className="sub">{co.domain}</div>
-                                    </td>
-                                    <td className="vtop" rowSpan={co.people.length}>
-                                      <span className={clsx("badge", co.score.cls)}>
-                                        <span className="bdot" />
-                                        {co.score.grade} · {co.score.heat}
-                                      </span>
-                                    </td>
-                                    <td className="vtop" rowSpan={co.people.length}>
-                                      <span className="icp-chip">{co.industry}</span>
-                                    </td>
-                                    <td className="vtop muted" rowSpan={co.people.length}>
-                                      {co.connectedTo}
-                                    </td>
-                                  </>
-                                )}
-                                <td>
-                                  <span className="nm">{p.name}</span>
-                                  <div className="sub">{p.role}</div>
-                                </td>
-                                <td>
-                                  <span
-                                    className={clsx(
-                                      "badge",
-                                      BATCH_STATUS_CLS[p.status] || "badge-neutral"
-                                    )}
-                                  >
-                                    <span className="bdot" />
-                                    {p.status}
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
+                        {(detail?.companies ?? []).map((co, ci) => (
+                          <Fragment key={co.domain + ci}>
+                            {co.prospects.map((p, pj) => {
+                              const dec = DECISION_VIEW[p.decision] || {
+                                label: p.decision,
+                                cls: "badge-neutral",
+                              };
+                              return (
+                                <tr key={p.approval_id}>
+                                  {pj === 0 && (
+                                    <>
+                                      <td className="vtop" rowSpan={co.prospects.length}>
+                                        <span className="nm">{co.company || co.domain || "—"}</span>
+                                        {co.domain && <div className="sub">{co.domain}</div>}
+                                      </td>
+                                      <td className="vtop" rowSpan={co.prospects.length}>
+                                        {co.fit_tier ? (
+                                          <span className="badge badge-info">
+                                            <span className="bdot" />
+                                            {co.fit_tier}
+                                          </span>
+                                        ) : (
+                                          <span className="muted">—</span>
+                                        )}
+                                      </td>
+                                      <td className="vtop" rowSpan={co.prospects.length}>
+                                        {co.industry ? (
+                                          <span className="icp-chip">{co.industry}</span>
+                                        ) : (
+                                          <span className="muted">—</span>
+                                        )}
+                                      </td>
+                                    </>
+                                  )}
+                                  <td>
+                                    <span className="nm">{p.full_name || "—"}</span>
+                                    <div className="sub">{p.title}</div>
+                                  </td>
+                                  <td>
+                                    <span className={clsx("badge", dec.cls)}>
+                                      <span className="bdot" />
+                                      {dec.label}
+                                    </span>
+                                  </td>
+                                </tr>
+                              );
+                            })}
                           </Fragment>
                         ))}
+                        {detail && detail.companies.length === 0 && (
+                          <tr>
+                            <td colSpan={5} className="muted">
+                              No prospects in this batch.
+                            </td>
+                          </tr>
+                        )}
+                        {!detail && (
+                          <tr>
+                            <td colSpan={5} className="muted">
+                              Loading prospects…
+                            </td>
+                          </tr>
+                        )}
                       </tbody>
                     </table>
                   </div>
                   <div className="sob-more">
-                    {b.count} prospects · {b.approved} approved · {b.count - b.approved} pending
+                    {b.count} prospects · {b.approved} approved
                   </div>
                 </div>
               )}

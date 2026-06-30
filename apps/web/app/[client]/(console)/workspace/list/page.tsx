@@ -18,6 +18,7 @@ import {
   addCompany,
   addProspect,
   awaitScoringJob,
+  createBatch as apiCreateBatch,
   deletePeopleScopeOverride,
   enrichProspects,
   findCompaniesAsync,
@@ -56,7 +57,6 @@ import {
   SOURCE_CLS,
   SOURCE_LABEL,
   STATUS_LABEL,
-  TODAY_ISO,
   apiToIcp,
   clearScoring,
   compareProspectRows,
@@ -87,9 +87,9 @@ export default function ListPage() {
   // the reloads + scope/doc writes below sync the cache so a return after a paid find shows fresh rows.
   const qc = useQueryClient();
   const toast = useToast();
-  // Batch creation from selection writes the shared cross-tab batches state (and reads the current
-  // count for the default batch name).
-  const { batches, setBatches } = useWorkspace();
+  // Batch creation from the enriched selection calls the live API, then refreshes the shared
+  // cross-tab batches state so the Sendout Batch + Campaign surfaces pick it up.
+  const { reloadBatches } = useWorkspace();
 
   // ICPs + research spec — loaded locally on mount: icpNameById/the fIcp filter/ICP labels need
   // `icps`, and the scope-override `effectiveScope` needs `spec`. Additive to the list load below.
@@ -222,12 +222,6 @@ export default function ListPage() {
   const [addPersonOpen, setAddPersonOpen] = useState(false);
   const [personForm, setPersonForm] = useState({ ...blankPerson });
   const [savingPerson, setSavingPerson] = useState(false);
-
-  const icpNameById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const p of icps) if (p.id) m.set(p.id, p.short);
-    return m;
-  }, [icps]);
 
   async function reloadProspects() {
     setProspectsLoading(true);
@@ -1070,29 +1064,30 @@ export default function ListPage() {
     }
   }
 
-  function createBatch() {
-    const name = newBatchName.trim() || "Batch " + (batches.length + 1);
+  async function createBatch() {
     // Only enriched people can be batched — enforce enrich-before-batch (the dock already gates
     // the button; re-check here so a stale click can't slip unenriched rows through).
     const picked = enrichedSel;
     if (!picked.length) {
       return toast("Select enriched people — enrich the Found ones first", "warn");
     }
-    const icpSet = new Set(picked.map((p) => (p.icp_id ? icpNameById.get(p.icp_id) : null) || "—"));
-    setBatches((s) => [
-      ...s,
-      {
-        name,
-        count: picked.length,
-        approved: 0,
-        icp: icpSet.size === 1 ? [...icpSet][0] : "Multiple ICPs",
-        status: "Pending",
-        createdAt: TODAY_ISO,
-      },
-    ]);
-    setNewBatchName("");
-    setChecked(new Set());
-    toast(name + " created with " + picked.length + " prospects, pending client approval");
+    const name = newBatchName.trim();
+    // Pass the shared ICP when the whole selection agrees; else the server leaves it unset.
+    const icpIds = new Set(picked.map((p) => p.icp_id).filter(Boolean));
+    const icp_id = icpIds.size === 1 ? ([...icpIds][0] as string) : undefined;
+    try {
+      const b = await apiCreateBatch(client, {
+        prospect_ids: picked.map((p) => p.id),
+        ...(name ? { name } : {}),
+        ...(icp_id ? { icp_id } : {}),
+      });
+      await reloadBatches();
+      setNewBatchName("");
+      setChecked(new Set());
+      toast(`${b.name} created with ${b.total} prospects, pending client approval`);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Create batch failed", "warn");
+    }
   }
 
   return (

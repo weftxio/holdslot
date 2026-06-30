@@ -1,54 +1,103 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { useClient } from "@/lib/nav";
 import clsx from "clsx";
+import {
+  getApprovalTemplate,
+  listBatches,
+  saveApprovalTemplate,
+  type ApprovalTemplateApi,
+  type BatchApi,
+} from "@/lib/api";
+import { useClient } from "@/lib/nav";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { highlightTokens } from "@/lib/tmpl";
-import { A_LOG } from "@/lib/fixtures/client-status";
+import { BATCH_STATUS_CLS, fmtShortDate, uiBatchStatus } from "@/lib/workspace/constants";
+
+const DEFAULT_TMPL: ApprovalTemplateApi = {
+  subject: "HoldSlot: your prospect list is ready to approve",
+  body:
+    "Hi {{client_name}}, we've prepared a new batch of {{count}} prospects matched to your brief.\n\n" +
+    "Nothing is contacted until you approve. Review the list, then approve it or flag anyone who isn't a fit.",
+  cta: "Review the list",
+};
+
+const day = (iso: string | null) => (iso ? fmtShortDate(iso.slice(0, 10)) : null);
 
 export default function ApprovalPage() {
   const client = useClient();
   const toast = useToast();
   const [approvalBatch, setApprovalBatch] = useState("");
+  const [batches, setBatches] = useState<BatchApi[]>([]);
 
-  // editable sendout template
-  const [tmpl, setTmpl] = useState({
-    subject: "HoldSlot: your prospect list is ready to approve",
-    body:
-      "Hi {{client_name}}, we've prepared a new batch of {{count}} prospects matched to your brief.\n\n" +
-      "Nothing is contacted until you approve. Review the list, then approve it or flag anyone who isn't a fit.",
-    cta: "Review the list",
-  });
+  // editable sendout template (seeded from the API; the default renders until it loads). Editing is
+  // gated on `tmplReady` so a click before the fetch resolves can't seed the draft from the default
+  // and save it over a custom template (also re-gated while a new client's template loads).
+  const [tmpl, setTmpl] = useState<ApprovalTemplateApi>(DEFAULT_TMPL);
+  const [tmplReady, setTmplReady] = useState(false);
   const [editingTmpl, setEditingTmpl] = useState(false);
   const [draft, setDraft] = useState(tmpl);
+
+  useEffect(() => {
+    let alive = true;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- re-gate edit while the client's template loads
+    setTmplReady(false);
+    getApprovalTemplate(client)
+      .then((t) => alive && setTmpl(t))
+      .catch(() => undefined)
+      .finally(() => alive && setTmplReady(true));
+    listBatches(client)
+      .then((b) => alive && setBatches(b))
+      .catch(() => alive && setBatches([]));
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+
   function startEditTmpl() {
     setDraft(tmpl);
     setEditingTmpl(true);
   }
-  function saveTmpl() {
-    setTmpl(draft);
-    setEditingTmpl(false);
-    toast("Template saved");
+  async function saveTmpl() {
+    try {
+      const saved = await saveApprovalTemplate(client, draft);
+      setTmpl(saved);
+      setEditingTmpl(false);
+      toast("Template saved");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Save failed", "warn");
+    }
   }
 
-  const approveHref = `/${client}/approve/sample-link`;
+  // Derived summary chips — Total prospects + Approved are live (Phase D); Message sent (E) and
+  // Booked meeting (F) stay placeholder until those phases land.
+  const totalProspects = batches.reduce((n, b) => n + b.total, 0);
+  const totalApproved = batches.reduce((n, b) => n + b.approved, 0);
+
+  const log = batches.map((b) => {
+    const status = uiBatchStatus(b.status);
+    return {
+      id: b.id,
+      name: b.name,
+      sent: b.sent_at ? day(b.sent_at)! : "Not sent",
+      prospects: String(b.total),
+      responded: b.decided_at ? day(b.decided_at)! : "Not yet",
+      status,
+      badge: BATCH_STATUS_CLS[status] || "badge-neutral",
+    };
+  });
 
   return (
     <section className="es-section active">
       <div className="es-summary">
         <div className="esc">
           <div className="ecap">Total prospects</div>
-          <div className="en">
-            <Sample>n</Sample>
-          </div>
+          <div className="en">{totalProspects}</div>
         </div>
         <div className="esc">
           <div className="ecap">Approved</div>
-          <div className="en">
-            <Sample>n</Sample>
-          </div>
+          <div className="en">{totalApproved}</div>
         </div>
         <div className="esc">
           <div className="ecap">Message sent</div>
@@ -145,13 +194,18 @@ export default function ApprovalPage() {
                 </div>
               </div>
               <div className="tmpl-actions">
-                <button
+                <Link
+                  href={`/${client}/workspace/batches`}
                   className="btn btn-sm"
-                  style={{ width: "100%", background: "var(--cerulean-deep)", color: "#fff" }}
-                  onClick={() => toast("Approval request sent to client")}
+                  style={{
+                    width: "100%",
+                    background: "var(--cerulean-deep)",
+                    color: "#fff",
+                    textAlign: "center",
+                  }}
                 >
-                  Send to client
-                </button>
+                  Send a batch to client
+                </Link>
               </div>
               <div className="tmpl-actions" style={{ marginTop: 9 }}>
                 {editingTmpl ? (
@@ -177,17 +231,10 @@ export default function ApprovalPage() {
                       className="btn btn-ghost btn-sm"
                       style={{ flex: 1 }}
                       onClick={startEditTmpl}
+                      disabled={!tmplReady}
                     >
                       Edit template
                     </button>
-                    <Link
-                      href={approveHref}
-                      target="_blank"
-                      className="btn btn-ghost btn-sm"
-                      style={{ flex: 1 }}
-                    >
-                      Preview live page
-                    </Link>
                   </>
                 )}
               </div>
@@ -209,8 +256,8 @@ export default function ApprovalPage() {
                   onChange={(e) => setApprovalBatch(e.target.value)}
                 >
                   <option value="">All batches</option>
-                  {A_LOG.map((r) => (
-                    <option key={r.name}>{r.name}</option>
+                  {log.map((r) => (
+                    <option key={r.id}>{r.name}</option>
                   ))}
                 </select>
               </div>
@@ -228,30 +275,39 @@ export default function ApprovalPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {A_LOG.filter((r) => !approvalBatch || r.name === approvalBatch).map((r) => (
-                    <tr key={r.name}>
-                      <td>
-                        <span className="nm">{r.name}</span> <Sample>sample</Sample>
-                      </td>
-                      <td className="muted">{r.sent}</td>
-                      <td className="num">{r.prospects}</td>
-                      <td className="muted">{r.responded}</td>
-                      <td>
-                        <span className={clsx("badge", r.badge)}>
-                          <span className="bdot" />
-                          {r.status}
-                        </span>
-                      </td>
-                      <td style={{ textAlign: "right" }}>
-                        <Link
-                          href={`/${client}/workspace/batches?batch=${encodeURIComponent(r.name)}`}
-                          className="btn btn-ghost btn-2xs"
-                        >
-                          View batch
-                        </Link>
+                  {log.length === 0 && (
+                    <tr>
+                      <td colSpan={6} className="muted">
+                        No approval requests yet.
                       </td>
                     </tr>
-                  ))}
+                  )}
+                  {log
+                    .filter((r) => !approvalBatch || r.name === approvalBatch)
+                    .map((r) => (
+                      <tr key={r.id}>
+                        <td>
+                          <span className="nm">{r.name}</span>
+                        </td>
+                        <td className="muted">{r.sent}</td>
+                        <td className="num">{r.prospects}</td>
+                        <td className="muted">{r.responded}</td>
+                        <td>
+                          <span className={clsx("badge", r.badge)}>
+                            <span className="bdot" />
+                            {r.status}
+                          </span>
+                        </td>
+                        <td style={{ textAlign: "right" }}>
+                          <Link
+                            href={`/${client}/workspace/batches?batch=${encodeURIComponent(r.id)}`}
+                            className="btn btn-ghost btn-2xs"
+                          >
+                            View batch
+                          </Link>
+                        </td>
+                      </tr>
+                    ))}
                 </tbody>
               </table>
             </div>

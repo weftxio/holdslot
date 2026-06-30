@@ -1,4 +1,3 @@
-import { type ExclRow } from "@/lib/csv";
 import type { LedgerRow, Recap, Reply } from "./types";
 
 // Per-prospect enrichment shown in the expanded Approval Batches table (mock — wired in Phase C/E).
@@ -175,44 +174,5 @@ export const INITIAL_REPLIES: Reply[] = [
   // Most-aged first: oldest outreach/reply date on top (ISO strings sort lexically).
   .sort((a, b) => a.repliedAt.localeCompare(b.repliedAt));
 
-// Do-not-contact list — the three exclusion sources from the Brief. Everyone here is
-// suppressed from every batch and campaign; it is pinned to the top of Approval Batches
-// for review and never overlaps a sendout batch.
-// Each entry mirrors the Brief exclusion input format: company domain · company name · website.
-export const EXCLUSIONS: {
-  label: string;
-  tag: string;
-  cls: string;
-  entries: ExclRow[];
-}[] = [
-  {
-    label: "Existing customers to exclude",
-    tag: "Customer",
-    cls: "badge-info",
-    entries: [
-      { domain: "acme.com", name: "Acme Corp", website: "https://acme.com" },
-      { domain: "globex.com", name: "Globex Inc", website: "https://globex.com" },
-      { domain: "initech.com", name: "Initech", website: "https://initech.com" },
-    ],
-  },
-  {
-    label: "Active deals / pipeline to exclude",
-    tag: "Active deal",
-    cls: "badge-warn",
-    entries: [
-      { domain: "umbrella.co", name: "Umbrella Co", website: "https://umbrella.co" },
-      { domain: "soylent.com", name: "Soylent Ltd", website: "https://soylent.com" },
-    ],
-  },
-  {
-    label: "Competitors & do-not-contact (any reason)",
-    tag: "Competitor / DNC",
-    cls: "badge-danger",
-    entries: [
-      { domain: "competitor-a.com", name: "Competitor A", website: "https://competitor-a.com" },
-      { domain: "competitor-b.io", name: "Competitor B", website: "https://competitor-b.io" },
-      { domain: "hooli.com", name: "Hooli", website: "https://hooli.com" },
-    ],
-  },
-];
-export const EXCLUSION_COUNT = EXCLUSIONS.reduce((n, g) => n + g.entries.length, 0);
+// The Do-not-contact list shown on the Sendout Batch tab now reads live from the client's Brief
+// (§4 Exclusions & Guardrails) via `exclusionsFromBrief` in lib/workspace/constants — no mock.

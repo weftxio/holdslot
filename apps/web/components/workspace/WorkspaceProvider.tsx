@@ -1,15 +1,23 @@
 "use client";
-import { createContext, useContext, useState, type ReactNode } from "react";
-import type { Batch, Campaign, Reply } from "@/lib/workspace/types";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { listBatches } from "@/lib/api";
+import { useClient } from "@/lib/nav";
+import { batchFromApi } from "@/lib/workspace/constants";
 import { INITIAL_REPLIES } from "@/lib/workspace/fixtures";
+import type { Batch, Campaign, Reply } from "@/lib/workspace/types";
 
-// The cross-tab mock state that must survive sub-route navigation. The workspace tabs are now real
-// nested routes, so each route page unmounts on navigation — anything shared between tabs (the
-// batches a campaign links to; the campaigns a reply/recap filter reads; the reply queue itself)
-// lives here in a provider mounted by the workspace layout, above all the sub-routes.
+// The cross-tab state that must survive sub-route navigation. The workspace tabs are real nested
+// routes, so each route page unmounts on navigation — anything shared between tabs (the batches a
+// campaign links to; the campaigns a reply/recap filter reads; the reply queue itself) lives here
+// in a provider mounted by the workspace layout, above all the sub-routes.
+//
+// Phase D: `batches` is now LIVE — loaded from the API on mount and refreshable via `reloadBatches`
+// (create/send call it). `campaigns`/`replies` stay mock until Phase E.
 type WorkspaceCtx = {
+  // batches are read-only to consumers — mutated only via the live `reloadBatches` (create/send
+  // refresh through it), so there's no `setBatches` escape hatch.
   batches: Batch[];
-  setBatches: React.Dispatch<React.SetStateAction<Batch[]>>;
+  reloadBatches: () => Promise<void>;
   campaigns: Campaign[];
   setCampaigns: React.Dispatch<React.SetStateAction<Campaign[]>>;
   replies: Reply[];
@@ -19,47 +27,43 @@ type WorkspaceCtx = {
 const Ctx = createContext<WorkspaceCtx | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
-  // Batches / campaigns
-  const [batches, setBatches] = useState<Batch[]>([
-    {
-      name: "Batch 1",
-      count: 40,
-      approved: 40,
-      icp: "ICP A",
-      status: "Approved",
-      createdAt: "2026-05-20",
-      sentAt: "2026-05-21",
-      approvedAt: "2026-05-23",
-    },
-    {
-      name: "Batch 2",
-      count: 52,
-      approved: 52,
-      icp: "ICP A",
-      status: "Approved",
-      createdAt: "2026-05-26",
-      sentAt: "2026-05-27",
-      approvedAt: "2026-05-29",
-    },
-    {
-      name: "Batch 3",
-      count: 48,
-      approved: 0,
-      icp: "ICP B",
-      status: "Pending",
-      createdAt: "2026-06-01",
-      sentAt: "2026-06-01",
-    },
-  ]);
+  const client = useClient();
+  const [batches, setBatches] = useState<Batch[]>([]);
   const [campaigns, setCampaigns] = useState<Campaign[]>([
     { name: "Campaign 1", batch: "Batch 1", locked: true },
     { name: "Campaign 2", batch: "Batch 2", locked: true },
   ]);
-  // Replies
   const [replies, setReplies] = useState<Reply[]>(INITIAL_REPLIES);
 
+  const reloadBatches = useCallback(async () => {
+    try {
+      const rows = await listBatches(client);
+      setBatches(rows.map(batchFromApi));
+    } catch {
+      // Auth/cold-start failures surface via the console SessionGuard; an empty list is the safe
+      // default here so the tab still renders.
+      setBatches([]);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    // Load batches on mount / client change — a data-sync effect (external → React), not derived
+    // state; the setState lands after the awaited fetch inside reloadBatches.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    void reloadBatches();
+  }, [reloadBatches]);
+
   return (
-    <Ctx.Provider value={{ batches, setBatches, campaigns, setCampaigns, replies, setReplies }}>
+    <Ctx.Provider
+      value={{
+        batches,
+        reloadBatches,
+        campaigns,
+        setCampaigns,
+        replies,
+        setReplies,
+      }}
+    >
       {children}
     </Ctx.Provider>
   );
