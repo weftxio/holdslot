@@ -278,6 +278,25 @@ def decide_batch(
     return _batch_out(batch, counts, names.get(batch.icp_id, ""))
 
 
+# --------------------------------------------------------------------------- D2: delete
+
+
+@router.delete("/{client}/batches/{batch_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_batch(
+    batch_id: str,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> None:
+    """Hard-delete a batch and, by FK cascade (`prospect_approval`/`approval_link` both declare
+    `ondelete="CASCADE"` on `batch_id`), all its approval records + tokenized links — so a removed
+    batch leaves no live link and no decision rows behind. Allowed at any status: deleting a decided
+    batch intentionally discards its append-only approval evidence too. Tenant-scoped via
+    `_load_batch` (404 cross-tenant); `approval_template` is tenant-scoped and survives."""
+    batch = _load_batch(db, ctx.tenant.id, batch_id)
+    db.delete(batch)
+    db.commit()
+
+
 # --------------------------------------------------------------------------- D3: template
 
 

@@ -276,3 +276,113 @@ def test_batch_end_to_end_create_send_view_decide():
         db.delete(tenant)
         db.commit()
         db.close()
+
+
+@pytestmark_db
+def test_delete_batch_cascades_isolates_and_scopes():
+    """Delete removes the batch + ALL its prospect_approval and approval_link rows by FK cascade, at
+    any status (here an already-decided batch); a sibling batch's rows survive; a cross-tenant or
+    missing id 404s and deletes nothing."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.batches.router import create_batch, decide_batch, delete_batch, send_approval
+    from app.domains.batches.schemas import BatchCreateIn, DecisionIn, SendIn
+    from app.models import (
+        ApprovalLink,
+        AppUser,
+        Batch,
+        Company,
+        Membership,
+        MembershipRole,
+        Prospect,
+        ProspectApproval,
+        Tenant,
+    )
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant = Tenant(slug=f"del-{suffix}", name=f"Northwind {suffix}")
+    db.add(tenant)
+    db.flush()
+    user = AppUser(email=f"owner-{suffix}@example.com", password_hash="x", full_name="Owner")
+    db.add(user)
+    db.flush()
+    membership = Membership(user_id=user.id, tenant_id=tenant.id, role=MembershipRole.owner)
+    db.add(membership)
+    company = Company(
+        tenant_id=tenant.id, domain="northwind.example", source="manual",
+        name="Northwind Traders", industry="SaaS", size="200-500", country="US",
+    )
+    db.add(company)
+    db.flush()
+    prospects = []
+    for i in range(3):
+        p = Prospect(
+            tenant_id=tenant.id, company_id=company.id, identity_key=f"del-{suffix}-{i}",
+            source="manual", status="scored", fit_tier="Strong", fit_reason="great fit",
+            enrichment={"full_name": f"Sarah Khan{i}", "title": "VP"},
+        )
+        db.add(p)
+        prospects.append(p)
+    # second tenant — proves cross-tenant deletes are refused (404), not silently applied
+    t2 = Tenant(slug=f"del2-{suffix}", name=f"Acme {suffix}")
+    db.add(t2)
+    db.flush()
+    u2 = AppUser(email=f"owner2-{suffix}@example.com", password_hash="x", full_name="Owner2")
+    db.add(u2)
+    db.flush()
+    m2 = Membership(user_id=u2.id, tenant_id=t2.id, role=MembershipRole.owner)
+    db.add(m2)
+    db.commit()
+
+    ctx = AccessContext(user=user, tenant=tenant, membership=membership)
+    ctx2 = AccessContext(user=u2, tenant=t2, membership=m2)
+    try:
+        # Batch A: send (mints a link) then decide → an *approved* batch carrying rows + a link.
+        batch_a = create_batch(
+            BatchCreateIn(prospect_ids=[str(prospects[0].id), str(prospects[1].id)]), ctx=ctx, db=db
+        )
+        bid_a = uuid.UUID(batch_a.id)
+        send_approval(batch_a.id, SendIn(email="client@example.com"), ctx=ctx, db=db)
+        decided = decide_batch(batch_a.id, DecisionIn(removed_ids=[]), ctx=ctx, db=db)
+        assert decided.status == "approved"
+        assert db.query(ProspectApproval).filter_by(batch_id=bid_a).count() == 2
+        assert db.query(ApprovalLink).filter_by(batch_id=bid_a).count() == 1
+
+        # Batch B: a sibling that must survive A's delete.
+        batch_b = create_batch(BatchCreateIn(prospect_ids=[str(prospects[2].id)]), ctx=ctx, db=db)
+        bid_b = uuid.UUID(batch_b.id)
+        assert db.query(ProspectApproval).filter_by(batch_id=bid_b).count() == 1
+
+        # Cross-tenant id (B owned by tenant 1, deleted as tenant 2) and a missing id both 404 —
+        # and B is left intact.
+        for bad_ctx, bad_id in ((ctx2, batch_b.id), (ctx, str(uuid.uuid4()))):
+            with pytest.raises(HTTPException) as ei:
+                delete_batch(bad_id, ctx=bad_ctx, db=db)
+            assert ei.value.status_code == 404
+        assert db.get(Batch, bid_b) is not None
+
+        # Delete A (decided / any-status) → A and ALL its approval records + links are gone.
+        assert delete_batch(batch_a.id, ctx=ctx, db=db) is None
+        assert db.get(Batch, bid_a) is None
+        assert db.query(ProspectApproval).filter_by(batch_id=bid_a).count() == 0
+        assert db.query(ApprovalLink).filter_by(batch_id=bid_a).count() == 0
+
+        # B untouched.
+        assert db.get(Batch, bid_b) is not None
+        assert db.query(ProspectApproval).filter_by(batch_id=bid_b).count() == 1
+    finally:
+        for tid in (tenant.id, t2.id):
+            db.query(ProspectApproval).filter_by(tenant_id=tid).delete()
+            db.query(ApprovalLink).filter_by(tenant_id=tid).delete()
+        db.commit()
+        db.delete(membership)
+        db.delete(m2)
+        db.delete(user)
+        db.delete(u2)
+        db.delete(tenant)
+        db.delete(t2)
+        db.commit()
+        db.close()
