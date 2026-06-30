@@ -18,8 +18,9 @@ import { BATCH_STATUS_CLS, fmtShortDate, uiBatchStatus } from "@/lib/workspace/c
 const DEFAULT_TMPL: ApprovalTemplateApi = {
   subject: "HoldSlot: your prospect list is ready to approve",
   body:
-    "Hi {{client_name}}, we've prepared a new batch of {{count}} prospects matched to your brief.\n\n" +
-    "Nothing is contacted until you approve. Review the list, then approve it or flag anyone who isn't a fit.",
+    "Hi there,\n\n" +
+    "HoldSlot has prepared a new batch of {{prospects}} matched to your brief. " +
+    "Take a look, then approve the list or remove anyone who isn't a fit.",
   cta: "Review the list",
 };
 
@@ -168,7 +169,8 @@ export default function ApprovalPage() {
                         placeholder="Button label"
                       />
                       <div className="tmpl-meta" style={{ marginTop: 8 }}>
-                        Use {"{{client_name}}"} and {"{{count}}"} as placeholders.
+                        Use {"{{prospects}}"}, {"{{count}}"}, and {"{{client_name}}"} as
+                        placeholders.
                       </div>
                     </>
                   ) : (
