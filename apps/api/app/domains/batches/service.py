@@ -17,16 +17,17 @@ from sqlalchemy.orm import Session
 
 from app.models import ApprovalTemplate, Batch, ProspectApproval
 
-# The sendout copy default — lifted VERBATIM from the List-approval *Sendout template* already
-# authored in the web app (client-status/approval). `{{client_name}}`/`{{count}}` are the only
-# tokens. A code default serves until the founder edits it (then an `approval_template` row wins).
+# The sendout copy default — kept in sync with the web app's editable default (client-status/
+# approval). Tokens: `{{prospects}}` (count + grammatical noun, e.g. "1 prospect" / "3 prospects"),
+# `{{count}}` (the bare number), and `{{client_name}}` (the client org). A code default serves until
+# the founder edits it (then an `approval_template` row wins). The greeting is neutral ("Hi there,")
+# rather than the client/tenant name, which otherwise mis-addresses the recipient.
 DEFAULT_TEMPLATE: dict[str, str] = {
     "subject": "HoldSlot: your prospect list is ready to approve",
     "body": (
-        "Hi {{client_name}}, we've prepared a new batch of {{count}} prospects matched to your "
-        "brief.\n\n"
-        "Nothing is contacted until you approve. Review the list, then approve it or flag anyone "
-        "who isn't a fit."
+        "Hi there,\n\n"
+        "HoldSlot has prepared a new batch of {{prospects}} matched to your brief. "
+        "Take a look, then approve the list or remove anyone who isn't a fit."
     ),
     "cta": "Review the list",
 }
@@ -77,10 +78,18 @@ def get_template_from(data: dict[str, str]) -> dict[str, str]:
 
 
 def render_template(tpl: dict[str, str], *, client_name: str, count: int) -> dict[str, str]:
-    """Substitute `{{client_name}}`/`{{count}}` into each field."""
+    """Substitute the template tokens into each field. `{{prospects}}` renders the count with a
+    grammatical noun ("1 prospect" / "3 prospects"); `{{count}}` is the bare number;
+    `{{client_name}}` is the client org."""
+    prospects = f"{count} prospect" if count == 1 else f"{count} prospects"
 
     def sub(s: str) -> str:
-        return (s or "").replace("{{client_name}}", client_name).replace("{{count}}", str(count))
+        return (
+            (s or "")
+            .replace("{{prospects}}", prospects)
+            .replace("{{client_name}}", client_name)
+            .replace("{{count}}", str(count))
+        )
 
     return {"subject": sub(tpl["subject"]), "body": sub(tpl["body"]), "cta": sub(tpl["cta"])}
 

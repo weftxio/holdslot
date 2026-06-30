@@ -147,9 +147,17 @@ def test_template_default_and_render():
     tpl = svc.get_template_from({"subject": "Custom subject", "body": ""})
     assert tpl["subject"] == "Custom subject"
     assert tpl["body"] == svc.DEFAULT_TEMPLATE["body"]  # blank field falls back to default
-    rendered = svc.render_template(tpl, client_name="Northwind", count=12)
-    assert "Northwind" in rendered["body"] and "12" in rendered["body"]
-    assert "{{client_name}}" not in rendered["body"]
+    # {{prospects}} renders the count with a grammatical noun; no leftover tokens.
+    one = svc.render_template(tpl, client_name="Northwind", count=1)
+    assert "1 prospect " in one["body"] and "1 prospects" not in one["body"]
+    assert "{{prospects}}" not in one["body"]
+    many = svc.render_template(tpl, client_name="Northwind", count=12)
+    assert "12 prospects" in many["body"]
+    # {{client_name}} stays a supported token even though the default copy no longer uses it.
+    custom = svc.render_template(
+        {"subject": "", "body": "Hi {{client_name}}", "cta": ""}, client_name="Northwind", count=1
+    )
+    assert custom["body"] == "Hi Northwind" and "{{client_name}}" not in custom["body"]
 
 
 def test_state_used_when_batch_decided_even_if_link_live():
