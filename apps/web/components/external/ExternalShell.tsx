@@ -26,7 +26,7 @@ export function ExternalShell({
   secure: string;
   narrow?: boolean;
   footBy: string;
-  footNote: string;
+  footNote?: string;
   expiredTitle: string;
   expiredLines: string[];
   success: React.ReactNode;
@@ -80,9 +80,11 @@ export function ExternalShell({
                 <span style={footDot} />
                 {footBy}
               </span>
-              <span className="muted" style={{ fontSize: 12 }}>
-                {footNote}
-              </span>
+              {footNote ? (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {footNote}
+                </span>
+              ) : null}
             </div>
           )}
         </div>

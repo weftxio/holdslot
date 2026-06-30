@@ -91,7 +91,6 @@ export default function Approve() {
     <ExternalShell
       secure="🔒 Secure link · for the client"
       footBy="Sent securely by HoldSlot"
-      footNote="Questions? Reply to the email this came from."
       expiredTitle={view?.state === "used" ? "This link has already been used" : "This link has expired"}
       expiredLines={[
         "For security, approval links are valid for a limited time and can be used once.",
@@ -142,7 +141,7 @@ export default function Approve() {
                   className="ex"
                   onClick={() => setRemoved((s) => ({ ...s, [p.id]: !s[p.id] }))}
                 >
-                  {removed[p.id] ? "Undo" : "Remove"}
+                  {removed[p.id] ? "Undo" : "Reject"}
                 </button>
               </div>
             ))}
@@ -163,16 +162,17 @@ export default function Approve() {
         </div>
 
         <div className="cta-row">
-          <button className="btn btn-ghost" onClick={requestChanges} disabled={busy || !view}>
-            Request changes
-          </button>
-          <button
-            className="btn btn-primary"
-            onClick={approve}
-            disabled={busy || !view || live === 0}
-          >
-            Approve {live} prospect{live === 1 ? "" : "s"} &amp; start outreach
-          </button>
+          {live > 0 ? (
+            <button className="btn btn-primary" onClick={approve} disabled={busy || !view}>
+              {`Approve ${live} prospect${live === 1 ? "" : "s"} & start outreach`}
+            </button>
+          ) : (
+            // Every prospect removed → the one action left is to bounce the whole list back. Submits
+            // request_changes, so the batch goes Rejected (reopenable via the operator's Re-send).
+            <button className="btn btn-danger" onClick={requestChanges} disabled={busy || !view}>
+              Reject the list
+            </button>
+          )}
         </div>
       </div>
     </ExternalShell>
