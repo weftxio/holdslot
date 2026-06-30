@@ -386,3 +386,112 @@ def test_delete_batch_cascades_isolates_and_scopes():
         db.delete(t2)
         db.commit()
         db.close()
+
+
+@pytestmark_db
+def test_resend_reopens_rejected_batch_but_approved_stays_final():
+    """Client 'Request changes' (reject) → batch `changes_requested`, prospects still `pending`, the
+    used link reads `used`. Re-sending REOPENS the batch to `sent` (decided_at cleared) so a fresh
+    link is valid and the revised list can be re-approved. Once approved, a re-send is refused
+    (409)."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.core.security import hash_token, new_opaque_token
+    from app.domains.approvals.router import decide_approval, view_approval
+    from app.domains.batches.router import create_batch, send_approval
+    from app.domains.batches.schemas import BatchCreateIn, DecisionIn, SendIn
+    from app.models import (
+        ApprovalLink,
+        AppUser,
+        Batch,
+        Company,
+        Membership,
+        MembershipRole,
+        Prospect,
+        ProspectApproval,
+        Tenant,
+    )
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant = Tenant(slug=f"re-{suffix}", name=f"Reopen {suffix}")
+    db.add(tenant)
+    db.flush()
+    user = AppUser(email=f"owner-{suffix}@example.com", password_hash="x", full_name="Owner")
+    db.add(user)
+    db.flush()
+    membership = Membership(user_id=user.id, tenant_id=tenant.id, role=MembershipRole.owner)
+    db.add(membership)
+    company = Company(
+        tenant_id=tenant.id, domain="reopen.example", source="manual",
+        name="Reopen Co", industry="SaaS", size="50-200", country="US",
+    )
+    db.add(company)
+    db.flush()
+    prospects = []
+    for i in range(2):
+        p = Prospect(
+            tenant_id=tenant.id, company_id=company.id, identity_key=f"re-{suffix}-{i}",
+            source="manual", status="scored", fit_tier="Strong", fit_reason="fit",
+            enrichment={"full_name": f"Lee Wong{i}", "title": "VP", "seniority": "vp",
+                        "company": "Reopen Co", "domain": "reopen.example"},
+        )
+        db.add(p)
+        prospects.append(p)
+    db.commit()
+
+    ctx = AccessContext(user=user, tenant=tenant, membership=membership)
+    try:
+        batch = create_batch(
+            BatchCreateIn(prospect_ids=[str(p.id) for p in prospects]), ctx=ctx, db=db
+        )
+        bid = uuid.UUID(batch.id)
+        send_approval(batch.id, SendIn(email="client@example.com"), ctx=ctx, db=db)
+
+        # Client rejects via a known token → changes_requested, prospects untouched (pending).
+        tok1 = new_opaque_token()
+        db.add(ApprovalLink(
+            tenant_id=tenant.id, batch_id=bid, recipient_email="client@example.com",
+            token_hash=hash_token(tok1), expires_at=datetime.now(UTC) + timedelta(days=7),
+        ))
+        db.commit()
+        rejected = decide_approval(tok1, DecisionIn(request_changes=True), db=db)
+        assert rejected.status == "changes_requested"
+        b_after = db.get(Batch, bid)
+        assert b_after.decided_at is not None
+        decisions = [
+            a.decision
+            for a in db.query(ProspectApproval).filter_by(batch_id=bid).all()
+        ]
+        assert decisions == ["pending", "pending"]
+        assert view_approval(tok1, db=db).state == "used"  # decided batch → link reads used
+
+        # Re-send REOPENS: status back to sent, decided_at cleared; a fresh link is valid again.
+        resent = send_approval(batch.id, SendIn(email="client@example.com"), ctx=ctx, db=db)
+        assert resent.status == "sent"
+        assert db.get(Batch, bid).decided_at is None
+        tok2 = new_opaque_token()
+        db.add(ApprovalLink(
+            tenant_id=tenant.id, batch_id=bid, recipient_email="client@example.com",
+            token_hash=hash_token(tok2), expires_at=datetime.now(UTC) + timedelta(days=7),
+        ))
+        db.commit()
+        assert view_approval(tok2, db=db).state == "valid"
+
+        # The reopened batch can now be approved; an approved batch then refuses re-send (409).
+        approved = decide_approval(tok2, DecisionIn(removed_ids=[]), db=db)
+        assert approved.status == "approved" and approved.approved == 2
+        with pytest.raises(HTTPException) as ei:
+            send_approval(batch.id, SendIn(email="client@example.com"), ctx=ctx, db=db)
+        assert ei.value.status_code == 409
+    finally:
+        db.query(ProspectApproval).filter_by(tenant_id=tenant.id).delete()
+        db.query(ApprovalLink).filter_by(tenant_id=tenant.id).delete()
+        db.commit()
+        db.delete(membership)
+        db.delete(user)
+        db.delete(tenant)
+        db.commit()
+        db.close()

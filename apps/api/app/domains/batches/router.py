@@ -336,11 +336,17 @@ def send_approval(
     batch and mints a fresh 7-day one, so only the latest send's link is ever valid — a mistyped or
     forwarded earlier recipient can no longer view or decide. Double-decide is also prevented
     downstream by gating link validity on `batch.status == sent`.
+
+    Re-sending a **changes_requested** (Rejected) batch is allowed: the client bounced the list, the
+    operator revised it, and this **reopens** the batch to `sent` (clearing `decided_at`) so the
+    new link is valid again. Its per-prospect rows were left `pending` by the reject, so they're
+    ready to be re-decided. Only an **approved** batch is final (409) — re-sending it would let the
+    client re-decide already-recorded approvals.
     """
     s = get_settings()
     batch = _load_batch(db, ctx.tenant.id, batch_id)
-    if batch.status in (svc.APPROVED_BATCH, svc.CHANGES_REQUESTED):
-        raise HTTPException(status.HTTP_409_CONFLICT, "batch already decided")
+    if batch.status == svc.APPROVED_BATCH:
+        raise HTTPException(status.HTTP_409_CONFLICT, "batch already approved")
     email = (body.email or "").strip()
     if not email or "@" not in email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "a recipient email is required")
@@ -371,6 +377,9 @@ def send_approval(
     batch.status = svc.SENT
     if batch.sent_at is None:
         batch.sent_at = now
+    # Reopened for a fresh decision: a re-sent rejected batch is no longer "decided". (For a first
+    # send / Follow-Up this is already None — a no-op.)
+    batch.decided_at = None
 
     link = f"{s.web_base_url}/{ctx.tenant.slug}/approve/{token}"
     send_email(
