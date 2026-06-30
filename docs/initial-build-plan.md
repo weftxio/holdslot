@@ -16,7 +16,11 @@
 > (`scoring_job`, `0015`, all 5 surfaces), cursor pagination, login cold-start retry, an LLM token trim,
 > request-id logging, and warm-container caching → **47 endpoints · 16 tables · head `0015`**. See
 > *Modularization + W0–W8 (landed 2026-06-25)* below + the per-phase **Δ** table. **Phase D (batch + approval) is
-> next — build plan finalized 2026-06-25 (D0–D6, all decisions confirmed).**
+> BUILT 2026-06-25 (D1–D6: `domains/batches` + `domains/approvals`, Alembic `0016`, 3 web surfaces live; tests +
+> build green) + REVIEWED/HARDENED 2026-06-30 (re-decide guard, tenant-scoped ICP, mask hardening, prior-link
+> revocation on resend, no-leak expired view, atomic decide claim, UI date/id/refresh fixes — see *★ Review
+> hardening 2026-06-30*) — pending `0016` apply to dev Aurora + redeploy, then the live end-to-end.** → **20
+> tables · head `0016`** once applied.
 > **S2 ticks once the founder runs one live end-to-end round** (the one operational gate left).
 
 > ## ▶ NEXT SESSION — START HERE
@@ -39,10 +43,26 @@
 > - **UX fixes** — async "Scoring…" now reconciles from the DB (no Pending flash, Step-1 *and* Step-2); sort
 >   rules: Step-1 Accepted-on-top, Step-2 Enriched-first.
 >
-> **Next:** Phase D (batch + client approval) — **build plan finalized** (see *Phase D — Sendout Batch + Client
-> Approval*, all decisions founder-confirmed; D0–D6, ready to build). Then the loop is ready for real outreach
-> (Phase E warm-up is the gating long pole). The one operational gate left to tick **S2** is a founder live
-> end-to-end round (below). Optionally revisit the *⚠️ Post-C review* deferred ICP inputs.
+> **Next:** Phase D (batch + client approval) is **BUILT 2026-06-25 + REVIEWED/HARDENED 2026-06-30** (see *Phase
+> D — Sendout Batch + Client Approval*; D1–D6 code complete + tested, backend 100 pass/10 skip + ruff clean, web
+> tsc + eslint + knip clean, 6 external e2e green). The code is review-clean and ready to deploy.
+>
+> **▶ Remaining plan (in order):**
+> 1. **Ship D (deploy-time, ~1 session).** `alembic upgrade head` (0015 → 0016) on dev Aurora → redeploy the
+>    Lambda → set `HOLDSLOT_DB_*` + run the DB-gated e2e (`test_batch_end_to_end_create_send_view_decide`) →
+>    founder live round: create batch → send masked link → approve → confirm `prospect_approval` rows. **This
+>    ticks S2** (the one operational gate) and makes the find→approve loop live for real outreach.
+> 2. **Phase E — Outreach + reply handling (S4, the gating long pole).** Warm-up inbox(es), Smartlead lead-add
+>    from `prospect_approval.decision = approved` (backend-only clear-text — never through D's masked serializer),
+>    A/B/C campaign send, reply queue → meeting. Phase E warm-up lead time is the schedule driver — start the
+>    inbox warm-up clock as soon as D ships.
+> 3. **Phase F — Booking + qualified-meeting confirmation (S5/S7).** `book/[token]`, the ≥10-min + 48h-dispute
+>    qualified-meeting rule, post-booking contact reveal; closes the S7 billing loop (`prospect_approval` is leg
+>    (a)). Then **G — billing/ledger**.
+> 4. **Backlog / optional:** the *⚠️ Post-C review* deferred ICP inputs; a **step-3 console decide UI** for the
+>    `decide_batch` endpoint (built + tested, no console UI yet); the `person` enrich-once cache (lands with
+>    tenant #2); converting `WorkspaceProvider.reloadBatches` onto the repo's TanStack-Query cache (consistency,
+>    not a bug).
 >
 > **⚠️ Context you MUST carry (non-obvious; the rest of the doc has the detail):**
 > - **OpenRouter HK geo-block.** OpenAI / Anthropic / Google providers return **403 ToS** for this account
@@ -146,7 +166,7 @@ tenants, memberships → Aurora.
 | **A** | Foundation (S0) | Founder login; seed tenant #0; multi-tenant + role-aware schema; Aurora + deploy; console on live data | — | P0 | Both founders log in (full access); schema admits a 2nd tenant/non-owner role w/o migration |
 | **B** | Targeting (S1) | Brief → OpenRouter `ResearchSpec`; ICP record | A | P0 | ResearchSpec saved, search-ready |
 | **C** | Prospects + Apollo (S2) | design filter → Apollo search → fit-scored `Company`/`Prospect` rows; select → enrich | B · Apollo | P0 | Find→score→select→enrich runs in-app (no CSV) |
-| **D** | Batch + approval (S3 min) | Batch from enriched prospects → tokenized **masked** client-approval link → record per-prospect decision; approved set ready for E | C | P1 | Client approves a masked batch; `prospect_approval` rows exist (the S7 billing precondition) |
+| **D** ✅ built | Batch + approval (S3 min) | Batch from enriched prospects → tokenized **masked** client-approval link → record per-prospect decision; approved set ready for E | C | P1 | Client approves a masked batch; `prospect_approval` rows exist (the S7 billing precondition) — **code complete + tested 2026-06-25; `0016` pending Aurora apply + live round** |
 | **E** | Outreach + Smartlead (S4/S5) | Batch → campaign; A/B/C; send controls; webhook sync; cross-campaign Reply Queue; reply-to-thread | D · warm domains · Smartlead | P0 | Live sending; replies triaged in one queue |
 | **F** | Book + meeting (S6 min) | Booking link → Calendar/Meet event + invites; capture held + duration | E · Google | P0 | Prospect self-books; held/duration recorded |
 | **G** | Run & close (human) | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | P0 | **6 signups over H1** |
@@ -886,10 +906,16 @@ two ⏳ acceptance rounds are the only gates that tick S1/S2. Code is current at
 
 ---
 
-## Phase D — Sendout Batch + Client Approval (S3): the revenue precondition 🔲 PLAN FINALIZED — ready to build (next)
+## Phase D — Sendout Batch + Client Approval (S3): the revenue precondition ✅ BUILT 2026-06-25 (code complete + tested; `0016` pending Aurora apply)
 
-> **Plan finalized 2026-06-25** — all five decisions founder-confirmed (see *Locked decisions*); scope = exactly
-> the three surfaces in *Surfaces covered* (Sendout Batch · List approval · external approve/[token]). No code yet.
+> **BUILT 2026-06-25** — D1–D6 all landed (backend `domains/batches` + `domains/approvals`, Alembic `0016`,
+> `apps/web` 3 surfaces live). Backend **100 pass / 10 skip** + ruff clean; web typecheck + lint + `next build`
+> all clean. **Remaining to ship:** (1) `alembic upgrade head` (0015 → 0016) on dev Aurora, then redeploy the
+> Lambda; (2) the DB-gated end-to-end (`tests/test_batches.py::test_batch_end_to_end_*`) + the founder smoke
+> (enrich → Create batch → send → open masked link → approve) run against the live env. All five decisions
+> founder-confirmed (see *Locked decisions*); scope = exactly the three surfaces in *Surfaces covered*.
+> **D0 gate cleared 2026-06-25** — SES production access live (200→50,000/day) + custom MAIL FROM
+> `mail.tryholdslot.com`.
 
 Phase D = **S3 · Sendout batch & client approval** — the **revenue precondition**: a `prospect_approval` row is
 the billable agreement S7 charges against. It groups the enriched Phase-C prospects into a **batch**, sends the
@@ -988,16 +1014,19 @@ APPROVED SET ─▶ Phase E reads approved prospect_approval rows; clear-text em
 
 ### Tasks (by dependency; all `[MVP]`)
 
-**D0 — Gate (no code).** ⭐ **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) — the approval email
-goes to an **external** client address, so SES must leave the sandbox (or verify the recipient). The one remaining
-external gate; schedule ahead of D3. *(Expiry ladder, template seed, and masking are all founder-confirmed —
-see Locked decisions; nothing else is owed.)*
+**D0 — Gate (no code) ✅ DONE 2026-06-25.** ⭐ **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) —
+the approval email goes to an **external** client address, so SES had to leave the sandbox. **Cleared:** production
+access granted (account `138743894336`, us-east-1 — quota **200 → 50,000/day**, rate **1 → 14/sec**); custom MAIL
+FROM **`mail.tryholdslot.com`** registered (MX `10 feedback-smtp.us-east-1.amazonses.com` + SPF TXT live and
+resolving; `MailFromDomainStatus` `PENDING → SUCCESS` on SES's async check, `USE_DEFAULT_VALUE` fallback so **no
+send breakage** meanwhile). Domain + DKIM were already verified. *(Expiry ladder, template seed, and masking are
+all founder-confirmed — see Locked decisions; nothing else is owed.)* **No remaining external gate — D can start at D1.**
 
-**D1 — Schema (Alembic `0016`+).** `batch`, `prospect_approval`, `approval_link`, `approval_template` — tenant-scoped,
+**D1 — Schema (Alembic `0016`). ✅ BUILT.** `batch`, `prospect_approval`, `approval_link`, `approval_template` — tenant-scoped,
 helpers + indexes per the existing pattern; add the four models to `models.py`; record canonical defs in
 [`data-schema.md`](data-schema.md). **DoD:** `0015 → 0016+` head, up/down clean on dev; ORM matches.
 
-**D2 — Batches domain (internal, JWT).** New `domains/batches/` (router + thin service + schemas). `POST
+**D2 — Batches domain (internal, JWT). ✅ BUILT.** New `domains/batches/` (router + thin service + schemas). `POST
 /{client}/batches` (owner) builds a batch + `prospect_approval(pending)` rows from the posted enriched
 `prospect_ids`; `GET /{client}/batches` lists with **derived** total/approved counts + status; `GET
 /{client}/batches/{id}` returns the company-grouped prospect detail; **`POST /{client}/batches/{id}/decide`**
@@ -1005,35 +1034,70 @@ helpers + indexes per the existing pattern; add the four models to `models.py`; 
 route is exhausted (same `prospect_approval` write path as the external decide). **DoD:** create from selected →
 list/detail feed the Sendout Batch tab; counts reconcile from `prospect_approval`; manual decide works.
 
-**D3 — Template + send (the resend ladder).** `GET/PUT /{client}/approval-template` — the override seeded
+**D3 — Template + send (the resend ladder). ✅ BUILT.** `GET/PUT /{client}/approval-template` — the override seeded
 **verbatim from the existing List-approval *Sendout template*** (subject/body/cta). `POST /{client}/batches/{id}/send`
 (owner): mint `approval_link` (7-day expiry), set `status=sent`/`sent_at`, render the template, `send_email()` the
-`{{token}}` link. **Resend ladder:** a second send while the link is **live** resends the same token; once it has
-**lapsed**, it mints a **fresh 7-day link** (STEP 2). **DoD:** "Send to client" emails a real link; the template
-editor saves; Follow-Up resends/renews correctly without orphaning tokens.
+`{{token}}` link. **Resend ladder (built):** each send mints a **fresh 7-day link** — we store only the token *hash*,
+so the raw token can't be re-emailed; double-decide is prevented by gating link validity on `batch.status == sent`
+(a decided batch makes every link read `used`), not by reusing a token. **DoD:** "Send to client" emails a real link;
+the template editor saves; Follow-Up resends without orphaning tokens.
 
-**D4 — External approval (public, tokenized) ⭐.** New `domains/approvals/` (**no auth**). `GET /approve/{token}`
+**D4 — External approval (public, tokenized) ⭐. ✅ BUILT.** New `domains/approvals/` (**no auth**). `GET /approve/{token}`
 → verify (valid/expired/used) → the **masked allow-list serializer** (D's security core). `POST
 /approve/{token}/decide` → record per-prospect decisions, `used_at` (single-use, no replay), roll up
 `batch.status` + `decided_at`. **DoD:** the masked page renders valid/expired/used; approve/remove writes
 `prospect_approval`; **no clear-text vector is ever in the response** (asserted by test).
 
-**D5 — Frontend wiring.** Replace the three mocks with live calls (exact classes, no new CSS): *Sendout Batch* tab
+**D5 — Frontend wiring. ✅ BUILT.** Replace the three mocks with live calls (exact classes, no new CSS): *Sendout Batch* tab
 (`workspace/batches`) ← D2/D3; external *approve/[token]* (valid/success/expired panes) ← D4; *client-status ·
 List approval* (summary chips + template editor + status log) ← D2/D3. Add `lib/api.ts` fns (`listBatches`,
 `createBatch`, `sendApproval`, `decideBatch`, `getApprovalTemplate`/`saveApprovalTemplate`, `getApproval`,
-`decideApproval`); **drop the `WorkspaceProvider` mock `batches`** and **re-point the Campaign tab's
-approved-batch selector at live `listBatches`** (read-only; the rest of Campaign stays mock until E). **DoD:** all
-three surfaces live; the external link round-trips; the Campaign selector lists real approved batches.
+`decideApproval`); **drop the `WorkspaceProvider` mock `batches`** (now loaded live + refreshable via
+`reloadBatches`) and **re-point the Campaign tab's approved-batch selector at live `listBatches`** (free — it filters
+the live batches to `Approved`). Also wired: the Prospect-List **Create batch** button → `createBatch` (infers a
+shared ICP); the Sendout-Batch **Send/Follow-Up** button prompts for the client email → `sendApproval`. **DoD:** all
+three surfaces live; the external link round-trips; the Campaign selector lists real approved batches. *(Built; the
+`?state=expired` demo toggle is kept and OR'd with the live `state` via a new `forceExpired` prop on ExternalShell.)*
 
-**D6 — Acceptance (tick S3).** Founder: enrich a set in C → **Create batch** → edit/send the approval email →
-open the masked external link → remove one + **Approve** → approved rows show in *List approval* and are queryable
-by Phase E; an expired link shows the expired pane. **DoD:** one real batch approved end-to-end; `prospect_approval`
-rows exist as the S7 billing precondition.
+**D6 — Acceptance (tick S3). ✅ TESTS BUILT (live round pending).** Pure tests (`tests/test_batches.py`, no DB, in
+CI) lock D's security core: the masking serializer emits **zero** clear-text vector (asserted on the serialized
+JSON), and `apply_decision` writes the right approve/remove/request-changes outcomes; a DB-gated
+`test_batch_end_to_end_create_send_view_decide` drives one real batch (create → send → masked view → decide) against
+dev Aurora (skipped without the env). **Founder live round still owed:** enrich a set in C → **Create batch** →
+send → open the masked link → remove one + **Approve** → approved rows queryable by E. **DoD:** one real batch
+approved end-to-end; `prospect_approval` rows exist as the S7 billing precondition.
 
-**Critical path:** D0(SES) → D1 → {D2 · D3} → D4 → D5 → D6. **D4 is the highest-leverage + highest-risk code**
-(the masking serializer is the anti-theft control). **Cost:** **~$0** — no new AWS resources; SES is fractions of
-a cent per approval email.
+**Critical path:** ~~D0(SES)~~ ✅ → ~~D1~~ ✅ → {~~D2~~ · ~~D3~~} ✅ → ~~D4~~ ✅ → ~~D5~~ ✅ → D6 (tests ✅; live round pending).
+**D4 was the highest-leverage + highest-risk code** (the masking serializer is the anti-theft control — now
+allow-list + test-asserted). **Cost:** **~$0** — no new AWS resources; SES is fractions of a cent per approval email.
+
+> **★ Build outcome 2026-06-25.** Backend: `app/domains/batches` (router·service·schemas) + `app/domains/approvals`
+> (router·schemas), config `approval_ttl_seconds = 7d`, Alembic `0016` (+ guard tests), 4 ORM models; `core/email`,
+> `core/security` token helpers, and `require_membership` reused **as-is** (no new infra). Frontend: `lib/api.ts`
+> +9 fns/types, live `WorkspaceProvider`, and the 3 surfaces. Gates green: **backend 100 pass / 10 skip + ruff
+> clean**; **web tsc + eslint + `next build` clean**. **Two deviations from the plan, both simplifications:**
+> (1) the resend ladder mints a fresh link per send (hash-only storage ⇒ can't re-emit a raw token; double-decide
+> blocked by the `batch.status` gate); (2) on `client-status/approval` the "Send to client" button is a **link to
+> the Sendout Batch tab** (where the per-batch send + recipient prompt live) rather than a send in place. **Not yet
+> done (deploy-time):** apply `0016` to dev Aurora + redeploy; run the DB-gated e2e + founder smoke on the live env.
+
+> **★ Review hardening 2026-06-30.** A multi-angle review of the Phase D diff produced fixes (no scope
+> change, all gates still green — backend 100 pass/10 skip + ruff clean, web tsc + eslint + knip clean,
+> 6 external e2e green): **(integrity)** `decide_batch` now 409s on an already-decided batch (re-decide
+> could overwrite the client's recorded approve/remove choices). **(tenancy)** `create_batch` validates
+> an explicit `icp_id` is the tenant's own and `_icp_name_map` is tenant-scoped (no cross-tenant ICP-name
+> leak). **(masking)** `mask_name` strips an "@"-bearing value to its name tokens so an email/handle can't
+> leak through the public view. **(links)** `send_approval` now **expires any prior live link** on resend
+> (only the latest send works — a mistyped earlier recipient is revoked); the resend ladder note above is
+> updated accordingly. **(no-leak)** `view_approval` returns only `{state, expires_at}` for expired/used
+> links (no client/batch name). **(race)** `decide_approval` claims the link with an atomic
+> `UPDATE … WHERE used_at IS NULL` before writing, closing the double-decide window. **(UI)** a
+> `changes_requested` batch no longer renders "Approved &lt;date&gt;"; live batch ages use the real
+> current date (the mock `TODAY_ISO` now drives only the reply fixtures via `MOCK_TODAY`); batch
+> expand/deep-link/status-log are keyed by **id** not name; the Sendout detail refetches on expand (no
+> stale cache); and the approval template's Edit is gated until the saved copy loads. **Cleanup:** dead
+> `A_LOG`/`ApprovalRow` mock removed (approval log is live), `TODAY_ISO` un-exported, the stale e2e
+> "pages don't call the API" comment + missing `/approve/{token}` mock fixed.
 
 ### Cross-phase
 - **From C:** reads the enriched `prospect` rows (status `scored`) + their `company` firmographics (for the
@@ -1071,8 +1135,9 @@ a cent per approval email.
 **`WorkspaceProvider`:** D5 removes the mock `batches`; keeps `campaigns`/`replies` (still mock until E). The
 **only** cross-tab consumer of `batches` is the Campaign batch selector (lightly-touched, above).
 
-**Gating dependency from A:** the **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) is required for
-the client-facing approval email — the D0 gate, scheduled ahead of D3.
+**Gating dependency from A:** the **SES sandbox-exit + custom MAIL FROM** (Phase A follow-up #1) — the D0 gate for
+the client-facing approval email — is **✅ cleared 2026-06-25** (production access live + `mail.tryholdslot.com`
+MAIL FROM configured). D3's client-facing send is unblocked.
 
 ---
 

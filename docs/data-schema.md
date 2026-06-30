@@ -6,12 +6,18 @@
 > [`backend-development-plan.md`](backend-development-plan.md)) shows a table or column differently, **this
 > doc wins**, and schema changes are recorded **here first**.
 >
-> **A, B & C are built** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
-> Alembic migrations **through `0015`**, the current Aurora head — Lambda **v46** / commit `196a31e`); C is
+> **A, B & C are live** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
+> Alembic migrations **through `0015`**, the live Aurora head — Lambda **v46** / commit `196a31e`); C is
 > the **Apollo-only** find → score → select → enrich loop (see
 > [`initial-build-plan.md`](initial-build-plan.md) → Phase C). The 2026-06-25 modularization + W0–W8 hardening
 > pass added the perf indexes + `prospect.fit_reason` (`0014`) and the `scoring_job` async ledger (`0015`);
-> the `scope_override` table (`0012`) is also defined below. **16 tables.**
+> the `scope_override` table (`0012`) is also defined below.
+>
+> **D is built (2026-06-25, code complete + tested; migration `0016` pending apply to dev Aurora).** Phase D
+> (S3 · Sendout batch + client approval) adds **4 tables** — `batch`, `prospect_approval` ⭐, `approval_link`,
+> `approval_template` — the revenue precondition: a `prospect_approval` row is the billable agreement S7 charges
+> against, written through a tokenized, expiring, **masked** approval link (see
+> [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables.**
 
 ## The governing boundary
 
@@ -139,10 +145,11 @@ the sync response — off at MVP, so the sync email path is all we wire:
 
 # Part 2 — Internal database
 
-## Entity-relationship overview (16 tables · head `0015`)
+## Entity-relationship overview (20 tables · head `0016`)
 
-Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, plus the W4
-async-scoring `scoring_job` ledger and the `scope_override` Find-Settings store. The ORM
+Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, the W4
+async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
+batch/approval (`batch`, `prospect_approval`, `approval_link`, `approval_template`). The ORM
 ([`apps/api/app/models.py`](../apps/api/app/models.py)) matches the migrations — **no drift**.
 
 ```mermaid
@@ -162,12 +169,18 @@ erDiagram
     tenant        ||--o{ prompt          : "versioned"
     tenant        ||--o{ scope_override  : "1 per kind"
     tenant        ||--o{ scoring_job     : "1 in-flight/kind"
+    tenant        ||--o{ batch           : ""
+    tenant        ||--|| approval_template : "1:1"
     icp           ||--o{ company         : "SET NULL"
     icp           ||--o{ prospect        : "SET NULL"
     icp           ||--o{ research_run    : "SET NULL"
+    icp           ||--o{ batch           : "SET NULL"
     llm_call      ||--o{ research_spec   : "SET NULL"
     llm_call      ||--o{ research_job    : "SET NULL"
     company       ||--o{ prospect        : "Stage1→2, SET NULL"
+    batch         ||--o{ prospect_approval : "CASCADE"
+    batch         ||--o{ approval_link   : "CASCADE"
+    prospect      ||--o{ prospect_approval : "CASCADE"
     tenant { uuid id PK }
     app_user { uuid id PK }
     membership { uuid id PK }
@@ -182,6 +195,10 @@ erDiagram
     prompt { uuid id PK }
     scope_override { uuid id PK }
     scoring_job { uuid id PK }
+    batch { uuid id PK }
+    prospect_approval { uuid id PK }
+    approval_link { uuid id PK }
+    approval_template { uuid id PK }
     refresh_token { uuid id PK }
     password_reset { uuid id PK }
 ```
@@ -197,6 +214,11 @@ erDiagram
 - Versioned config — `research_spec`, `prompt` (per tenant×stage), `research_run` (cost ledger) — append-only.
 - `scope_override` (`0012`) and `scoring_job` (`0015`) are **operational ledgers**, not business entities:
   one `scope_override` per (tenant, kind); one in-flight `scoring_job` per (tenant, kind).
+- **Phase D (`0016`)** — `batch` groups enriched `prospect` rows; each (prospect × batch) gets one
+  append-only `prospect_approval` ⭐ (the billable record); `approval_link` is the tokenized expiring
+  link (mirrors `password_reset`); `approval_template` is one sendout-copy doc per tenant (mirrors
+  `brief`). `prospect_approval`/`approval_link` **CASCADE** from `batch`; counts are **derived**, never
+  stored. The masked external serializer reads `prospect`+`company` but emits fit context only.
 
 ## Phase A (S0) — Identity & tenancy core ✅ BUILT
 Migration `20260611_0001_baseline` (+ `0002_seed`). Identity tables are **global**; a user joins tenants
@@ -501,6 +523,76 @@ See [`initial-build-plan.md`](initial-build-plan.md) → *Modularization + W0–
 | `error` | text nullable | set on `error` |
 | `created_at`, `updated_at` | timestamptz | `updated_at` via ORM `onupdate` (no trigger needed) |
 
+## Phase D (S3) — Sendout batch & client approval ✅ BUILT (code complete + tested; `0016` pending Aurora apply)
+The **revenue precondition**: group enriched Phase-C prospects into a `batch`, send the client a
+tokenized, expiring, **masked** approval link, record each per-prospect decision as the append-only
+`prospect_approval` row S7 bills against. Reuses A/B/C primitives wholesale — the password-reset
+opaque-token pattern (`approval_link` mirrors `password_reset`), the SES `send_email()` adapter, the
+`require_membership(owner)` guard, the per-router `_out()` serializers — so **no EventBridge, no async
+worker, no new AWS resources** (expiry is checked on read, a send is one SES call). The masking
+allow-list serializer (`domains/approvals`) is the anti-data-theft control: the public endpoint emits
+**fit context only** (name+initial · company *descriptor* · title/seniority · fit tier+reason), never a
+clear-text identity/contact vector. Console surface = `domains/batches`; counts are **derived** from
+`prospect_approval`, never stored. See [`initial-build-plan.md`](initial-build-plan.md) → Phase D.
+
+### `batch` ✅ (`0016`) — one sendout batch per group of enriched prospects
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx `ix_batch_tenant_created` (tenant_id, created_at DESC) — the list ORDER BY |
+| `icp_id` | uuid FK → `icp` (SET NULL) nullable | inferred from the prospects' shared ICP (when they agree) |
+| `name` | varchar(255) | auto-named `Batch N` when omitted |
+| `status` | varchar(32) (default `draft`) | `draft` → `sent` → `approved` \| `changes_requested` (string, not enum) |
+| `sent_at` | timestamptz nullable | first send (kept on Follow-Up resends) |
+| `decided_at` | timestamptz nullable | set when the client (or the step-3 manual fallback) decides |
+| `created_at` | timestamptz | |
+| | | total/approved/removed/pending counts are **DERIVED** from `prospect_approval`, never stored |
+| | | a decided batch is **final** — both decide paths 409/410 a re-decide so the client's recorded choices can't be overwritten |
+
+### `prospect_approval` ⭐ (`0016`) — the billable record, one append-only row per (prospect × batch)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | the opaque external decide handle (carries no identity) |
+| `tenant_id` | uuid FK (CASCADE) | idx `ix_prospect_approval_tenant_id` (Phase E / billing reads) |
+| `batch_id` | uuid FK → `batch` (CASCADE) | covered by the unique key's leftmost prefix (no separate idx) |
+| `prospect_id` | uuid FK → `prospect` (CASCADE) | |
+| `decision` | varchar(32) (default `pending`) | `pending` → `approved` \| `removed` (`request_changes` is a batch-level status) |
+| `decided_at` | timestamptz nullable | |
+| `created_at` | timestamptz | |
+| | | **unique(`batch_id`,`prospect_id`)** (`uq_prospect_approval_batch_prospect`); **append-only** — "removed" is a value, never a delete |
+
+### `approval_link` ✅ (`0016`) — tokenized expiring approval link (mirrors `password_reset`)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | |
+| `batch_id` | uuid FK → `batch` (CASCADE) | idx `ix_approval_link_batch_id` (resend ladder finds a batch's links) |
+| `recipient_email` | varchar(320) | the client contact the link was emailed to |
+| `token_hash` | varchar(64) **unique** | SHA-256; the raw `secrets.token_urlsafe` token lives ONLY in the emailed URL |
+| `expires_at` | timestamptz | validity checked **on read** (no scheduler); 7-day lifetime |
+| `used_at` | timestamptz nullable | single-use |
+| `created_at` | timestamptz | |
+| | | resend **expires any prior live link** then mints a fresh row (only the latest send works — a mistyped earlier recipient is revoked); a decided `batch.status` makes EVERY link read `used`, and `decide` claims its link with an atomic `UPDATE … WHERE used_at IS NULL` (no double-decide / replay) |
+
+### `approval_template` ✅ (`0016`) — one sendout-copy doc per tenant (mirrors `brief`)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | **unique(`tenant_id`)** (`uq_approval_template_tenant`) |
+| `data` | JSONB (default `{}`) | `{subject, body, cta}` with `{{client_name}}`/`{{count}}` tokens; a code default serves until edited |
+| `created_at`, `updated_at` | timestamptz | `updated_at` via ORM `onupdate` |
+
+### Masking allow-list (the `GET /approve/{token}` serializer — D's security core)
+The external (token-only, no-auth) view emits **exactly** these and nothing else (an allow-list, not a
+deny-list — a new field can never leak): first name + last initial (from `enrichment.full_name`),
+company *descriptor* (`company.industry`/`size`/`country`, **not** the exact name/domain),
+title·seniority, `prospect.fit_tier`+`fit_reason`, plus batch name/live count/client name/`expires_at`/
+state (`valid`/`expired`/`used`) — and for an **expired/used** link, ONLY `state`+`expires_at` (no
+client/batch name, so a forwarded stale link can't reveal tenant existence). **Withheld:** email, phone,
+**LinkedIn URL**, full last name, exact company name+domain, `fit_components`, and any verified-presence
+badge. `mask_name` also defends in depth — an "@"-bearing value (an email mistaken for a name) is
+reduced to its local-part name tokens, never echoed whole. (Post-booking reveal = Phase F.)
+
 ### `person` ⬜ SCALE — tenant-AGNOSTIC enrichment cache (the enrich-once seam)
 Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched once (one Apollo
 `people/match`, paid once) and referenced by N `prospect` rows.
@@ -544,10 +636,12 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260624_0013_split_fit_rubric` ✅ | C | split `prompt` stage `fit_scoring` → **`company_fit`** (Step 1) + **`prospect_fit`** (Step 2); rename existing rows to `company_fit`, seed `prospect_fit` from the same body (append-only, up/down clean — see Phase C → C10) |
 | `20260625_0014_perf_indexes_fit_reason` ✅ | C (W1) | composite `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` indexes on `prospect`+`company`; **drop** 4 UNIQUE-covered single-col indexes; add `prospect.fit_reason`; attach `scope_override.updated_at` trigger. Reversible. |
 | `20260625_0015_scoring_job` ✅ | C (W4) | `scoring_job` async fit-scoring job ledger + `ix_scoring_job_tenant_kind`; one in-flight per (tenant, kind) |
+| `20260625_0016_phase_d_batch_approval` 🔲 | D | `batch`, `prospect_approval` ⭐, `approval_link`, `approval_template` + indexes/unique keys (built + up/down tested; **pending apply to dev Aurora**) |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Current Aurora head: `0015`** (Lambda v46 / `196a31e`). W6/W7/W8 (login cold-start retry, LLM token trim,
-warm-container caching) are **code-only — no migration.**
+**Live Aurora head: `0015`** (Lambda v46 / `196a31e`). **`0016` (Phase D) is built and tested but not yet
+applied** — the next deploy runs `alembic upgrade head` (0015 → 0016). W6/W7/W8 (login cold-start retry,
+LLM token trim, warm-container caching) are **code-only — no migration.**
 
 > **`prompt.stage` vocabulary (current):** `briefing` (Brief→spec, B) · **`company_fit`** (Step-1 company
 > scoring) · **`prospect_fit`** (Step-2 person scoring). The old single `fit_scoring` stage was split in `0013`;
