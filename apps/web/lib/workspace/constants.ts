@@ -127,6 +127,31 @@ export function exclusionsFromBrief(doc: BriefDoc | undefined): {
   return { groups, count: groups.reduce((n, g) => n + g.entries.length, 0) };
 }
 
+// Meeting attendee emails from this client's Brief (§5 logistics) — the recipients the approval
+// link can be sent to. Stored as free text (one per line or comma/semicolon/space-separated, with
+// the same meetingsLand→attendeeEmails read-migration the brief form uses). Parsed into a deduped
+// (case-insensitive), order-preserving list of syntactically valid addresses for the Sendout Batch
+// "Send approval email" recipient dropdown — no free-text entry, so only Brief addresses are used.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export function attendeeEmailsFromBrief(doc: BriefDoc | undefined): string[] {
+  const d = (doc ?? {}) as Record<string, unknown>;
+  const raw =
+    (typeof d.attendeeEmails === "string" && d.attendeeEmails) ||
+    (typeof d.meetingsLand === "string" && d.meetingsLand) ||
+    "";
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const tok of raw.split(/[\s,;]+/)) {
+    const e = tok.trim();
+    const key = e.toLowerCase();
+    if (EMAIL_RE.test(e) && !seen.has(key)) {
+      seen.add(key);
+      out.push(e);
+    }
+  }
+  return out;
+}
+
 // Per-prospect approval decision (pending·approved·removed) → {label, badge class} for the
 // Sendout Batch detail rows.
 export const DECISION_VIEW: Record<string, { label: string; cls: string }> = {
@@ -134,6 +159,21 @@ export const DECISION_VIEW: Record<string, { label: string; cls: string }> = {
   removed: { label: "Removed", cls: "badge-danger" },
   pending: { label: "Pending", cls: "badge-warn" },
 };
+
+// The approval cell for one prospect, resolved against its batch status. A Rejected (changes-
+// requested) batch has NO per-prospect verdict — every row stays `pending` in the data so a re-send
+// can re-open the same rows — but showing "Pending" next to a Rejected batch is contradictory, so a
+// still-pending prospect under a rejected batch reads "Rejected". Approved/removed rows keep their
+// own decision.
+export function decisionView(
+  decision: string,
+  batchStatus: Batch["status"]
+): { label: string; cls: string } {
+  if (batchStatus === "Rejected" && decision === "pending") {
+    return { label: "Rejected", cls: "badge-danger" };
+  }
+  return DECISION_VIEW[decision] || { label: decision, cls: "badge-neutral" };
+}
 
 export const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 export function clearScoring(setScoring: ScoringSetter, ids: string[]) {

@@ -16,9 +16,10 @@ import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { Batch } from "@/lib/workspace/types";
 import {
+  attendeeEmailsFromBrief,
   BATCH_STATUS_CLS,
-  DECISION_VIEW,
   daysAgoLabel,
+  decisionView,
   exclusionsFromBrief,
   fmtShortDate,
 } from "@/lib/workspace/constants";
@@ -34,12 +35,20 @@ export default function BatchesPage() {
   // after that tab has loaded and reflects whatever exclusions the client most recently saved.
   const { data: briefRes } = useQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) });
   const { groups: exclusionGroups, count: exclusionCount } = exclusionsFromBrief(briefRes?.data);
+  // Recipients for the approval link: the Meeting attendee emails saved on this client's Brief (§5).
+  // Shares the ["brief", client] cache above, so the dropdown is populated the moment the brief loads.
+  const attendeeEmails = attendeeEmailsFromBrief(briefRes?.data);
 
   // expandable batch detail — fetched live per batch id on first open
   const [openBatch, setOpenBatch] = useState<string | null>(null);
   const [details, setDetails] = useState<Record<string, BatchDetailApi>>({});
   const [exclOpen, setExclOpen] = useState(false);
   const [lastEmail, setLastEmail] = useState("");
+  // batch the user is sending the approval link for (drives the recipient-picker modal); `sendEmail`
+  // is the chosen attendee address and `sending` gates the modal's Send button.
+  const [sendFor, setSendFor] = useState<Batch | null>(null);
+  const [sendEmail, setSendEmail] = useState("");
+  const [sending, setSending] = useState(false);
   // batch pending a confirmed delete (drives the confirm modal); `deleting` gates the modal button.
   const [pendingDelete, setPendingDelete] = useState<Batch | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -90,17 +99,36 @@ export default function BatchesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batches.length]);
 
-  // batch approval action: send the approval link, or a follow-up nudge if it was already sent
-  const onSend = async (b: Batch) => {
-    const email = window.prompt("Send the approval link to which client email?", lastEmail);
-    if (!email || !email.trim()) return;
+  // Open the recipient picker for this batch. Pre-select the last address used if it's still one of
+  // the Brief's attendee emails, otherwise the first attendee (empty when the Brief has none).
+  const openSend = (b: Batch) => {
+    setSendEmail(attendeeEmails.includes(lastEmail) ? lastEmail : attendeeEmails[0] || "");
+    setSendFor(b);
+  };
+
+  // batch approval action: send the approval link to the chosen attendee, or a follow-up nudge if it
+  // was already sent. Recipient comes from the Brief dropdown (no free-text), so no prompt box.
+  const onSend = async () => {
+    const b = sendFor;
+    const email = sendEmail.trim();
+    if (!b || !email) return;
+    setSending(true);
     try {
-      await apiSendApproval(client, b.id, email.trim());
-      setLastEmail(email.trim());
+      await apiSendApproval(client, b.id, email);
+      setLastEmail(email);
       await reloadBatches();
-      toast(b.sentAt ? "Follow-up nudge sent to client" : "Approval email sent to client");
+      toast(
+        b.status === "Rejected"
+          ? "Revised list re-sent to client"
+          : b.sentAt
+            ? "Follow-up nudge sent to client"
+            : "Approval email sent to client"
+      );
+      setSendFor(null);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Send failed", "warn");
+    } finally {
+      setSending(false);
     }
   };
 
@@ -274,15 +302,19 @@ export default function BatchesPage() {
                     )}
                   </div>
                 </div>
-                {b.status === "Pending" && (
+                {(b.status === "Pending" || b.status === "Rejected") && (
                   <button
                     className="btn btn-accent btn-sm"
                     onClick={(e) => {
                       e.stopPropagation();
-                      void onSend(b);
+                      openSend(b);
                     }}
                   >
-                    {b.sentAt ? "Follow-Up Approval" : "Send approval email"}
+                    {b.status === "Rejected"
+                      ? "Re-send for approval"
+                      : b.sentAt
+                        ? "Follow-Up Approval"
+                        : "Send approval email"}
                   </button>
                 )}
                 <span className={clsx("badge", BATCH_STATUS_CLS[b.status] || "badge-neutral")}>
@@ -309,10 +341,7 @@ export default function BatchesPage() {
                         {(detail?.companies ?? []).map((co, ci) => (
                           <Fragment key={co.domain + ci}>
                             {co.prospects.map((p, pj) => {
-                              const dec = DECISION_VIEW[p.decision] || {
-                                label: p.decision,
-                                cls: "badge-neutral",
-                              };
+                              const dec = decisionView(p.decision, b.status);
                               return (
                                 <tr key={p.approval_id}>
                                   {pj === 0 && (
@@ -378,6 +407,76 @@ export default function BatchesPage() {
       </div>
 
       <Modal
+        open={sendFor !== null}
+        onClose={() => !sending && setSendFor(null)}
+        title={
+          sendFor?.status === "Rejected"
+            ? "Re-send the revised list"
+            : sendFor?.sentAt
+              ? "Send a follow-up nudge"
+              : "Send approval email"
+        }
+        subtitle={sendFor ? `Batch "${sendFor.name}" · ${sendFor.count} prospects` : undefined}
+        footer={
+          <>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setSendFor(null)}
+              disabled={sending}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-accent btn-sm"
+              onClick={() => void onSend()}
+              disabled={sending || !sendEmail}
+            >
+              {sending
+                ? "Sending…"
+                : sendFor?.status === "Rejected"
+                  ? "Re-send for approval"
+                  : sendFor?.sentAt
+                    ? "Send follow-up"
+                    : "Send approval email"}
+            </button>
+          </>
+        }
+      >
+        {sendFor?.status === "Rejected" && (
+          <p style={{ margin: "0 0 14px", lineHeight: 1.5 }}>
+            This batch was rejected. Re-sending <b>reopens</b> it and emails a fresh approval link so
+            the client can review the revised list.
+          </p>
+        )}
+        {sendFor &&
+          (attendeeEmails.length > 0 ? (
+            <div className="field" style={{ margin: 0 }}>
+              <label>Send the approval link to</label>
+              <select
+                className="select"
+                value={sendEmail}
+                onChange={(e) => setSendEmail(e.target.value)}
+              >
+                {attendeeEmails.map((em) => (
+                  <option key={em} value={em}>
+                    {em}
+                  </option>
+                ))}
+              </select>
+              <div className="muted" style={{ marginTop: 8 }}>
+                From your Brief · Meeting attendee emails.
+              </div>
+            </div>
+          ) : (
+            <p style={{ margin: 0, lineHeight: 1.5 }}>
+              No meeting attendee emails on your Brief yet. Add them in{" "}
+              <Link href={`/${client}/workspace/brief`}>Business Brief · Meeting attendee emails</Link>
+              , then send.
+            </p>
+          ))}
+      </Modal>
+
+      <Modal
         open={pendingDelete !== null}
         onClose={() => !deleting && setPendingDelete(null)}
         title={pendingDelete ? `Delete batch "${pendingDelete.name}"?` : ""}
@@ -402,14 +501,14 @@ export default function BatchesPage() {
       >
         {pendingDelete && (
           <p style={{ margin: 0, lineHeight: 1.5 }}>
-            This permanently removes <b>{pendingDelete.name}</b> and its{" "}
-            <b>{pendingDelete.count}</b> approval record{pendingDelete.count === 1 ? "" : "s"} and
+            This permanently deletes <b>{pendingDelete.name}</b>, its{" "}
+            <b>{pendingDelete.count}</b> approval record{pendingDelete.count === 1 ? "" : "s"}, and
             any approval links. This can&apos;t be undone.
             {pendingDelete.status !== "Pending" && (
               <>
                 {" "}
-                Because this batch is already {pendingDelete.status.toLowerCase()}, its recorded
-                approve/remove decisions will be erased too.
+                Because the batch is already {pendingDelete.status.toLowerCase()}, its recorded
+                approve/remove decisions are erased too.
               </>
             )}
           </p>
