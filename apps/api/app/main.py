@@ -18,7 +18,9 @@ from fastapi.responses import JSONResponse
 from mangum import Mangum
 from sqlalchemy.exc import DBAPIError
 
+from app.domains.approvals.router import router as approvals_router
 from app.domains.auth.router import router as auth_router
+from app.domains.batches.router import router as batches_router
 from app.domains.briefs.router import router as briefs_router
 from app.domains.clients.router import router as clients_router
 from app.domains.icps.router import router as icps_router
@@ -155,6 +157,8 @@ app.include_router(clients_router)
 app.include_router(briefs_router)
 app.include_router(icps_router)
 app.include_router(prospects_router)
+app.include_router(batches_router)
+app.include_router(approvals_router)
 
 # AWS Lambda entrypoint. Two event shapes reach this one function:
 #   * API Gateway (HTTP API) requests → Mangum → FastAPI.

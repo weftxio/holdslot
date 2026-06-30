@@ -569,3 +569,119 @@ class ScopeOverride(Base):
     )
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
+
+
+# ---------------------------------------------------------------------------
+# Phase D (S3) — Sendout Batch + Client Approval: the revenue precondition.
+#
+# The one idea that drives everything (see docs/initial-build-plan.md → Phase D):
+# **the approved prospect is the billable agreement; the client never sees clear-text contact
+# data.** Enriched Phase-C prospects are grouped into a `batch`; the client gets a tokenized,
+# expiring, MASKED approval link (the `approval_link`, an opaque-hash token mirroring
+# `password_reset` — expiry checked on read, no scheduler); each per-prospect decision is the
+# append-only `prospect_approval` row S7 bills against. `approval_template` is the thin per-tenant
+# sendout copy override (mirrors `brief`). Counts (total/approved) are DERIVED from
+# `prospect_approval`, never stored — deriving avoids drift. Reuses A/B/C primitives wholesale:
+# NO EventBridge, NO async worker, NO new AWS resources.
+# ---------------------------------------------------------------------------
+
+
+class Batch(Base):
+    """One sendout batch per group of enriched prospects — the unit the client approves.
+
+    `status` walks `draft` → `sent` → `approved` | `changes_requested` (plain string, not a DB
+    enum, so a new state never needs a migration). Total/approved counts are **derived** from the
+    child `prospect_approval` rows (deriving avoids the dual-write drift a stored counter invites),
+    so this row holds only the batch's identity + lifecycle timestamps.
+    """
+
+    __tablename__ = "batch"
+    # List feed orders by (tenant, created_at desc) — the composite matches that ORDER BY exactly.
+    __table_args__ = (
+        Index("ix_batch_tenant_created", "tenant_id", text("created_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="draft")
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ProspectApproval(Base):
+    """⭐ The billable record — one append-only row per (prospect × batch), carrying the decision.
+
+    `decision` walks `pending` → `approved` | `removed` (`request_changes` is a batch-level state
+    on `batch.status`, not a per-prospect value). **Append-only**: "removed" is a decision value,
+    never a delete — the row is the audit/billing evidence S7's qualified-meeting rule charges on.
+    `unique(batch_id, prospect_id)` makes "add the same prospect to the batch twice" idempotent.
+    """
+
+    __tablename__ = "prospect_approval"
+    # uq_prospect_approval_batch_prospect (batch_id, prospect_id) covers batch_id lookups via its
+    # leftmost prefix (the derived-count rollups GROUP BY batch_id), so no separate batch_id index.
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id", "prospect_id", name="uq_prospect_approval_batch_prospect"
+        ),
+        Index("ix_prospect_approval_tenant_id", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("batch.id", ondelete="CASCADE"), nullable=False
+    )
+    prospect_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("prospect.id", ondelete="CASCADE"), nullable=False
+    )
+    decision: Mapped[str] = mapped_column(String(32), nullable=False, server_default="pending")
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ApprovalLink(Base):
+    """The tokenized, expiring approval link — mirrors `password_reset` exactly.
+
+    The raw `secrets.token_urlsafe` token lives only in the emailed URL; the DB stores its SHA-256
+    `token_hash` (unique). Validity is checked **on read** (`expires_at` + single-use `used_at`) —
+    no scheduler. The resend ladder mints a fresh row each send (we store only the hash, so the raw
+    token can't be re-emailed); double-decide is prevented downstream by gating validity on
+    `batch.status == sent`, not by token reuse. `batch_id` is indexed to find a batch's links.
+    """
+
+    __tablename__ = "approval_link"
+    __table_args__ = (Index("ix_approval_link_batch_id", "batch_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("batch.id", ondelete="CASCADE"), nullable=False
+    )
+    recipient_email: Mapped[str] = mapped_column(String(320), nullable=False)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class ApprovalTemplate(Base):
+    """One sendout-copy override per tenant (mirrors `brief`) — the thinnest slice.
+
+    `data` is the opaque `{subject, body, cta}` doc (with `{{client_name}}`/`{{count}}` tokens); a
+    code default serves until the founder edits it, so the row need not exist for a send to work.
+    """
+
+    __tablename__ = "approval_template"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_approval_template_tenant"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()

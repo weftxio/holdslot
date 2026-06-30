@@ -12,7 +12,18 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
-from app.models import Brief, Company, Prospect, ScopeOverride, ScoringJob, Tenant
+from app.models import (
+    ApprovalLink,
+    ApprovalTemplate,
+    Batch,
+    Brief,
+    Company,
+    Prospect,
+    ProspectApproval,
+    ScopeOverride,
+    ScoringJob,
+    Tenant,
+)
 
 _ALEMBIC = Path(__file__).resolve().parents[3] / "infra" / "alembic"
 
@@ -25,7 +36,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0015_scoring_job"]
+    assert _script_dir().get_heads() == ["0016_phase_d_batch_approval"]
 
 
 def test_0011_columns_present_on_models():
@@ -65,3 +76,29 @@ def test_0015_scoring_job_model_matches_migration():
     assert cols == {"id", "tenant_id", "kind", "params", "status", "result", "error",
                     "created_at", "updated_at"}
     assert "ix_scoring_job_tenant_kind" in {i.name for i in ScoringJob.__table__.indexes}
+
+
+def test_0016_phase_d_models_match_migration():
+    """0016 creates the four Phase D tables — the ORM models must match the columns + keys the
+    migration builds (the masking serializer + billing rows depend on this exact shape)."""
+    assert set(Batch.__table__.columns.keys()) == {
+        "id", "tenant_id", "icp_id", "name", "status", "sent_at", "decided_at", "created_at"
+    }
+    assert "ix_batch_tenant_created" in {i.name for i in Batch.__table__.indexes}
+
+    assert set(ProspectApproval.__table__.columns.keys()) == {
+        "id", "tenant_id", "batch_id", "prospect_id", "decision", "decided_at", "created_at"
+    }
+    pa_cons = {c.name for c in ProspectApproval.__table__.constraints}
+    assert "uq_prospect_approval_batch_prospect" in pa_cons
+
+    assert set(ApprovalLink.__table__.columns.keys()) == {
+        "id", "tenant_id", "batch_id", "recipient_email", "token_hash", "expires_at",
+        "used_at", "created_at"
+    }
+    assert set(ApprovalTemplate.__table__.columns.keys()) == {
+        "id", "tenant_id", "data", "created_at", "updated_at"
+    }
+    assert "uq_approval_template_tenant" in {
+        c.name for c in ApprovalTemplate.__table__.constraints
+    }

@@ -28,6 +28,7 @@ class Settings:
     access_ttl_seconds: int = 8 * 60 * 60  # 8 h — the web client silently refreshes on 401
     refresh_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     reset_ttl_seconds: int = 60 * 60  # 1 hour
+    approval_ttl_seconds: int = 7 * 24 * 60 * 60  # 7 days — client approval-link lifetime (Phase D)
     email_sender: str = "no-reply@tryholdslot.com"
     web_base_url: str = "https://tryholdslot.com"  # base for links in emails (e.g. reset)
 
