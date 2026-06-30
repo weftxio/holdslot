@@ -277,7 +277,6 @@ export default function BatchesPage() {
                       <thead>
                         <tr>
                           <th>Company</th>
-                          <th>Score</th>
                           <th>Industry</th>
                           <th>Prospect</th>
                           <th>Approval</th>
@@ -298,16 +297,6 @@ export default function BatchesPage() {
                                       <td className="vtop" rowSpan={co.prospects.length}>
                                         <span className="nm">{co.company || co.domain || "—"}</span>
                                         {co.domain && <div className="sub">{co.domain}</div>}
-                                      </td>
-                                      <td className="vtop" rowSpan={co.prospects.length}>
-                                        {co.fit_tier ? (
-                                          <span className="badge badge-info">
-                                            <span className="bdot" />
-                                            {co.fit_tier}
-                                          </span>
-                                        ) : (
-                                          <span className="muted">—</span>
-                                        )}
                                       </td>
                                       <td className="vtop" rowSpan={co.prospects.length}>
                                         {co.industry ? (
@@ -335,14 +324,14 @@ export default function BatchesPage() {
                         ))}
                         {detail && detail.companies.length === 0 && (
                           <tr>
-                            <td colSpan={5} className="muted">
+                            <td colSpan={4} className="muted">
                               No prospects in this batch.
                             </td>
                           </tr>
                         )}
                         {!detail && (
                           <tr>
-                            <td colSpan={5} className="muted">
+                            <td colSpan={4} className="muted">
                               Loading prospects…
                             </td>
                           </tr>
