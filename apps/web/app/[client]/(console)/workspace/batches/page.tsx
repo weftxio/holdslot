@@ -4,12 +4,14 @@ import Link from "next/link";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import {
+  deleteBatch as apiDeleteBatch,
   getBatch,
   getBrief,
   sendApproval as apiSendApproval,
   type BatchDetailApi,
 } from "@/lib/api";
 import { useClient } from "@/lib/nav";
+import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { Batch } from "@/lib/workspace/types";
@@ -38,6 +40,9 @@ export default function BatchesPage() {
   const [details, setDetails] = useState<Record<string, BatchDetailApi>>({});
   const [exclOpen, setExclOpen] = useState(false);
   const [lastEmail, setLastEmail] = useState("");
+  // batch pending a confirmed delete (drives the confirm modal); `deleting` gates the modal button.
+  const [pendingDelete, setPendingDelete] = useState<Batch | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   // Refetch on every open (no stale cache): a batch's decisions can change after the client responds
   // via the link, so the prior detail is shown only until the fresh fetch lands.
@@ -96,6 +101,24 @@ export default function BatchesPage() {
       toast(b.sentAt ? "Follow-up nudge sent to client" : "Approval email sent to client");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Send failed", "warn");
+    }
+  };
+
+  // confirmed batch delete (server cascades its approval records + links). Close the row if it was
+  // open, drop its cached detail, then refresh the list so the deleted batch disappears.
+  const onDelete = async (b: Batch) => {
+    setDeleting(true);
+    try {
+      await apiDeleteBatch(client, b.id);
+      if (openBatch === b.id) setOpenBatch(null);
+      setDetails(({ [b.id]: _drop, ...rest }) => rest);
+      await reloadBatches();
+      toast("Batch deleted");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Delete failed", "warn");
+    } finally {
+      setDeleting(false);
+      setPendingDelete(null);
     }
   };
 
@@ -339,8 +362,13 @@ export default function BatchesPage() {
                       </tbody>
                     </table>
                   </div>
-                  <div className="sob-more">
-                    {b.count} prospects · {b.approved} approved
+                  <div className="sob-more between" style={{ alignItems: "center", gap: 12 }}>
+                    <span>
+                      {b.count} prospects · {b.approved} approved
+                    </span>
+                    <button className="btn btn-danger btn-sm" onClick={() => setPendingDelete(b)}>
+                      Delete batch
+                    </button>
                   </div>
                 </div>
               )}
@@ -348,6 +376,45 @@ export default function BatchesPage() {
           );
         })}
       </div>
+
+      <Modal
+        open={pendingDelete !== null}
+        onClose={() => !deleting && setPendingDelete(null)}
+        title={pendingDelete ? `Delete batch "${pendingDelete.name}"?` : ""}
+        footer={
+          <>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setPendingDelete(null)}
+              disabled={deleting}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={() => pendingDelete && void onDelete(pendingDelete)}
+              disabled={deleting}
+            >
+              {deleting ? "Deleting…" : "Delete batch"}
+            </button>
+          </>
+        }
+      >
+        {pendingDelete && (
+          <p style={{ margin: 0, lineHeight: 1.5 }}>
+            This permanently removes <b>{pendingDelete.name}</b> and its{" "}
+            <b>{pendingDelete.count}</b> approval record{pendingDelete.count === 1 ? "" : "s"} and
+            any approval links. This can&apos;t be undone.
+            {pendingDelete.status !== "Pending" && (
+              <>
+                {" "}
+                Because this batch is already {pendingDelete.status.toLowerCase()}, its recorded
+                approve/remove decisions will be erased too.
+              </>
+            )}
+          </p>
+        )}
+      </Modal>
     </section>
   );
 }

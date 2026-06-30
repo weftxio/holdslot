@@ -876,6 +876,11 @@ export async function decideBatch(
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
+// Hard-delete a batch; the server cascades its prospect_approval + approval_link rows. 204, no body.
+export async function deleteBatch(client: string, id: string): Promise<void> {
+  const r = await authFetch(`/${client}/batches/${id}`, { method: "DELETE" });
+  if (!r.ok) throw new Error(await detail(r));
+}
 export async function getApprovalTemplate(client: string): Promise<ApprovalTemplateApi> {
   const r = await authFetch(`/${client}/approval-template`);
   if (!r.ok) throw new Error(await detail(r));
