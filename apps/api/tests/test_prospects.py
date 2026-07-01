@@ -66,14 +66,20 @@ def test_extract_exclusions_from_brief_text_and_spec():
 # --------------------------------------------------------------- company fit collapse (stage 1)
 
 
-def test_company_fit_schema_is_verdict_plus_market_label():
-    # Company scoring stays minimal: the model returns the verdict (score + reason) plus a factual
-    # B2B/B2C `business_model` label — NOT the line-item grid (a reasoning model fills it
-    # unreliably). The server derives the tier and applies the market gate from the label.
+def test_company_fit_schema_is_verdict_only():
+    # Company scoring stays minimal AND no longer classifies: the model returns just the verdict
+    # (score + reason). The B2B/B2C label is a separate stage-0 call now (BUSINESS_MODEL_SCHEMA).
     schema = fit.COMPANY_FIT_JSON_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"fit_score", "fit_reason", "business_model"}
-    assert set(schema["properties"]) == {"fit_score", "fit_reason", "business_model"}
+    assert set(schema["required"]) == {"fit_score", "fit_reason"}
+    assert set(schema["properties"]) == {"fit_score", "fit_reason"}
+
+
+def test_business_model_schema_is_single_enum():
+    # The stage-0 classifier's schema is one enum field — nothing else (token minimization).
+    schema = fit.BUSINESS_MODEL_SCHEMA["schema"]
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == {"business_model"}
     assert schema["properties"]["business_model"]["enum"] == ["B2B", "B2C", "Complex", "Unknown"]
 
 
@@ -102,20 +108,22 @@ def _stub_company_call(monkeypatch, data: dict):
     monkeypatch.setattr(fit, "structured_completion", lambda **kw: _StubResult(data))
 
 
-def _score_company(targeting: dict):
+def _score_company(targeting: dict, business_model: str = "Unknown"):
+    # `business_model` is no longer emitted by the LLM — score_company reads it from the company
+    # payload (stamped by the stage-0 classifier) to re-apply the market gate.
     return fit.score_company(
-        tenant_id="t", rubric_body="", company={"domain": "x.example"}, targeting=targeting
+        tenant_id="t",
+        rubric_body="",
+        company={"domain": "x.example", "business_model": business_model},
+        targeting=targeting,
     )
 
 
 def test_company_market_gate_excludes_opposite_market(monkeypatch):
     # A B2C company scored for a B2B client is forced into the Below band (0) and stamped — before
     # any person is sourced or enriched. The business_model label is preserved for audit.
-    _stub_company_call(
-        monkeypatch,
-        {"fit_score": 85, "fit_reason": "Strong firmographic fit.", "business_model": "B2C"},
-    )
-    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    _stub_company_call(monkeypatch, {"fit_score": 85, "fit_reason": "Strong firmographic fit."})
+    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="B2C")
     assert out["fit_score"] == 0 and out["fit_tier"] == "Below"
     assert out["fit_components"]["market_excluded"] is True
     assert out["fit_components"]["business_model"] == "B2C"
@@ -124,10 +132,8 @@ def test_company_market_gate_excludes_opposite_market(monkeypatch):
 
 def test_company_market_gate_keeps_matching_market(monkeypatch):
     # A B2B company for a B2B client keeps its verdict; no gate.
-    _stub_company_call(
-        monkeypatch, {"fit_score": 85, "fit_reason": "Strong fit.", "business_model": "B2B"}
-    )
-    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    _stub_company_call(monkeypatch, {"fit_score": 85, "fit_reason": "Strong fit."})
+    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="B2B")
     assert out["fit_score"] == 85 and out["fit_tier"] == "Strong"
     assert out["fit_components"]["market_excluded"] is False
 
@@ -135,19 +141,45 @@ def test_company_market_gate_keeps_matching_market(monkeypatch):
 def test_company_market_gate_ignores_unknown_and_both(monkeypatch):
     # `Unknown` is never gated (a mixed company surfaces for a human); a `Both`/absent targetMarket
     # disables the gate entirely even for a confirmed opposite-market company.
-    _stub_company_call(
-        monkeypatch, {"fit_score": 70, "fit_reason": "Fits.", "business_model": "Unknown"}
-    )
-    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    _stub_company_call(monkeypatch, {"fit_score": 70, "fit_reason": "Fits."})
+    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="Unknown")
     assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
 
-    _stub_company_call(
-        monkeypatch, {"fit_score": 70, "fit_reason": "Fits.", "business_model": "B2C"}
+    out = _score_company({"brief": {"targetMarket": "Both"}}, business_model="B2C")
+    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
+    out = _score_company({"brief": {}}, business_model="B2C")
+    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
+
+
+def test_apply_market_gate_find_time_buries_opposite_and_leaves_others_unscored():
+    # find/add-time gate (fit_score=None): an opposite-market row is buried into Below·0 up-front;
+    # a non-excluded row stays UNSCORED (tier None) for the on-demand AI-score pass.
+    s, t, ex, r = fit.apply_market_gate(
+        business_model="B2C", target_market="B2B", fit_score=None, fit_reason=""
     )
-    out = _score_company({"brief": {"targetMarket": "Both"}})
-    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
-    out = _score_company({"brief": {}})
-    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
+    assert (s, t, ex) == (0, "Below", True) and r.startswith("Excluded:")
+    assert fit.apply_market_gate(
+        business_model="B2B", target_market="B2B", fit_score=None, fit_reason=""
+    ) == (None, None, False, "")
+    # Complex / Unknown never gate, even when typed opposite the target market.
+    assert fit.apply_market_gate(
+        business_model="Complex", target_market="B2B", fit_score=None, fit_reason=""
+    )[2] is False
+
+
+def test_classify_business_model_returns_label(monkeypatch):
+    # The stage-0 classifier reads the single enum out of its own minimal call.
+    _stub_company_call(monkeypatch, {"business_model": "Complex"})
+    out = fit.classify_business_model(tenant_id="t", company={"domain": "x.example"})
+    assert out["business_model"] == "Complex"
+
+
+def test_model_messages_stay_minimal():
+    # Token minimization: the classifier prompt carries NO rubric / targeting, unlike company_fit.
+    msgs = fit.build_model_messages({"domain": "x.example", "short_description": "sells shoes"})
+    assert len(msgs) == 2 and msgs[0]["role"] == "system"
+    joined = msgs[0]["content"] + msgs[1]["content"]
+    assert "RUBRIC" not in joined and "TARGETING" not in joined
 
 
 # --------------------------------------------------------------------------- fit collapse (C3)

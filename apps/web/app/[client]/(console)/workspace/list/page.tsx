@@ -82,6 +82,10 @@ import {
   WebLink,
 } from "@/components/workspace";
 
+// Sentinel for the Step-1 fit filter's "Pending · unscored" option — a value that can't collide
+// with a real fit_tier (Strong/Good/Moderate/Below), so the predicate can special-case it.
+const UNSCORED_FIT = "__unscored";
+
 export default function ListPage() {
   const client = useClient();
   // Cross-navigation cache for this page's API reads (companies/prospects/docs/depts/icps/spec/
@@ -168,6 +172,8 @@ export default function ListPage() {
   const [expandedCos, setExpandedCos] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
   const [coFit, setCoFit] = useState("");
+  // Business-model filter: "" any · "B2B"/"B2C"/"Complex"/"Unknown" (the stage-0 label).
+  const [coModel, setCoModel] = useState("");
   // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
   const [coStatus, setCoStatus] = useState("");
   const [enriching, setEnriching] = useState(false);
@@ -295,6 +301,7 @@ export default function ListPage() {
     setFIcp("");
     setFFit("");
     setCoFit("");
+    setCoModel("");
     setCoStatus("");
     setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
@@ -424,6 +431,19 @@ export default function ListPage() {
       ),
     [companies]
   );
+  // Header count for the Step-2 tab — people whose company is CURRENTLY in Step 2 (selected |
+  // people_found). Unlike `prospects.length`, this drops the people of a company that was removed
+  // back to Step 1: their prospect rows persist in the DB but no longer show under any Step-2 row,
+  // so the tab count would otherwise over-report. Independent of the search/fit/status filters (a
+  // "total", mirroring how Step 1's tab shows all companies).
+  const step2PeopleCount = useMemo(() => {
+    const inStep2 = new Set(
+      companies
+        .filter((c) => c.status === "selected" || c.status === "people_found")
+        .map((c) => c.id)
+    );
+    return prospects.reduce((n, p) => (p.company_id && inStep2.has(p.company_id) ? n + 1 : n), 0);
+  }, [companies, prospects]);
   // Rows of a pursued company that pass the fit filter — the per-company nested list.
   const rowsForCompany = (id: string) =>
     (prospectsByCompany.get(id) ?? [])
@@ -493,9 +513,15 @@ export default function ListPage() {
           const accepted = c.status === "people_found";
           const statusOk =
             !coStatus || (coStatus === "accepted" ? accepted : !accepted);
+          const modelOk = !coModel || c.business_model === coModel;
+          // "Unscored" (UNSCORED_FIT) = rows still awaiting Get AI score (fit_score null). Market-
+          // excluded rows are forced to Below·0 at find time, so they read as scored, not unscored.
+          const fitOk =
+            !coFit || (coFit === UNSCORED_FIT ? c.fit_score === null : c.fit_tier === coFit);
           return (
             (!coSearch || text.includes(coSearch.toLowerCase())) &&
-            (!coFit || c.fit_tier === coFit) &&
+            fitOk &&
+            modelOk &&
             statusOk
           );
         })
@@ -514,7 +540,7 @@ export default function ListPage() {
           if (aa !== ba) return aa - ba;
           return (b.fit_score ?? -1) - (a.fit_score ?? -1);
         }),
-    [companies, coSearch, coFit, coStatus, coExcluded]
+    [companies, coSearch, coFit, coModel, coStatus, coExcluded]
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
@@ -1141,7 +1167,7 @@ export default function ListPage() {
               onClick={() => setListStage("people")}
             >
               <span className="tab-num">Step 2</span> People{" "}
-              <span className="tab-ct">({prospects.length})</span>
+              <span className="tab-ct">({step2PeopleCount})</span>
             </button>
           </div>
           <div className="head-actions">
@@ -1244,12 +1270,24 @@ export default function ListPage() {
                 <option value="accepted">Accepted</option>
                 <option value="pending">Pending</option>
               </select>
+              <select
+                className="select"
+                value={coModel}
+                onChange={(e) => setCoModel(e.target.value)}
+              >
+                <option value="">All Business</option>
+                <option value="B2B">B2B</option>
+                <option value="B2C">B2C</option>
+                <option value="Complex">Complex</option>
+                <option value="Unknown">Unknown</option>
+              </select>
               <select className="select" value={coFit} onChange={(e) => setCoFit(e.target.value)}>
                 <option value="">Any fit</option>
                 <option value="Strong">Strong fit</option>
                 <option value="Good">Good fit</option>
                 <option value="Moderate">Moderate fit</option>
                 <option value="Below">Below</option>
+                <option value={UNSCORED_FIT}>Pending · unscored</option>
               </select>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
                 Manual Upload

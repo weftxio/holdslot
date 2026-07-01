@@ -302,7 +302,7 @@ recaps) writes through it.
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | idx |
-| `purpose` | varchar(64) | `brief_structure` today; `prospect_fit`/`sourcing_round`/… in C; idx |
+| `purpose` | varchar(64) | `brief_structure` today; `company_fit`/`prospect_fit`/**`company_model`** (stage-0 B2B/B2C classifier)/… in C; idx |
 | `model` | varchar(128) nullable | model actually served |
 | `prompt_version` | varchar(64) nullable | the loop's instrument |
 | `status` | varchar(32) | `ok`/`parse_error`/`timeout`/`error` (string, not enum) |
@@ -427,7 +427,7 @@ apply DB-side on every search.
 | `fit_score` | int nullable | company-level fit (reuses `fit.py`, persona lines omitted) |
 | `fit_tier` | varchar nullable | Strong/Good/Moderate/Below |
 | `fit_reason` | text nullable | "why a fit" (client-facing) |
-| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; also the stage-1 **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict, see Phase B/C refinement in [`initial-build-plan.md`](initial-build-plan.md)) |
+| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; also the **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict). The label is set by a **dedicated stage-0 classifier** (`company_model` purpose) at find/lookalike/manual-add time — BEFORE scoring — not by `company_fit` (which now only reads it for the gate); see Phase B/C refinement in [`initial-build-plan.md`](initial-build-plan.md) |
 | `evidence` | JSONB (default `{}`) | citations / extras (revenue, employee count, locality) |
 | `source` | varchar | `apollo` \| `manual` |
 | `status` | varchar | `discovered` → `selected` → `people_found` → `archived` (selection lives here — no separate `selected` column) |
@@ -644,7 +644,10 @@ retry, LLM token trim, warm-container caching) are **code-only — no migration*
 refinements (delete batch, re-send-reopen) are also **code-only** (delete rides the existing `0016` FK
 cascade). The 2026-07 **B2B/B2C market gate** (`brief.data.targetMarket` + `company.fit_components.business_model`
 /`market_excluded`) and the **thinking-OFF fit scoring** + **async-scoring reaper** are likewise **code-only —
-no migration** (both new fields ride existing JSONB).
+no migration** (both new fields ride existing JSONB). The 2026-07-01 **stage-0 business-model classifier**
+(splits the `business_model` label out of `company_fit` into its own minimal `company_model` LLM call, run at
+find/lookalike/manual-add so every row is labelled + market-gated BEFORE scoring) is also **code-only — no
+migration** (same `fit_components` JSONB fields, one new `llm_call.purpose` value).
 
 > **`prompt.stage` vocabulary (current):** `briefing` (Brief→spec, B) · **`company_fit`** (Step-1 company
 > scoring) · **`prospect_fit`** (Step-2 person scoring). The old single `fit_scoring` stage was split in `0013`;

@@ -13,6 +13,11 @@ Two shapes, one rubric (the founder-edited `fit-scoring-rubric-v1.md`):
   ask a reasoning model to also emit the line-item grid: it fills that unreliably (decides in the
   thinking trace, then zeroes the grid → every company collapsed to "Below · 0"). Two fields it
   fills well; the tier stays policy.
+* **Business model** (stage 0, `classify_business_model`): a separate, deliberately tiny call (its
+  own split system + input prompt) that labels each company B2B / B2C / Complex / Unknown. Split out
+  of company_fit (2026-07) so it runs up-front on EVERY find-company / find-lookalike / manual-add
+  row — the label (and the B2B/B2C market gate it drives) is present BEFORE any on-demand AI
+  scoring, not just on scored rows. score_company no longer classifies; it reads the stored label.
 
 Routing (see initial-build-plan §"Model usage"): both stages run on **DeepSeek V4 Pro** at
 `temperature=0` — a non-US provider (the Gemini/OpenAI fallback was dropped 2026-06-21 as
@@ -46,6 +51,17 @@ FIT_MODELS = ["deepseek/deepseek-v4-pro"]
 COMPANY_FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 PROSPECT_FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 
+# Business-model classifier (stage-0, its own tiny LLM call — see classify_business_model). Split
+# out of company_fit (2026-07) so EVERY find-company / find-lookalike / manual-add row carries the
+# B2B/B2C label — and is market-gated — BEFORE any (on-demand, paid) AI scoring. It is deliberately
+# minimal: no rubric, no targeting, no full firmographics reach it (business_model is a factual,
+# client-independent property), and it returns a single enum token. Same region-safe model as
+# scoring, thinking OFF + temperature 0 — accuracy without the token/latency of the trace.
+MODEL_PURPOSE = "company_model"
+MODEL_PROMPT_VERSION = "company-model-v1"
+CLASSIFY_MODELS = ["deepseek/deepseek-v4-pro"]
+CLASSIFY_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
+
 # The rubric's sub-criteria → their max points (the deterministic caps). Mirrors §2 of the
 # rubric doc; the LLM scores each, we clamp to max, cap each dimension at its sum-of-maxes.
 DIMENSIONS: dict[str, dict[str, int]] = {
@@ -71,6 +87,39 @@ def tier_for(score: int) -> str:
         if score >= floor:
             return name
     return "Below"
+
+
+def apply_market_gate(
+    *,
+    business_model: str | None,
+    target_market: str | None,
+    fit_score: int | None,
+    fit_reason: str,
+) -> tuple[int | None, str | None, bool, str]:
+    """Deterministic B2B/B2C hard gate → `(fit_score, fit_tier, market_excluded, fit_reason)`.
+
+    When the company's `business_model` is the strict OPPOSITE of the client's `target_market`,
+    force it into the Below band (score 0) and stamp an auditable reason — regardless of any LLM
+    score — so it is never selected for people-search (no person sourced, no enrich spend). Only a
+    strict B2B/B2C opposite gates: `Both`/absent target, or a `Complex`/`Unknown` model, never do.
+
+    Applied at two moments over the same rule: at find/classify time (`fit_score=None` → an excluded
+    row is buried before scoring; a non-excluded row stays unscored, tier None) and at score time
+    (`fit_score` set → the tier is derived, or the gate overrides it). Pure + deterministic.
+    """
+    excluded = (
+        target_market in ("B2B", "B2C")
+        and business_model in ("B2B", "B2C")
+        and business_model != target_market
+    )
+    if excluded:
+        reason = (
+            f"Excluded: {business_model}-only company for a {target_market} client. {fit_reason}"
+        ).strip()
+        return _MARKET_GATE_SCORE, tier_for(_MARKET_GATE_SCORE), True, reason
+    if fit_score is None:
+        return None, None, False, fit_reason
+    return fit_score, tier_for(fit_score), False, fit_reason
 
 
 def _ints(props: dict[str, int]) -> dict:
@@ -138,6 +187,9 @@ FIT_JSON_SCHEMA = _fit_schema("ProspectFit", DIMENSIONS)
 # `fit_reason`. The server derives the tier from the score (tier_for). We do NOT ask the model to
 # emit the per-sub-criterion grid: a reasoning model fills it unreliably (it decides in the thinking
 # trace, then zeroes the grid → every company collapsed to "Below · 0"). Two fields it fills well.
+# The B2B/B2C `business_model` label is NO LONGER produced here (2026-07): it is classified up-front
+# by its own dedicated call (classify_business_model) at find/add time, so score_company just READS
+# the stored label (via the company payload) to re-apply the market gate.
 COMPANY_FIT_JSON_SCHEMA = {
     "name": "CompanyFit",
     "strict": True,
@@ -147,13 +199,22 @@ COMPANY_FIT_JSON_SCHEMA = {
         "properties": {
             "fit_score": {"type": "integer"},
             "fit_reason": {"type": "string"},
-            # B2B/B2C label (Apollo's own method: judged from description/industries/keywords, not a
-            # search filter — the API has no market-segment param). Drives the market hard gate in
-            # score_company; only a strict B2B/B2C opposite gates — `Complex` (marketplace / B2B2C)
-            # and `Unknown` surface for a human.
+        },
+        "required": ["fit_score", "fit_reason"],
+    },
+}
+
+# Stage-0 business-model classifier — its own minimal schema: one enum field, nothing else.
+BUSINESS_MODEL_SCHEMA = {
+    "name": "BusinessModel",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
             "business_model": {"type": "string", "enum": ["B2B", "B2C", "Complex", "Unknown"]},
         },
-        "required": ["fit_score", "fit_reason", "business_model"],
+        "required": ["business_model"],
     },
 }
 
@@ -300,13 +361,7 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
         "jargon) saying what makes this company fit or not. It is shown in a small hover box, so "
         "keep it concise and make it match the score (never call a low-scoring company a strong "
         "fit).\n"
-        "• `business_model` — classify who THIS company sells to: `B2B` (primarily to other "
-        "businesses), `B2C` (directly to consumers — e.g. a digital insurer, retail brand, "
-        "consumer app / fintech), `Complex` (serves BOTH sides by design — marketplaces, "
-        "platforms, and B2B2C models, e.g. Amazon or a payments network), or `Unknown` (too little "
-        "signal to tell). Judge from its description, industries and keywords — the customer it "
-        "serves, not its own size. This is a factual label, independent of the score.\n"
-        "Emit ONLY the JSON object with those three fields.\n\n"
+        "Emit ONLY the JSON object with those two fields.\n\n"
         "=== FIT RUBRIC (your thinking framework) ===\n" + rubric_body
     )
     user = (
@@ -324,7 +379,11 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
 def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict) -> dict:
     """Score one company (LLM usage B, stage 1). The model returns the verdict directly: a 0–100
     `fit_score` + a short `fit_reason`; the server clamps the score and derives `fit_tier` from it
-    (tier_for). Raises `LlmError` on a non-ok call (telemetry already persisted)."""
+    (tier_for). Raises `LlmError` on a non-ok call (telemetry already persisted).
+
+    `business_model` is NOT (re-)classified here — it is read from the `company` payload (stamped by
+    classify_business_model at find/add time) and used only to re-apply the market gate + preserved
+    in the returned components, so a re-score can neither drop the label nor un-exclude the row."""
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=COMPANY_PURPOSE,
@@ -334,27 +393,19 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
         models=FIT_MODELS,
         extra_body=COMPANY_FIT_EXTRA_BODY,
     )
-    fit_score = max(0, min(int(result.data.get("fit_score") or 0), 100))
-    fit_tier = tier_for(fit_score)  # tier is policy, derived from the model's score, never LLM-set
-    fit_reason = result.data.get("fit_reason", "")
-    business_model = result.data.get("business_model") or "Unknown"
-    # Market hard gate: the brief's `targetMarket` (B2B / B2C / Both / absent) vs the company's
-    # `business_model`. A confirmed opposite-market company is a structural miss — force it into the
-    # Below band so it is never selected for people-search (no person sourced, no enrich spend), and
-    # stamp the reason so the exclusion is auditable. `Both`/absent disables the gate; only a strict
-    # B2B/B2C opposite gates — `Complex` (marketplace / B2B2C) and `Unknown` surface for a human.
+    raw_score = max(0, min(int(result.data.get("fit_score") or 0), 100))
+    business_model = company.get("business_model") or "Unknown"
+    # Market hard gate: the brief's `targetMarket` (B2B / B2C / Both / absent) vs the stored
+    # `business_model`. A confirmed opposite-market company is a structural miss — forced into the
+    # Below band so it is never selected for people-search (no person sourced, no enrich spend),
+    # with an auditable reason. `Both`/absent disables the gate; `Complex`/`Unknown` never gate.
     target_market = (targeting.get("brief") or {}).get("targetMarket")
-    market_excluded = (
-        target_market in ("B2B", "B2C")
-        and business_model in ("B2B", "B2C")
-        and business_model != target_market
+    fit_score, fit_tier, market_excluded, fit_reason = apply_market_gate(
+        business_model=business_model,
+        target_market=target_market,
+        fit_score=raw_score,
+        fit_reason=result.data.get("fit_reason", ""),
     )
-    if market_excluded:
-        fit_score = _MARKET_GATE_SCORE
-        fit_tier = tier_for(fit_score)
-        fit_reason = (
-            f"Excluded: {business_model}-only company for a {target_market} client. {fit_reason}"
-        ).strip()
     # Observability: the model's verdict only lands in the DB otherwise, so a low/0 score is hard to
     # diagnose. One INFO line per company makes "why is this Below/0?" answerable from CloudWatch.
     log.info(
@@ -380,15 +431,73 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
     }
 
 
+def build_model_messages(company: dict) -> list[dict]:
+    """Stage-0 classifier prompt — deliberately tiny (token minimization is the whole point): the
+    label definitions + ONLY the company's identity/description signals. No rubric, no targeting, no
+    full firmographics — `business_model` is a factual, client-independent property."""
+    import json
+
+    system = (
+        "Classify who a company sells to. Judge from its description, industries and keywords — "
+        "the customer it serves, not its own size. Output ONE label:\n"
+        "• B2B — sells primarily to other businesses.\n"
+        "• B2C — sells directly to consumers (e.g. a digital insurer, retail brand, consumer "
+        "app/fintech).\n"
+        "• Complex — serves BOTH sides by design: marketplaces, platforms, B2B2C (e.g. Amazon, a "
+        "payments network).\n"
+        "• Unknown — too little signal to tell.\n"
+        "Emit ONLY the JSON object with the single `business_model` field."
+    )
+    user = "COMPANY:\n" + json.dumps(company, ensure_ascii=False)
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+
+
+def classify_business_model(*, tenant_id, company: dict) -> dict:
+    """Stage-0 — classify a company's B2B/B2C `business_model` in one minimal call. Returns
+    `{business_model, llm_call_id, model, cost_usd}`; raises `LlmError` on a non-ok call (telemetry
+    already persisted). Client-independent, so it takes no rubric/targeting — the caller applies the
+    market gate against the brief's `targetMarket` separately (apply_market_gate)."""
+    result = structured_completion(
+        tenant_id=tenant_id,
+        purpose=MODEL_PURPOSE,
+        messages=build_model_messages(company),
+        schema=BUSINESS_MODEL_SCHEMA,
+        prompt_version=MODEL_PROMPT_VERSION,
+        models=CLASSIFY_MODELS,
+        extra_body=CLASSIFY_EXTRA_BODY,
+    )
+    business_model = result.data.get("business_model") or "Unknown"
+    log.info(
+        "business_model classified: model=%s company=%s llm=%s call=%s",
+        business_model,
+        company.get("domain") or company.get("name") or "?",
+        result.model,
+        result.llm_call_id,
+    )
+    return {
+        "business_model": business_model,
+        "llm_call_id": result.llm_call_id,
+        "model": result.model,
+        "cost_usd": result.cost_usd,
+    }
+
+
 __all__ = [
     "score",
     "score_company",
+    "classify_business_model",
+    "apply_market_gate",
     "collapse",
     "tier_for",
     "FIT_JSON_SCHEMA",
     "COMPANY_FIT_JSON_SCHEMA",
+    "BUSINESS_MODEL_SCHEMA",
     "PURPOSE",
     "COMPANY_PURPOSE",
+    "MODEL_PURPOSE",
     "RUBRIC_VERSION",
     "LlmError",
 ]

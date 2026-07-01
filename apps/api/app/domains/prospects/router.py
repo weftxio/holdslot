@@ -339,7 +339,9 @@ def _company_out(c: Company) -> CompanyOut:
 
 
 def _company_payload(c: Company) -> dict:
-    """The company facts the rubric scores against (stage-1 firmographics + evidence)."""
+    """The company facts the rubric scores against (stage-1 firmographics + evidence). Carries the
+    already-classified `business_model` (stamped by classify_business_model at find/add time) so
+    score_company can re-apply the market gate WITHOUT re-classifying (stage-0 owns the label)."""
     return {
         "name": c.name,
         "domain": c.domain,
@@ -348,6 +350,23 @@ def _company_payload(c: Company) -> dict:
         "country": c.country,
         "linkedin_url": c.linkedin_url,
         **(c.evidence or {}),
+        "business_model": (c.fit_components or {}).get("business_model", ""),
+    }
+
+
+def _classify_payload(c: Company) -> dict:
+    """The minimal signals the stage-0 business-model classifier judges from — identity + the
+    description / industries / keywords out of the enrich evidence. Deliberately excludes the
+    rubric, targeting and full firmographics (business_model is factual + client-independent) to
+    keep the call tiny."""
+    ev = c.evidence or {}
+    return {
+        "name": c.name,
+        "domain": c.domain,
+        "industry": c.industry,
+        "short_description": ev.get("short_description") or "",
+        "industries": [*(ev.get("industries") or []), *(ev.get("secondary_industries") or [])],
+        "keywords": ev.get("keywords") or [],
     }
 
 
@@ -413,6 +432,51 @@ def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
 
     with ThreadPoolExecutor(max_workers=min(_SCORE_WORKERS, len(jobs))) as ex:
         return list(ex.map(_run, jobs))
+
+
+def classify_companies(tenant_id, rows: list[Company], brief: Brief | None) -> float:
+    """Stage-0 — stamp the B2B/B2C `business_model` label on every row that lacks one (idempotent,
+    so a re-find never re-classifies) via a dedicated minimal LLM call, and apply the market gate at
+    find/add time: an opposite-market company is buried into Below·0 HERE, before any (paid) AI
+    scoring, and pinned to the bottom of Step 1. Returns the total cost_usd to book onto the run.
+
+    One concurrent wave (the LLM client is thread-safe); the ORM mutation stays on the calling
+    thread (results applied in the loop below). Does NOT commit — the caller owns the transaction. A
+    per-row classify failure is absorbed (row kept unlabeled), never fatal.
+    """
+    target_market = ((brief.data if brief else None) or {}).get("targetMarket")
+    todo = [c for c in rows if not (c.fit_components or {}).get("business_model")]
+    jobs = [
+        (
+            c,
+            (lambda payload=_classify_payload(c): fit.classify_business_model(
+                tenant_id=tenant_id, company=payload
+            )),
+        )
+        for c in todo
+    ]
+    cost = 0.0
+    for c, res in _score_concurrently(jobs):
+        if res is None:
+            continue
+        business_model = res.get("business_model") or "Unknown"
+        comps = dict(c.fit_components or {})
+        comps["business_model"] = business_model
+        # Gate at find/add time: fit_score=None means an excluded row is buried (Below·0) up-front,
+        # while a non-excluded row is left UNSCORED for the on-demand "Get AI score" pass.
+        score, tier, excluded, reason = fit.apply_market_gate(
+            business_model=business_model,
+            target_market=target_market,
+            fit_score=None,
+            fit_reason=comps.get("fit_reason", ""),
+        )
+        comps["market_excluded"] = excluded
+        if excluded:
+            comps["fit_reason"] = reason
+            c.fit_score, c.fit_tier, c.fit_reason = score, tier, reason
+        c.fit_components = comps
+        cost += float(res.get("cost_usd") or 0.0)
+    return cost
 
 
 @router.get("/{client}/companies", response_model=CompanyPage)
@@ -486,6 +550,11 @@ def add_company(
     # Land UNSCORED. Fit scoring is a ~15-25s reasoning call (+retry) that can exceed the 30s API
     # Gateway sync cap on the request path — the web app scores the new row in the background
     # (chunked /companies/rescore), like an Apollo-found row. A re-add keeps the prior score.
+    db.flush()  # assign the row's identity before the stage-0 classify mutates its fit_components
+    # Stage-0: classify the business model now (one fast, minimal LLM call — NOT the AI-score call)
+    # so the manual row carries its Model chip immediately and is market-gated like a found row. A
+    # re-add that already has a label is skipped by classify_companies (idempotent).
+    classify_companies(ctx.tenant.id, [company], _latest_brief(db, ctx.tenant.id))
     db.commit()
     db.refresh(company)
     return _company_out(company)
@@ -719,6 +788,11 @@ def _run_company_find(
         c = _upsert_company(db, tenant_id, p)
         c.run_id, c.icp_id = run_id, icp or c.icp_id
         companies.append(c)
+
+    # Stage-0: classify the business model of every NEW row up-front (a dedicated minimal LLM call)
+    # so the B2B/B2C label — and the market gate — is present BEFORE any AI scoring. Opposite-market
+    # rows are gated into Below·0 here, dropping out of the `fit_score is None` set scored below.
+    cost += classify_companies(tenant_id, companies, brief)
 
     # Score the unscored rows concurrently (re-finds don't re-spend on already-scored rows). The
     # scoring payload is built here on the main thread so no lazy ORM load runs off-thread; results

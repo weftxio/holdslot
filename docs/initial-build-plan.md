@@ -5,14 +5,16 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-01): A–D BUILT & LIVE on `dev`.** Backend **Lambda v55** · Aurora **head `0016`** (20
-> tables) · web **Amplify `dev`**. The Apollo **find → score → select → enrich → batch → masked
-> client-approval** loop is live end-to-end. Latest (2026-07, this push): the **B2B/B2C market gate** (exclude
-> opposite-market companies before the paid enrich step) + **fit scoring runs thinking-OFF** on both stages
-> (A/B'd — ~10× faster, ~⅓ the cost, cleaner JSON) + the **async-scoring zombie reaper** (one-wave batch of
-> 15, 300s worker timeout). **Next: Phase E (outreach + Smartlead)** — gated on warmed inboxes (warm-up
-> running since 2026-06-17). The only thing left on A–D is the three **founder operational acceptance rounds**
-> (S1/S2/S3) — no code or deploy pending.
+> **Status (2026-07-01): A–D BUILT & LIVE on `dev`.** Backend **Lambda v55** (→ **v56** with this push,
+> pending deploy) · Aurora **head `0016`** (20 tables) · web **Amplify `dev`**. The Apollo **find → score →
+> select → enrich → batch → masked client-approval** loop is live end-to-end. Latest (2026-07-01, this push):
+> the **stage-0 business-model classifier** — splits the B2B/B2C label into its own minimal `company_model`
+> LLM call run at find/lookalike/manual-add, so every row is labelled + market-gated **before** any (paid) AI
+> scoring — plus Step-1 **Business-model** and **Pending · unscored** filters. Prior push (v55, live): the
+> **B2B/B2C market gate** + **thinking-OFF fit scoring** (A/B'd — ~10× faster, ~⅓ the cost, cleaner JSON) +
+> the **async-scoring zombie reaper** (one-wave batch of 15, 300s worker timeout). **Next: Phase E (outreach +
+> Smartlead)** — gated on warmed inboxes (warm-up running since 2026-06-17). The only thing left on A–D is the
+> three **founder operational acceptance rounds** (S1/S2/S3).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
 - **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all 20 DB tables, head `0016`). Update it first on any schema change.
@@ -92,8 +94,8 @@ the company tier, **before the only paid step (enrich)**:
 | Piece | What |
 |---|---|
 | Brief | new **`targetMarket`** field (B2B / B2C / Both; opaque `brief.data` JSONB → **no migration**); required, reaches the scorer via `_SCORING_BRIEF_FIELDS` |
-| Company scorer | stage-1 `company_fit` now also emits **`business_model`** (B2B / B2C / **Complex** / Unknown — `Complex` = marketplace / B2B2C / platform serving both sides, e.g. Amazon), judged from description/industries/keywords — Apollo's own recommended method (a post-search LLM *label*, not a filter); same call, no new spend. Stored in `company.fit_components` + surfaced as the Step-1 model chip. |
-| Hard gate | `targetMarket` vs `business_model` mismatch (only when **both** are a clean B2B/B2C, e.g. B2B client × B2C company) → force `fit_score = 0` / tier **Below** + stamped reason, `market_excluded` stored for audit + surfaced on `CompanyOut`. `Complex` / `Unknown` / `Both` / absent **never gate**. Gated companies are never selected for people-search → **no contact sourced, no enrich spend**, and the Step-1 table **pins them to the bottom regardless of sort**. |
+| Business-model classifier | The **`business_model`** label (B2B / B2C / **Complex** / Unknown — `Complex` = marketplace / B2B2C / platform serving both sides, e.g. Amazon) is set by a **dedicated stage-0 call** (`company_model` purpose · its own minimal split prompt — no rubric, no targeting, single-enum output, DeepSeek V4 Pro thinking-OFF) run at **find / lookalike / manual-add** time, so EVERY row is labelled BEFORE any (on-demand, paid) AI scoring — not just scored rows (2026-07-01 split out of `company_fit`). Judged from description/industries/keywords — Apollo's own recommended method (a post-search LLM *label*, not a filter). Token-minimal, so the extra call is cheap. Stored in `company.fit_components` + surfaced as the Step-1 model chip. `company_fit` no longer classifies — it just reads the stored label. |
+| Hard gate | `targetMarket` vs `business_model` mismatch (only when **both** are a clean B2B/B2C, e.g. B2B client × B2C company) → force `fit_score = 0` / tier **Below** + stamped reason, `market_excluded` stored for audit + surfaced on `CompanyOut`. Now fires at **find/classify time** (opposite-market rows are buried into Below·0 up-front, before scoring — never consuming a paid score); `company_fit` re-applies it from the stored label so a re-score can't un-exclude. `Complex` / `Unknown` / `Both` / absent **never gate**. Gated companies are never selected for people-search → **no contact sourced, no enrich spend**, and the Step-1 table **pins them to the bottom regardless of sort** (+ a Step-1 **Business-model filter** and a **Pending · unscored** fit filter). |
 
 **Fit-scoring hardening shipped alongside (2026-07):**
 - **Thinking OFF on both stages** (`company_fit` + `prospect_fit`). Telemetry showed the reasoning trace was

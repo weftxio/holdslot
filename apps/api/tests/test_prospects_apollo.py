@@ -121,6 +121,18 @@ def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
     )
     monkeypatch.setattr(fit, "score", _score)
     monkeypatch.setattr(fit, "score_company", _score)
+    # Find now runs the stage-0 business-model classifier up-front (before scoring); stub it so the
+    # flow doesn't reach the network. B2B keeps the row (no gate for a B2B/absent-market fixture).
+    monkeypatch.setattr(
+        fit,
+        "classify_business_model",
+        lambda **k: {
+            "business_model": "B2B",
+            "llm_call_id": None,
+            "model": "test",
+            "cost_usd": 0.0,
+        },
+    )
     return seen_targeting
 
 
