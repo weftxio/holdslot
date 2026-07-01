@@ -432,6 +432,8 @@ export type CompanyApi = {
   fit_score: number | null;
   fit_tier: string | null;
   fit_reason: string;
+  business_model: string; // "B2B" | "B2C" | "Complex" | "Unknown" | "" (unscored / pre-label)
+  market_excluded: boolean; // B2B/B2C gate fired (opposite-market) → pinned to the bottom of Step 1
   reason_tags: string[];
   enrichment: CompanyEnrichment;
   source: string; // "apollo" | "manual"
@@ -566,8 +568,9 @@ export type ScoringJobApi = {
   error: string | null;
 };
 
-// "Get AI score" / "Update Field" batch ceiling — must match the backend ASYNC_BATCH_MAX.
-export const SCORE_BATCH_MAX = 20;
+// "Get AI score" / "Update Field" batch ceiling — must match the backend ASYNC_BATCH_MAX (one
+// concurrent scoring wave, so the batch finishes well inside the Lambda timeout).
+export const SCORE_BATCH_MAX = 15;
 
 const JOB_POLL_MS = 2000;
 const JOB_POLL_MAX = 200; // ~6.5-min ceiling; the Lambda-bounded worker terminates well before this
@@ -803,8 +806,9 @@ export type BatchApi = {
   sent_at: string | null;
   decided_at: string | null;
 };
-// One prospect inside the console (FULL, operator-owned) batch detail — NOT masked.
-export type BatchProspectApi = {
+// One prospect inside the console (FULL, operator-owned) batch detail — NOT masked. Composed into
+// BatchDetailApi (the exported parent); not imported standalone.
+type BatchProspectApi = {
   approval_id: string;
   prospect_id: string;
   full_name: string;
@@ -814,7 +818,7 @@ export type BatchProspectApi = {
   fit_reason: string;
   decision: string; // pending | approved | removed
 };
-export type BatchCompanyGroupApi = {
+type BatchCompanyGroupApi = {
   company: string;
   domain: string;
   industry: string;
@@ -900,8 +904,9 @@ export async function saveApprovalTemplate(
 }
 
 // --- Phase D external (public, token-only — NO auth) -------------------------
-// The MASKED client view: fit context only, never a clear-text identity/contact vector.
-export type ApprovalProspectApi = {
+// The MASKED client view: fit context only, never a clear-text identity/contact vector. Composed
+// into ApprovalViewApi (the exported parent); not imported standalone.
+type ApprovalProspectApi = {
   id: string; // the opaque decide handle (prospect_approval id)
   name: string; // "Sarah K."
   company_descriptor: string; // "SaaS · 200–500 · US" (not the exact company)

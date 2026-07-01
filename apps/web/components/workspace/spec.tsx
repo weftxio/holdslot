@@ -229,12 +229,14 @@ export function CompanyStudy({ e }: { e: CompanyEnrichment }) {
   );
 }
 
-// Clickable company website — links to the raw URL when known, else derives one from the domain.
-// Both are user/CSV-sourced strings, so render the label as JSX text and force a safe scheme.
+// Clickable company site for the merged Domain+Website cell: shows the short domain as the label
+// and links to the full website (falls back to the domain when no website is known). Both are
+// user/CSV-sourced strings, so render the label as JSX text and force a safe scheme.
 export function WebLink({ website, domain }: { website?: string; domain?: string }) {
-  const label = website || domain || "";
+  const label = domain || website || "";
+  const target = website || domain || "";
   if (!label) return <span className="muted">—</span>;
-  const href = /^https?:\/\//i.test(label) ? label : `https://${label.replace(/^\/+/, "")}`;
+  const href = /^https?:\/\//i.test(target) ? target : `https://${target.replace(/^\/+/, "")}`;
   return (
     <a className="weblink" href={href} target="_blank" rel="noopener noreferrer">
       {label} ↗

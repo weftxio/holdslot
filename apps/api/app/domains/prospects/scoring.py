@@ -25,6 +25,7 @@ import logging
 import os
 import threading
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -49,22 +50,53 @@ KIND_UPDATE_FIELDS = "update_fields"
 _ACTIVE = ("queued", "running")
 _ERR_MAX = 500  # cap the stored error message
 
+# A worker runs inside a SINGLE Lambda invocation, so it cannot outlive the function timeout. A hard
+# timeout kills it mid-run WITHOUT raising, so run_scoring_job's except/finally never fires and the
+# job is left `running` forever (a zombie): the poll spins to its ceiling, AND enqueue_scoring
+# coalesces every retry onto it, wedging the surface. So on each read we reap any non-terminal job
+# older than a worker could possibly live → `error`, settling the poll and freeing the next. Keep
+# this comfortably ABOVE the Lambda timeout (infra/terraform/lambda.tf, currently 300s).
+MAX_JOB_AGE_SECONDS = 360
+
+
+def _job_age_seconds(job: ScoringJob) -> float:
+    created = job.created_at
+    if created.tzinfo is None:  # aurora-data-api can hand back a naive UTC datetime
+        created = created.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - created).total_seconds()
+
+
+def _reap_if_stale(db: Session, job: ScoringJob) -> bool:
+    """Flip a non-terminal job that outlived any possible worker run to `error`. Idempotent; returns
+    True when it reaped (so callers stop treating the job as active/in-flight)."""
+    if job.status not in _ACTIVE or _job_age_seconds(job) <= MAX_JOB_AGE_SECONDS:
+        return False
+    _fail(db, job, "scoring worker timed out — try a smaller selection")
+    log.warning("reaped stale scoring job kind=%s id=%s", job.kind, job.id)
+    return True
+
 
 def latest_job(db: Session, tenant_id, kind: str) -> ScoringJob | None:
     """The most recent job of this kind for the tenant (what the status poll reads)."""
-    return db.execute(
+    job = db.execute(
         select(ScoringJob)
         .where(ScoringJob.tenant_id == tenant_id, ScoringJob.kind == kind)
         .order_by(ScoringJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if job is not None:
+        _reap_if_stale(db, job)
+    return job
 
 
 def job_by_id(db: Session, tenant_id, job_id) -> ScoringJob | None:
     """A specific job, tenant-scoped (the poll fetches by id once kicked off)."""
-    return db.execute(
+    job = db.execute(
         select(ScoringJob).where(ScoringJob.tenant_id == tenant_id, ScoringJob.id == job_id)
     ).scalar_one_or_none()
+    if job is not None:
+        _reap_if_stale(db, job)
+    return job
 
 
 def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJob:
@@ -80,7 +112,9 @@ def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJ
         .order_by(ScoringJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if active is not None:
+    # Coalesce onto a genuinely in-flight job (prevents a double-click double-spend); but a stale
+    # zombie must NOT wedge the surface — reap it and fall through to enqueue a fresh one.
+    if active is not None and not _reap_if_stale(db, active):
         return active
 
     job = ScoringJob(tenant_id=tenant_id, kind=kind, params=params, status="queued")

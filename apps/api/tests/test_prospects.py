@@ -66,13 +66,15 @@ def test_extract_exclusions_from_brief_text_and_spec():
 # --------------------------------------------------------------- company fit collapse (stage 1)
 
 
-def test_company_fit_schema_is_two_fields_only():
-    # Company scoring is minimal: the model returns only the verdict (score + reason); the server
-    # derives the tier from the score. No line-item grid (a reasoning model fills it unreliably).
+def test_company_fit_schema_is_verdict_plus_market_label():
+    # Company scoring stays minimal: the model returns the verdict (score + reason) plus a factual
+    # B2B/B2C `business_model` label — NOT the line-item grid (a reasoning model fills it
+    # unreliably). The server derives the tier and applies the market gate from the label.
     schema = fit.COMPANY_FIT_JSON_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"fit_score", "fit_reason"}
-    assert set(schema["properties"]) == {"fit_score", "fit_reason"}
+    assert set(schema["required"]) == {"fit_score", "fit_reason", "business_model"}
+    assert set(schema["properties"]) == {"fit_score", "fit_reason", "business_model"}
+    assert schema["properties"]["business_model"]["enum"] == ["B2B", "B2C", "Complex", "Unknown"]
 
 
 def test_company_tier_derives_from_score():
@@ -81,6 +83,71 @@ def test_company_tier_derives_from_score():
     assert fit.tier_for(60) == "Good"
     assert fit.tier_for(45) == "Moderate"
     assert fit.tier_for(10) == "Below"
+
+
+# ------------------------------------------------------ company market hard gate (B2B/B2C, stage 1)
+
+
+class _StubResult:
+    """A structured_completion result stand-in (score_company reads .data + telemetry fields)."""
+
+    def __init__(self, data: dict):
+        self.data = data
+        self.llm_call_id = "call-1"
+        self.model = "stub-model"
+        self.cost_usd = 0.0
+
+
+def _stub_company_call(monkeypatch, data: dict):
+    monkeypatch.setattr(fit, "structured_completion", lambda **kw: _StubResult(data))
+
+
+def _score_company(targeting: dict):
+    return fit.score_company(
+        tenant_id="t", rubric_body="", company={"domain": "x.example"}, targeting=targeting
+    )
+
+
+def test_company_market_gate_excludes_opposite_market(monkeypatch):
+    # A B2C company scored for a B2B client is forced into the Below band (0) and stamped — before
+    # any person is sourced or enriched. The business_model label is preserved for audit.
+    _stub_company_call(
+        monkeypatch,
+        {"fit_score": 85, "fit_reason": "Strong firmographic fit.", "business_model": "B2C"},
+    )
+    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    assert out["fit_score"] == 0 and out["fit_tier"] == "Below"
+    assert out["fit_components"]["market_excluded"] is True
+    assert out["fit_components"]["business_model"] == "B2C"
+    assert out["fit_reason"].startswith("Excluded: B2C-only company for a B2B client.")
+
+
+def test_company_market_gate_keeps_matching_market(monkeypatch):
+    # A B2B company for a B2B client keeps its verdict; no gate.
+    _stub_company_call(
+        monkeypatch, {"fit_score": 85, "fit_reason": "Strong fit.", "business_model": "B2B"}
+    )
+    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    assert out["fit_score"] == 85 and out["fit_tier"] == "Strong"
+    assert out["fit_components"]["market_excluded"] is False
+
+
+def test_company_market_gate_ignores_unknown_and_both(monkeypatch):
+    # `Unknown` is never gated (a mixed company surfaces for a human); a `Both`/absent targetMarket
+    # disables the gate entirely even for a confirmed opposite-market company.
+    _stub_company_call(
+        monkeypatch, {"fit_score": 70, "fit_reason": "Fits.", "business_model": "Unknown"}
+    )
+    out = _score_company({"brief": {"targetMarket": "B2B"}})
+    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
+
+    _stub_company_call(
+        monkeypatch, {"fit_score": 70, "fit_reason": "Fits.", "business_model": "B2C"}
+    )
+    out = _score_company({"brief": {"targetMarket": "Both"}})
+    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
+    out = _score_company({"brief": {}})
+    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
 
 
 # --------------------------------------------------------------------------- fit collapse (C3)

@@ -153,8 +153,8 @@ export function attendeeEmailsFromBrief(doc: BriefDoc | undefined): string[] {
 }
 
 // Per-prospect approval decision (pending·approved·removed) → {label, badge class} for the
-// Sendout Batch detail rows.
-export const DECISION_VIEW: Record<string, { label: string; cls: string }> = {
+// Sendout Batch detail rows. Resolved through `decisionView` (below) — not consumed directly.
+const DECISION_VIEW: Record<string, { label: string; cls: string }> = {
   approved: { label: "Approved", cls: "badge-ok" },
   removed: { label: "Removed", cls: "badge-danger" },
   pending: { label: "Pending", cls: "badge-warn" },
@@ -203,6 +203,15 @@ export function daysAgoLabel(iso: string, now: Date = new Date()) {
   return diff <= 0 ? "today" : diff === 1 ? "1 day ago" : diff + " days ago";
 }
 
+// Who the client sells to — drives the B2B/B2C market hard gate in company fit scoring. The stored
+// value must be exactly B2B / B2C / Both (the gate matches on it); labels carry the plain-language
+// hint. "Both" (or unset) disables the gate.
+export const TARGET_MARKET_OPTS: { value: string; label: string }[] = [
+  { value: "B2B", label: "B2B · we sell to businesses" },
+  { value: "B2C", label: "B2C · we sell to consumers" },
+  { value: "Both", label: "Both" },
+];
+
 export const SENIORITY_OPTS = ["C-level", "VP", "Director", "Manager", "Individual contributor"];
 export const LANGUAGE_OPTS = ["English", "Mandarin", "Spanish", "French", "German", "Other"];
 export const CYCLE_OPTS = ["Less than 1 month", "1–3 months", "3–6 months", "6+ months"];
@@ -229,6 +238,7 @@ export const blankBrief = (): Brief => ({
   companyName: "",
   website: "",
   sell: "",
+  targetMarket: "",
   problem: "",
   dealSize: "",
   salesCycle: "",
@@ -314,6 +324,20 @@ export function dateRange(r?: { min?: string | null; max?: string | null }): str
   if (lo) return `from ${lo}`;
   if (hi) return `until ${hi}`;
   return null;
+}
+
+// Stage-1 business-model chip (B2B · B2C · Complex · Unknown) shown in the Step-1 company table.
+// A factual label from `company_fit` — `Complex` = marketplace / B2B2C / platform serving both
+// sides (e.g. Amazon). Colors are categorical, NOT a verdict (the fit chip carries the verdict; the
+// gate reason explains an exclusion). Unlabeled ("") rows are pre-label — a rescore fills them.
+const BUSINESS_MODEL_CHIP: Record<string, { label: string; cls: string }> = {
+  B2B: { label: "B2B", cls: "badge-ok" },
+  B2C: { label: "B2C", cls: "badge-warn" },
+  Complex: { label: "Complex", cls: "badge-info" },
+  Unknown: { label: "Unknown", cls: "badge-neutral" },
+};
+export function businessModelChip(value: string): { label: string; cls: string } {
+  return BUSINESS_MODEL_CHIP[value] ?? { label: value, cls: "badge-neutral" };
 }
 
 // AI Score cell — a clean fit chip (4 tier colors) + a hover/focus info tooltip carrying the

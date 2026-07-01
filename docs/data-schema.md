@@ -6,18 +6,17 @@
 > [`backend-development-plan.md`](backend-development-plan.md)) shows a table or column differently, **this
 > doc wins**, and schema changes are recorded **here first**.
 >
-> **A, B & C are live** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the
-> Alembic migrations **through `0015`**, the live Aurora head — Lambda **v46** / commit `196a31e`); C is
-> the **Apollo-only** find → score → select → enrich loop (see
-> [`initial-build-plan.md`](initial-build-plan.md) → Phase C). The 2026-06-25 modularization + W0–W8 hardening
-> pass added the perf indexes + `prospect.fit_reason` (`0014`) and the `scoring_job` async ledger (`0015`);
-> the `scope_override` table (`0012`) is also defined below.
+> **A–D are LIVE** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the Alembic
+> migrations **through `0016`**, the live Aurora head — Lambda **v55**). C is the **Apollo-only**
+> find → score → select → enrich loop (see [`initial-build-plan.md`](initial-build-plan.md) → Phase C); the
+> 2026-06-25 modularization + W0–W8 pass added the perf indexes + `prospect.fit_reason` (`0014`) and the
+> `scoring_job` async ledger (`0015`); `scope_override` (`0012`) is also defined below.
 >
-> **D is built (2026-06-25, code complete + tested; migration `0016` pending apply to dev Aurora).** Phase D
-> (S3 · Sendout batch + client approval) adds **4 tables** — `batch`, `prospect_approval` ⭐, `approval_link`,
-> `approval_template` — the revenue precondition: a `prospect_approval` row is the billable agreement S7 charges
-> against, written through a tokenized, expiring, **masked** approval link (see
-> [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables.**
+> **D is LIVE** — migration `0016` **applied** to dev Aurora (verified 2026-07-01: head `0016`, all 4 tables
+> present, 20 application tables). Phase D (S3 · Sendout batch + client approval) adds **4 tables** — `batch`,
+> `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
+> row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
+> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0016`.**
 
 ## The governing boundary
 
@@ -284,7 +283,7 @@ contract (**v3**, Apollo-native), append-only, each linked to the `llm_call` tha
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | **unique per tenant**; idx |
-| `data` | JSONB (default `{}`) | the opaque form document |
+| `data` | JSONB (default `{}`) | the opaque form document (incl. **`targetMarket`** = `B2B`/`B2C`/`Both`, which drives the company-fit market gate — no migration, a form field) |
 | `created_at`, `updated_at` | timestamptz | |
 
 ### `icp` — many per tenant
@@ -371,7 +370,7 @@ One in-flight job per tenant (a queued/running job is returned as-is) so a doubl
 | `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | the call that produced the spec |
 | `created_at`, `updated_at` | timestamptz | |
 
-## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ✅ BUILT & LIVE (Lambda v46)
+## Phase C (S2) — Prospects: company-first, two-stage (Apollo find → enrich) ✅ BUILT & LIVE
 Follows the same conventions; all carry `tenant_id` (= `client_id`), scoped by the A4 guard. **Built today:
 `prospect` + `research_run` + `prompt` (created as `sourcing_doc` in `0005`, renamed `0010`), `company`
 + `prospect.company_id` (`0007`), `company.website` (`0008`), `research_job` async-structuring tracker
@@ -428,7 +427,7 @@ apply DB-side on every search.
 | `fit_score` | int nullable | company-level fit (reuses `fit.py`, persona lines omitted) |
 | `fit_tier` | varchar nullable | Strong/Good/Moderate/Below |
 | `fit_reason` | text nullable | "why a fit" (client-facing) |
-| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags |
+| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; also the stage-1 **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict, see Phase B/C refinement in [`initial-build-plan.md`](initial-build-plan.md)) |
 | `evidence` | JSONB (default `{}`) | citations / extras (revenue, employee count, locality) |
 | `source` | varchar | `apollo` \| `manual` |
 | `status` | varchar | `discovered` → `selected` → `people_found` → `archived` (selection lives here — no separate `selected` column) |
@@ -523,7 +522,7 @@ See [`initial-build-plan.md`](initial-build-plan.md) → *Modularization + W0–
 | `error` | text nullable | set on `error` |
 | `created_at`, `updated_at` | timestamptz | `updated_at` via ORM `onupdate` (no trigger needed) |
 
-## Phase D (S3) — Sendout batch & client approval ✅ BUILT (code complete + tested; `0016` pending Aurora apply)
+## Phase D (S3) — Sendout batch & client approval ✅ BUILT & LIVE (`0016` applied · Lambda v55)
 The **revenue precondition**: group enriched Phase-C prospects into a `batch`, send the client a
 tokenized, expiring, **masked** approval link, record each per-prospect decision as the append-only
 `prospect_approval` row S7 bills against. Reuses A/B/C primitives wholesale — the password-reset
@@ -636,12 +635,16 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260624_0013_split_fit_rubric` ✅ | C | split `prompt` stage `fit_scoring` → **`company_fit`** (Step 1) + **`prospect_fit`** (Step 2); rename existing rows to `company_fit`, seed `prospect_fit` from the same body (append-only, up/down clean — see Phase C → C10) |
 | `20260625_0014_perf_indexes_fit_reason` ✅ | C (W1) | composite `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` indexes on `prospect`+`company`; **drop** 4 UNIQUE-covered single-col indexes; add `prospect.fit_reason`; attach `scope_override.updated_at` trigger. Reversible. |
 | `20260625_0015_scoring_job` ✅ | C (W4) | `scoring_job` async fit-scoring job ledger + `ix_scoring_job_tenant_kind`; one in-flight per (tenant, kind) |
-| `20260625_0016_phase_d_batch_approval` 🔲 | D | `batch`, `prospect_approval` ⭐, `approval_link`, `approval_template` + indexes/unique keys (built + up/down tested; **pending apply to dev Aurora**) |
+| `20260625_0016_phase_d_batch_approval` ✅ | D | `batch`, `prospect_approval` ⭐, `approval_link`, `approval_template` + indexes/unique keys (**applied to dev Aurora** — head `0016`, verified live) |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0015`** (Lambda v46 / `196a31e`). **`0016` (Phase D) is built and tested but not yet
-applied** — the next deploy runs `alembic upgrade head` (0015 → 0016). W6/W7/W8 (login cold-start retry,
-LLM token trim, warm-container caching) are **code-only — no migration.**
+**Live Aurora head: `0016`** (Lambda v55). All migrations `0001`→`0016` applied to dev Aurora (verified
+2026-07-01: head `0016`, 20 application tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
+retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01
+refinements (delete batch, re-send-reopen) are also **code-only** (delete rides the existing `0016` FK
+cascade). The 2026-07 **B2B/B2C market gate** (`brief.data.targetMarket` + `company.fit_components.business_model`
+/`market_excluded`) and the **thinking-OFF fit scoring** + **async-scoring reaper** are likewise **code-only —
+no migration** (both new fields ride existing JSONB).
 
 > **`prompt.stage` vocabulary (current):** `briefing` (Brief→spec, B) · **`company_fit`** (Step-1 company
 > scoring) · **`prospect_fit`** (Step-2 person scoring). The old single `fit_scoring` stage was split in `0013`;

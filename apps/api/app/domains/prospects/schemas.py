@@ -40,6 +40,12 @@ class CompanyOut(BaseModel):
     fit_score: int | None = None
     fit_tier: str | None = None
     fit_reason: str = ""
+    # Stage-1 B2B/B2C label (B2B · B2C · Complex · Unknown; "" if scored before the label shipped).
+    # Drives the market gate + the Step-1 model chip. Empty until the row is (re)scored.
+    business_model: str = ""
+    # True when the B2B/B2C gate fired (opposite-market company for this client). The Step-1 table
+    # pins these to the bottom regardless of sort; the gate already forced fit_score=0/Below.
+    market_excluded: bool = False
     reason_tags: list[str] = []
     enrichment: CompanyEnrichment = Field(default_factory=CompanyEnrichment)
     source: str = ""

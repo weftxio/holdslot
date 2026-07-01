@@ -30,6 +30,7 @@ import {
   MAX_CSV_BYTES,
   MAX_CSV_ROWS,
   SENIORITY_OPTS,
+  TARGET_MARKET_OPTS,
   TONE_OPTS,
   apiToIcp,
   blankBrief,
@@ -449,6 +450,7 @@ export default function BriefPage() {
       filled(brief.companyName),
       filled(brief.website),
       filled(brief.sell),
+      filled(brief.targetMarket),
       filled(brief.problem),
       filled(brief.dealSize),
       filled(brief.salesCycle),
@@ -600,6 +602,27 @@ export default function BriefPage() {
                   placeholder="e.g. A workforce analytics platform that reduces attrition"
                   onChange={(e) => setB("sell", e.target.value)}
                 />
+              </div>
+              <div className="field">
+                <Lbl
+                  req
+                  done={filled(brief.targetMarket)}
+                  help="Who you sell to. We exclude opposite-market companies before sourcing — e.g. a B2B client won't get consumer-facing (B2C) firms like digital insurers."
+                >
+                  Who do you sell to?
+                </Lbl>
+                <select
+                  className={errCls(filled(brief.targetMarket), "select")}
+                  value={brief.targetMarket}
+                  onChange={(e) => setB("targetMarket", e.target.value)}
+                >
+                  <option value="">Select…</option>
+                  {TARGET_MARKET_OPTS.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               </div>
               <div className="field">
                 <Lbl

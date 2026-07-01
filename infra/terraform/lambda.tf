@@ -34,10 +34,13 @@ resource "aws_lambda_function" "api" {
   architectures = ["x86_64"]
   handler       = "app.main.handler"
   memory_size   = 512
-  # 180s lets the async structuring worker run DeepSeek V4 Pro (thinking + web search, ~55-76s,
-  # SCOPING_TIMEOUT=120) to completion. Synchronous API requests are unaffected — API Gateway
-  # still caps those at its own 30s; this only governs the off-gateway background invocation.
-  timeout = 180
+  # 300s gives the async workers headroom: structuring (DeepSeek V4 Pro thinking + web search,
+  # ~55-76s) AND a full fit-scoring wave (up to `_SCORE_WORKERS` concurrent reasoning calls at ~70s
+  # each, one wave per `ASYNC_BATCH_MAX`) must finish before the worker is hard-killed — a mid-batch
+  # kill leaves a zombie `running` job (see scoring.MAX_JOB_AGE_SECONDS, kept above this). Synchronous
+  # API requests are unaffected — API Gateway still caps those at its own 30s; this only governs the
+  # off-gateway background invocation.
+  timeout = 300
 
   filename         = data.archive_file.placeholder.output_path
   source_code_hash = data.archive_file.placeholder.output_base64sha256

@@ -253,7 +253,7 @@ export default function BatchesPage() {
           )}
         </div>
         {batches.length === 0 && (
-          <div className="ph" style={{ padding: "26px 4px" }}>
+          <div className="ph sob-empty">
             No batches yet · create one from the enriched prospects on the Prospect List tab.
           </div>
         )}

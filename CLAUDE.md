@@ -101,7 +101,7 @@ Northwind, Acme Robotics. Switching navigates to `/[client]/workspace` (the defa
   design's Google Fonts `<link>` in `app/layout.tsx`.
 - Shells: `components/console/ConsoleShell` (+ `Sidebar`, `ClientSwitcher`) wraps console pages and
   provides `ToastProvider`; `components/external/ExternalShell` wraps the 3 external pages (valid/
-  success/expired, `?state=expired`). Shared bits: `components/Toast`, `Sample`, `StateToggle`.
+  success/expired, read straight from `?state=expired`). Shared bits: `components/Toast`, `Sample`.
 - `lib/client.ts` (multi-client storage/slug). Data-model types/taxonomy live in the spec doc, not
   in code, until the API needs them (avoids unused contract files).
 - **Mock data is co-located** with each page as clearly-named consts (the data/view split is the seam);

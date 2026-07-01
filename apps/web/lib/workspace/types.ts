@@ -17,6 +17,7 @@ export type Brief = {
   companyName: string;
   website: string;
   sell: string;
+  targetMarket: string;
   problem: string;
   dealSize: string;
   salesCycle: string;

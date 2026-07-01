@@ -1120,6 +1120,17 @@
   flex-direction: column;
   scroll-margin-top: 80px; /* below the console topbar */
 }
+/* empty state — match the sibling cards' radius/inset, centered + muted at the meta type scale
+   (the bare .ph marker carries no font/color/alignment, so it would otherwise inherit the large
+   body font and sit left-aligned against the box edge). */
+.sob-empty {
+  border-radius: 13px;
+  padding: 26px 20px;
+  text-align: center;
+  color: var(--ink-faint);
+  font-size: 13px;
+  line-height: 1.5;
+}
 .sob-card {
   border: 1px solid var(--line);
   border-radius: 13px;
@@ -2583,6 +2594,14 @@
 .fit-chip--below {
   color: #6b7280;
   background: #f1f3f6;
+}
+/* AI Score cell — the fit chip with the company's B2B/B2C/Complex model chip stacked beneath it
+   (the standalone Model column was merged in here). */
+.ai-score-cell {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
 }
 /* Per-row "Scoring…" status while AI fit-scoring runs in the background after Find Lookalike. */
 .fit-scoring {

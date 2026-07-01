@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import clsx from "clsx";
@@ -24,6 +24,7 @@ import {
   findCompaniesAsync,
   findLookalikesAsync,
   findPeople,
+  getBrief,
   getFitPrompt,
   getPeopleDepartments,
   getPeopleScopeOverride,
@@ -58,6 +59,7 @@ import {
   SOURCE_LABEL,
   STATUS_LABEL,
   apiToIcp,
+  businessModelChip,
   clearScoring,
   compareProspectRows,
   effectivePeopleScope,
@@ -103,6 +105,13 @@ export default function ListPage() {
       client,
     ]);
     return cached?.latest ?? null;
+  });
+  // The client's B2B/B2C selection (brief.targetMarket) — drives the Step-1 market-exclusion sort
+  // below. Read client-side so the ordering is correct against ANY backend (incl. one that predates
+  // the `market_excluded` serialization) and stays live-reactive to a brief edit. Loaded on mount.
+  const [targetMarket, setTargetMarket] = useState<string>(() => {
+    const cached = qc.getQueryData<Awaited<ReturnType<typeof getBrief>>>(["brief", client]);
+    return typeof cached?.data?.targetMarket === "string" ? cached.data.targetMarket : "";
   });
 
   // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
@@ -309,7 +318,7 @@ export default function ListPage() {
         // fetchQuery serves the cached payload when fresh (instant, no request) and refetches in the
         // background when stale; the cache lives above the routes, so this is what frees a tab-switch
         // from a full reload. The lists' free DB reads are safe to background-revalidate (no credits).
-        const [ps, cs, dl, depts, ics, rs] = await Promise.all([
+        const [ps, cs, dl, depts, ics, rs, bf] = await Promise.all([
           qc.fetchQuery({ queryKey: ["prospects", client], queryFn: () => listProspects(client) }),
           qc.fetchQuery({ queryKey: ["companies", client], queryFn: () => listCompanies(client) }),
           qc.fetchQuery({
@@ -331,6 +340,9 @@ export default function ListPage() {
               queryFn: () => getResearchSpec(client),
             })
             .catch(() => null),
+          qc
+            .fetchQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) })
+            .catch(() => null), // non-fatal: no brief yet → market-exclusion sort just stays off
         ]);
         if (!alive) return;
         setProspects(ps.items);
@@ -342,6 +354,7 @@ export default function ListPage() {
         setMasterDepts(depts);
         if (ics) setIcps(ics.map(apiToIcp));
         if (rs) setSpec(rs.latest);
+        setTargetMarket(typeof bf?.data?.targetMarket === "string" ? bf.data.targetMarket : "");
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       } finally {
@@ -460,6 +473,18 @@ export default function ListPage() {
   }
 
   // ---- Stage 1: companies ----
+  // A company is market-excluded when its business model is the strict opposite of the client's
+  // selection (B2B client × B2C company, or vice-versa). Computed client-side from the visible label
+  // + brief so the sort is correct against ANY backend, and OR'd with the server's `market_excluded`
+  // (authoritative once serialized). `Complex`/`Unknown`/`Both`/unset never exclude.
+  const coExcluded = useCallback(
+    (c: CompanyApi) =>
+      !!c.market_excluded ||
+      ((targetMarket === "B2B" || targetMarket === "B2C") &&
+        (c.business_model === "B2B" || c.business_model === "B2C") &&
+        c.business_model !== targetMarket),
+    [targetMarket]
+  );
   const coVisible = useMemo(
     () =>
       companies
@@ -474,16 +499,22 @@ export default function ListPage() {
             statusOk
           );
         })
-        // Accepted (people_found) rows float to the top; within each group, highest fit_score first
-        // (nulls last). Sorting explicitly here makes the order self-sufficient rather than relying
-        // on the backend list endpoint's ORDER BY (defense-in-depth, matching compareProspectRows).
+        // Order (self-sufficient here rather than relying on the backend ORDER BY — defense-in-depth,
+        // matching compareProspectRows):
+        //  1. Market-excluded rows (opposite business model to the client's targetMarket) sink to the
+        //     bottom NO MATTER WHAT — they're never worth outreach, so they never outrank a real fit.
+        //  2. Accepted (people_found) rows float to the top.
+        //  3. Within a group, highest fit_score first (nulls last).
         .sort((a, b) => {
+          const ae = coExcluded(a);
+          const be = coExcluded(b);
+          if (ae !== be) return ae ? 1 : -1;
           const aa = a.status === "people_found" ? 0 : 1;
           const ba = b.status === "people_found" ? 0 : 1;
           if (aa !== ba) return aa - ba;
           return (b.fit_score ?? -1) - (a.fit_score ?? -1);
         }),
-    [companies, coSearch, coFit, coStatus]
+    [companies, coSearch, coFit, coStatus, coExcluded]
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
@@ -1252,7 +1283,6 @@ export default function ListPage() {
                     <th>Company</th>
                     <th>AI Score</th>
                     <th>Domain</th>
-                    <th>Website</th>
                     <th>Industry</th>
                     <th>Size</th>
                     <th>Source</th>
@@ -1289,15 +1319,24 @@ export default function ListPage() {
                               Scoring…
                             </span>
                           ) : (
-                            <FitScore
-                              tier={c.fit_tier}
-                              score={c.fit_score}
-                              reason={c.fit_reason}
-                            />
+                            <div className="ai-score-cell">
+                              <FitScore
+                                tier={c.fit_tier}
+                                score={c.fit_score}
+                                reason={c.fit_reason}
+                              />
+                              {c.business_model ? (
+                                <span
+                                  className={clsx(
+                                    "badge",
+                                    businessModelChip(c.business_model).cls
+                                  )}
+                                >
+                                  {businessModelChip(c.business_model).label}
+                                </span>
+                              ) : null}
+                            </div>
                           )}
-                        </td>
-                        <td>
-                          <span className="domain">{c.domain}</span>
                         </td>
                         <td>
                           <WebLink website={c.website} domain={c.domain} />

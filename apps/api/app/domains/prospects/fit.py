@@ -14,13 +14,13 @@ Two shapes, one rubric (the founder-edited `fit-scoring-rubric-v1.md`):
   thinking trace, then zeroes the grid → every company collapsed to "Below · 0"). Two fields it
   fills well; the tier stays policy.
 
-Routing (FINAL, see initial-build-plan §"Model usage"): `prospect_fit`/`company_fit` →
-**DeepSeek V4 Pro with reasoning ON** (`effort=medium`, `temperature=0`) for best-quality fit
-judgement — a non-US provider (the Gemini/OpenAI fallback was dropped 2026-06-21 as geo-blocked,
-403 ToS, for this account; see openrouter/client.py module docstring). V4 Pro is a reasoning model,
-so to hold the 30s sync-gateway budget the find/rescore routes score the whole batch in ONE
-concurrent wave (`_SCORE_WORKERS` ≥ `MAX_COMPANIES_PER_FIND`): wall-clock ≈ one reasoning call, not
-N waves. Dial `effort` down to "low" or shrink the per-find cap if a batch nears the timeout.
+Routing (see initial-build-plan §"Model usage"): both stages run on **DeepSeek V4 Pro** at
+`temperature=0` — a non-US provider (the Gemini/OpenAI fallback was dropped 2026-06-21 as
+geo-blocked, 403 ToS; see openrouter/client.py). Reasoning is tuned per purpose (A/B'd 2026-07, see
+the EXTRA_BODY constants): **thinking is OFF for both** — the trace was ~98% of output and drove the
+batch timeouts, and DeepSeek's structured output is cleaner without it (company_fit is rubric
+classification; prospect_fit's 12-criterion grid filled fine without deliberation). The find/rescore
+routes still score a batch in ONE concurrent wave (`_SCORE_WORKERS` = `ASYNC_BATCH_MAX`).
 """
 
 from __future__ import annotations
@@ -35,9 +35,16 @@ PURPOSE = "prospect_fit"
 COMPANY_PURPOSE = "company_fit"
 RUBRIC_VERSION = "fit-rubric-v1"
 FIT_MODELS = ["deepseek/deepseek-v4-pro"]
-# `temperature=0` for determinism; reasoning ON (effort medium) for judgement quality. The batch
-# runs single-wave (workers = cap) so the reasoning latency does not stack across waves.
-FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": True, "effort": "medium"}}
+# Reasoning is OFF for both purposes (A/B'd 2026-07 — telemetry showed the thinking trace was ~98%
+# of a company_fit call's output, drove ~50s (p95 137s) latency + the batch timeouts, and DeepSeek's
+# structured output is more reliable WITHOUT it):
+#   • company_fit — thinking OFF. Rubric classification at temperature 0; the model's guidance lives
+#     in the (founder-editable) rubric it reads. ~10x faster, ~half the cost, cleaner JSON.
+#   • prospect_fit — thinking OFF too. The 12-criterion grid filled fine at LOW effort, but the same
+#     trace-heavy latency/cost applied; turning it off keeps scoring fast and the JSON grid clean.
+# `temperature=0` on both for determinism.
+COMPANY_FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
+PROSPECT_FIT_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 
 # The rubric's sub-criteria → their max points (the deterministic caps). Mirrors §2 of the
 # rubric doc; the LLM scores each, we clamp to max, cap each dimension at its sum-of-maxes.
@@ -51,6 +58,12 @@ DIMENSION_MAX = {dim: sum(subs.values()) for dim, subs in DIMENSIONS.items()}  #
 
 # Tiers — policy thresholds (rubric §4); tuned as outcome data accumulates, never by the LLM.
 _TIERS = (("Strong", 75), ("Good", 55), ("Moderate", 40))
+
+# Market-fit hard gate (partner request, 2026-07): when the brief names a target market (B2B / B2C)
+# and stage-1 classifies the company on the OTHER side, it is a structural miss — we bury it into
+# the Below band BEFORE any person is sourced or enriched (enrich is the only paid step). The score
+# is forced (not trusted to the 0–100 verdict) so the exclusion is deterministic + auditable.
+_MARKET_GATE_SCORE = 0
 
 
 def tier_for(score: int) -> str:
@@ -134,8 +147,13 @@ COMPANY_FIT_JSON_SCHEMA = {
         "properties": {
             "fit_score": {"type": "integer"},
             "fit_reason": {"type": "string"},
+            # B2B/B2C label (Apollo's own method: judged from description/industries/keywords, not a
+            # search filter — the API has no market-segment param). Drives the market hard gate in
+            # score_company; only a strict B2B/B2C opposite gates — `Complex` (marketplace / B2B2C)
+            # and `Unknown` surface for a human.
+            "business_model": {"type": "string", "enum": ["B2B", "B2C", "Complex", "Unknown"]},
         },
-        "required": ["fit_score", "fit_reason"],
+        "required": ["fit_score", "fit_reason", "business_model"],
     },
 }
 
@@ -235,7 +253,7 @@ def score(
         schema=FIT_JSON_SCHEMA,
         prompt_version=RUBRIC_VERSION,
         models=FIT_MODELS,
-        extra_body=FIT_EXTRA_BODY,
+        extra_body=PROSPECT_FIT_EXTRA_BODY,
     )
     fit_score, fit_tier, normalized = collapse(result.data.get("components", {}))
     _log_drift(PURPOSE, fit_score, fit_tier, result.data)
@@ -282,7 +300,13 @@ def build_company_messages(rubric_body: str, company: dict, targeting: dict) -> 
         "jargon) saying what makes this company fit or not. It is shown in a small hover box, so "
         "keep it concise and make it match the score (never call a low-scoring company a strong "
         "fit).\n"
-        "Emit ONLY the JSON object with those two fields.\n\n"
+        "• `business_model` — classify who THIS company sells to: `B2B` (primarily to other "
+        "businesses), `B2C` (directly to consumers — e.g. a digital insurer, retail brand, "
+        "consumer app / fintech), `Complex` (serves BOTH sides by design — marketplaces, "
+        "platforms, and B2B2C models, e.g. Amazon or a payments network), or `Unknown` (too little "
+        "signal to tell). Judge from its description, industries and keywords — the customer it "
+        "serves, not its own size. This is a factual label, independent of the score.\n"
+        "Emit ONLY the JSON object with those three fields.\n\n"
         "=== FIT RUBRIC (your thinking framework) ===\n" + rubric_body
     )
     user = (
@@ -308,22 +332,47 @@ def score_company(*, tenant_id, rubric_body: str, company: dict, targeting: dict
         schema=COMPANY_FIT_JSON_SCHEMA,
         prompt_version=RUBRIC_VERSION,
         models=FIT_MODELS,
-        extra_body=FIT_EXTRA_BODY,
+        extra_body=COMPANY_FIT_EXTRA_BODY,
     )
     fit_score = max(0, min(int(result.data.get("fit_score") or 0), 100))
     fit_tier = tier_for(fit_score)  # tier is policy, derived from the model's score, never LLM-set
     fit_reason = result.data.get("fit_reason", "")
+    business_model = result.data.get("business_model") or "Unknown"
+    # Market hard gate: the brief's `targetMarket` (B2B / B2C / Both / absent) vs the company's
+    # `business_model`. A confirmed opposite-market company is a structural miss — force it into the
+    # Below band so it is never selected for people-search (no person sourced, no enrich spend), and
+    # stamp the reason so the exclusion is auditable. `Both`/absent disables the gate; only a strict
+    # B2B/B2C opposite gates — `Complex` (marketplace / B2B2C) and `Unknown` surface for a human.
+    target_market = (targeting.get("brief") or {}).get("targetMarket")
+    market_excluded = (
+        target_market in ("B2B", "B2C")
+        and business_model in ("B2B", "B2C")
+        and business_model != target_market
+    )
+    if market_excluded:
+        fit_score = _MARKET_GATE_SCORE
+        fit_tier = tier_for(fit_score)
+        fit_reason = (
+            f"Excluded: {business_model}-only company for a {target_market} client. {fit_reason}"
+        ).strip()
     # Observability: the model's verdict only lands in the DB otherwise, so a low/0 score is hard to
     # diagnose. One INFO line per company makes "why is this Below/0?" answerable from CloudWatch.
     log.info(
-        "company_fit scored: score=%s tier=%s company=%s model=%s call=%s reason=%r",
-        fit_score, fit_tier, company.get("domain") or company.get("name") or "?",
+        "company_fit scored: score=%s tier=%s model=%s excluded=%s company=%s llm=%s call=%s "
+        "reason=%r",
+        fit_score, fit_tier, business_model, market_excluded,
+        company.get("domain") or company.get("name") or "?",
         result.model, result.llm_call_id, (fit_reason or "")[:160],
     )
     return {
         "fit_score": fit_score,
         "fit_tier": fit_tier,
-        "fit_components": {"fit_reason": fit_reason, "rubric_version": RUBRIC_VERSION},
+        "fit_components": {
+            "fit_reason": fit_reason,
+            "business_model": business_model,
+            "market_excluded": market_excluded,
+            "rubric_version": RUBRIC_VERSION,
+        },
         "fit_reason": fit_reason,
         "llm_call_id": result.llm_call_id,
         "model": result.model,

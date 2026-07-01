@@ -1,6 +1,6 @@
 "use client";
 import Link from "next/link";
-import { useLinkState } from "../StateToggle";
+import { useSearchParams } from "next/navigation";
 import "../external.css";
 
 const footDot = {
@@ -36,10 +36,10 @@ export function ExternalShell({
   children: React.ReactNode;
 }) {
   // Live external link: the API decides valid vs. expired (forceExpired). The demo `?state=expired`
-  // override is still honored for previewing the expired pane, but the visible toggle is gone — a
+  // override is still honored for previewing the expired pane, but there is no visible toggle — a
   // real client must never see a control that flips their own approval link's state.
-  const [state] = useLinkState();
-  const expired = state === "expired" || !!forceExpired;
+  const demoExpired = useSearchParams().get("state") === "expired";
+  const expired = demoExpired || !!forceExpired;
 
   return (
     <div className="ext-body">

@@ -19,6 +19,7 @@ REQUIRED_BRIEF_FIELDS: tuple[str, ...] = (
     "companyName",
     "website",
     "sell",
+    "targetMarket",
     "problem",
     "dealSize",
     "salesCycle",

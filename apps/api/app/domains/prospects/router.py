@@ -180,6 +180,9 @@ _SCORING_BRIEF_FIELDS = frozenset(
         "valueProps",
         "signals",
         "qualifiedDef",
+        # B2B / B2C / Both — drives the market hard gate in fit.score_company (partner request,
+        # 2026-07). Must reach the scorer's targeting.brief slice for the gate to read it.
+        "targetMarket",
     }
 )
 
@@ -325,6 +328,8 @@ def _company_out(c: Company) -> CompanyOut:
         fit_score=c.fit_score,
         fit_tier=c.fit_tier,
         fit_reason=c.fit_reason or comps.get("fit_reason", ""),
+        business_model=comps.get("business_model", ""),
+        market_excluded=bool(comps.get("market_excluded", False)),
         reason_tags=comps.get("reason_tags", []),
         enrichment=_company_enrichment(c.evidence),
         source=c.source,
@@ -1112,9 +1117,11 @@ def rescore_companies(
 
 # Selection-based async jobs (the "Get AI score" buttons + "Update Field") batch at most this many
 # rows per job — the FE messages when a larger selection is picked. find/lookalike keep their own
-# find limits (MAX_COMPANIES_PER_FIND / LOOKALIKE_LIMIT). The cap also keeps a worst-case batch well
-# under the Lambda timeout: the worker scores in waves of `_SCORE_WORKERS`.
-ASYNC_BATCH_MAX = 20
+# find limits. Capped to `_SCORE_WORKERS` so the batch runs in ONE concurrent wave: a reasoning
+# `company_fit` call is ~70s, and 2 waves (the old cap of 20 vs 15 workers) overran the Lambda
+# and left the worker killed mid-batch → a zombie `running` job. One wave ≈ one call's wall-clock,
+# well inside the timeout. (scoring.py's reaper backstops any residual overrun.)
+ASYNC_BATCH_MAX = _SCORE_WORKERS  # 15
 
 
 def run_rescore_companies(db: Session, tenant_id, params: dict) -> dict:

@@ -2,7 +2,7 @@ import { test, expect } from "@playwright/test";
 import { CLIENT, setupApp } from "./_mock";
 
 // Route-smoke for the 3 external (token) pages — approve / book / feedback. Each renders a valid
-// card and an expired state (driven by ?state=expired, read by ExternalShell/useLinkState). The
+// card and an expired state (driven by ?state=expired, read by ExternalShell). The
 // approve page also fetches its masked view (mocked to a valid state in _mock.ts); setupApp installs
 // the external-request guard so the suite proves nothing escapes the local sandbox here either.
 
