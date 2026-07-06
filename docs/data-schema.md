@@ -16,7 +16,12 @@
 > present, 20 application tables). Phase D (S3 · Sendout batch + client approval) adds **4 tables** — `batch`,
 > `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
 > row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
-> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0016`.**
+> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0018`.**
+>
+> **Multi-ICP scoping (2026-07-06)** — `research_spec.spec` is now **v5**: `icp_targeting[]` carries one
+> Apollo targeting block per ICP, and the intent DATE windows are removed (hiring titles only — see the
+> `research_spec` section below). No table changes — `spec` is JSONB; `0017`/`0018` are data-only
+> (re-seed the `briefing` prompt to `brief-structure-v6` → `v7` for tenants still on a shipped default).
 
 ## The governing boundary
 
@@ -313,46 +318,62 @@ recaps) writes through it.
 | `raw` | JSONB nullable | raw completion — top debugging signal; parse failures recorded before retry |
 | `created_at` | timestamptz | |
 
-### `research_spec` — append-only versioned **v3** search contract (Apollo-native)
+### `research_spec` — append-only versioned **v5** search contract (Apollo-native, per-ICP)
+
+> **v5 (2026-07-06):** the intent DATE windows (`latest_funding_date_range`,
+> `organization_job_posted_at_range`, `recency_window`) are **removed from the contract** — they
+> always over-constrained the company search (founder verdict). Intent = hiring titles only.
+> `apollo_map.map_company_filter` also refuses to forward the date fields from OLD stored specs /
+> stale overrides, so they are dead everywhere. Prompt re-seeded to `brief-structure-v7` (`0018`).
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
 | `tenant_id` | uuid FK (CASCADE) | idx |
 | `version` | int | **unique(`tenant_id`,`version`)**; re-run inserts the next version |
-| `spec` | JSONB | **v3** targeting (company_search_params · people_search_params · intent_filters · icp_validation + server-merged credit policy) |
-| `gaps` | JSONB (default `[]`) | value-loop prompts (`{field, why_it_matters, ask}`) |
+| `spec` | JSONB | **v4** targeting (icp_targeting[] — one block per ICP · icp_validation + server-merged credit policy). v3 rows (single merged block) remain readable via the `targeting_for_icp` fallback |
+| `gaps` | JSONB (default `[]`) | value-loop prompts (`{field, why_it_matters, ask, icp_name}` — `icp_name` "" = whole-brief) |
 | `icp_suggestions` | JSONB (default `[]`) | proposed ICPs from the existing-customer list (added `0004`) |
 | `model` | varchar(128) nullable | |
 | `llm_call_id` | uuid FK → `llm_call` (SET NULL) nullable | traces spec → exact model/cost/raw output |
 | `created_at` | timestamptz | |
 
-**`research_spec.spec` — the v3 JSON contract** (`spec_version = 3`; what the LLM emits + what
+**`research_spec.spec` — the v4 JSON contract** (`spec_version = 4`; what the LLM emits + what
 `apollo_map` forwards — fields are **exact Apollo request params**, full mapping in *Request-param
 contract* above). The strict `json_schema` lives in
 [`research_spec.py`](../apps/api/app/domains/briefs/research_spec.py); the workspace *Prospect Scope*
-panel renders every field below for operator review.
+panel renders every field below for operator review, one section group per ICP.
 
-- **`company_search_params`** — `q_organization_keyword_tags[]` · `organization_num_employees_ranges[]`
-  (comma-strings `"10,100"`) · `organization_locations[]` (lowercase HQ) · `revenue_range{min,max}` (int)
-- **`people_search_params`** — `person_titles[]` · `include_similar_titles` (bool) ·
-  `q_keywords` (single string — industry/vertical for people) · `person_seniorities[]` (**fixed enum:**
-  owner·founder·c_suite·partner·vp·head·director·manager·senior·entry·intern) ·
-  `organization_locations[]` · `organization_num_employees_ranges[]`
-- **`intent_filters`** — `company{latest_funding_date_range{min,max} (YYYY-MM-DD),
-  q_organization_job_titles[], organization_job_posted_at_range{min,max}}` ·
-  `recency_window{funding_since, jobs_posted_since}` (echo of the lower bounds, computed from `today`)
+- **`icp_targeting[]`** — **exactly ONE entry per ICP** (`icp_id`/`icp_name` echoed from the input
+  and verified server-side by `reconcile_icp_targeting`; echo typos repaired by name, a missing ICP
+  fails the job by name — the old v3 "second ICP silently merged/dropped" failure is contract-impossible).
+  Each entry carries its own:
+  - **`company_search_params`** — `q_organization_keyword_tags[]` · `organization_num_employees_ranges[]`
+    (comma-strings `"10,100"`) · `organization_locations[]` (lowercase HQ) · `revenue_range{min,max}` (int)
+  - **`people_search_params`** — `q_keywords` (single string — industry/vertical for people) ·
+    `person_seniorities[]` (**fixed enum:** owner·founder·c_suite·partner·vp·head·director·manager·
+    senior·entry·intern) · `person_department_or_subdepartments[]` (Apollo taxonomy enum) ·
+    `organization_locations[]` · `organization_num_employees_ranges[]`
+  - **`intent_filters`** — `company{q_organization_job_titles[]}` (hiring signal only; the
+    funding/jobs-posted date windows were removed in v5)
 - **`icp_validation`** (analysis, NOT Apollo-bound — the paying-customer read from the brief's
-  `excludeCustomers` list) — `customer_profiles[]{name, domain, industry, employee_band, hq_country,
-  business_model, source:"knowledge"|"web", confidence}` · `paying_customer_summary`
+  `excludeCustomers` list; brief-level, emitted ONCE) — `customer_profiles[]{name, domain, industry,
+  employee_band, hq_country, business_model, source:"knowledge"|"web", confidence}` · `paying_customer_summary`
 - **`credit_policy`** (deterministic **server config**, never LLM-set; merged at save time) —
   `email_status_filter` (default `["verified"]` → `contact_email_status`) · `phone` (default `false`) ·
   `max_companies` (500) · `max_people` (800)
+
+**Consumption:** `targeting_for_icp(spec, icp_id)` is the ONE spec reader — find-company resolves
+the chosen ICP's block (multi-ICP spec + no/unknown ICP → 400, never a silent merge); find-people
+resolves each company's block from its own `company.icp_id` (a mixed selection searches ICP by ICP
+in one call); fit scoring slices the scored row's own block into the v3 single-block shape the
+rubrics read. A **v3 spec** (pre-multi-ICP, single merged block) answers any `icp_id` unchanged
+until the next regenerate — no migration (`spec` is JSONB, append-only; same as the v2→v3 move).
 
 `gaps` + `icp_suggestions` are separate columns (above) — value-loop signals, never folded into `spec`.
 Each `icp_suggestions[]` entry is `{name, rationale, evidencing_customers[], confidence,
 company_search_params{…}, people_search_params{…}}` — a ready-to-run ICP the operator can accept.
 **Brief-side exclusions** (`excludeCustomers`/`excludeDeals`/`doNotContact`) feed suppression directly
-from the brief text (not the spec) — v3 emits no `exclusions` block.
+from the brief text (not the spec) — the spec emits no `exclusions` block.
 
 ### `research_job` — async structuring job tracker (`0009`)
 Scoping runs **DeepSeek V4 Pro** (thinking + web-search plugin, ~55-76s) — past the API Gateway

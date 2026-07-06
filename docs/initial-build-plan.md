@@ -5,19 +5,19 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-01): A–D BUILT & LIVE on `dev`.** Backend **Lambda v55** (→ **v56** with this push,
-> pending deploy) · Aurora **head `0016`** (20 tables) · web **Amplify `dev`**. The Apollo **find → score →
-> select → enrich → batch → masked client-approval** loop is live end-to-end. Latest (2026-07-01, this push):
-> the **stage-0 business-model classifier** — splits the B2B/B2C label into its own minimal `company_model`
-> LLM call run at find/lookalike/manual-add, so every row is labelled + market-gated **before** any (paid) AI
-> scoring — plus Step-1 **Business-model** and **Pending · unscored** filters. Prior push (v55, live): the
-> **B2B/B2C market gate** + **thinking-OFF fit scoring** (A/B'd — ~10× faster, ~⅓ the cost, cleaner JSON) +
-> the **async-scoring zombie reaper** (one-wave batch of 15, 300s worker timeout). **Next: Phase E (outreach +
-> Smartlead)** — gated on warmed inboxes (warm-up running since 2026-06-17). The only thing left on A–D is the
-> three **founder operational acceptance rounds** (S1/S2/S3).
+> **Status (2026-07-06): A–D BUILT & LIVE on `dev`.** Backend **Lambda v59** (deployed) · Aurora
+> **head `0018`** (20 tables) · web **Amplify `dev`**. The Apollo **find → score → select → enrich →
+> batch → masked client-approval** loop is live end-to-end. Latest (2026-07-06, this push): **multi-ICP
+> scoping** — **ResearchSpec v5** emits one targeting block PER ICP (the v3 single-block contract was
+> why a 2nd ICP crashed Regenerate Scope), find-company/find-people run ICP by ICP, ICP labels + filters
+> across both prospect tables — and the **funding/jobs-posted date windows removed end-to-end** (they
+> silently over-constrained every company search). Prior pushes (v55–v56, live): stage-0 business-model
+> classifier, B2B/B2C market gate, thinking-OFF fit scoring, async-scoring zombie reaper. **Next: Phase E
+> (outreach + Smartlead)** — gated on warmed inboxes (warm-up running since 2026-06-17). The only thing
+> left on A–D is the three **founder operational acceptance rounds** (S1/S2/S3).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all 20 DB tables, head `0016`). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all 20 DB tables, head `0018`). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -41,7 +41,7 @@
 | Ph | Stage | Status | Builds | Dep | Gate to tick / DoD |
 |---|---|---|---|---|---|
 | **A** | S0 Foundation | ✅ **live** | Founder login (JWT), seed tenant #0, multi-tenant + role schema, Aurora + deploy, console on live data | — | ✅ both founders log in; schema admits a 2nd tenant/role w/o migration |
-| **B** | S1 Targeting | ✅ **live** | Brief → OpenRouter **ResearchSpec v3** (async) + ICP profiles | A | ⏳ **S1**: founder Brief→Scope round on dev |
+| **B** | S1 Targeting | ✅ **live** | Brief → OpenRouter **ResearchSpec v5** (async, **per-ICP** targeting blocks, date-window-free) + ICP profiles | A | ⏳ **S1**: founder Brief→Scope round on dev |
 | **C** | S2 Prospects+Apollo | ✅ **live** | Apollo find → fit-score → select → enrich loop, in-app, no CSV (C0–C10) | B · Apollo | ⏳ **S2**: founder live Apollo round |
 | **D** | S3 Batch+Approval | ✅ **live** | Batch → masked tokenized approval link → record decision; delete / re-send-reopen / attendee dropdown | C | ⏳ **S3**: founder live batch round (create→send→approve) |
 | **E** | S4/S5 Outreach | ⬜ **planned** | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D · warm domains · Smartlead | Live sending; replies triaged in one queue |
@@ -58,9 +58,9 @@
 
 | Thing | State |
 |---|---|
-| Backend | **Lambda v55** (alias `live`), `api.tryholdslot.com`, **47+ endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals` |
-| Database | Aurora Serverless v2 + Data API · **head `0016`** · **20 tables** (verified live 2026-07-01) |
-| Web | Amplify `dev` **#44** (`f3298f9`); `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Backend | **Lambda v59** (alias `live`), `api.tryholdslot.com`, **47+ endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals` |
+| Database | Aurora Serverless v2 + Data API · **head `0018`** · **20 tables** (verified live 2026-07-06) |
+| Web | Amplify `dev` (autoBuild on this push); `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + fit = `deepseek/deepseek-v4-pro`, both async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | the 3 founder operational rounds (S1/S2/S3) — infra is live |
@@ -132,6 +132,62 @@ back to an APAC-native source for contacts.** **Compliance is a green light:** B
 addresses is permitted in **SG (PDPA) · HK (PDPO/UEMO) · TH (PDPA)** — business contact info is carved out of
 personal-data consent given lawful sourcing + sender ID + purpose + working opt-out (SG: unsub ≤ 5 days); favour
 lawfully-sourced DBs (AroundDeal / SMARTe / Apollo) over pure LinkedIn-scrapers.
+
+---
+
+## Multi-ICP scoping + spec v5 — founder feedback (2026-07-06): ✅ BUILT
+
+Founder test: a second ICP broke Regenerate Scope. **Root cause was structural, not a glitch** —
+the ResearchSpec **v3** contract held exactly ONE `company_search_params` + ONE
+`people_search_params` per tenant while the scoping worker fed ALL ICPs into one prompt, so with
+two divergent ICPs the LLM had to **merge** them (Apollo ANDs across facets → over-constrained to
+zero, or ORed mush), **drop one** (the founder's "could not pick up the second"), or emit an
+off-contract shape that failed strict validation (the "crash"). Everything downstream was already
+ICP-aware (`icp_id` FKs on company/prospect/research_run, per-ICP fit targeting + `avoidTitles`,
+`icp_docs` narrowing, `fIcp` state in the list page) — the spec was the only missing link.
+
+**Design chosen: ONE LLM call with an array-of-blocks schema** — rejected alternatives: one call
+per ICP (N× cost + N× ~60–76s latency, Job 3's web-search re-runs) and one spec ROW per ICP
+(migration + N jobs + poll-contract rework). The strict schema makes "one block per ICP" a
+*contract*, so the original bug is structurally impossible to recur; a model echo-typo on `icp_id`
+is repaired by name match, and a genuinely missed ICP fails the job **by name** — never silently.
+
+| Piece | What shipped |
+|---|---|
+| **ResearchSpec v4→v5** | `spec.icp_targeting[]` — **one Apollo block per ICP** (`icp_id`/`icp_name` echoed + company/people/intent params), emitted in ONE LLM call (Job 3 still runs once). `reconcile_icp_targeting` verifies coverage post-call. No schema migration — `spec` is JSONB, append-only versioned (same as v2→v3). **v5** (same day, founder feedback) then **removed the funding/jobs-posted date windows entirely** — they silently over-constrained every company search; intent = `q_organization_job_titles` (hiring signal) only. Prompt bumped **brief-structure-v6 → v7**; data-only migrations **`0017`/`0018`** re-seed the `briefing` prompt for tenants still on a shipped default (custom edits untouched — gotcha: Postgres `trim()` strips spaces only, so the match uses `btrim(body, ' \t\r\n')`). `map_company_filter` **never forwards the date fields** even when present, killing them from old specs + stale overrides too. |
+| **One spec reader** | `targeting_for_icp(spec, icp_id)` — find-company resolves the picked ICP's block (multi-ICP + no/unknown ICP → 400, never a silent merge; single-block resolves + labels automatically); find-people resolves **per company** from `company.icp_id` (a mixed selection searches ICP by ICP in one call); fit scoring slices the row's own block into the v3 shape the rubrics read (fewer tokens, sharper targeting). **v3 specs keep working** via the fallback until the next regenerate — backend deploys first with zero downtime. |
+| **UI** | Prospect Scope panel: per-ICP **coverage chips** + an **ICP dropdown** next to View prompt (drives the rendered block AND the prompt preview's `?icp_id=` input); gaps carry their ICP tag; legacy/missing-scope callouts. Prospect list: **ICP dropdown** (both stages — filters the tables AND picks the Find Company target; single ICP auto-picked, multi without a pick = guard toast + warn flash mirroring the server 400), **ICP badge under the company name** in both tables, Find-Settings modal gets an **ICP switcher** seeding from that ICP's block (override saved per ICP in localStorage, legacy key read as fallback). |
+| **Job hygiene** | The `research_job` **zombie reaper** (`MAX_JOB_AGE_SECONDS=360`, same pattern as scoring) — a worker killed mid-run no longer wedges the brief page in "Generating…" forever; stale jobs flip to a named timeout error on read/enqueue. |
+
+Out of scope (follow-ups): per-ICP *persisted* scope overrides in the DB (`by_icp` keying, no
+migration needed) · per-ICP partial regenerate · auto-seeding a block when a suggested ICP is
+accepted · ICP-level credit budgets.
+
+---
+
+## Scope lineage — link every find result to its exact Apollo filters (DESIGN LOCKED · not built)
+
+Founder ask: *"link back each generated result in step 1 find company setting apollo API filter
+parameter"* — today the forward chain (spec → find) is solid but the backward chain leaks: a
+localStorage override or a find-people relax level changes *what was sent* without any record.
+Design locked 2026-07-06 (v2, simplified — run snapshots alone satisfy every requirement; moving
+overrides into the DB was dropped as a dependency and deferred). **~half a day when green-lit.**
+
+- **Schema (next free migration, `0019`):** `research_run` gains `filter_body` JSONB (the exact
+  `mixed_companies/search` body; find-people stores `{"per_org": {domain: {body, relax}}}`, ≤8
+  orgs/run) + `scope_source` varchar(16) (`ai` · `custom` = any operator-supplied params · `lookalike`
+  · NULL for non-Apollo runs). No other table changes.
+- **Backend (one concept — snapshot at the moment of send):** `_run_company_find` already receives
+  the final body — thread `{filter_body, scope_source}` into its `ResearchRun` insert; find-people
+  collects per-org body + relax in its existing loop; expose `icp_id`/`icp_name`/`scope_source`/
+  `filter_body` on `ResearchRunOut`.
+- **Frontend:** a **Find history drawer** on the Prospect list (read side of the existing but
+  UI-orphaned `/research-runs` endpoint) — when · source · ICP badge · `spec vN` · `ai/custom` chip ·
+  rows found · cost, with a per-row "View filters" popover (`scopeSummary()` humanizer + raw-JSON
+  toggle). Plus an **honest Find-Settings badge**: `AI scope · v<N> · <ICP>` vs `custom · saved`.
+- **Why this design:** the snapshot records the **executed** body, so it is override-proof (AI
+  block, saved tuning, or one-off edit — lineage is identical) and absorbs the deferred DB-override
+  follow-up with zero migration rework.
 
 ---
 
@@ -210,7 +266,8 @@ Work the live loop: meeting → pitch the live product (the product *is* the dem
 |---|---|---|
 | Founder Brief→Scope round (dev) | S1 | ⏳ operational |
 | Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ⏳ operational (+ optional Apollo credit-dashboard glance) |
-| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live (0016 applied, v55) |
+| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live (0018 applied, v59) |
+| Scope-lineage build (`research_run.filter_body` + Find-history drawer, §above) | — | design locked, awaiting go-ahead |
 | Warmed inboxes ready (~early Jul'26) | E0 | running since 06-17 |
 | **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation doesn't re-check `UserStatus` | — | tracked |
 | **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (no resolver) · `revenue_range` (no ICP form field) · funding-stage key unverified | — | post-MVP |
@@ -260,7 +317,7 @@ dedicated lookalike domain **`getholdslot.com`** (cold mail never goes from `try
 
 ---
 
-## API surface (live · Lambda v55)
+## API surface (live · Lambda v59)
 
 Auth = JWT Bearer; tenant scope via `require_membership()` on every `/{client}/…` route (non-members → **404**).
 `+Owner` = owner-gated. Live inventory at **`/docs`**. Routers + the routes that matter per phase:

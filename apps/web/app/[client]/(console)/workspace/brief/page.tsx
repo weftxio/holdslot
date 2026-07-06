@@ -1390,6 +1390,9 @@ export default function BriefPage() {
             ready={allComplete}
             onStructure={runStructure}
             onAcceptIcp={acceptIcpSuggestion}
+            icps={icps
+              .filter((p) => p.id)
+              .map((p) => ({ id: p.id as string, name: p.short || p.tag || "ICP" }))}
           />
         </>
       )}

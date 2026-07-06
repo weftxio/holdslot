@@ -30,6 +30,7 @@ from app.domains.briefs.research_spec import (
     DEPARTMENT_TAXONOMY,
     MASTER_DEPARTMENTS,
     SENIORITY_ENUM,
+    targeting_for_icp,
 )
 from app.domains.icps import icp_docs
 from app.domains.prospects import apollo_map, find, fit, lookalike, scoring
@@ -193,14 +194,35 @@ def _trim_brief_for_scoring(data: dict) -> dict:
     return {k: v for k, v in data.items() if k in _SCORING_BRIEF_FIELDS}
 
 
-def _trim_spec_for_scoring(spec_blob: dict) -> dict:
+def _trim_spec_for_scoring(spec_blob: dict, icp_id=None) -> dict:
     """Drop the spec's `credit_policy` (operational budget caps — not a fit signal) from the scoring
-    context (W7); the search-param blocks that define the ICP stay."""
-    return {k: v for k, v in spec_blob.items() if k != "credit_policy"}
+    context (W7); the search-param blocks that define the ICP stay.
+
+    For a v4 multi-ICP spec, keep only the scored row's own ICP block — flattened back to the
+    single-block shape the fit rubrics already read, so the rubric prompts never change and the
+    scorer isn't fed N-1 irrelevant ICPs' params (smaller prompt, sharper targeting). A v3 spec
+    passes through unchanged; an unresolvable ICP (multi-ICP spec, unscoped row) falls back to the
+    whole spec so scoring still has the ICP-union context it had before."""
+    trimmed = {k: v for k, v in spec_blob.items() if k != "credit_policy"}
+    if "icp_targeting" not in trimmed:
+        return trimmed
+    block = targeting_for_icp(spec_blob, icp_id)
+    if block is None:
+        return trimmed
+    return {
+        "spec_version": trimmed.get("spec_version"),
+        "company_search_params": block.get("company_search_params") or {},
+        "people_search_params": block.get("people_search_params") or {},
+        "intent_filters": block.get("intent_filters") or {},
+        "icp_validation": trimmed.get("icp_validation") or {},
+    }
 
 
 def _build_targeting(
-    brief: Brief | None, spec: ResearchSpec | None, icps: list[dict] | None = None
+    brief: Brief | None,
+    spec: ResearchSpec | None,
+    icps: list[dict] | None = None,
+    icp_id=None,
 ) -> dict:
     """The fit scorer's targeting context. Trimmed to the fit-relevant slice (W7): the keep-listed
     brief fields + the spec minus `credit_policy` + the ICP persona profiles.
@@ -208,11 +230,12 @@ def _build_targeting(
     `icps` carries the persona profiles the rubric grades maturity/department/tech/economic-buyer
     against (docs/prompts/fit-scoring-rubric-v1.md §2/§3). Without them those sub-criteria score 0
     by the rubric's Unknown policy, so the ICP docs are not optional context — they unlock points
-    that are otherwise structurally unreachable.
+    that are otherwise structurally unreachable. `icp_id` (the scored row's ICP) narrows a v4
+    spec to that ICP's own targeting block — pass it whenever the row carries one.
     """
     return {
         "brief": _trim_brief_for_scoring(brief.data) if brief else {},
-        "spec": _trim_spec_for_scoring(spec.spec) if spec else {},
+        "spec": _trim_spec_for_scoring(spec.spec, icp_id) if spec else {},
         "icps": icps or [],
     }
 
@@ -679,7 +702,9 @@ def find_company(
 ) -> FindResult:
     """Flow A — Apollo company search from the latest ResearchSpec → suppress → enrich → upsert.
 
-    The search params are the v3 `company_search_params` + `intent_filters` (already Apollo-shaped);
+    The search params are the chosen ICP's `company_search_params` + `intent_filters` from the
+    latest spec (already Apollo-shaped, resolved via `targeting_for_icp` — v3 single-block specs
+    fall back to their merged block);
     existing-customer domains and same-batch dupes are dropped before any row is stored. Survivors
     are upserted (a previously-known company is re-stamped with its `apollo_org_id`, not skipped).
     Capped at `MAX_COMPANIES_PER_FIND` per request. Records one `research_run` (source=apollo).
@@ -694,24 +719,47 @@ def find_company(
 def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
     """Flow-A find from the latest spec (the sync endpoint's body — `limit`, `icp_id`, and the
     optional `company_search_params` / `intent_filters` Settings overrides). Shared by the sync
-    `/companies/find-company` endpoint and the W4 async worker. Rows land UNSCORED."""
+    `/companies/find-company` endpoint and the W4 async worker. Rows land UNSCORED.
+
+    Multi-ICP (spec v4): the find is ICP-scoped — `icp_id` picks which ICP's targeting block runs.
+    A single-block spec resolves without one (and the row still gets labeled from the block); a
+    multi-block spec with no/unknown `icp_id` is a 400, never a silent merge."""
     spec = _latest_spec(db, tenant_id)
-    if spec is None or not (spec.spec or {}).get("company_search_params"):
+    blob = (spec.spec or {}) if spec else {}
+    has_scope = bool(blob.get("icp_targeting") or blob.get("company_search_params"))
+    if not has_scope:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "generate a research scope before finding companies"
         )
-    credit = spec.spec.get("credit_policy") or {}
+    icp = uuid.UUID(params["icp_id"]) if params.get("icp_id") else None
+    block = targeting_for_icp(blob, icp)
+    if block is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            (
+                "this scope has per-ICP targeting — pick an ICP to find for"
+                if icp is None
+                else "no targeting for this ICP yet — regenerate the scope"
+            ),
+        )
+    if icp is None and block.get("icp_id"):
+        # Single-block spec found without an explicit ICP: adopt the block's own ICP so the rows
+        # still land labeled ("" = brief-derived block stays unlabeled).
+        try:
+            icp = uuid.UUID(str(block["icp_id"]))
+        except ValueError:
+            icp = None
+    credit = blob.get("credit_policy") or {}
     hard_cap = min(MAX_COMPANIES_PER_FIND, credit.get("max_companies", 500))
     limit = max(1, min(params.get("limit") or 25, hard_cap))
     # Operator override (Settings modal) wins over the AI spec for *this call only*; an omitted
     # block falls back to the spec. `_clean` in apollo_map drops empty filters, so a cleared field
     # simply widens the search.
     o_csp = params.get("company_search_params")
-    csp = o_csp if o_csp is not None else (spec.spec.get("company_search_params") or {})
+    csp = o_csp if o_csp is not None else (block.get("company_search_params") or {})
     o_intent = params.get("intent_filters")
-    intent = o_intent if o_intent is not None else (spec.spec.get("intent_filters") or {})
+    intent = o_intent if o_intent is not None else (block.get("intent_filters") or {})
     filter_body = apollo_map.map_company_filter(csp, intent)
-    icp = uuid.UUID(params["icp_id"]) if params.get("icp_id") else None
     return _run_company_find(
         db,
         tenant_id,
@@ -779,7 +827,7 @@ def _run_company_find(
 
     run_id = _apollo_run_id()
     brief = _latest_brief(db, tenant_id)
-    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp))
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp), icp)
     rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
     cost = 0.0
@@ -1005,7 +1053,7 @@ def _company_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPro
     rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
     rubric_body = rubric.body if rubric else ""
     icp_id = company.icp_id if company else None
-    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id), icp_id)
     payload = _company_payload(company) if company else {}
     msgs = fit.build_company_messages(rubric_body, payload, targeting)
     by_role = {m["role"]: m["content"] for m in msgs}
@@ -1054,7 +1102,7 @@ def _prospect_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPr
     rubric = _latest_doc(db, tenant_id, PROSPECT_STAGE)
     rubric_body = rubric.body if rubric else ""
     icp_id = prospect.icp_id if prospect else None
-    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id), icp_id)
     payload = _prospect_payload(prospect.enrichment, company) if prospect else {}
     by_role = {m["role"]: m["content"] for m in fit.build_messages(rubric_body, payload, targeting)}
     sample = (prospect.enrichment or {}).get("full_name") or (
@@ -1107,7 +1155,9 @@ def _score_companies(db: Session, tenant_id, rows: list[Company]) -> dict:
     def _targeting_for(icp_id) -> dict:
         key = str(icp_id) if icp_id else None
         if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+            targeting_cache[key] = _build_targeting(
+                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
+            )
         return targeting_cache[key]
 
     jobs = [
@@ -1693,7 +1743,8 @@ def find_people(
     actually searched advances to `people_found`; the operator re-runs to drain a large selection.
     """
     spec = _latest_spec(db, ctx.tenant.id)
-    if spec is None or not (spec.spec or {}).get("people_search_params"):
+    spec_blob = (spec.spec or {}) if spec else {}
+    if not (spec_blob.get("icp_targeting") or spec_blob.get("people_search_params")):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "generate a research scope before finding people"
         )
@@ -1723,19 +1774,28 @@ def find_people(
         )
 
     # Precedence: a per-call override in the request → the tenant's saved Find-Settings override
-    # (persisted server-side, survives across browsers) → the AI spec. `_clean` in apollo_map drops
-    # empty filters, so a cleared field widens the search. `organization_ids` is never taken from
-    # here: the per-org loop sets it (C0: search rows carry no org id).
+    # (persisted server-side, survives across browsers) → the AI spec, resolved PER COMPANY from
+    # each org's own ICP (the multi-ICP "find ICP by ICP": a mixed selection searches each org
+    # with its own personas in one click; `body.icp_id`, when set, pins one ICP for the whole
+    # call). `_clean` in apollo_map drops empty filters, so a cleared field widens the search.
+    # `organization_ids` is never taken from here: the per-org loop sets it.
     if body.people_search_params is not None:
-        people_params = body.people_search_params
+        base_params = body.people_search_params
     else:
         saved = _people_scope_override(db, ctx.tenant.id)
-        saved_params = (saved.params or {}).get("people_search_params") if saved else None
-        people_params = (
-            saved_params
-            if saved_params is not None
-            else (spec.spec.get("people_search_params") or {})
-        )
+        base_params = (saved.params or {}).get("people_search_params") if saved else None
+    call_icp = uuid.UUID(body.icp_id) if body.icp_id else None
+
+    def _people_params_for(comp: Company) -> dict:
+        if base_params is not None:  # operator override applies to every org in the call
+            return base_params
+        block = targeting_for_icp(spec_blob, call_icp or comp.icp_id)
+        if block is None:
+            # Unlabeled/unknown-ICP company under a multi-ICP scope: fall back to the FIRST
+            # block — people search is free and a reviewable near-miss beats a hard fail.
+            block = (spec_blob.get("icp_targeting") or [{}])[0]
+        return block.get("people_search_params") or {}
+
     per_company = max(1, min(body.per_company, apollo.PER_PAGE_MAX))
     seen_ids = set(
         db.execute(
@@ -1744,7 +1804,7 @@ def find_people(
             )
         ).scalars()
     )
-    run_id, icp = _apollo_run_id(), (uuid.UUID(body.icp_id) if body.icp_id else None)
+    run_id, icp = _apollo_run_id(), call_icp
     docs = icp_docs(db, ctx.tenant.id, icp)
     # avoidTitles → hard pre-score drop (Apollo people search has no exclude-title field). Keyed per
     # ICP so a title avoided in one profile is not dropped from another when the run spans ICPs.
@@ -1756,7 +1816,7 @@ def find_people(
             continue  # batch full — leave this org as-is (still "Pending") for the next run
         try:
             rows, pbody, relax = _search_people_relaxed(
-                people_params, comp.apollo_org_id, per_company
+                _people_params_for(comp), comp.apollo_org_id, per_company
             )
         except apollo.ApolloError as e:
             raise HTTPException(
@@ -2034,7 +2094,9 @@ def _score_prospects(db: Session, tenant_id, rows: list[Prospect]) -> dict:
     def _targeting_for(icp_id) -> dict:
         key = str(icp_id) if icp_id else None
         if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id))
+            targeting_cache[key] = _build_targeting(
+                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
+            )
         return targeting_cache[key]
 
     jobs = [

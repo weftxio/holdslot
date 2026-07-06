@@ -32,9 +32,11 @@ def test_map_company_filter_forwards_and_drops_empties():
     }
     intent = {
         "company": {
+            # Date windows may still exist in OLD stored specs / stale saved overrides — the
+            # mapper must NEVER forward them (spec v5 removed them from the contract entirely).
             "latest_funding_date_range": {"min": "2026-01-01", "max": None},
             "q_organization_job_titles": ["Head of Sales"],
-            "organization_job_posted_at_range": {"min": None, "max": None},  # all-null → dropped
+            "organization_job_posted_at_range": {"min": "2026-03-01", "max": None},
         }
     }
     body = apollo_map.map_company_filter(cs, intent)
@@ -42,8 +44,8 @@ def test_map_company_filter_forwards_and_drops_empties():
     assert body["organization_num_employees_ranges"] == ["11,50"]
     assert "organization_locations" not in body
     assert body["revenue_range"] == {"min": 1000000}
-    assert body["latest_funding_date_range"] == {"min": "2026-01-01"}
     assert body["q_organization_job_titles"] == ["Head of Sales"]
+    assert "latest_funding_date_range" not in body  # dead since v5, even when present upstream
     assert "organization_job_posted_at_range" not in body
 
 

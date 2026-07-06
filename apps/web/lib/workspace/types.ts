@@ -106,6 +106,8 @@ export type ScopeOverride = {
   intent_filters: Record<string, unknown>;
 };
 // The editable shape — arrays are held as comma/semicolon text so they type naturally in inputs.
+// The funding/jobs-posted date windows were removed entirely (spec v5): they always
+// over-constrained the search, so they are gone from the form, the contract, and the mapper.
 export type ScopeForm = {
   keywords: string;
   sizes: string;
@@ -113,10 +115,6 @@ export type ScopeForm = {
   revenueMin: string;
   revenueMax: string;
   hiringTitles: string;
-  fundedMin: string;
-  fundedMax: string;
-  jobsMin: string;
-  jobsMax: string;
 };
 
 // ---- Find-people scope override (Step-2 Settings modal) -----------------------------------

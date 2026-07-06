@@ -39,10 +39,13 @@ def _clean(d: dict) -> dict:
 
 
 def map_company_filter(company_search_params: dict, intent_filters: dict | None = None) -> dict:
-    """Build the `mixed_companies/search` request body from v3 fit + intent params (no paging).
+    """Build the `mixed_companies/search` request body from fit + intent params (no paging).
 
-    Fit firmographics forward 1:1; the intent block (funding date + hiring-title/date windows) is
-    merged in as native Apollo recency filters. The caller adds `page`/`per_page`.
+    Fit firmographics forward 1:1; the intent block contributes ONLY the hiring-titles signal.
+    The funding/jobs-posted DATE windows are deliberately NOT forwarded — spec v5 dropped them
+    from the contract (they always over-constrained the search), and dropping them HERE means a
+    date window in an older stored spec or a stale saved override is dead too, not just absent
+    from new generations. The caller adds `page`/`per_page`.
     """
     cs = company_search_params or {}
     body = {
@@ -52,15 +55,7 @@ def map_company_filter(company_search_params: dict, intent_filters: dict | None 
         "revenue_range": cs.get("revenue_range"),
     }
     company_intent = (intent_filters or {}).get("company") or {}
-    body.update(
-        {
-            "latest_funding_date_range": company_intent.get("latest_funding_date_range"),
-            "q_organization_job_titles": company_intent.get("q_organization_job_titles"),
-            "organization_job_posted_at_range": company_intent.get(
-                "organization_job_posted_at_range"
-            ),
-        }
-    )
+    body["q_organization_job_titles"] = company_intent.get("q_organization_job_titles")
     return _clean(body)
 
 

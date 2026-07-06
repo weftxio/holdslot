@@ -23,6 +23,7 @@ import logging
 import os
 import threading
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -36,9 +37,10 @@ from app.domains.briefs.research_spec import (
     SCOPING_EXTRA_BODY,
     SCOPING_MODELS,
     SCOPING_TIMEOUT,
-    ResearchSpecV3,
+    ResearchSpecV4,
     assemble_spec,
     build_messages,
+    reconcile_icp_targeting,
 )
 from app.domains.icps import icp_docs
 from app.integrations.openrouter.client import LlmError, structured_completion
@@ -57,6 +59,32 @@ JOB_BRIEF_STRUCTURE = "brief_structure"
 _ACTIVE = ("queued", "running")
 _ERR_MAX = 500  # cap the stored error message
 
+# A worker runs inside a SINGLE Lambda invocation, so it cannot outlive the function timeout. A hard
+# timeout (or a killed local thread) ends it mid-run WITHOUT raising, so run_structuring_job's
+# except/finally never fires and the job is left `running` forever (a zombie): every page load
+# resumes the "Generating…" poll, AND enqueue_structuring coalesces each Regenerate click onto it —
+# the surface is wedged. So on each read we reap any non-terminal job older than a worker could
+# possibly live → `error` (mirrors prospects/scoring.py). Keep this comfortably ABOVE the Lambda
+# timeout (infra/terraform/lambda.tf, currently 300s).
+MAX_JOB_AGE_SECONDS = 360
+
+
+def _job_age_seconds(job: ResearchJob) -> float:
+    created = job.created_at
+    if created.tzinfo is None:  # aurora-data-api can hand back a naive UTC datetime
+        created = created.replace(tzinfo=UTC)
+    return (datetime.now(UTC) - created).total_seconds()
+
+
+def _reap_if_stale(db: Session, job: ResearchJob) -> bool:
+    """Flip a non-terminal job that outlived any possible worker run to `error`. Idempotent; returns
+    True when it reaped (so callers stop treating the job as active/in-flight)."""
+    if job.status not in _ACTIVE or _job_age_seconds(job) <= MAX_JOB_AGE_SECONDS:
+        return False
+    _fail(db, job, "scope generation timed out — click Generate Scope to retry")
+    log.warning("reaped stale structuring job id=%s", job.id)
+    return True
+
 
 def latest_system_prompt(db: Session, tenant_id) -> Prompt | None:
     """The newest stored scoping system prompt for the tenant (None → use the code default)."""
@@ -69,13 +97,17 @@ def latest_system_prompt(db: Session, tenant_id) -> Prompt | None:
 
 
 def latest_job(db: Session, tenant_id) -> ResearchJob | None:
-    """The most recent structuring job for the tenant (what the status poll reads)."""
-    return db.execute(
+    """The most recent structuring job for the tenant (what the status poll reads). A zombie
+    `running` job is reaped here, so a page refresh never resumes a dead run's spinner."""
+    job = db.execute(
         select(ResearchJob)
         .where(ResearchJob.tenant_id == tenant_id)
         .order_by(ResearchJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+    if job is not None:
+        _reap_if_stale(db, job)
+    return job
 
 
 def enqueue_structuring(db: Session, tenant_id) -> ResearchJob:
@@ -86,7 +118,9 @@ def enqueue_structuring(db: Session, tenant_id) -> ResearchJob:
         .order_by(ResearchJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
-    if active is not None:
+    # Coalesce onto a genuinely in-flight job (a double-click never double-spends); but a stale
+    # zombie must NOT wedge Regenerate forever — reap it and fall through to a fresh job.
+    if active is not None and not _reap_if_stale(db, active):
         return active
 
     job = ResearchJob(tenant_id=tenant_id, status="queued")
@@ -196,9 +230,8 @@ def run_structuring_job(tenant_id, job_id, session_factory=None) -> None:
             return
 
         saved = latest_system_prompt(db, tid)
-        messages = build_messages(
-            brief.data, icp_docs(db, tid), system_override=saved.body if saved else None
-        )
+        docs = icp_docs(db, tid)
+        messages = build_messages(brief.data, docs, system_override=saved.body if saved else None)
 
         try:
             result = structured_completion(
@@ -217,10 +250,20 @@ def run_structuring_job(tenant_id, job_id, session_factory=None) -> None:
             return
 
         try:
-            ResearchSpecV3(**result.data)
+            ResearchSpecV4(**result.data)
         except Exception:
             _fail(db, job, "LLM returned an off-contract spec")
             return
+
+        # Multi-ICP coverage check: one block per input ICP, ids echoed (typos repaired by name).
+        # A missing ICP is a NAMED failure, never a silently merged/dropped profile (the v3 bug).
+        blocks, cover_err = reconcile_icp_targeting(
+            result.data["icp_targeting"], {d["id"]: d["name"] for d in docs}
+        )
+        if cover_err:
+            _fail(db, job, cover_err)
+            return
+        result.data["icp_targeting"] = blocks
 
         spec, gaps, icp_suggestions = assemble_spec(result.data)
         version = _insert_spec(db, tid, spec, gaps, icp_suggestions, result)

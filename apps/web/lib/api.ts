@@ -242,7 +242,8 @@ export type IcpSuggestion = {
 export type ResearchSpecResult = {
   version: number;
   spec: Record<string, unknown>;
-  gaps: { field: string; why_it_matters: string; ask: string }[];
+  // `icp_name` (spec v4) names the ICP a gap concerns; "" or absent (v3 specs) = whole-brief gap.
+  gaps: { field: string; why_it_matters: string; ask: string; icp_name?: string }[];
   icp_suggestions: IcpSuggestion[];
   model: string | null;
   llm_call_id: string | null;
@@ -339,8 +340,13 @@ export type ScopingPrompt = {
   prompt_version: string;
 };
 
-export async function getScopingPrompt(client: string): Promise<ScopingPrompt> {
-  const r = await authFetch(`/${client}/brief/structure/preview`);
+// `icpId` narrows the input prompt's ICP set to one profile (the scope panel's ICP filter) —
+// a review lens only; the live Generate always sends every ICP.
+export async function getScopingPrompt(client: string, icpId?: string): Promise<ScopingPrompt> {
+  const url = `/${client}/brief/structure/preview${
+    icpId ? `?icp_id=${encodeURIComponent(icpId)}` : ""
+  }`;
+  const r = await authFetch(url);
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }

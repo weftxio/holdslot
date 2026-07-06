@@ -1,6 +1,8 @@
 """B4/B6 tests — Brief → ResearchSpec structuring.
 
-Unit tests validate the v3 (Apollo-native) contract + the assemble/credit-policy split (no I/O).
+Unit tests validate the v4 (per-ICP Apollo-native) contract + the assemble/credit-policy split,
+the `targeting_for_icp` resolver (v4 match + v3 fallback), and `reconcile_icp_targeting` (the
+coverage guard that makes the original "second ICP silently dropped" bug impossible). No I/O.
 Gated integration tests run real structuring against dev: a filled brief yields a schema-valid,
 versioned spec with gaps and resolvable telemetry, and the credit policy is server-set.
 """
@@ -13,6 +15,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.domains.briefs import research_spec as RS
+
+ICP_A = "11111111-1111-1111-1111-111111111111"
+ICP_B = "22222222-2222-2222-2222-222222222222"
 
 
 def _company_params() -> dict:
@@ -34,18 +39,24 @@ def _people_params() -> dict:
     }
 
 
-def _valid_targeting() -> dict:
+def _intent_filters() -> dict:
+    # v5: hiring titles only — the funding/jobs-posted date windows are gone from the contract.
+    return {"company": {"q_organization_job_titles": ["sales", "growth"]}}
+
+
+def _block(icp_id: str = ICP_A, icp_name: str = "Insurers") -> dict:
     return {
+        "icp_id": icp_id,
+        "icp_name": icp_name,
         "company_search_params": _company_params(),
         "people_search_params": _people_params(),
-        "intent_filters": {
-            "company": {
-                "latest_funding_date_range": {"min": "2025-12-22", "max": "2026-06-22"},
-                "q_organization_job_titles": ["sales", "growth"],
-                "organization_job_posted_at_range": {"min": "2026-03-22", "max": "2026-06-22"},
-            },
-            "recency_window": {"funding_since": "2025-12-22", "jobs_posted_since": "2026-03-22"},
-        },
+        "intent_filters": _intent_filters(),
+    }
+
+
+def _valid_targeting() -> dict:
+    return {
+        "icp_targeting": [_block(), _block(ICP_B, "Brokers")],
         "icp_validation": {"customer_profiles": [], "paying_customer_summary": ""},
         "icp_suggestions": [
             {
@@ -62,45 +73,65 @@ def _valid_targeting() -> dict:
                 "field": "excludeCustomers",
                 "why_it_matters": "Existing customers are the strongest proof of who buys.",
                 "ask": "Share current customers as 'domain, name, website'.",
+                "icp_name": "",
             }
         ],
     }
 
 
-def test_v3_accepts_canonical_targeting():
-    RS.ResearchSpecV3(**_valid_targeting())  # must not raise
+def test_v4_accepts_canonical_targeting():
+    RS.ResearchSpecV4(**_valid_targeting())  # must not raise
 
 
-def test_v3_rejects_missing_group():
+def test_v4_rejects_missing_group():
     bad = _valid_targeting()
-    del bad["company_search_params"]
+    del bad["icp_targeting"]
     with pytest.raises(ValidationError):
-        RS.ResearchSpecV3(**bad)
+        RS.ResearchSpecV4(**bad)
 
 
-def test_v3_rejects_extra_field_and_missing_nested():
+def test_v4_rejects_extra_field_and_missing_nested():
     # extra="forbid": an unknown root key is rejected.
     with pytest.raises(ValidationError):
-        RS.ResearchSpecV3(**{**_valid_targeting(), "surprise": 1})
-    # a missing NESTED field (recency_window) is rejected — validator is as strict as the schema.
+        RS.ResearchSpecV4(**{**_valid_targeting(), "surprise": 1})
+    # a missing NESTED field (a block's intent company) is rejected — validator is as strict as
+    # the schema, per targeting entry. An extra nested date field is rejected too (v5 removed the
+    # funding/jobs windows from the contract; strict mode keeps them out).
     bad = _valid_targeting()
-    del bad["intent_filters"]["recency_window"]
+    del bad["icp_targeting"][0]["intent_filters"]["company"]
     with pytest.raises(ValidationError):
-        RS.ResearchSpecV3(**bad)
+        RS.ResearchSpecV4(**bad)
+    bad3 = _valid_targeting()
+    bad3["icp_targeting"][0]["intent_filters"]["company"]["latest_funding_date_range"] = {
+        "min": "2026-01-01",
+        "max": None,
+    }
+    with pytest.raises(ValidationError):
+        RS.ResearchSpecV4(**bad3)
+    # a block without its icp_id echo is rejected too (the attribution contract).
+    bad2 = _valid_targeting()
+    del bad2["icp_targeting"][1]["icp_id"]
+    with pytest.raises(ValidationError):
+        RS.ResearchSpecV4(**bad2)
+
+
+def _people_schema() -> dict:
+    item = RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["icp_targeting"]["items"]
+    return item["properties"]["people_search_params"]
 
 
 def test_seniority_enum_in_people_schema():
     # The json_schema constrains person_seniorities to the Apollo enum (the Pydantic validator is
     # list[str], so this guards the schema the model is actually held to).
-    ppl = RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["people_search_params"]
-    assert ppl["properties"]["person_seniorities"]["items"]["enum"] == RS.SENIORITY_ENUM
+    assert _people_schema()["properties"]["person_seniorities"]["items"]["enum"] == (
+        RS.SENIORITY_ENUM
+    )
 
 
 def test_department_enum_in_people_schema_and_taxonomy_is_consistent():
     # Departments are constrained to the (deduped) master+sub enum, and the flat enum is exactly
     # the masters + their subs — so a value the LLM emits always maps to a real facet.
-    ppl = RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["people_search_params"]
-    enum = ppl["properties"]["person_department_or_subdepartments"]["items"]["enum"]
+    enum = _people_schema()["properties"]["person_department_or_subdepartments"]["items"]["enum"]
     assert enum == RS.DEPARTMENT_ENUM
     assert RS.MASTER_DEPARTMENTS == list(RS.DEPARTMENT_TAXONOMY.keys())
     flat = RS.MASTER_DEPARTMENTS + [s for subs in RS.DEPARTMENT_TAXONOMY.values() for s in subs]
@@ -111,15 +142,21 @@ def test_department_enum_in_people_schema_and_taxonomy_is_consistent():
 def test_validator_matches_json_schema_root_keys():
     # The defensive validator and the schema sent to the model can't drift apart.
     schema_keys = set(RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"].keys())
-    model_keys = set(RS.ResearchSpecV3.model_fields.keys())
+    model_keys = set(RS.ResearchSpecV4.model_fields.keys())
     assert schema_keys == model_keys
-    cs_schema = set(
-        RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["company_search_params"][
+    item_schema = set(
+        RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["icp_targeting"]["items"][
             "properties"
         ].keys()
     )
-    cs_model = set(RS.CompanySearchParams.model_fields.keys())
-    assert cs_schema == cs_model
+    item_model = set(RS.IcpTargetingV4.model_fields.keys())
+    assert item_schema == item_model
+    gap_schema = set(
+        RS.RESEARCH_SPEC_JSON_SCHEMA["schema"]["properties"]["gaps"]["items"][
+            "properties"
+        ].keys()
+    )
+    assert gap_schema == set(RS.GapV4.model_fields.keys())
 
 
 def test_assemble_merges_server_credit_policy_not_llm():
@@ -130,11 +167,11 @@ def test_assemble_merges_server_credit_policy_not_llm():
     assert spec["credit_policy"] == RS.CREDIT_POLICY  # server-set, deterministic
     assert spec["credit_policy"]["email_status_filter"] == ["verified"]
     assert spec["credit_policy"]["phone"] is False
-    assert spec["spec_version"] == RS.SPEC_VERSION == 3
-    assert spec["company_search_params"]["q_organization_keyword_tags"] == [
-        "insurance",
-        "insurtech",
-    ]
+    assert spec["spec_version"] == RS.SPEC_VERSION == 5
+    assert [b["icp_id"] for b in spec["icp_targeting"]] == [ICP_A, ICP_B]
+    assert spec["icp_targeting"][0]["company_search_params"][
+        "q_organization_keyword_tags"
+    ] == ["insurance", "insurtech"]
     assert "icp_validation" in spec  # analysis travels in the spec, not its own column
     assert gaps and gaps[0]["field"] == "excludeCustomers"
     # icp_suggestions are split out alongside gaps — never folded into the Apollo-bound spec.
@@ -148,13 +185,103 @@ def test_json_schema_is_strict():
     root = s["schema"]
     assert root["additionalProperties"] is False
     assert set(root["required"]) == {
-        "company_search_params",
-        "people_search_params",
-        "intent_filters",
+        "icp_targeting",
         "icp_validation",
         "icp_suggestions",
         "gaps",
     }
+
+
+# --- targeting_for_icp — the one spec reader (v4 match + v3 fallback) -----------------
+
+
+def _v4_blob(*blocks: dict) -> dict:
+    return {
+        "spec_version": 4,
+        "icp_targeting": list(blocks),
+        "icp_validation": {"customer_profiles": [], "paying_customer_summary": ""},
+        "credit_policy": RS.CREDIT_POLICY,
+    }
+
+
+def test_targeting_for_icp_matches_block_by_id():
+    blob = _v4_blob(_block(), _block(ICP_B, "Brokers"))
+    got = RS.targeting_for_icp(blob, ICP_B)
+    assert got is not None and got["icp_name"] == "Brokers"
+
+
+def test_targeting_for_icp_multi_block_requires_icp():
+    blob = _v4_blob(_block(), _block(ICP_B, "Brokers"))
+    assert RS.targeting_for_icp(blob, None) is None  # caller 400s: "pick an ICP"
+    # An unknown id never silently gets another ICP's targeting.
+    assert RS.targeting_for_icp(blob, "33333333-3333-3333-3333-333333333333") is None
+
+
+def test_targeting_for_icp_single_block_resolves_without_icp():
+    blob = _v4_blob(_block())
+    got = RS.targeting_for_icp(blob, None)
+    assert got is not None and got["icp_id"] == ICP_A
+
+
+def test_targeting_for_icp_v3_fallback_answers_any_icp():
+    v3 = {
+        "spec_version": 3,
+        "company_search_params": _company_params(),
+        "people_search_params": _people_params(),
+        "intent_filters": _intent_filters(),
+        "icp_validation": {"customer_profiles": [], "paying_customer_summary": ""},
+        "credit_policy": RS.CREDIT_POLICY,
+    }
+    for icp in (None, ICP_A):
+        got = RS.targeting_for_icp(v3, icp)
+        assert got is not None
+        assert got["company_search_params"] == _company_params()
+        assert got["people_search_params"] == _people_params()
+    assert RS.targeting_for_icp({}, None) is None
+    assert RS.targeting_for_icp(None, ICP_A) is None
+    assert RS.targeting_for_icp(_v4_blob(), ICP_A) is None  # v4 with zero blocks
+
+
+# --- reconcile_icp_targeting — the coverage guard --------------------------------------
+
+
+def test_reconcile_passes_exact_echo_and_orders_by_input():
+    expected = {ICP_A: "Insurers", ICP_B: "Brokers"}
+    blocks, err = RS.reconcile_icp_targeting(
+        [_block(ICP_B, "Brokers"), _block(ICP_A, "Insurers")], expected
+    )
+    assert err is None
+    assert [b["icp_id"] for b in blocks] == [ICP_A, ICP_B]  # input order restored
+
+
+def test_reconcile_repairs_echo_typo_by_name():
+    expected = {ICP_A: "Insurers", ICP_B: "Brokers"}
+    typo = _block("not-a-real-id", "brokers ")  # bad id, name matches case/space-insensitively
+    blocks, err = RS.reconcile_icp_targeting([_block(ICP_A, "Insurers"), typo], expected)
+    assert err is None
+    assert blocks[1]["icp_id"] == ICP_B and blocks[1]["icp_name"] == "Brokers"
+
+
+def test_reconcile_fails_loudly_on_missing_icp():
+    expected = {ICP_A: "Insurers", ICP_B: "Brokers"}
+    blocks, err = RS.reconcile_icp_targeting([_block(ICP_A, "Insurers")], expected)
+    assert blocks == []
+    assert err is not None and "Brokers" in err  # the missed ICP is NAMED
+
+
+def test_reconcile_drops_extra_invented_blocks():
+    expected = {ICP_A: "Insurers"}
+    blocks, err = RS.reconcile_icp_targeting(
+        [_block(ICP_A, "Insurers"), _block("99", "Invented")], expected
+    )
+    assert err is None and len(blocks) == 1 and blocks[0]["icp_id"] == ICP_A
+
+
+def test_reconcile_no_expected_passes_blocks_through():
+    blocks, err = RS.reconcile_icp_targeting([_block("", "Brief-derived")], {})
+    assert err is None and blocks[0]["icp_name"] == "Brief-derived"
+    blocks, err = RS.reconcile_icp_targeting([], {})
+    assert blocks == [] and err is not None  # zero blocks for a brief-only tenant is an error
 
 
 def test_build_messages_injects_today():
@@ -165,16 +292,35 @@ def test_build_messages_injects_today():
 
 def test_default_prompt_matches_seed_file():
     # The code fallback (runtime) and the migration's DB seed source must be identical, or a saved
-    # default would differ from the seeded `briefing` v1. They have no other binding — assert it.
+    # default would differ from the seeded `briefing` row. They have no other binding — assert it.
     from pathlib import Path
 
     seed = (
-        Path(__file__).resolve().parents[3] / "docs" / "prompts" / "brief-structure-v5.md"
+        Path(__file__).resolve().parents[3] / "docs" / "prompts" / "brief-structure-v7.md"
     ).read_text(encoding="utf-8")
     assert seed.strip() == RS.DEFAULT_SYSTEM_PROMPT.strip()
 
 
+def test_default_prompt_teaches_per_icp_output():
+    # The per-ICP contract must be stated in the prompt (schema enforces shape; the prompt carries
+    # the echo + no-merge semantics the schema can't express).
+    p = RS.DEFAULT_SYSTEM_PROMPT
+    assert "icp_targeting" in p
+    assert "ONE icp_targeting entry PER input ICP" in p
+    assert "NEVER merge two ICPs" in p
+
+
+def test_default_prompt_never_mentions_date_windows():
+    # v5 removed the funding/jobs-posted windows entirely — the prompt must not teach, request, or
+    # even name the fields (naming them invites the model to raise gaps about them).
+    p = RS.DEFAULT_SYSTEM_PROMPT
+    assert "latest_funding_date_range" not in p
+    assert "organization_job_posted_at_range" not in p
+    assert "recency_window" not in p
+
+
 # --- gated integration ---------------------------------------------------------
+
 
 _DB = os.environ.get("HOLDSLOT_DB_CLUSTER_ARN")
 
@@ -223,11 +369,18 @@ def test_structure_endpoint_versions_and_links_telemetry():
             },
             headers=auth,
         )
-        client.post(
-            f"/{slug}/icps",
-            json={"name": "Ops leader", "tag": "primary", "data": {"titles": ["VP Operations"]}},
-            headers=auth,
-        )
+        # TWO ICPs — the multi-ICP contract: one icp_targeting entry per profile, ids echoed.
+        icp_ids = []
+        for name, titles in (
+            ("Ops leader", ["VP Operations"]),
+            ("Founder-led 3PL", ["Founder", "CEO"]),
+        ):
+            r = client.post(
+                f"/{slug}/icps",
+                json={"name": name, "tag": "primary", "data": {"titles": titles}},
+                headers=auth,
+            )
+            icp_ids.append(r.json()["id"])
 
         import time
 
@@ -251,11 +404,15 @@ def test_structure_endpoint_versions_and_links_telemetry():
         latest = client.get(f"/{slug}/research-spec", headers=auth).json()
         s1 = latest["latest"]
         assert s1["version"] == 1
-        # Schema-valid v3 spec, server-set credit policy, real gaps.
-        assert s1["spec"]["spec_version"] == 3
+        # Schema-valid v4 spec, server-set credit policy, one block per ICP with ids echoed.
+        assert s1["spec"]["spec_version"] == 5
         assert s1["spec"]["credit_policy"]["email_status_filter"] == ["verified"]
-        assert "company_search_params" in s1["spec"] and "people_search_params" in s1["spec"]
-        assert "intent_filters" in s1["spec"] and "icp_validation" in s1["spec"]
+        blocks = s1["spec"]["icp_targeting"]
+        assert [b["icp_id"] for b in blocks] == icp_ids  # both ICPs covered, input order
+        for b in blocks:
+            assert "company_search_params" in b and "people_search_params" in b
+            assert "intent_filters" in b
+        assert "icp_validation" in s1["spec"]
         assert isinstance(s1["gaps"], list) and len(s1["gaps"]) >= 1
         assert s1["llm_call_id"]
 

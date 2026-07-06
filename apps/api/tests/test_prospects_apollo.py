@@ -236,3 +236,159 @@ def test_find_company_requires_spec(owner_member, monkeypatch):
     r = client.post(f"/{slug}/people/find-people", json={}, headers=_auth(token))
     assert r.status_code == 400
     assert "select companies first" in r.text
+
+
+# --------------------------------------------------------------------- multi-ICP (spec v4)
+
+
+@pytest.fixture
+def owner_member_v4():
+    """An ephemeral tenant with TWO ICPs + a v4 per-ICP ResearchSpec — the multi-ICP loop.
+
+    Each ICP block carries deliberately different company keywords and people personas, so a test
+    can prove the find flows run ICP by ICP (block A's params never leak into an ICP-B find)."""
+    from fastapi.testclient import TestClient
+
+    from app.core.db import get_session
+    from app.core.security import hash_password
+    from app.main import app
+    from app.models import AppUser, Icp, Membership, MembershipRole, ResearchSpec, Tenant
+
+    client = TestClient(app)
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    slug, email = f"micp-{suffix}", f"micp-{suffix}@example.com"
+    tenant = Tenant(slug=slug, name=f"MultiICP {suffix}")
+    db.add(tenant)
+    db.flush()
+    user = AppUser(email=email, password_hash=hash_password(BUILD_PW), full_name="Owner")
+    db.add(user)
+    db.flush()
+    db.add(Membership(user_id=user.id, tenant_id=tenant.id, role=MembershipRole.owner))
+    icp_a = Icp(tenant_id=tenant.id, name="Insurers", tag="primary", data={"maturity": "growth"})
+    icp_b = Icp(tenant_id=tenant.id, name="Brokers", tag="secondary", data={})
+    db.add_all([icp_a, icp_b])
+    db.flush()
+    ids = (str(icp_a.id), str(icp_b.id))
+    db.add(
+        ResearchSpec(
+            tenant_id=tenant.id,
+            version=1,
+            spec={
+                "spec_version": 4,
+                "icp_targeting": [
+                    {
+                        "icp_id": ids[0],
+                        "icp_name": "Insurers",
+                        "company_search_params": {"q_organization_keyword_tags": ["insurance"]},
+                        "people_search_params": {
+                            "person_seniorities": ["c_suite"],
+                            "person_department_or_subdepartments": ["master_sales"],
+                        },
+                        "intent_filters": {},
+                    },
+                    {
+                        "icp_id": ids[1],
+                        "icp_name": "Brokers",
+                        "company_search_params": {"q_organization_keyword_tags": ["brokerage"]},
+                        "people_search_params": {
+                            "person_seniorities": ["manager"],
+                            "person_department_or_subdepartments": ["master_operations"],
+                        },
+                        "intent_filters": {},
+                    },
+                ],
+                "icp_validation": {},
+                "credit_policy": {"max_companies": 500},
+            },
+        )
+    )
+    db.commit()
+    token = client.post("/auth/login", json={"email": email, "password": BUILD_PW}).json()[
+        "access_token"
+    ]
+    try:
+        yield client, slug, token, ids
+    finally:
+        db.delete(icp_a)
+        db.delete(icp_b)
+        db.delete(user)
+        db.delete(tenant)
+        db.commit()
+        db.close()
+
+
+def test_multi_icp_find_runs_icp_by_icp(owner_member_v4, monkeypatch):
+    """Spec v4: find-company requires an ICP, runs THAT ICP's params, labels the rows; find-people
+    resolves each company's personas from its OWN ICP block in a single mixed-selection call."""
+    from app.domains.prospects import fit
+    from app.integrations.apollo import client as apollo
+
+    client, slug, token, (icp_a, icp_b) = owner_member_v4
+
+    company_bodies: list[dict] = []
+    people_bodies: list[dict] = []
+
+    def _search_companies(body, *, max_results=100):
+        company_bodies.append(body)
+        if "insurance" in (body.get("q_organization_keyword_tags") or []):
+            return [{"id": "org-A", "name": "Alpha Ins", "primary_domain": "alpha-ins.com"}]
+        return [{"id": "org-B", "name": "Beta Brokers", "primary_domain": "beta-brokers.com"}]
+
+    def _search_people(body, *, max_results=100):
+        people_bodies.append(body)
+        org = (body.get("organization_ids") or ["?"])[0]
+        return [
+            {"id": f"ppl-{org}", "first_name": "Kim", "title": "Buyer",
+             "organization": {"name": org}, "has_email": True}
+        ]
+
+    monkeypatch.setattr(apollo, "search_companies", _search_companies)
+    monkeypatch.setattr(apollo, "enrich_organizations", lambda domains: [])
+    monkeypatch.setattr(apollo, "search_people", _search_people)
+    monkeypatch.setattr(
+        fit, "classify_business_model",
+        lambda **k: {"business_model": "B2B", "llm_call_id": None, "model": "t", "cost_usd": 0.0},
+    )
+
+    # 1) A multi-ICP scope refuses an un-scoped find — never a silent merge.
+    r = client.post(f"/{slug}/companies/find-company", json={"limit": 5}, headers=_auth(token))
+    assert r.status_code == 400 and "pick an ICP" in r.text
+
+    # 2) Find for ICP-A runs block A's params only; rows land labeled icp_id=A.
+    r = client.post(f"/{slug}/companies/find-company",
+                    json={"limit": 5, "icp_id": icp_a}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    a_rows = r.json()["companies"]
+    assert company_bodies[-1]["q_organization_keyword_tags"] == ["insurance"]
+    assert a_rows and all(c["icp_id"] == icp_a for c in a_rows)
+
+    # 3) Find for ICP-B runs block B's params; rows labeled icp_id=B.
+    r = client.post(f"/{slug}/companies/find-company",
+                    json={"limit": 5, "icp_id": icp_b}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    b_rows = r.json()["companies"]
+    assert company_bodies[-1]["q_organization_keyword_tags"] == ["brokerage"]
+    assert b_rows and all(c["icp_id"] == icp_b for c in b_rows)
+
+    # 4) An unknown ICP under a v4 spec is a named 400 (regenerate), not another ICP's block.
+    r = client.post(
+        f"/{slug}/companies/find-company",
+        json={"limit": 5, "icp_id": str(uuid.uuid4())}, headers=_auth(token),
+    )
+    assert r.status_code == 400 and "regenerate" in r.text
+
+    # 5) Find-people across BOTH companies in one call: each org is searched with its OWN ICP's
+    #    personas (A → c_suite/sales; B → manager/operations) and each prospect inherits its
+    #    company's ICP label.
+    ids = [a_rows[0]["id"], b_rows[0]["id"]]
+    r = client.post(f"/{slug}/people/find-people",
+                    json={"per_company": 5, "company_ids": ids}, headers=_auth(token))
+    assert r.status_code == 200, r.text
+    by_org = {(b.get("organization_ids") or ["?"])[0]: b for b in people_bodies}
+    assert by_org["org-A"]["person_seniorities"] == ["c_suite"]
+    assert by_org["org-A"]["person_department_or_subdepartments"] == ["master_sales"]
+    assert by_org["org-B"]["person_seniorities"] == ["manager"]
+    assert by_org["org-B"]["person_department_or_subdepartments"] == ["master_operations"]
+    people = r.json()["prospects"]
+    assert {p["icp_id"] for p in people} == {icp_a, icp_b}  # label inherited per company

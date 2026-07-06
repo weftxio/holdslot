@@ -2489,6 +2489,10 @@
   font-size: 13.5px;
   color: var(--ink);
 }
+/* The ICP badge sits directly in the column flexbox — stop it stretching to cell width. */
+.grp-co > .badge {
+  align-self: flex-start;
+}
 .grp-hint {
   font-size: 12.5px;
   font-style: italic;

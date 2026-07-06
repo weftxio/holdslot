@@ -36,7 +36,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0016_phase_d_batch_approval"]
+    assert _script_dir().get_heads() == ["0018_brief_structure_v7"]
 
 
 def test_0011_columns_present_on_models():

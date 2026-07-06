@@ -110,6 +110,19 @@ export default function ListPage() {
     ]);
     return cached?.latest ?? null;
   });
+  // The multi-ICP axis: dropdown options + id→name lookup for the ICP filter (both stages), the
+  // ICP column chips, and the Find Company target. API-loaded ICPs always carry a real id.
+  const icpOptions = useMemo(
+    () =>
+      icps
+        .filter((i) => i.id)
+        .map((i) => ({ id: i.id as string, label: i.short || i.tag || "ICP" })),
+    [icps]
+  );
+  const icpNameById = useMemo(
+    () => new Map(icpOptions.map((o) => [o.id, o.label])),
+    [icpOptions]
+  );
   // The client's B2B/B2C selection (brief.targetMarket) — drives the Step-1 market-exclusion sort
   // below. Read client-side so the ordering is correct against ANY backend (incl. one that predates
   // the `market_excluded` serialization) and stays live-reactive to a brief edit. Loaded on mount.
@@ -208,10 +221,17 @@ export default function ListPage() {
   const [addCoOpen, setAddCoOpen] = useState(false);
   const [coForm, setCoForm] = useState({ ...blankCo });
   const [savingCo, setSavingCo] = useState(false);
-  // Manual override of the AI scope's Apollo company-search filters (Settings modal).
+  // Manual override of the AI scope's Apollo company-search filters (Settings modal). Stored per
+  // (client, ICP); this state mirrors the CURRENT ICP filter's entry (see the sync effect below).
   const [scopeOverride, setScopeOverride] = useState<ScopeOverride | null>(null);
   const [scopeOpen, setScopeOpen] = useState(false);
   const [scopeForm, setScopeForm] = useState<ScopeForm | null>(null);
+  // Which ICP the Find-Settings modal is editing (its own pick, so the operator can switch ICP
+  // scopes inside the modal without touching the page filter until Save).
+  const [scopeIcp, setScopeIcp] = useState("");
+  // Brief attention flash on the Step-1 ICP dropdown when Find Company needs a pick — the toast
+  // says WHAT, this shows WHERE.
+  const [icpNeedsPick, setIcpNeedsPick] = useState(false);
   // Same, for the Step-2 Apollo people-search filters.
   const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
   // The saved override is hydrated from the server on mount; until it resolves we don't yet know the
@@ -303,7 +323,6 @@ export default function ListPage() {
     setCoFit("");
     setCoModel("");
     setCoStatus("");
-    setScopeOverride(loadScopeOverride(client)); // per-client manual scope; null → AI spec
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
     setPplScopeLoaded(false); // gate the Find-Settings gear until the saved scope is known
     setProspectsTruncated(false); // cleared until the new client's feed reports its own cap
@@ -410,6 +429,7 @@ export default function ListPage() {
         .filter(
           (c) =>
             (c.status === "selected" || c.status === "people_found") &&
+            (!fIcp || c.icp_id === fIcp) &&
             (!search || `${c.name} ${c.domain}`.toLowerCase().includes(search.toLowerCase()))
         )
         .sort((a, b) => {
@@ -420,7 +440,7 @@ export default function ListPage() {
           if (eb !== ea) return eb - ea;
           return pb.length - pa.length;
         }),
-    [companies, search, prospectsByCompany]
+    [companies, search, fIcp, prospectsByCompany]
   );
   // The pool a manually-added person can attach to: companies accepted into Step 2 (with a domain,
   // since the backend resolves the person's company by domain). Drives the Add-person dropdown.
@@ -492,6 +512,14 @@ export default function ListPage() {
     });
   }
 
+  // The Step-1 manual scope override is stored per (client, ICP) — re-read it whenever either
+  // changes (covers mount + client switch too) so the active-filters summary and the next Find
+  // reflect the selected ICP's own tuning.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setScopeOverride(loadScopeOverride(client, fIcp || undefined));
+  }, [client, fIcp]);
+
   // ---- Stage 1: companies ----
   // A company is market-excluded when its business model is the strict opposite of the client's
   // selection (B2B client × B2C company, or vice-versa). Computed client-side from the visible label
@@ -518,11 +546,13 @@ export default function ListPage() {
           // excluded rows are forced to Below·0 at find time, so they read as scored, not unscored.
           const fitOk =
             !coFit || (coFit === UNSCORED_FIT ? c.fit_score === null : c.fit_tier === coFit);
+          const icpOk = !fIcp || c.icp_id === fIcp;
           return (
             (!coSearch || text.includes(coSearch.toLowerCase())) &&
             fitOk &&
             modelOk &&
-            statusOk
+            statusOk &&
+            icpOk
           );
         })
         // Order (self-sufficient here rather than relying on the backend ORDER BY — defense-in-depth,
@@ -540,7 +570,7 @@ export default function ListPage() {
           if (aa !== ba) return aa - ba;
           return (b.fit_score ?? -1) - (a.fit_score ?? -1);
         }),
-    [companies, coSearch, coFit, coModel, coStatus, coExcluded]
+    [companies, coSearch, coFit, coModel, coStatus, fIcp, coExcluded]
   );
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
@@ -568,12 +598,12 @@ export default function ListPage() {
   // One-line read of the scope Find Companies will use right now (override or AI spec) — shown in
   // the empty state so a 0-result is explainable, not mysterious.
   const coScopeSummary = useMemo(
-    () => scopeSummary(effectiveScope(scopeOverride, spec)),
-    [scopeOverride, spec]
+    () => scopeSummary(effectiveScope(scopeOverride, spec, fIcp || undefined)),
+    [scopeOverride, spec, fIcp]
   );
   const pplScopeSummary = useMemo(
-    () => peopleScopeSummary(effectivePeopleScope(peopleScopeOverride, spec)),
-    [peopleScopeOverride, spec]
+    () => peopleScopeSummary(effectivePeopleScope(peopleScopeOverride, spec, fIcp || undefined)),
+    [peopleScopeOverride, spec, fIcp]
   );
   function toggleCo(id: string) {
     setCompanyChecked((s) => {
@@ -642,11 +672,25 @@ export default function ListPage() {
   // generated scope. The 0-result toast distinguishes "Apollo matched nothing" (loosen filters)
   // from "matched but all filtered out as dupes/exclusions" (`dropped`) so the cause is explainable.
   // Async (W4): kicks a background find job, polls it, then reloads. Rows land unscored.
+  // Multi-ICP: the find is ICP-scoped — the ICP filter picks whose targeting block runs (a single
+  // ICP is auto-picked). Mirrors the server 400 so the operator never hits an opaque error.
   async function runFindCompanies() {
+    const icpForFind = fIcp || (icpOptions.length === 1 ? icpOptions[0].id : "");
+    if (!icpForFind && icpOptions.length > 1) {
+      setIcpNeedsPick(true);
+      setTimeout(() => setIcpNeedsPick(false), 2200);
+      return toast(
+        "Pick an ICP in the filter first · Find Company searches one ICP's scope at a time",
+        "warn"
+      );
+    }
     setFindingCo(true);
     try {
+      // The override is per (client, ICP) — read the TARGET ICP's entry (icpForFind can be the
+      // auto-picked single ICP while the page filter still says "All ICPs").
+      const ov = loadScopeOverride(client, icpForFind || undefined);
       const job = await runScoringJob(
-        () => findCompaniesAsync(client, { icp_id: fIcp || null, ...(scopeOverride ?? {}) }),
+        () => findCompaniesAsync(client, { icp_id: icpForFind || null, ...(ov ?? {}) }),
         "Find companies"
       );
       if (!job) return;
@@ -792,22 +836,49 @@ export default function ListPage() {
   }
 
   // ---- Settings (find-company scope) handlers ----
+  // The modal edits ONE ICP's filters at a time (its own dropdown switches between them); each
+  // ICP's tuning is stored under its own (client, ICP) key and shadows only that ICP's AI block.
+  function seedScopeForm(icp: string) {
+    setScopeForm(
+      scopeToForm(
+        effectiveScope(loadScopeOverride(client, icp || undefined), spec, icp || undefined)
+      )
+    );
+  }
   function openScopeSettings() {
-    setScopeForm(scopeToForm(effectiveScope(scopeOverride, spec)));
+    // Default to the page's ICP pick (or the only/first ICP) so the form shows the scope the next
+    // ICP-scoped Find would actually run.
+    const icp = fIcp || icpOptions[0]?.id || "";
+    setScopeIcp(icp);
+    seedScopeForm(icp);
     setScopeOpen(true);
+  }
+  function switchScopeIcp(icp: string) {
+    // Switching ICP re-seeds the form from THAT ICP's saved override / AI block (unsaved edits to
+    // the previous ICP are discarded — Save first to keep them).
+    setScopeIcp(icp);
+    seedScopeForm(icp);
   }
   function saveScopeSettings() {
     if (!scopeForm) return;
     const ov = formToOverride(scopeForm);
+    saveScopeOverride(client, ov, scopeIcp || undefined);
     setScopeOverride(ov);
-    saveScopeOverride(client, ov);
+    // The next Find should target the ICP whose filters were just saved — sync the page filter.
+    if (scopeIcp && scopeIcp !== fIcp) setFIcp(scopeIcp);
     setScopeOpen(false);
-    toast("Search filters saved · used on the next Find");
+    const label = scopeIcp ? icpNameById.get(scopeIcp) : null;
+    toast(
+      label
+        ? `Search filters saved for ${label} · used on the next Find`
+        : "Search filters saved · used on the next Find"
+    );
   }
   function resetScopeSettings() {
-    setScopeOverride(null);
-    saveScopeOverride(client, null);
-    setScopeForm(scopeToForm(effectiveScope(null, spec)));
+    saveScopeOverride(client, null, scopeIcp || undefined);
+    if (scopeIcp) saveScopeOverride(client, null); // clear the legacy ICP-less entry too
+    setScopeOverride(loadScopeOverride(client, fIcp || undefined)); // resync the page's copy
+    seedScopeForm(scopeIcp);
     toast("Reverted to the AI-generated scope");
   }
 
@@ -957,7 +1028,9 @@ export default function ListPage() {
     }
   }
   function openPeopleScopeSettings() {
-    setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec)));
+    setPeopleScopeForm(
+      peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec, fIcp || undefined))
+    );
     setPplFacets(null);
     setPeopleScopeOpen(true);
     void loadPeopleFacets();
@@ -1003,7 +1076,9 @@ export default function ListPage() {
       if (clientRef.current !== client) return; // client switched mid-reset — drop the stale write
       setPeopleScopeOverride(null);
       qc.setQueryData(["people-scope-override", client], null); // sync the nav cache
-      setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec)));
+      setPeopleScopeForm(
+        peopleScopeToForm(effectivePeopleScope(null, spec, fIcp || undefined))
+      );
       toast("Reverted to the AI-generated person scope");
     } catch (e) {
       if (clientRef.current === client)
@@ -1261,6 +1336,30 @@ export default function ListPage() {
                   onChange={(e) => setCoSearch(e.target.value)}
                 />
               </div>
+              {icpOptions.length > 1 && (
+                <select
+                  className="select"
+                  value={fIcp}
+                  onChange={(e) => setFIcp(e.target.value)}
+                  title="Filter the list by ICP · Find Company searches the picked ICP's scope"
+                  style={
+                    icpNeedsPick
+                      ? {
+                          borderColor: "var(--warn)",
+                          boxShadow: "0 0 0 3px var(--warn-wash)",
+                          transition: "box-shadow 0.2s",
+                        }
+                      : undefined
+                  }
+                >
+                  <option value="">All ICPs</option>
+                  {icpOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <select
                 className="select"
                 value={coStatus}
@@ -1347,6 +1446,13 @@ export default function ListPage() {
                               ) : null}
                               <div className="nm">{c.name || c.domain}</div>
                               {c.country ? <div className="sub">{c.country}</div> : null}
+                              {c.icp_id && icpNameById.get(c.icp_id) ? (
+                                <div style={{ marginTop: 4 }}>
+                                  <span className="badge badge-neutral">
+                                    {icpNameById.get(c.icp_id)}
+                                  </span>
+                                </div>
+                              ) : null}
                             </div>
                           </div>
                         </td>
@@ -1403,7 +1509,9 @@ export default function ListPage() {
                   <br />
                   {coScopeSummary ? (
                     <>
-                      Active filters{scopeOverride ? " (custom)" : ""} · {coScopeSummary}.
+                      Active filters{scopeOverride ? " (custom)" : ""}
+                      {fIcp && icpNameById.get(fIcp) ? ` · ${icpNameById.get(fIcp)}` : ""} ·{" "}
+                      {coScopeSummary}.
                       <br />
                       Too few results? Widen them in ⚙ Settings, or + Add company manually.
                     </>
@@ -1509,6 +1617,21 @@ export default function ListPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
+              {icpOptions.length > 1 && (
+                <select
+                  className="select"
+                  value={fIcp}
+                  onChange={(e) => setFIcp(e.target.value)}
+                  title="Filter the Step-2 companies (and their people) by ICP"
+                >
+                  <option value="">All ICPs</option>
+                  {icpOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <select
                 className="select"
                 value={fStatus}
@@ -1618,6 +1741,11 @@ export default function ListPage() {
                             </span>
                             <span className="nm">{c.name || c.domain}</span>
                             {c.domain ? <span className="domain">{c.domain}</span> : null}
+                            {c.icp_id && icpNameById.get(c.icp_id) ? (
+                              <span className="badge badge-neutral">
+                                {icpNameById.get(c.icp_id)}
+                              </span>
+                            ) : null}
                           </div>
                         </td>
                       );
@@ -1889,7 +2017,7 @@ export default function ListPage() {
         className="modal-lg"
         onClose={() => setScopeOpen(false)}
         title="Find Companies · search filters"
-        subtitle="Apollo company-search filters, pre-filled from your AI scope · blank fields are dropped · saved per client for the next Find."
+        subtitle="Apollo company-search filters, pre-filled from the selected ICP's AI scope · blank fields are dropped · saved per ICP for the next Find."
         footer={
           <>
             <button
@@ -1911,9 +2039,31 @@ export default function ListPage() {
       >
         {scopeForm && (
           <>
-            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+            <div
+              className="row"
+              style={{ gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}
+            >
+              {icpOptions.length > 0 && (
+                <select
+                  className="select"
+                  value={scopeIcp}
+                  onChange={(e) => switchScopeIcp(e.target.value)}
+                  title="Switch which ICP's search filters you are viewing/editing · Save targets the next Find at this ICP"
+                >
+                  {icpOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      ICP · {o.label}
+                    </option>
+                  ))}
+                </select>
+              )}
               <span className="badge badge-neutral">search · apollo</span>
               <span className="badge badge-info">pre-filled from AI scope</span>
+              {icpOptions.length > 1 && (
+                <span className="ph-sub">
+                  switching ICP reloads that profile&rsquo;s filters · Save first to keep edits
+                </span>
+              )}
             </div>
             <SpecHead>Company search · firmographics</SpecHead>
             <div className="sourcing-cols">
@@ -1980,44 +2130,6 @@ export default function ListPage() {
                 value={scopeForm.hiringTitles}
                 onChange={(e) => setScopeForm({ ...scopeForm, hiringTitles: e.target.value })}
               />
-            </div>
-            <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr 1fr" }}>
-              <div className="field">
-                <label>Funded since</label>
-                <input
-                  className="input"
-                  type="date"
-                  value={scopeForm.fundedMin}
-                  onChange={(e) => setScopeForm({ ...scopeForm, fundedMin: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Funded until</label>
-                <input
-                  className="input"
-                  type="date"
-                  value={scopeForm.fundedMax}
-                  onChange={(e) => setScopeForm({ ...scopeForm, fundedMax: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Jobs posted since</label>
-                <input
-                  className="input"
-                  type="date"
-                  value={scopeForm.jobsMin}
-                  onChange={(e) => setScopeForm({ ...scopeForm, jobsMin: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Jobs posted until</label>
-                <input
-                  className="input"
-                  type="date"
-                  value={scopeForm.jobsMax}
-                  onChange={(e) => setScopeForm({ ...scopeForm, jobsMax: e.target.value })}
-                />
-              </div>
             </div>
           </>
         )}

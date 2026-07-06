@@ -1,24 +1,38 @@
-"""ResearchSpec v3 — the Apollo-mapped Brief→targeting contract + the LLM seam (B4/B6).
+"""ResearchSpec v4 — the per-ICP Apollo-mapped Brief→targeting contract + the LLM seam (B4/B6).
 
 Two halves with different stability profiles (see docs/initial-build-plan.md → Phase B):
-  * **The LLM emits targeting + ICP validation** — `company_search_params`,
-    `people_search_params`, `intent_filters`, `icp_validation`, `icp_suggestions`, `gaps` — via a
-    strict `json_schema` so the structure can't drift. It is fed the *whole* Brief + ICP documents
-    (no per-field plumbing → churn-proof prompt), plus `today` for recency-window math.
+  * **The LLM emits per-ICP targeting + ICP validation** — `icp_targeting` (ONE entry per input
+    ICP: `icp_id`/`icp_name` echoed + `company_search_params`/`people_search_params`/
+    `intent_filters`), plus brief-level `icp_validation`, `icp_suggestions`, `gaps` — via a strict
+    `json_schema` so the structure can't drift. It is fed the *whole* Brief + ICP documents
+    (no per-field plumbing → churn-proof prompt), plus `today` for date context.
   * **The credit policy is deterministic server config** (`CREDIT_POLICY`), merged in at save
     time — never LLM-inferred. Credit rules are policy, not judgment.
 
-The persisted spec = `{spec_version, company_search_params, people_search_params, intent_filters,
-icp_validation, credit_policy}`; `gaps` + `icp_suggestions` are stored in their own columns on the
-`ResearchSpec` row.
+The persisted spec = `{spec_version, icp_targeting, icp_validation, credit_policy}`; `gaps` +
+`icp_suggestions` are stored in their own columns on the `ResearchSpec` row.
 
-**v3 (Apollo-native, 2026-06-22):** the LLM now emits **exact Apollo request fields** by name
+**v5 (no intent date windows, 2026-07-06):** founder verdict — the funding/jobs-posted date
+ranges (`latest_funding_date_range`, `organization_job_posted_at_range`, `recency_window`) always
+over-constrained the company search, so they are removed from the contract entirely. The intent
+layer is now just the hiring-titles signal (`q_organization_job_titles`). `apollo_map` also stops
+forwarding the date fields from OLD stored specs, so they are dead everywhere, not just absent
+from new generations.
+
+**v4 (multi-ICP, 2026-07-06):** v3 forced ONE merged targeting block per tenant, so a second ICP
+was silently dropped or crashed the strict-schema validation. v4 makes "one block per ICP" the
+contract: `reconcile_icp_targeting` verifies every input ICP got a block (repairing echo typos by
+name), and `targeting_for_icp` resolves the block a find/score call should use — with a v3
+single-block fallback so pre-multi-ICP specs keep working until the next regenerate. No migration —
+`spec` is JSONB, append-only (same as the v2→v3 transition).
+
+**v3 (Apollo-native, 2026-06-22):** the LLM emits **exact Apollo request fields** by name
 (`q_organization_keyword_tags`, `organization_num_employees_ranges` comma-strings,
 `person_seniorities` enum, …) — no intermediate vocabulary to translate. `apollo_map` (Phase C)
 forwards them straight to `mixed_companies/search` / `mixed_people/api_search`. Buying signals live
 in a separate `intent_filters` block (funding date + hiring titles/dates). `icp_validation`
 characterizes the real paying customers (from the brief's `excludeCustomers` list) for the ICP-vs-
-reality check. No migration — `spec` is JSONB, append-only.
+reality check.
 """
 
 from __future__ import annotations
@@ -28,8 +42,8 @@ from datetime import date
 
 from pydantic import BaseModel, ConfigDict
 
-SPEC_VERSION = 3
-PROMPT_VERSION = "brief-structure-v5"
+SPEC_VERSION = 5  # v5 = v4 minus the intent DATE windows (funding/jobs-posted) — see below
+PROMPT_VERSION = "brief-structure-v7"
 PURPOSE = "brief_structure"
 
 # Apollo's fixed `person_seniorities` enum = the app's "Management Level" facet (the only accepted
@@ -191,10 +205,8 @@ def _obj(props: dict) -> dict:
 
 
 _INT_OR_NULL = {"type": ["integer", "null"]}
-_STR_OR_NULL = {"type": ["string", "null"]}
 _CONF = {"type": "string", "enum": ["low", "medium", "high"]}
 _MIN_MAX_INT = _obj({"min": _INT_OR_NULL, "max": _INT_OR_NULL})  # revenue_range
-_MIN_MAX_DATE = _obj({"min": _STR_OR_NULL, "max": _STR_OR_NULL})  # YYYY-MM-DD ranges
 
 # POST /api/v1/mixed_companies/search — the subset the model emits (fit firmographics).
 _COMPANY_SEARCH_PARAMS = _obj(
@@ -223,21 +235,14 @@ _PEOPLE_SEARCH_PARAMS = _obj(
     }
 )
 
-# Intent layer — buying signals as native Apollo recency filters (Job 2). Kept separate from fit:
-# both fit AND intent are required at search time.
+# Intent layer — the hiring buying-signal as a native Apollo filter (Job 2). Kept separate from
+# fit. v5 removed the funding/jobs-posted DATE windows entirely (they always over-constrained the
+# search — founder verdict 2026-07-06); hiring titles are the one intent signal that stays.
 _INTENT_FILTERS = _obj(
     {
         "company": _obj(
             {
-                "latest_funding_date_range": _MIN_MAX_DATE,  # closed funding window
                 "q_organization_job_titles": _arr_str(),  # hiring-signal roles
-                "organization_job_posted_at_range": _MIN_MAX_DATE,  # roles posted window
-            }
-        ),
-        "recency_window": _obj(
-            {
-                "funding_since": _STR_OR_NULL,  # echo of the funding lower bound
-                "jobs_posted_since": _STR_OR_NULL,  # echo of the jobs lower bound
             }
         ),
     }
@@ -269,6 +274,7 @@ _GAP_ITEM = _obj(
         "field": {"type": "string"},
         "why_it_matters": {"type": "string"},
         "ask": {"type": "string"},
+        "icp_name": {"type": "string"},  # the ICP the gap concerns; "" = whole-brief gap
     }
 )
 
@@ -287,14 +293,24 @@ _ICP_SUGGESTION_ITEM = _obj(
     }
 )
 
+# One per-ICP targeting entry (v4). `icp_id`/`icp_name` are echoed from the input ICP documents
+# so every block is attributable; `reconcile_icp_targeting` verifies the echo after the call.
+_ICP_TARGETING_ITEM = _obj(
+    {
+        "icp_id": {"type": "string"},
+        "icp_name": {"type": "string"},
+        "company_search_params": _COMPANY_SEARCH_PARAMS,
+        "people_search_params": _PEOPLE_SEARCH_PARAMS,
+        "intent_filters": _INTENT_FILTERS,
+    }
+)
+
 RESEARCH_SPEC_JSON_SCHEMA: dict = {
     "name": "ResearchSpec",
     "strict": True,
     "schema": _obj(
         {
-            "company_search_params": _COMPANY_SEARCH_PARAMS,
-            "people_search_params": _PEOPLE_SEARCH_PARAMS,
-            "intent_filters": _INTENT_FILTERS,
+            "icp_targeting": {"type": "array", "items": _ICP_TARGETING_ITEM},
             "icp_validation": _ICP_VALIDATION,
             "icp_suggestions": {"type": "array", "items": _ICP_SUGGESTION_ITEM},
             "gaps": {"type": "array", "items": _GAP_ITEM},
@@ -319,12 +335,6 @@ class MinMaxInt(BaseModel):
     max: int | None
 
 
-class MinMaxDate(BaseModel):
-    model_config = _STRICT
-    min: str | None
-    max: str | None
-
-
 class CompanySearchParams(BaseModel):
     model_config = _STRICT
     q_organization_keyword_tags: list[str]
@@ -344,21 +354,12 @@ class PeopleSearchParams(BaseModel):
 
 class IntentCompany(BaseModel):
     model_config = _STRICT
-    latest_funding_date_range: MinMaxDate
     q_organization_job_titles: list[str]
-    organization_job_posted_at_range: MinMaxDate
-
-
-class RecencyWindow(BaseModel):
-    model_config = _STRICT
-    funding_since: str | None
-    jobs_posted_since: str | None
 
 
 class IntentFilters(BaseModel):
     model_config = _STRICT
     company: IntentCompany
-    recency_window: RecencyWindow
 
 
 class CustomerProfile(BaseModel):
@@ -379,14 +380,15 @@ class IcpValidation(BaseModel):
     paying_customer_summary: str
 
 
-class GapV3(BaseModel):
+class GapV4(BaseModel):
     model_config = _STRICT
     field: str
     why_it_matters: str
     ask: str
+    icp_name: str  # "" = whole-brief gap
 
 
-class IcpSuggestionV3(BaseModel):
+class IcpSuggestionV4(BaseModel):
     model_config = _STRICT
     name: str
     rationale: str
@@ -396,16 +398,23 @@ class IcpSuggestionV3(BaseModel):
     people_search_params: PeopleSearchParams
 
 
-class ResearchSpecV3(BaseModel):
-    """Validates the LLM output — exactly as strict as the json_schema."""
-
+class IcpTargetingV4(BaseModel):
     model_config = _STRICT
+    icp_id: str
+    icp_name: str
     company_search_params: CompanySearchParams
     people_search_params: PeopleSearchParams
     intent_filters: IntentFilters
+
+
+class ResearchSpecV4(BaseModel):
+    """Validates the LLM output — exactly as strict as the json_schema."""
+
+    model_config = _STRICT
+    icp_targeting: list[IcpTargetingV4]
     icp_validation: IcpValidation
-    icp_suggestions: list[IcpSuggestionV3]
-    gaps: list[GapV3]
+    icp_suggestions: list[IcpSuggestionV4]
+    gaps: list[GapV4]
 
 
 # The default system prompt. Per client it's seeded into the DB as a `Prompt` row of
@@ -413,8 +422,8 @@ class ResearchSpecV3(BaseModel):
 # this constant is the runtime fallback (the Lambda bundle has no docs/) and the source of truth —
 # `test_research_spec.test_default_prompt_matches_seed_file` binds it to the .md so they can't drift.
 # The model returns the exact Apollo-field JSON shape embedded at the end of the prompt; strict
-# json_schema enforces it. `today` (injected by build_messages) drives the Job-2 recency math.
-DEFAULT_SYSTEM_PROMPT = """You are a B2B go-to-market analyst. From a client brief and ICP profiles you build Apollo API search parameters and validate the client's ICPs, and you return json. You emit ONE json object. Output json only — no prose, no markdown, no code fences, no preamble.
+# json_schema enforces it. `today` (injected by build_messages) is date context only since v5 dropped the date windows.
+DEFAULT_SYSTEM_PROMPT = """You are a B2B go-to-market analyst. From a client brief and ICP profiles you build Apollo API search parameters for EACH ICP separately and validate the client's ICPs, and you return json. You emit ONE json object. Output json only — no prose, no markdown, no code fences, no preamble.
 
 WEB SEARCH POLICY — read first, applies to the whole task.
 
@@ -429,23 +438,24 @@ THINKING POLICY: keep the reasoning trace short and task-bound. This is mostly d
 OUTPUT TARGET (exact Apollo fields — never invent field names)
 
 POST /api/v1/mixed_companies/search:
-q_organization_keyword_tags[] (industry/vertical lives HERE — there is NO industry-id field), organization_num_employees_ranges[] (comma-strings like "10,100"), organization_locations[] (HQ; lowercase country/US-state/city), organization_not_locations[], revenue_range[min]/revenue_range[max] (integers, no symbols/commas), currently_using_any_of_technology_uids[] (underscored), q_organization_name, organization_ids[], latest_funding_amount_range[min]/[max], total_funding_range[min]/[max], latest_funding_date_range[min]/[max] (YYYY-MM-DD), q_organization_job_titles[], organization_job_locations[], organization_num_jobs_range[min]/[max], organization_job_posted_at_range[min]/[max] (YYYY-MM-DD).
+q_organization_keyword_tags[] (industry/vertical lives HERE — there is NO industry-id field), organization_num_employees_ranges[] (comma-strings like "10,100"), organization_locations[] (HQ; lowercase country/US-state/city), organization_not_locations[], revenue_range[min]/revenue_range[max] (integers, no symbols/commas), currently_using_any_of_technology_uids[] (underscored), q_organization_name, organization_ids[], q_organization_job_titles[], organization_job_locations[]. Funding-date and job-posted-date window filters are NOT used in this system — never emit them.
 
 POST /api/v1/mixed_people/api_search:
 person_seniorities[] = Management Level (ENUM ONLY: owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern). person_department_or_subdepartments[] = Departments & Job Function (ENUM; 14 master departments: c_suite, product_management, master_engineering_technical, design, education, master_finance, master_human_resources, master_information_technology, master_legal, master_marketing, medical_health, master_operations, master_sales, consulting — each with finer subdepartments, e.g. master_sales→business_development/account_management/partnerships, master_marketing→demand_generation/product_marketing, master_finance→accounting/treasury; use a master for breadth or subdepartments for precision). q_keywords (industry/vertical for PEOPLE lives HERE — single string, NOT an array), organization_locations[] (employer HQ), organization_num_employees_ranges[]. DO NOT use person_titles or include_similar_titles — exact-title matching AND's to zero against any org whose people use different title wording; express the persona as Management Level × Department instead.
 
 Do NOT emit: enrichment, credits, email-status, page, per_page. The system sets those.
 
-JOB 1 — FIT TARGETING (no web)
-Map ICP firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Persona/titles -> map the BUYING-ROLE intent to person_seniorities[] (Management Level) AND person_department_or_subdepartments[] (Department/Job Function) — never person_titles. E.g. "Head of Sales / CCO / VP Revenue" -> seniorities [c_suite, vp, head, director] + departments [master_sales]; "Head of Marketing" -> [vp, head, director] + [master_marketing]; a founder-led SMB -> [owner, founder, c_suite] + the relevant department. Pick a master department for breadth, subdepartments for precision. Apollo AND's across facets and OR's within each, so keep each facet a SHORT list of the levels/functions that actually buy — over-listing one facet is fine (OR), but a needless second facet narrows (AND).
+PER-ICP STRUCTURE — the core output rule.
+The input carries an icps array. Emit EXACTLY ONE icp_targeting entry PER input ICP: echo that ICP's id into icp_id and its name into icp_name byte-for-byte as given. NEVER merge two ICPs into one entry, NEVER skip an ICP, NEVER invent an entry for an ICP not in the input. Each entry carries its own company_search_params, people_search_params and intent_filters built from THAT ICP (plus shared brief context). If the icps array is empty, emit exactly one entry derived from the brief alone with icp_id "" and icp_name "Brief-derived".
 
-JOB 2 — INTENT LAYER (no web). Separate intent_filters block. Fit AND intent both required.
+JOB 1 — FIT TARGETING, once per ICP (no web)
+For each ICP, map THAT ICP's firmographics to the fields above. Industry -> q_organization_keyword_tags[] (company) AND q_keywords (people). Employee count -> comma-string ranges. Geography -> lowercase canonical Apollo location strings. Persona/titles -> map the BUYING-ROLE intent to person_seniorities[] (Management Level) AND person_department_or_subdepartments[] (Department/Job Function) — never person_titles. E.g. "Head of Sales / CCO / VP Revenue" -> seniorities [c_suite, vp, head, director] + departments [master_sales]; "Head of Marketing" -> [vp, head, director] + [master_marketing]; a founder-led SMB -> [owner, founder, c_suite] + the relevant department. Pick a master department for breadth, subdepartments for precision. Apollo AND's across facets and OR's within each, so keep each facet a SHORT list of the levels/functions that actually buy — over-listing one facet is fine (OR), but a needless second facet narrows (AND). Two ICPs may legitimately produce very different params — that divergence is the point; do not average them.
+
+JOB 2 — INTENT LAYER, once per ICP (no web). Each icp_targeting entry carries its own intent_filters block with EXACTLY ONE field: q_organization_job_titles[]. The hiring signal usually comes from the brief and may be identical across entries — that is fine; tailor the titles to an ICP when a signal names roles specific to it.
 
 
-"Closed seed/A/B funding" -> latest_funding_date_range[min] = (today - 6 months), [max] = today.
-"Hiring sales/growth/commercial" -> q_organization_job_titles[] with those roles + organization_job_posted_at_range[min] = (today - 3 months).
-"New product / partner / deal" -> no native Apollo field. Approximate via the funding + hiring signals above; if Apollo cannot express the signal, OMIT it. Do NOT raise a gap for it and do NOT suggest external/non-Apollo tools (no BuiltWith / Crunchbase / news scraping). Do NOT web-search to satisfy this.
-Every intent filter needs a recency date computed from today. If today is absent, leave dates null and add a gaps entry.
+"Hiring sales/growth/commercial" -> q_organization_job_titles[] with those roles.
+Any other signal ("closed funding", "new product / partner / deal", ...) -> date/window filters are NOT used in this system. If a signal cannot be expressed as hiring job titles, OMIT it silently: do NOT emit funding or job-posted date ranges, do NOT raise a gap for it, and do NOT suggest external/non-Apollo tools (no BuiltWith / Crunchbase / news scraping). Do NOT web-search to satisfy this.
 
 
 JOB 3 — ICP VALIDATION (web allowed, gated)
@@ -458,14 +468,18 @@ Summarize the real paying-customer profile from the companies you resolved. Comp
 
 
 RULES
-Undeterminable field -> empty array or null, PLUS a gaps entry {field, why_it_matters, ask}. Gaps beat guesses. A gap may ONLY request client-supplied data that an Apollo field or ICP validation needs (e.g. excludeCustomers, a revenue band) — NEVER suggest external or non-Apollo tools/data sources, and NEVER raise a gap for a signal Apollo has no field for (omit it silently instead). Never invent facts. Industry goes to keyword_tags (company) / q_keywords (people) — never a made-up industry field. Propose at most ONE new ICP.
+Undeterminable field -> empty array or null, PLUS a gaps entry {field, why_it_matters, ask, icp_name} — icp_name is the name of the ICP the gap concerns, or "" when it concerns the whole brief. Gaps beat guesses. A gap may ONLY request client-supplied data that an Apollo field or ICP validation needs (e.g. excludeCustomers, a revenue band) — NEVER suggest external or non-Apollo tools/data sources, and NEVER raise a gap for a signal Apollo has no field for (omit it silently instead). Never invent facts. Industry goes to keyword_tags (company) / q_keywords (people) — never a made-up industry field. Propose at most ONE new ICP.
 
 FORMAT DISCIPLINE
-Wrong: json {...}   Wrong: Here are the parameters: {...}   Wrong: {"industry_tag_ids":[...]} (no such field)
+Wrong: json {...}   Wrong: Here are the parameters: {...}   Wrong: {"industry_tag_ids":[...]} (no such field)   Wrong: one merged icp_targeting entry for two ICPs
 Right: a single json object, first character {, matching the schema below, nothing before or after it.
 
 Return exactly this json shape:
 {
+"icp_targeting": [
+{
+"icp_id": "",
+"icp_name": "",
 "company_search_params": {
 "q_organization_keyword_tags": [],
 "organization_num_employees_ranges": [],
@@ -481,12 +495,11 @@ Return exactly this json shape:
 },
 "intent_filters": {
 "company": {
-"latest_funding_date_range": {"min": null, "max": null},
-"q_organization_job_titles": [],
-"organization_job_posted_at_range": {"min": null, "max": null}
-},
-"recency_window": {"funding_since": null, "jobs_posted_since": null}
-},
+"q_organization_job_titles": []
+}
+}
+}
+],
 "icp_validation": {
 "customer_profiles": [],
 "paying_customer_summary": ""
@@ -498,6 +511,7 @@ Return exactly this json shape:
 Notes on the schema:
 
 
+icp_targeting has EXACTLY one entry per input ICP (or the single "Brief-derived" entry when icps is empty), echoing id and name verbatim.
 customer_profiles entries (only when a customer list was processed): {name, domain, industry, employee_band, hq_country, business_model, source:"knowledge"|"web", confidence}.
 icp_suggestions entries (zero or one): {name, rationale, evidencing_customers, confidence, company_search_params{...}, people_search_params{...}}.
 When excludeCustomers is empty: customer_profiles is [], paying_customer_summary is "", icp_suggestions is [], and gaps names the missing list.
@@ -515,16 +529,16 @@ def build_messages(
     """Prompt the model with the WHOLE brief + ICP documents (+ `today`) — no per-field plumbing.
 
     `system_override` (a non-empty operator-saved system prompt) replaces the default; the user
-    message always carries the client's data (brief + ICPs) plus `today` (YYYY-MM-DD), which the
-    prompt's Job-2 recency math needs. `today` defaults to the server date so the preview and the
-    live worker stay in lockstep."""
+    message always carries the client's data (brief + ICPs) plus `today` (YYYY-MM-DD) as date
+    context. `today` defaults to the server date so the preview and the live worker stay in
+    lockstep."""
     system = (
         system_override if (system_override and system_override.strip()) else DEFAULT_SYSTEM_PROMPT
     )
     payload = {"today": today or date.today().isoformat(), "brief": brief_data, "icps": icps}
     user = (
-        "Build the Apollo search parameters and validate the ICPs from this brief and ICP set.\n\n"
-        + json.dumps(payload, ensure_ascii=False)
+        "Build the Apollo search parameters PER ICP (one icp_targeting entry each) and validate "
+        "the ICPs from this brief and ICP set.\n\n" + json.dumps(payload, ensure_ascii=False)
     )
     return [
         {"role": "system", "content": system},
@@ -535,18 +549,83 @@ def build_messages(
 def assemble_spec(targeting: dict) -> tuple[dict, list[dict], list[dict]]:
     """Split the validated LLM output into the persisted spec + gaps + icp_suggestions.
 
-    The spec carries the Apollo-bound params (company/people/intent) + the `icp_validation`
+    The spec carries the per-ICP Apollo-bound blocks (`icp_targeting`) + the `icp_validation`
     analysis + the deterministic server `credit_policy`. `gaps` and `icp_suggestions` are a
     learning/operator signal, NOT part of the Apollo contract, so they live in their own columns.
     """
     spec = {
         "spec_version": SPEC_VERSION,
-        "company_search_params": targeting["company_search_params"],
-        "people_search_params": targeting["people_search_params"],
-        "intent_filters": targeting["intent_filters"],
+        "icp_targeting": targeting["icp_targeting"],
         "icp_validation": targeting["icp_validation"],
         "credit_policy": CREDIT_POLICY,  # deterministic, server-set
     }
     gaps = targeting.get("gaps", [])
     icp_suggestions = targeting.get("icp_suggestions", [])
     return spec, gaps, icp_suggestions
+
+
+def targeting_for_icp(spec_blob: dict | None, icp_id) -> dict | None:
+    """Resolve the Apollo targeting block one find/score call should use — the ONE spec reader.
+
+    v4 (`icp_targeting` list): match `icp_id` by string compare. `icp_id=None` resolves only when
+    the spec has exactly one block (single-ICP convenience); a multi-block spec with no/unknown
+    `icp_id` returns None and the caller decides the 400 ("pick an ICP" / "regenerate"). An id
+    that matches no block also returns None — never silently hand back another ICP's targeting.
+    v3 and earlier (single top-level block): always returns that block, whatever the `icp_id`, so
+    pre-multi-ICP specs keep working until the next regenerate.
+    """
+    blob = spec_blob or {}
+    blocks = blob.get("icp_targeting")
+    if blocks is None:  # v3 fallback — the legacy single merged block
+        if not blob:
+            return None
+        return {
+            "company_search_params": blob.get("company_search_params") or {},
+            "people_search_params": blob.get("people_search_params") or {},
+            "intent_filters": blob.get("intent_filters") or {},
+        }
+    if not blocks:
+        return None
+    if icp_id is None:
+        return blocks[0] if len(blocks) == 1 else None
+    key = str(icp_id)
+    for b in blocks:
+        if str(b.get("icp_id")) == key:
+            return b
+    return None
+
+
+def reconcile_icp_targeting(
+    blocks: list[dict], expected: dict[str, str]
+) -> tuple[list[dict], str | None]:
+    """Post-validate the LLM's per-ICP blocks against the input ICP set → (repaired, error).
+
+    The model must emit one block per input ICP with `icp_id` echoed verbatim. An echo typo is
+    repaired by exact (case-insensitive) `icp_name` match; leftover unmatched blocks are dropped;
+    a still-missing ICP is a hard error naming the profile — the original multi-ICP bug (a
+    silently ignored second ICP) can never recur silently. Output order follows the input order.
+    With no input ICPs (`expected` empty, brief-only tenant) any non-empty list passes through.
+    """
+    if not expected:
+        return (blocks, None) if blocks else ([], "the model returned no targeting blocks")
+    by_id: dict[str, dict] = {}
+    unmatched: list[dict] = []
+    for b in blocks:
+        bid = str(b.get("icp_id") or "")
+        if bid in expected and bid not in by_id:
+            by_id[bid] = b
+        else:
+            unmatched.append(b)
+    for iid, name in expected.items():  # repair echo typos by name
+        if iid in by_id:
+            continue
+        for b in unmatched:
+            if (b.get("icp_name") or "").strip().lower() == (name or "").strip().lower():
+                b["icp_id"], b["icp_name"] = iid, name
+                by_id[iid] = b
+                unmatched.remove(b)
+                break
+    missing = [name or iid for iid, name in expected.items() if iid not in by_id]
+    if missing:
+        return [], "scope generation missed ICP(s): " + ", ".join(missing)
+    return [by_id[iid] for iid in expected], None

@@ -14,7 +14,6 @@ import {
 import type { Range } from "@/lib/workspace/types";
 import {
   FIT_CHIP,
-  dateRange,
   empBand,
   fmtGrowth,
   fmtRevenue,
@@ -257,6 +256,91 @@ export function LinkedInLink({ url }: { url?: string }) {
   );
 }
 
+// One per-ICP targeting block of the ResearchSpec (v4), or the v3 legacy single block (no
+// icp_id/icp_name). Exact Apollo request fields — see research_spec.py.
+type SpecTargetingBlock = {
+  icp_id?: string;
+  icp_name?: string;
+  company_search_params?: {
+    q_organization_keyword_tags?: string[];
+    organization_num_employees_ranges?: string[];
+    organization_locations?: string[];
+    revenue_range?: Range;
+  };
+  people_search_params?: {
+    person_seniorities?: string[];
+    person_department_or_subdepartments?: string[];
+    q_keywords?: string;
+    organization_locations?: string[];
+    organization_num_employees_ranges?: string[];
+  };
+  // v5: intent = hiring titles only (the funding/jobs-posted date windows were removed — they
+  // always over-constrained the search; old specs may still carry them but they're never shown
+  // or sent).
+  intent_filters?: {
+    company?: {
+      q_organization_job_titles?: string[];
+    };
+  };
+};
+
+// The three review grids (company / people / intent) for ONE targeting block. A v4 block is
+// headed by its ICP name (multi-ICP scopes render one group per profile); the v3 single block
+// keeps the original unnamed headings.
+function TargetingSections({ b }: { b: SpecTargetingBlock }) {
+  const cs = b.company_search_params ?? {};
+  const ppl = b.people_search_params ?? {};
+  const intent = b.intent_filters?.company ?? {};
+  const head = (label: string) => (b.icp_name ? `${b.icp_name} · ${label}` : label);
+  return (
+    <>
+      <SpecHead>{head("Company search · firmographics")}</SpecHead>
+      <div className="icp-grid">
+        <SpecCell label="Industry keyword tags">
+          <SpecChips items={cs.q_organization_keyword_tags} />
+        </SpecCell>
+        <SpecCell label="Company size">
+          <SpecChips items={(cs.organization_num_employees_ranges ?? []).map(empBand)} />
+        </SpecCell>
+        <SpecCell label="Locations (HQ)">
+          <SpecChips items={cs.organization_locations} />
+        </SpecCell>
+        <SpecCell label="Revenue (USD)">
+          <Val>{rangeText(cs.revenue_range, usd)}</Val>
+        </SpecCell>
+      </div>
+
+      <SpecHead>{head("People search · personas (Management Level × Department)")}</SpecHead>
+      <div className="icp-grid">
+        <SpecCell label="Management level">
+          <SpecChips items={(ppl.person_seniorities ?? []).map(humanizeFacet)} />
+        </SpecCell>
+        <SpecCell label="Departments &amp; job function">
+          <SpecChips
+            items={(ppl.person_department_or_subdepartments ?? []).map(humanizeFacet)}
+          />
+        </SpecCell>
+        <SpecCell label="Industry keywords">
+          <Val>{ppl.q_keywords}</Val>
+        </SpecCell>
+        <SpecCell label="Locations (HQ)">
+          <SpecChips items={ppl.organization_locations} />
+        </SpecCell>
+        <SpecCell label="Company size">
+          <SpecChips items={(ppl.organization_num_employees_ranges ?? []).map(empBand)} />
+        </SpecCell>
+      </div>
+
+      <SpecHead>{head("Intent signals · hiring")}</SpecHead>
+      <div className="icp-grid">
+        <SpecCell label="Hiring for">
+          <SpecChips items={intent.q_organization_job_titles} />
+        </SpecCell>
+      </div>
+    </>
+  );
+}
+
 // The LLM-generated ResearchSpec, rendered for operator review with existing classes only.
 // Always rendered: the Structure/Re-structure control lives in this panel's header, so the
 // first spec is generated from here too. Before any spec exists, an empty state is shown.
@@ -268,6 +352,7 @@ export function SpecReview({
   ready,
   onStructure,
   onAcceptIcp,
+  icps = [],
 }: {
   client: string;
   spec: ResearchSpecResult | null;
@@ -276,6 +361,9 @@ export function SpecReview({
   ready: boolean;
   onStructure: () => void;
   onAcceptIcp: (s: IcpSuggestion) => void;
+  // The client's ICP profiles (id + display name) — drives the panel's ICP filter even when the
+  // stored scope predates per-ICP generation (a legacy scope has no blocks to derive names from).
+  icps?: { id: string; name: string }[];
 }) {
   // Prompt popup: the System prompt (left) is editable + saved per client; the Input prompt
   // (right) is read-only — it is always the client brief + ICPs.
@@ -293,7 +381,9 @@ export function SpecReview({
     setPromptErr(null);
     setSaveMsg(null);
     try {
-      const p = await getScopingPrompt(client);
+      // The panel's ICP filter narrows the previewed INPUT to that profile (review lens only —
+      // the live Generate always sends every ICP).
+      const p = await getScopingPrompt(client, viewIcp || undefined);
       setPrompt(p);
       setSystemDraft(p.system);
       setIsCustom(p.system_is_custom);
@@ -318,32 +408,18 @@ export function SpecReview({
       setSavingPrompt(false);
     }
   }
-  // The full v3 ResearchSpec shape — exact Apollo request fields, rendered field-by-field so the
-  // operator can review every parameter the LLM produced before Phase C's Apollo search (see
-  // research_spec.py). `intent_filters` carries buying signals; `icp_validation` the paying-customer
-  // read; `credit_policy` is server-set, not AI.
+  // The ResearchSpec shape — exact Apollo request fields, rendered field-by-field so the operator
+  // can review every parameter the LLM produced before Phase C's Apollo search (see
+  // research_spec.py). v4 carries `icp_targeting` (ONE block per ICP — rendered as one section
+  // group per profile); a v3 spec's single top-level block renders as one unnamed group until the
+  // next regenerate. `icp_validation` is the paying-customer read; `credit_policy` is server-set,
+  // not AI.
   const s = (spec?.spec ?? {}) as {
-    company_search_params?: {
-      q_organization_keyword_tags?: string[];
-      organization_num_employees_ranges?: string[];
-      organization_locations?: string[];
-      revenue_range?: Range;
-    };
-    people_search_params?: {
-      person_seniorities?: string[];
-      person_department_or_subdepartments?: string[];
-      q_keywords?: string;
-      organization_locations?: string[];
-      organization_num_employees_ranges?: string[];
-    };
-    intent_filters?: {
-      company?: {
-        latest_funding_date_range?: { min?: string | null; max?: string | null };
-        q_organization_job_titles?: string[];
-        organization_job_posted_at_range?: { min?: string | null; max?: string | null };
-      };
-      recency_window?: { funding_since?: string | null; jobs_posted_since?: string | null };
-    };
+    icp_targeting?: SpecTargetingBlock[];
+    // v3 legacy — single top-level block
+    company_search_params?: SpecTargetingBlock["company_search_params"];
+    people_search_params?: SpecTargetingBlock["people_search_params"];
+    intent_filters?: SpecTargetingBlock["intent_filters"];
     icp_validation?: {
       customer_profiles?: {
         name?: string;
@@ -364,10 +440,39 @@ export function SpecReview({
       max_people?: number;
     };
   };
-  const cs = s.company_search_params ?? {};
-  const ppl = s.people_search_params ?? {};
-  const intent = s.intent_filters?.company ?? {};
-  const recency = s.intent_filters?.recency_window ?? {};
+  // v4 → one section group per ICP block; v3 → the single merged block as one unnamed group.
+  const blocks: SpecTargetingBlock[] = s.icp_targeting?.length
+    ? s.icp_targeting
+    : [
+        {
+          company_search_params: s.company_search_params,
+          people_search_params: s.people_search_params,
+          intent_filters: s.intent_filters,
+        },
+      ];
+  // Multi-ICP review filter: pick one ICP profile or view all. Options come from the client's
+  // live ICP list (so the filter shows even over a legacy pre-multi-ICP scope), with the blocks'
+  // own echoed names as fallback when the caller passes none.
+  const [viewIcp, setViewIcp] = useState("");
+  const isPerIcp = Boolean(s.icp_targeting?.length);
+  const blockNames = new Map(
+    blocks
+      .filter((b) => b.icp_id && b.icp_name)
+      .map((b) => [b.icp_id as string, b.icp_name as string])
+  );
+  const icpOptions = icps.length
+    ? icps
+    : [...blockNames].map(([id, name]) => ({ id, name }));
+  const icpLabel = (id: string) =>
+    icps.find((o) => o.id === id)?.name ?? blockNames.get(id) ?? "ICP";
+  // What the sections show for the current selection:
+  //  · All ICPs → every block (a v3 scope's single merged block reads as one unnamed group)
+  //  · one ICP × v4 → that ICP's block, or a "no scope yet · regenerate" callout when missing
+  //  · one ICP × v3 → the merged block + a "legacy scope, applies to all ICPs" callout
+  const matched = viewIcp && isPerIcp ? blocks.filter((b) => (b.icp_id ?? "") === viewIcp) : blocks;
+  const shownBlocks = matched;
+  const missingIcpScope = Boolean(viewIcp) && isPerIcp && matched.length === 0;
+  const legacyScopeNote = Boolean(viewIcp) && !isPerIcp;
   const val = s.icp_validation ?? {};
   const profiles = val.customer_profiles ?? [];
   const cp = s.credit_policy ?? {};
@@ -382,9 +487,46 @@ export function SpecReview({
             Complete all 6 sections of the brief first. We summarize the full brief to source
             prospects.
           </div>
+          {/* Per-ICP coverage at a glance: which profiles the CURRENT scope covers (✓), which
+              were added after the last generation (needs a regenerate), or — for a legacy
+              pre-multi-ICP scope — that one merged scope still applies to every profile. */}
+          {spec && icpOptions.length > 0 && (
+            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {icpOptions.map((o) =>
+                !isPerIcp ? (
+                  <span key={o.id} className="badge badge-warn">
+                    {o.name} · merged scope
+                  </span>
+                ) : blockNames.has(o.id) ? (
+                  <span key={o.id} className="badge badge-ok">
+                    {o.name} ✓
+                  </span>
+                ) : (
+                  <span key={o.id} className="badge badge-warn">
+                    {o.name} · no scope yet
+                  </span>
+                )
+              )}
+            </div>
+          )}
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
           <div className="row" style={{ gap: 8 }}>
+            {icpOptions.length > 1 && (
+              <select
+                className="select"
+                value={viewIcp}
+                onChange={(e) => setViewIcp(e.target.value)}
+                title="Review the generated scope (and the View-prompt input) for one ICP profile, or all"
+              >
+                <option value="">All ICPs</option>
+                {icpOptions.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.name}
+                  </option>
+                ))}
+              </select>
+            )}
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -435,61 +577,27 @@ export function SpecReview({
         </div>
       ) : (
         <div className="panel-pad">
-          <SpecHead>Company search · firmographics</SpecHead>
-          <div className="icp-grid">
-            <SpecCell label="Industry keyword tags">
-              <SpecChips items={cs.q_organization_keyword_tags} />
-            </SpecCell>
-            <SpecCell label="Company size">
-              <SpecChips items={(cs.organization_num_employees_ranges ?? []).map(empBand)} />
-            </SpecCell>
-            <SpecCell label="Locations (HQ)">
-              <SpecChips items={cs.organization_locations} />
-            </SpecCell>
-            <SpecCell label="Revenue (USD)">
-              <Val>{rangeText(cs.revenue_range, usd)}</Val>
-            </SpecCell>
-          </div>
-
-          <SpecHead>People search · personas (Management Level × Department)</SpecHead>
-          <div className="icp-grid">
-            <SpecCell label="Management level">
-              <SpecChips items={(ppl.person_seniorities ?? []).map(humanizeFacet)} />
-            </SpecCell>
-            <SpecCell label="Departments &amp; job function">
-              <SpecChips
-                items={(ppl.person_department_or_subdepartments ?? []).map(humanizeFacet)}
-              />
-            </SpecCell>
-            <SpecCell label="Industry keywords">
-              <Val>{ppl.q_keywords}</Val>
-            </SpecCell>
-            <SpecCell label="Locations (HQ)">
-              <SpecChips items={ppl.organization_locations} />
-            </SpecCell>
-            <SpecCell label="Company size">
-              <SpecChips items={(ppl.organization_num_employees_ranges ?? []).map(empBand)} />
-            </SpecCell>
-          </div>
-
-          <SpecHead>Intent signals · funding &amp; hiring</SpecHead>
-          <div className="icp-grid">
-            <SpecCell label="Funding closed">
-              <Val>{dateRange(intent.latest_funding_date_range)}</Val>
-            </SpecCell>
-            <SpecCell label="Funding since">
-              <Val>{recency.funding_since}</Val>
-            </SpecCell>
-            <SpecCell label="Hiring for">
-              <SpecChips items={intent.q_organization_job_titles} />
-            </SpecCell>
-            <SpecCell label="Roles posted">
-              <Val>{dateRange(intent.organization_job_posted_at_range)}</Val>
-            </SpecCell>
-            <SpecCell label="Jobs posted since">
-              <Val>{recency.jobs_posted_since}</Val>
-            </SpecCell>
-          </div>
+          {legacyScopeNote && (
+            <div className="brief-callout">
+              <span className="ci">!</span>
+              <div>
+                <strong>This scope predates per-ICP generation</strong> — it was built from all
+                ICPs merged, so the same scope applies to {icpLabel(viewIcp)} and every other
+                profile. Click Regenerate Scope to generate one scope per ICP.
+              </div>
+            </div>
+          )}
+          {missingIcpScope ? (
+            <div className="brief-callout">
+              <span className="ci">!</span>
+              <div>
+                <strong>No scope for {icpLabel(viewIcp)} yet</strong> — this profile was added
+                after the last generation. Click Regenerate Scope to include it.
+              </div>
+            </div>
+          ) : (
+            shownBlocks.map((b, i) => <TargetingSections key={b.icp_id || i} b={b} />)
+          )}
 
           <SpecHead>ICP validation · who actually pays</SpecHead>
           <div className="icp-grid">
@@ -551,7 +659,8 @@ export function SpecReview({
                 <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
                   {spec.gaps.map((g, i) => (
                     <li key={i}>
-                      <strong>{g.field}</strong> — {g.ask}
+                      <strong>{g.field}</strong>
+                      {g.icp_name ? ` · ${g.icp_name}` : ""} — {g.ask}
                     </li>
                   ))}
                 </ul>
@@ -635,6 +744,9 @@ export function SpecReview({
               <span className="badge badge-info">model · {prompt.model.join(" → ")}</span>
               <span className="badge badge-neutral">purpose · {prompt.purpose}</span>
               <span className="badge badge-neutral">{prompt.prompt_version}</span>
+              <span className={"badge badge-" + (viewIcp ? "warn" : "neutral")}>
+                input · {viewIcp ? icpLabel(viewIcp) : "all ICPs"}
+              </span>
             </div>
             <div className="prompt-cols">
               {/* LEFT — System prompt: editable + Save (adjust for testing; saved per client). */}
@@ -665,11 +777,14 @@ export function SpecReview({
                   onChange={(e) => setSystemDraft(e.target.value)}
                 />
               </div>
-              {/* RIGHT — Input prompt: read-only, always the client brief + ICPs. */}
+              {/* RIGHT — Input prompt: read-only, the client brief + the ICP set selected in the
+                  panel's ICP filter (narrowed = review lens; the live run sends every ICP). */}
               <div className="prompt-col">
                 <div className="prompt-col-head">
                   <label>Input prompt</label>
-                  <span className="ph-sub">read-only · from client brief</span>
+                  <span className="ph-sub">
+                    read-only · brief + {viewIcp ? `${icpLabel(viewIcp)} only` : "all ICPs"}
+                  </span>
                 </div>
                 <pre className="prompt-pre">{prompt.user}</pre>
               </div>
@@ -677,6 +792,9 @@ export function SpecReview({
             <div className="ph-sub prompt-hint">
               Edits are saved for this client and used on the next Generate Scope. Save the default
               text to reset.
+              {viewIcp
+                ? ` · Input shown for ${icpLabel(viewIcp)} only — the live Generate always sends every ICP and returns one scope per ICP.`
+                : ""}
             </div>
           </>
         ) : null}

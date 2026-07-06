@@ -8,6 +8,8 @@ can only ever reach their own client's brief.
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -94,19 +96,29 @@ def _spec_out(row: ResearchSpec) -> ResearchSpecOut:
 
 @router.get("/{client}/brief/structure/preview", response_model=ScopingPromptOut)
 def preview_structure_prompt(
+    icp_id: str | None = None,
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> ScopingPromptOut:
     """The exact system + input prompt `POST /brief/structure` would send — no LLM call, no spend.
 
     Built from the same `build_messages(brief, icps)` the live call uses, so the prompt-preview
-    popup always mirrors what actually reaches the model.
+    popup mirrors what actually reaches the model. `icp_id` narrows the input's ICP set to ONE
+    profile for review (the panel's ICP filter); the live run always sends every ICP — the
+    narrowed preview is a review lens, not a different call. A malformed/unknown id previews an
+    empty ICP set rather than erroring (it's a read-only popup).
     """
     brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
     saved = latest_system_prompt(db, ctx.tenant.id)
+    icp = None
+    if icp_id:
+        try:
+            icp = uuid.UUID(icp_id)
+        except ValueError:
+            icp = None
     messages = build_messages(
         brief.data if brief else {},
-        icp_docs(db, ctx.tenant.id),
+        icp_docs(db, ctx.tenant.id, icp),
         system_override=saved.body if saved else None,
     )
     by_role = {m["role"]: m["content"] for m in messages}

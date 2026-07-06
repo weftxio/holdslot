@@ -72,3 +72,44 @@ def test_spec_drops_credit_policy_keeps_search_params():
     assert "credit_policy" not in out
     assert out["company_search_params"] == {"a": 1}
     assert out["people_search_params"] == {"b": 2}
+
+
+_V4_SPEC = {
+    "spec_version": 4,
+    "icp_targeting": [
+        {
+            "icp_id": "icp-a",
+            "icp_name": "Insurers",
+            "company_search_params": {"a": 1},
+            "people_search_params": {"b": 2},
+            "intent_filters": {"c": 3},
+        },
+        {
+            "icp_id": "icp-b",
+            "icp_name": "Brokers",
+            "company_search_params": {"a": 9},
+            "people_search_params": {"b": 8},
+            "intent_filters": {"c": 7},
+        },
+    ],
+    "icp_validation": {"paying_customer_summary": "s"},
+    "credit_policy": {"max_companies": 500},
+}
+
+
+def test_v4_spec_slices_to_the_rows_own_icp_block():
+    # The scorer sees ONLY the scored row's ICP block, flattened to the single-block shape the
+    # rubrics already read — never the other ICPs' params.
+    out = _trim_spec_for_scoring(_V4_SPEC, "icp-b")
+    assert "credit_policy" not in out and "icp_targeting" not in out
+    assert out["company_search_params"] == {"a": 9}
+    assert out["people_search_params"] == {"b": 8}
+    assert out["intent_filters"] == {"c": 7}
+    assert out["icp_validation"] == {"paying_customer_summary": "s"}
+
+
+def test_v4_spec_unresolvable_icp_falls_back_to_whole_spec():
+    # A multi-ICP spec scored for an unlabeled row keeps the full (union) context, minus policy.
+    out = _trim_spec_for_scoring(_V4_SPEC, None)
+    assert "credit_policy" not in out
+    assert len(out["icp_targeting"]) == 2

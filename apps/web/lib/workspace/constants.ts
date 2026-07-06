@@ -377,21 +377,27 @@ export const EXCL_TEXT_KEY: Record<
 export const MAX_CSV_BYTES = 1_000_000; // 1 MB
 export const MAX_CSV_ROWS = 5000;
 
-const SCOPE_KEY = (client: string) => `holdslot_scope_${client}`;
-export function loadScopeOverride(client: string): ScopeOverride | null {
+// The Step-1 manual scope override is stored per (client, ICP): each ICP's Find Settings tuning
+// shadows only that ICP's AI block. The un-suffixed key is the legacy/ICP-less entry — still read
+// as a fallback so a pre-multi-ICP saved override keeps working.
+const SCOPE_KEY = (client: string, icpId?: string) =>
+  icpId ? `holdslot_scope_${client}:${icpId}` : `holdslot_scope_${client}`;
+export function loadScopeOverride(client: string, icpId?: string): ScopeOverride | null {
   if (typeof window === "undefined") return null;
   try {
-    const v = JSON.parse(localStorage.getItem(SCOPE_KEY(client)) || "null");
-    return v && typeof v === "object" ? (v as ScopeOverride) : null;
+    const v = JSON.parse(localStorage.getItem(SCOPE_KEY(client, icpId)) || "null");
+    if (v && typeof v === "object") return v as ScopeOverride;
+    if (icpId) return loadScopeOverride(client); // legacy ICP-less override as fallback
+    return null;
   } catch {
     return null;
   }
 }
-export function saveScopeOverride(client: string, v: ScopeOverride | null) {
+export function saveScopeOverride(client: string, v: ScopeOverride | null, icpId?: string) {
   if (typeof window === "undefined") return;
   try {
-    if (v) localStorage.setItem(SCOPE_KEY(client), JSON.stringify(v));
-    else localStorage.removeItem(SCOPE_KEY(client));
+    if (v) localStorage.setItem(SCOPE_KEY(client, icpId), JSON.stringify(v));
+    else localStorage.removeItem(SCOPE_KEY(client, icpId));
   } catch {
     /* ignore */
   }
@@ -408,13 +414,33 @@ const semiToArr = (s: string) =>
     .filter(Boolean);
 const arrToCsv = (a: unknown) => (Array.isArray(a) ? (a as string[]).join(", ") : "");
 
-// The scope find-company would use right now: the manual override if set, else the AI spec's blocks.
+// Resolve the AI spec's targeting block for display/settings seeding. A v4 spec carries one block
+// per ICP (`icp_targeting`) — `icpId` picks it, falling back to the first block so a summary is
+// never blank; a v3 spec's single top-level block passes through unchanged. Display-side only:
+// the server's strict per-ICP resolution (400 on ambiguity) lives in targeting_for_icp.
+function specTargetingBlock(
+  spec: ResearchSpecResult | null,
+  icpId?: string
+): Record<string, unknown> {
+  const sp = (spec?.spec ?? {}) as Record<string, unknown>;
+  const blocks = sp.icp_targeting as Record<string, unknown>[] | undefined;
+  if (!blocks?.length) return sp; // v3 (or no spec) — top-level block shape
+  if (icpId) {
+    const hit = blocks.find((b) => b.icp_id === icpId);
+    if (hit) return hit;
+  }
+  return blocks[0];
+}
+
+// The scope find-company would use right now: the manual override if set, else the AI spec's
+// blocks (the `icpId` ICP's own block on a v4 multi-ICP spec).
 export function effectiveScope(
   override: ScopeOverride | null,
-  spec: ResearchSpecResult | null
+  spec: ResearchSpecResult | null,
+  icpId?: string
 ): ScopeOverride {
   if (override) return override;
-  const sp = (spec?.spec ?? {}) as {
+  const sp = specTargetingBlock(spec, icpId) as {
     company_search_params?: Record<string, unknown>;
     intent_filters?: Record<string, unknown>;
   };
@@ -430,11 +456,6 @@ export function scopeToForm(o: ScopeOverride): ScopeForm {
     unknown
   >;
   const rev = (cs.revenue_range ?? {}) as { min?: number | null; max?: number | null };
-  const fund = (c.latest_funding_date_range ?? {}) as { min?: string | null; max?: string | null };
-  const jobs = (c.organization_job_posted_at_range ?? {}) as {
-    min?: string | null;
-    max?: string | null;
-  };
   return {
     keywords: arrToCsv(cs.q_organization_keyword_tags),
     sizes: Array.isArray(cs.organization_num_employees_ranges)
@@ -444,13 +465,11 @@ export function scopeToForm(o: ScopeOverride): ScopeForm {
     revenueMin: rev.min != null ? String(rev.min) : "",
     revenueMax: rev.max != null ? String(rev.max) : "",
     hiringTitles: arrToCsv(c.q_organization_job_titles),
-    fundedMin: fund.min ?? "",
-    fundedMax: fund.max ?? "",
-    jobsMin: jobs.min ?? "",
-    jobsMax: jobs.max ?? "",
   };
 }
 export function formToOverride(f: ScopeForm): ScopeOverride {
+  // No date windows here by design (spec v5): a stale saved override may still carry them, but
+  // the server-side mapper drops them unconditionally, and a re-save through this form sheds them.
   return {
     company_search_params: {
       q_organization_keyword_tags: csvToArr(f.keywords),
@@ -464,8 +483,6 @@ export function formToOverride(f: ScopeForm): ScopeOverride {
     intent_filters: {
       company: {
         q_organization_job_titles: csvToArr(f.hiringTitles),
-        latest_funding_date_range: { min: f.fundedMin || null, max: f.fundedMax || null },
-        organization_job_posted_at_range: { min: f.jobsMin || null, max: f.jobsMax || null },
       },
     },
   };
@@ -478,21 +495,14 @@ export function scopeSummary(o: ScopeOverride): string {
     unknown
   >;
   const arr = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
-  const fund = (c.latest_funding_date_range ?? {}) as { min?: string | null; max?: string | null };
-  const jobs = (c.organization_job_posted_at_range ?? {}) as {
-    min?: string | null;
-    max?: string | null;
-  };
   const parts: string[] = [];
   if (arr(cs.organization_locations).length) parts.push(arr(cs.organization_locations).join("/"));
   if (arr(cs.q_organization_keyword_tags).length)
     parts.push(arr(cs.q_organization_keyword_tags).join("/"));
   if (arr(cs.organization_num_employees_ranges).length)
     parts.push(`size ${arr(cs.organization_num_employees_ranges).join(", ")}`);
-  if (fund.min || fund.max) parts.push("recently funded");
   if (arr(c.q_organization_job_titles).length)
     parts.push(`hiring ${arr(c.q_organization_job_titles).join("/")}`);
-  if (jobs.min || jobs.max) parts.push("recent job posts");
   return parts.join(" · ");
 }
 
@@ -520,10 +530,13 @@ export const SENIORITY_OPTIONS: { value: string; label: string }[] = [
 // entry shadowing the AI scope. Load/save/reset go through the API (get/put/deletePeopleScopeOverride).
 export function effectivePeopleScope(
   override: PeopleScopeOverride | null,
-  spec: ResearchSpecResult | null
+  spec: ResearchSpecResult | null,
+  icpId?: string
 ): PeopleScopeOverride {
   if (override) return override;
-  const sp = (spec?.spec ?? {}) as { people_search_params?: Record<string, unknown> };
+  const sp = specTargetingBlock(spec, icpId) as {
+    people_search_params?: Record<string, unknown>;
+  };
   return { people_search_params: sp.people_search_params ?? {} };
 }
 const _arr = (v: unknown): string[] => (Array.isArray(v) ? (v as string[]) : []);
