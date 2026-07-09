@@ -63,7 +63,15 @@ MODEL_PURPOSE = "company_model"
 # Apollo's fields get wrong — `hq_country` (spec §5: HQ from the description, not the field) and
 # `has_b2b_line` (the Luma guard: a B2C-tagged firm with a B2B line is `Both`, never gated).
 MODEL_PROMPT_VERSION = "company-model-v2"
-CLASSIFY_MODELS = ["deepseek/deepseek-v4-pro"]
+# Flash, not Pro (switched 2026-07-10 after a live A/B — model_compare.py). Over all 239 dogfood
+# companies Flash matched Pro's B2B/B2C on 90.8% and — the metric that matters — agreed on the
+# market-GATE outcome (keep vs exclude) 94.6%, erring only toward `keep` (recoverable: a wrongly-
+# kept row just scores low_fit at stage 1) with a single debatable false-exclusion. hq_country was
+# noisier (71%) but flipped ZERO geo-gate outcomes (Apollo's field_country backstops it) and
+# has_b2b_line no longer gates (Luma guard removed). Flash is 21× cheaper + 2.3× faster on this
+# per-find call, and takes no web search so there's no drift confound. Company SCORING stays on Pro
+# (SCORE_MODELS) — that A/B showed Flash under-rates strong leads; only this classifier switched.
+CLASSIFY_MODELS = ["deepseek/deepseek-v4-flash"]
 CLASSIFY_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
 
 # The rubric's sub-criteria → their max points (the deterministic caps). Mirrors §2 of the
@@ -476,19 +484,24 @@ def build_model_messages(company: dict) -> list[dict]:
     ]
 
 
-def classify_business_model(*, tenant_id, company: dict) -> dict:
+def classify_business_model(
+    *, tenant_id, company: dict, models: list[str] | None = None
+) -> dict:
     """Stage-0 — classify a company's B2B/B2C `business_model` + description-derived `hq_country` +
     `has_b2b_line` in one minimal call. Returns those three plus `{llm_call_id, model, cost_usd}`;
     raises `LlmError` on a non-ok call (telemetry already persisted). Client-independent, so it
     takes no rubric/targeting — the caller applies the v2 rules against the brief's config
-    separately (labeling.rules_gate). `hq_country`/`has_b2b_line` feed the v2 geo + Luma rules."""
+    separately (labeling.rules_gate). `hq_country`/`has_b2b_line` feed the v2 geo + Luma rules.
+
+    `models` overrides `CLASSIFY_MODELS` for the one-off Pro-vs-Flash A/B (model_compare.py);
+    production leaves it None and gets the locked Pro list."""
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=MODEL_PURPOSE,
         messages=build_model_messages(company),
         schema=BUSINESS_MODEL_SCHEMA,
         prompt_version=MODEL_PROMPT_VERSION,
-        models=CLASSIFY_MODELS,
+        models=models or CLASSIFY_MODELS,
         extra_body=CLASSIFY_EXTRA_BODY,
     )
     business_model = result.data.get("business_model") or "Unknown"
@@ -643,10 +656,17 @@ def build_company_score_v2_messages(rubric_body: str, company: dict, targeting: 
         "growth)?\n"
         "  • `reachability` — can we reach the buyer (founder-led small team=5 … 1000+ "
         "layered=1)?\n\n"
-        "ICP MATCH — read the DESCRIPTION, not the `industries` field (it is often wrong). Compare "
-        "against the ICP definitions in the targeting context. Set `icp_match.icp` to \"A\", "
-        "\"B\", or \"none\", and `icp_match.clause` to the one-clause why. No match → the server "
-        "marks it `wrong vertical`.\n\n"
+        "ICP MATCH — the targeting context's `icps` lists MULTIPLE profiles, each with its own "
+        "`name` (\"ICP A\", \"ICP B\", …) and industry set; they are DIFFERENT businesses (e.g. "
+        "A = insurtech / insurance / healthtech / wellness; B = B2B professional services — "
+        "executive search, recruiting, IT services, corporate services, agencies, consultancies). "
+        "Test the company against EACH profile's industries + persona in turn and match the FIRST "
+        "it fits — read the company DESCRIPTION, not the `industries` field (often wrong; e.g. a "
+        "recruiting or IT-services firm tagged \"information technology\" still fits ICP B). Set "
+        "`icp_match.icp` to the matching profile's letter (the letter in its `name`: \"ICP A\" → "
+        "\"A\", \"ICP B\" → \"B\"); use \"none\" ONLY when it fits NEITHER — do NOT default to "
+        "ICP A. `icp_match.clause` = the one-clause why. No match → the server marks it "
+        "`wrong vertical`.\n\n"
         "`reason` — ONE short client-facing sentence, no number, matching the verdict; for a match "
         "write \"fits ICP A — <clause>\". `trigger_line` — the single most compelling in-market "
         "hook to open a cold email with (or \"\" if none). `flags` — emit any that apply: "
@@ -700,18 +720,23 @@ def build_prospect_score_v2_messages(
     ]
 
 
-def company_score_v2(*, tenant_id, rubric_body: str, company: dict, targeting: dict) -> dict:
+def company_score_v2(
+    *, tenant_id, rubric_body: str, company: dict, targeting: dict, models: list[str] | None = None
+) -> dict:
     """Stage-1 v2 — the web-grounded liveness + 4-axis score call. Returns the normalized paid
     signals for `labeling.assign_label` (NOT a final label): `{liveness, subscores, icp_match,
     reason, trigger_line, flags, llm_call_id, model, cost_usd}`. Raises `LlmError` on a non-ok call.
-    Runs on the async path only (SCORE_V2_TIMEOUT ≫ the 30s gateway)."""
+    Runs on the async path only (SCORE_V2_TIMEOUT ≫ the 30s gateway).
+
+    `models` overrides `SCORE_MODELS` for a one-off routing experiment (the Pro-vs-Flash A/B — see
+    domains/prospects/model_compare.py); production leaves it None and gets the locked Pro list."""
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=COMPANY_SCORE_PURPOSE,
         messages=build_company_score_v2_messages(rubric_body, company, targeting),
         schema=COMPANY_SCORE_V2_SCHEMA,
         prompt_version=SCORE_RUBRIC_VERSION,
-        models=SCORE_MODELS,
+        models=models or SCORE_MODELS,
         extra_body=COMPANY_SCORE_V2_EXTRA_BODY,
         timeout=SCORE_V2_TIMEOUT,
     )
