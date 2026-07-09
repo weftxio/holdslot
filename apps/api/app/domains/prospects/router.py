@@ -110,6 +110,13 @@ _PEOPLE_FACETS_CACHE = TTLCache(ttl_seconds=300)
 COMPANY_STAGE = "company_fit"
 PROSPECT_STAGE = "prospect_fit"
 _VALID_STAGES = (COMPANY_STAGE, PROSPECT_STAGE)
+# Scoring v2 cutover: the "Fit rubric" modal keeps these FE-facing tokens (API compatibility), but
+# they now read / preview / save the ACTIVE v2 score rubrics — so the modal shows and edits exactly
+# what the live scorer uses (`company_score_v2` / `prospect_score_v2`), not the retired v1 rubric.
+_RUBRIC_STAGE = {
+    COMPANY_STAGE: fit.COMPANY_SCORE_STAGE,
+    PROSPECT_STAGE: fit.PROSPECT_SCORE_STAGE,
+}
 
 # Sync-budget caps. Find/enrich run synchronously behind the 30s API-Gateway HTTP-API cap, and each
 # scored row is one blocking LLM call — so a single request must bound how many it does. Larger sets
@@ -1751,19 +1758,19 @@ def _company_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPro
             .first()
         )
     brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
-    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
+    rubric = _latest_doc(db, tenant_id, fit.COMPANY_SCORE_STAGE)
     rubric_body = rubric.body if rubric else ""
     icp_id = company.icp_id if company else None
     targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id), icp_id)
     payload = _company_payload(company) if company else {}
-    msgs = fit.build_company_messages(rubric_body, payload, targeting)
+    msgs = fit.build_company_score_v2_messages(rubric_body, payload, targeting)
     by_role = {m["role"]: m["content"] for m in msgs}
     return FitPromptOut(
         system=by_role.get("system", ""),
         user=by_role.get("user", ""),
         company=(company.name or company.domain) if company else None,
-        model=list(fit.FIT_MODELS),
-        purpose=fit.COMPANY_PURPOSE,
+        model=list(fit.SCORE_MODELS),
+        purpose=fit.COMPANY_SCORE_PURPOSE,
         prompt_version=f"v{rubric.version}" if rubric else "—",
     )
 
@@ -1800,12 +1807,15 @@ def _prospect_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPr
             )
         ).scalar_one_or_none()
     brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
-    rubric = _latest_doc(db, tenant_id, PROSPECT_STAGE)
+    rubric = _latest_doc(db, tenant_id, fit.PROSPECT_SCORE_STAGE)
     rubric_body = rubric.body if rubric else ""
     icp_id = prospect.icp_id if prospect else None
     targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id), icp_id)
     payload = _prospect_payload(prospect.enrichment, company) if prospect else {}
-    by_role = {m["role"]: m["content"] for m in fit.build_messages(rubric_body, payload, targeting)}
+    by_role = {
+        m["role"]: m["content"]
+        for m in fit.build_prospect_score_v2_messages(rubric_body, payload, targeting)
+    }
     sample = (prospect.enrichment or {}).get("full_name") or (
         (prospect.enrichment or {}).get("company") if prospect else None
     )
@@ -1813,8 +1823,8 @@ def _prospect_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPr
         system=by_role.get("system", ""),
         user=by_role.get("user", ""),
         company=sample or None,
-        model=list(fit.FIT_MODELS),
-        purpose=fit.PURPOSE,
+        model=list(fit.SCORE_MODELS),
+        purpose=fit.PROSPECT_SCORE_PURPOSE,
         prompt_version=f"v{rubric.version}" if rubric else "—",
     )
 
@@ -2300,10 +2310,10 @@ def get_sourcing_docs(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> SourcingDocList:
-    """The two editable fit rubrics: `company_fit` (Step 1) and `prospect_fit` (Step 2)."""
+    """The two editable fit rubrics — the v2 score rubrics served under the Step-1/Step-2 tokens."""
     return SourcingDocList(
-        company_fit=_doc_out(_latest_doc(db, ctx.tenant.id, COMPANY_STAGE)),
-        prospect_fit=_doc_out(_latest_doc(db, ctx.tenant.id, PROSPECT_STAGE)),
+        company_fit=_doc_out(_latest_doc(db, ctx.tenant.id, fit.COMPANY_SCORE_STAGE)),
+        prospect_fit=_doc_out(_latest_doc(db, ctx.tenant.id, fit.PROSPECT_SCORE_STAGE)),
     )
 
 
@@ -2316,10 +2326,11 @@ def save_sourcing_doc(
     """Append-only — save the founder's fit-rubric edit as the next version."""
     if body.stage not in _VALID_STAGES:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown prompt stage")
-    latest = _latest_doc(db, ctx.tenant.id, body.stage)
+    save_stage = _RUBRIC_STAGE[body.stage]  # the FE token → the active v2 rubric stage it edits
+    latest = _latest_doc(db, ctx.tenant.id, save_stage)
     doc = Prompt(
         tenant_id=ctx.tenant.id,
-        stage=body.stage,
+        stage=save_stage,
         version=(latest.version + 1) if latest else 1,
         body=body.body,
     )

@@ -868,6 +868,10 @@ export default function ListPage() {
     }
     toast(`Scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
     rescoringCoRef.current = true;
+    // Clear the selection once the batch is dispatched — the rows now track progress via
+    // `scoringCoIds` ("Scoring…"), and the tick-list is freed for the next batch. `ids` is already
+    // captured, so the in-flight job is unaffected.
+    setCompanyChecked(new Set());
     void scoreCompaniesJob(ids).finally(() => {
       rescoringCoRef.current = false;
     });
@@ -1152,6 +1156,9 @@ export default function ListPage() {
     }
     toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
     rescoringPplRef.current = true;
+    // Clear the selection once dispatched — rows track progress via `scoringPersonIds`; `picked` is
+    // already captured so the in-flight job is unaffected. Frees the tick-list for the next batch.
+    setChecked(new Set());
     void scorePeopleJob(picked.map((p) => ({ id: p.id, key: p.identity_key }))).finally(() => {
       rescoringPplRef.current = false;
     });
