@@ -51,13 +51,16 @@ def test_market_rule_excludes_b2c_for_b2b_client():
     assert v.reason == "rule: B2B only"
 
 
-def test_luma_guard_b2c_with_b2b_line_not_excluded():
-    """Spec §5: a B2C-tagged firm with a real B2B line is `Both` — never market-gated."""
+def test_b2c_with_b2b_line_still_excluded_for_b2b_client():
+    """Founder 2026-07-10 — the Luma guard is removed: a B2C-tagged firm is excluded for a strict
+    B2B client even with a secondary B2B line (has_b2b_line=True). Ruled out at step 1, before any
+    paid score (Aegis / Mothership)."""
     v = assign_label(
-        business_model="B2C", has_b2b_line=True, hq_country="Thailand",
-        industry="Insurance", name="Luma Health", config=RULES,
+        business_model="B2C", has_b2b_line=True, hq_country="Singapore",
+        industry="Insurance", name="Aegis Organization", config=RULES,
     )
-    assert v.label != "excluded_by_rules"
+    assert v.label == "excluded_by_rules"
+    assert v.reason == "rule: B2B only"
 
 
 def test_complex_treated_as_b2b():
@@ -68,15 +71,28 @@ def test_complex_treated_as_b2b():
     assert v.label != "excluded_by_rules"  # Complex is not B2C → market rule never fires
 
 
-def test_geography_rule_uses_description_country_and_flags_mismatch():
-    """Gateway Search — Apollo field says Singapore, description says Pennsylvania (spec §5)."""
+def test_geography_in_target_by_apollo_field_not_excluded():
+    """Founder 2026-07-09 — the geo-filtered Apollo search returned this row as HQ'd in Singapore,
+    so it must NOT be geo-excluded just because the description names a founding country (US).
+    Apollo's field is authoritative for the geo rule; the description mismatch only raises the
+    hq_mismatch flag. (Altered Security, ArkTalents, Ceffu … — the wrongly-excluded APAC rows.)"""
     v = assign_label(
         business_model="B2B", hq_country="United States", field_country="Singapore",
-        industry="Executive search", name="Gateway Search", config=RULES,
+        industry="Executive search", name="Altered Security", config=RULES,
+    )
+    assert v.label != "excluded_by_rules"
+    assert "hq_mismatch" in v.flags
+
+
+def test_geography_rule_excludes_when_no_known_country_in_target():
+    """Excluded only when EVERY known country is out of target — both the description HQ and the
+    Apollo field say a non-target country."""
+    v = assign_label(
+        business_model="B2B", hq_country="United States", field_country="United Kingdom",
+        industry="Executive search", name="Faraway Co", config=RULES,
     )
     assert v.label == "excluded_by_rules"
     assert v.reason == "rule: outside target geography"
-    assert "hq_mismatch" in v.flags
 
 
 def test_client_exclusion_rule_by_name_and_domain():
@@ -211,8 +227,10 @@ VERIFIED_ROWS = [
         ),
     },
     {
-        "name": "Luma Health", "expect": ("contact_soon", "A"),
-        # B2C-tagged but has a group-insurance B2B line → the Luma guard keeps it in.
+        # Deviation from spec §12 (founder 2026-07-10): the Luma guard is removed, so a B2C-tagged
+        # insurer is ruled out at step 1 even with a group-insurance B2B line — a strict-B2B client
+        # does not want primarily-consumer companies scored. (Spec §12 had this as contact_soon.)
+        "name": "Luma Health", "expect": ("excluded_by_rules", None),
         "kw": dict(
             business_model="B2C", has_b2b_line=True, hq_country="Thailand", industry="Insurance",
             icp_match={"icp": "A", "reason": "fits ICP A — group insurance for companies/NGOs"},

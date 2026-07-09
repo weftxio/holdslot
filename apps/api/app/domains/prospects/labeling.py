@@ -121,14 +121,18 @@ def _norm(s: str | None) -> str:
 
 
 def _effective_market(business_model: str | None, has_b2b_line: bool) -> str:
-    """The market side to gate on (spec §5): `Complex` is not B2C → treat as B2B; a B2C-tagged
-    company with a confirmed B2B line is `Both` → never gated (the Luma guard). B2B/B2C/Unknown/""
-    pass through; only a strict B2B/B2C opposite of the client's rule excludes."""
+    """The market side to gate on (spec §5): `Complex` (serves both by design — marketplaces /
+    platforms) is not B2C → treat as B2B. B2B/B2C/Unknown/"" pass through; only a strict B2B/B2C
+    opposite of the client's rule excludes.
+
+    Founder 2026-07-10: the former B2C-with-a-B2B-line → `Both` carve-out (the "Luma guard") is
+    REMOVED. A strict-B2B client wants EVERY B2C-classified company (even a consumer insurer with a
+    secondary group line, e.g. Aegis) ruled out at step 1, before any paid score — a secondary B2B
+    line no longer rescues a primarily-B2C company. `has_b2b_line` is still classified + stored for
+    reference, just no longer consulted here."""
     m = (business_model or "").strip()
     if m == "Complex":
         return "B2B"
-    if m == "B2C" and has_b2b_line:
-        return "Both"
     return m
 
 
@@ -201,19 +205,27 @@ def rules_gate(
     business_model: str | None,
     has_b2b_line: bool,
     hq_country: str | None,
+    field_country: str | None = None,
     name: str | None,
     domain: str | None,
     config: RulesConfig,
 ) -> tuple[str, str] | None:
     """Spec §5 — the client-defined rules: market (with the Luma B2B-line guard + Complex→B2B),
-    geography (description-derived country ∉ target list; only when a country is known — a null
-    country falls to the data check), and the client exclusion list."""
+    geography, and the client exclusion list.
+
+    Geography is checked against BOTH the description-derived `hq_country` AND Apollo's
+    `field_country` HQ field: the company search was geo-filtered, so Apollo's country is
+    authoritative even when the description names a founding/parent country elsewhere (e.g. an
+    India-founded firm HQ'd in Singapore — Apollo says Singapore, the description says India). A row
+    is excluded only when at least one country is known and NONE of the known countries is in the
+    target set (fail-open — a null country falls through to the data check)."""
     market = _effective_market(business_model, has_b2b_line)
     if config.market in ("B2B", "B2C") and market in ("B2B", "B2C") and market != config.market:
         return EXCLUDED, REASON_RULE_MARKET[config.market]
-    if hq_country and config.geographies:
+    if config.geographies:
         allowed = {_norm(g) for g in config.geographies}
-        if _norm(hq_country) not in allowed:
+        candidates = [c for c in (hq_country, field_country) if c and c.strip()]
+        if candidates and not any(_norm(c) in allowed for c in candidates):
             return EXCLUDED, REASON_RULE_GEO
     if config.excluded_names and _norm(name) in config.excluded_names:
         return EXCLUDED, REASON_RULE_EXCLUSION
@@ -330,7 +342,8 @@ def assign_label(
         liveness_gate(liveness),
         rules_gate(
             business_model=business_model, has_b2b_line=has_b2b_line,
-            hq_country=eff_country, name=name, domain=domain, config=config,
+            hq_country=hq_country, field_country=field_country,
+            name=name, domain=domain, config=config,
         ),
         data_gate(industry=industry, hq_country=eff_country, website=website),
         size_gate(headcount=headcount, size_ceiling=size_ceiling, flags=flags),

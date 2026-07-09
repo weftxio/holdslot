@@ -2,6 +2,7 @@
 
 from app.domains.prospects.router import (
     _SCORING_BRIEF_FIELDS,
+    _icp_letter,
     _trim_brief_for_scoring,
     _trim_spec_for_scoring,
 )
@@ -59,6 +60,17 @@ def test_pii_and_operational_dropped():
         "excludeDeals",
     ):
         assert dropped not in trimmed
+
+
+def test_icp_letter_maps_name_to_score_letter():
+    # The scorer emits icp_match.icp = "A"/"B"; re-tagging maps it back via the ICP's name.
+    assert _icp_letter("ICP A") == "A"
+    assert _icp_letter("ICP B") == "B"
+    assert _icp_letter("icp b") == "B"
+    # No single-letter tag → no re-tag (find-time icp_id is left untouched).
+    assert _icp_letter("Insurtech") is None
+    assert _icp_letter("") is None
+    assert _icp_letter(None) is None
 
 
 def test_spec_drops_credit_policy_keeps_search_params():

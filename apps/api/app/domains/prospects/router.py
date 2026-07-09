@@ -597,6 +597,13 @@ def _apply_company_verdict(
     c.fit_components = comps
 
 
+def _icp_letter(name: str | None) -> str | None:
+    """The A/B letter from an ICP profile's `name` ("ICP A" → "A"); None if it carries no single-
+    letter tag. Maps the scorer's `icp_match.icp` ("A"/"B") back to the ICP row it belongs to."""
+    tok = (name or "").strip().rsplit(" ", 1)[-1].upper()
+    return tok if tok in ("A", "B") else None
+
+
 def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
     """v2 rescore (spec §3): deterministic gates on every row → the paid web score on survivors →
     persist the `Verdict`. Records one `research_run` for cost; returns `{scored, failed, cost}`.
@@ -606,15 +613,22 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
     rubric_body = rubric.body if rubric else ""
     config = _rules_config(brief, spec)
     ceiling = labeling.size_ceiling_from_spec(spec.spec if spec else {})
-    targeting_cache: dict[str | None, dict] = {}
-
-    def _targeting_for(icp_id) -> dict:
-        key = str(icp_id) if icp_id else None
-        if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(
-                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
-            )
-        return targeting_cache[key]
+    # The scorer judges each row against the FULL ICP set and picks the ICP itself (`icp_match.icp`
+    # = A / B / none — spec §7: one company pool, the model assigns the ICP). So targeting carries
+    # EVERY ICP profile, NOT the row's find-time `icp_id`. Narrowing to one ICP was the wrong-
+    # vertical bug: a professional-services firm sourced under ICP A never saw the ICP-B definition,
+    # so the model called it "not insurtech → wrong vertical". Built once, client-wide, per row.
+    all_icps = icp_docs(db, tenant_id)
+    company_targeting = _build_targeting(brief, spec, all_icps, None)
+    # Letter → ICP row id ("ICP A" → "A"), so a row whose model-matched ICP differs from its find-
+    # time icp_id is re-tagged to the matched ICP — Step-2 people-search then uses that ICP's
+    # personas (ICP B's Founder/MD, not ICP A's Head of Growth/Sales). Only the score pass can
+    # re-tag: it is the one place an ICP is judged.
+    icp_by_letter = {
+        letter: d.get("id")
+        for d in all_icps
+        if (letter := _icp_letter(d.get("name")))
+    }
 
     # Pass 1 — free deterministic gates. A caught row (excluded_by_rules / low_fit) is labeled now
     # and never web-checked; a survivor (label None) goes to the paid pass.
@@ -631,7 +645,7 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
         (
             c,
             (
-                lambda payload=_company_payload(c), targeting=_targeting_for(c.icp_id): (
+                lambda payload=_company_payload(c), targeting=company_targeting: (
                     fit.company_score_v2(
                         tenant_id=tenant_id,
                         rubric_body=rubric_body,
@@ -658,6 +672,11 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
             extra_flags=signals["flags"],
         )
         _apply_company_verdict(c, v, signals=signals)
+        # Re-tag to the ICP the model matched (spec §7: the model assigns the ICP). A no-match
+        # (`icp` None → wrong vertical) leaves the find-time tag untouched.
+        matched = icp_by_letter.get((signals["icp_match"] or {}).get("icp"))
+        if matched and str(matched) != str(c.icp_id):
+            c.icp_id = uuid.UUID(matched) if isinstance(matched, str) else matched
         cost += float(signals.get("cost_usd") or 0.0)
         web_scored += 1
 
@@ -1760,8 +1779,9 @@ def _company_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPro
     brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
     rubric = _latest_doc(db, tenant_id, fit.COMPANY_SCORE_STAGE)
     rubric_body = rubric.body if rubric else ""
-    icp_id = company.icp_id if company else None
-    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp_id), icp_id)
+    # Mirror live company scoring: the FULL ICP set (the model picks A / B / none), not the row's
+    # find-time icp_id — so the modal shows exactly the context the scorer receives.
+    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id), None)
     payload = _company_payload(company) if company else {}
     msgs = fit.build_company_score_v2_messages(rubric_body, payload, targeting)
     by_role = {m["role"]: m["content"] for m in msgs}
