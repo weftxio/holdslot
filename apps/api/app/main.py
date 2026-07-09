@@ -174,14 +174,6 @@ def handler(event, context):
         # The shared event key carries a sub-kind; route to the matching worker (structuring vs.
         # the W4 scoring jobs), each running OFF the 30s gateway path.
         kind = event.get(JOB_EVENT_KEY)
-        # One-off model A/B: READ-ONLY, returns the comparison inline for a RequestResponse invoke
-        # (domains/prospects/model_compare.py). Direct-invoke only — never enqueued.
-        from app.domains.prospects.model_compare import JOB_MODEL_COMPARE
-
-        if kind == JOB_MODEL_COMPARE:
-            from app.domains.prospects.model_compare import run_compare
-
-            return run_compare(event)
         from app.domains.briefs.structuring import handle_job_event as handle_structuring
         from app.domains.prospects.scoring import (
             JOB_PROSPECT_SCORING,

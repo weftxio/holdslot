@@ -465,11 +465,33 @@ globally-label-ranked index scan.
 
 ---
 
+## Model selection — Pro vs Flash live A/B (2026-07-10) · ✅ classifier switched · ⛔ scorer held
+
+Both v2 LLM calls were A/B'd `deepseek-v4-pro` (the locked model) vs `deepseek-v4-flash` on the dogfood
+tenant via a **read-only in-Lambda harness** — it ran the *exact* production path with one model swapped and
+never persisted a verdict (the OpenRouter key is Lambda-only, so a local script can't make the call; the
+harness was direct-invoked off the auth path, diffed against stored baselines, then removed once the
+decision was recorded here — git-recoverable at `eaf7060:apps/api/app/domains/prospects/model_compare.py`).
+**Split verdict — the two calls have opposite cost/reliability trade-offs:**
+
+| Call | Verdict | Evidence |
+|---|---|---|
+| **`classify_business_model`** (stage-0, web-free, coarse 4-way label) | **✅ SWITCHED to Flash** — live, Lambda **v74** | 239-row run, **no web-drift confound** (inputs are static): **90.8% exact** `business_model` and — the metric that matters — **94.6% market-GATE-outcome** agreement (keep vs exclude). Errors are **safe-direction**: 12 recoverable false-*includes* (a wrongly-kept row just scores `low_fit` at stage 1) vs 1 debatable false-exclude. `hq_country` noisier (71% raw match) but flipped **0/239 geo gates** — Apollo `field_country` backstops it; `has_b2b_line` gates nothing (Luma guard already removed). Flash **21× cheaper** ($0.000063 vs $0.001348/call) + **2.3× faster** (1.7s vs 4.0s). |
+| **`company_score_v2`** (paid, web-grounded, 4-axis ranking) | **⛔ KEEP Pro** | 66-row run: 82% label agreement, score MAE 1.52 (Flash biases ~0.45 lower). A fresh-Pro control on the 12 flips split them **5 web-drift / 7 real model-divergence** — Flash under-rates strong 18–20 rows and once collapsed to all-1s (talentusgroup, Δ−10 = a reliability gap). Flash is 3.3× cheaper / 2.6× faster, but the saving is **cents** per call. |
+
+**Why they split — the decision rule:** switch the call whose errors are *recoverable* and whose inputs are
+*cheap + static* (the classifier — accuracy parity + 21× savings ⇒ switch); hold the call whose errors are
+*terminal* (a downgraded strong lead is never contacted). At HoldSlot's **$500/qualified-meeting** unit
+economics, reliability on the paid ranking call outranks a cent-level model saving, so the scorer stays on
+Pro. Re-run this A/B whenever the model list changes.
+
+---
+
 ## Locked context you MUST carry (non-obvious; carry into every phase)
 
 | Topic | Rule |
 |---|---|
-| **OpenRouter HK geo-block** | OpenAI / Anthropic / Google providers return **403 ToS** for this account (Hong Kong), account-wide. **Route every LLM call to non-US providers only** (DeepSeek / Qwen / Mistral; Llama dropped 2026-06-22). Scoping = `deepseek/deepseek-v4-pro` (thinking + web-search, ~55–76s) on the **async** path — exceeds the 30s API-GW sync cap. Fit scoring = `deepseek/deepseek-v4-pro` **thinking OFF** on both stages (`company_fit` + `prospect_fit`; A/B'd 2026-07 — the trace was ~98% of output and drove the timeouts) at `temperature=0`; still runs in the **background** via `scoring_job` (never on the find request). |
+| **OpenRouter HK geo-block** | OpenAI / Anthropic / Google providers return **403 ToS** for this account (Hong Kong), account-wide. **Route every LLM call to non-US providers only** (DeepSeek / Qwen / Mistral; Llama dropped 2026-06-22). Scoping = `deepseek/deepseek-v4-pro` (thinking + web-search, ~55–76s) on the **async** path — exceeds the 30s API-GW sync cap. Fit scoring = `deepseek/deepseek-v4-pro` **thinking OFF** on both stages (`company_fit` + `prospect_fit`; A/B'd 2026-07 — the trace was ~98% of output and drove the timeouts) at `temperature=0`; still runs in the **background** via `scoring_job` (never on the find request). **Stage-0 `classify_business_model` = `deepseek/deepseek-v4-flash`** (switched 2026-07-10 after a live A/B — see §Model selection; the paid scorer stays on Pro). |
 | **Apollo credits** | **BOTH searches are FREE — 0 credits** (founder Apollo-dashboard confirm 2026-07-08; the public "charged per page" pricing doc does NOT apply to this Professional + master-key account). **`people/match` (enrich) = the ONLY spend: 1 cr/email** (8/phone, `PHONE_ENABLED=false`), human-gated at Gate 2. So find-width is **not** credit-bound — it's bound by **sync find-path latency** (stage-0 classify + company-enrich run synchronously at find, vs the 30s API-GW cap); widening past ~25 needs the find path to go async (D+ Stage 1b). Never `people/match` before Gate 2; suppression/exclusions are DB-side. |
 | **Apollo API levers (verified vs OpenAPI spec 2026-07-08)** | **No exclusion params** except `organization_not_locations` + `currently_not_using_any_of_technology_uids` (no exclude-by-id/keyword/industry/title) → negative signal recycles pipeline-side (D+ Stage 3). `person_titles[]` is fuzzy by default — `include_similar_titles=false` = strict (D+ Stage 2). `person_department_or_subdepartments` is **not in the documented API** — live-verify (D+ Stage 1). Canonical tech vocabulary: `auth/supported_technologies_csv` (D+ Stage 4). Org-search responses carry `pagination.total_entries` + `breadcrumbs` — the probe loop's feedback signal (D+ Stage 1). |
 | **2nd data source** | **Skipped (2026-07-08)** until **AroundDeal offers monthly API pricing** (API today = Enterprise-only ~$10k; 11-provider vetting found no self-serve Apollo-like APAC search API). FullEnrich $69/mo = enrich-only door later. See §Phase B/C refinement (2). |
