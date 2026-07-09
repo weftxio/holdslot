@@ -30,12 +30,14 @@ from app.domains.briefs.schemas import (
     ResearchSpecList,
     ResearchSpecOut,
     ScopingPromptOut,
+    StructureIn,
     SystemPromptIn,
     SystemPromptOut,
 )
 from app.domains.briefs.structuring import (
     STAGE_BRIEFING,
     enqueue_structuring,
+    keyword_yield_for,
     latest_job,
     latest_system_prompt,
 )
@@ -120,6 +122,10 @@ def preview_structure_prompt(
         brief.data if brief else {},
         icp_docs(db, ctx.tenant.id, icp),
         system_override=saved.body if saved else None,
+        keyword_yield=keyword_yield_for(db, ctx.tenant.id),  # Stage 4 — DB-only yield scoreboard
+        # Stage 4 customer_anchors is deliberately OMITTED here: it requires a live Apollo enrich
+        # (a spend), and this preview is contractually no-spend. The keyword-yield block is the
+        # Stage-4 "feedback block" the operator reviews; anchors ground only the live worker run.
     )
     by_role = {m["role"]: m["content"] for m in messages}
     # "Custom" = the stored prompt diverges from the seeded code default (the seed itself reads as
@@ -179,6 +185,7 @@ def _job_out(job: ResearchJob | None) -> ResearchJobOut:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def structure_brief(
+    body: StructureIn | None = None,
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> ResearchJobOut:
@@ -188,12 +195,16 @@ def structure_brief(
     Gateway sync cap — so the LLM call runs on a background worker and the client polls
     `GET /brief/structure/status` until `done`/`error`. A still-running job is returned as-is, so
     a double-click never double-spends. (B6, async — see domains/briefs/structuring.py.)
+
+    `body.icp_ids` (optional) restricts the run to those ICP profiles — the worker regenerates only
+    their targeting and splices it into the latest spec; empty/omitted scopes every ICP.
     """
     brief = db.execute(select(Brief).where(Brief.tenant_id == ctx.tenant.id)).scalar_one_or_none()
     if brief is None or completeness(brief.data) == 0:
         # Don't enqueue a (billed) LLM call for an empty brief.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "fill in the brief before structuring")
-    return _job_out(enqueue_structuring(db, ctx.tenant.id))
+    icp_ids = body.icp_ids if body else None
+    return _job_out(enqueue_structuring(db, ctx.tenant.id, icp_ids))
 
 
 @router.get("/{client}/brief/structure/status", response_model=ResearchJobOut)

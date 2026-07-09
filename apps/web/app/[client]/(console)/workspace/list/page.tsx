@@ -1,11 +1,12 @@
 "use client";
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import clsx from "clsx";
 import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
+import { FindHistoryDrawer } from "@/components/workspace/FindHistoryDrawer";
 import {
   type CompanyApi,
   type FacetOption,
@@ -24,7 +25,6 @@ import {
   findCompaniesAsync,
   findLookalikesAsync,
   findPeople,
-  getBrief,
   getFitPrompt,
   getPeopleDepartments,
   getPeopleScopeOverride,
@@ -43,7 +43,7 @@ import {
   selectCompanies,
   updateCompanyFieldsAsync,
 } from "@/lib/api";
-import type { ScoringJobApi } from "@/lib/api";
+import type { ScoreLabel, ScoringJobApi } from "@/lib/api";
 import type {
   Icp,
   PeopleScopeForm,
@@ -52,20 +52,27 @@ import type {
   ScopeOverride,
 } from "@/lib/workspace/types";
 import {
+  BUCKET_HEAD,
+  BUCKET_ORDER,
+  COLLAPSED_LABELS,
+  COMPANY_AXES,
   ENRICHED_STATUS,
   NEEDS_ENRICH,
+  PROSPECT_AXES,
   SENIORITY_OPTIONS,
   SOURCE_CLS,
   SOURCE_LABEL,
   STATUS_LABEL,
+  UNSCORED_LABEL,
   apiToIcp,
   businessModelChip,
   clearScoring,
-  compareProspectRows,
+  compareByLabel,
   effectivePeopleScope,
   effectiveScope,
   formToOverride,
   formToPeopleOverride,
+  groupByLabel,
   humanizeFacet,
   loadScopeOverride,
   peopleScopeSummary,
@@ -76,15 +83,35 @@ import {
 } from "@/lib/workspace/constants";
 import {
   CompanyStudy,
-  FitScore,
+  FlagMarker,
+  LabelChip,
   LinkedInLink,
   SpecHead,
+  SubscoreBar,
   WebLink,
 } from "@/components/workspace";
 
-// Sentinel for the Step-1 fit filter's "Pending · unscored" option — a value that can't collide
-// with a real fit_tier (Strong/Good/Moderate/Below), so the predicate can special-case it.
-const UNSCORED_FIT = "__unscored";
+// The two collapsed footnote buckets as a plain string set — COLLAPSED_LABELS is typed to
+// ScoreLabel, but the bucket keys include the "unscored" (null-label) group, so membership is
+// tested against strings.
+const COLLAPSED_KEYS = new Set<string>(COLLAPSED_LABELS);
+// Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection;
+// a `low_fit` row can be selected but only behind an explicit confirm. Returns whether the toggle
+// may proceed. Deselecting is always allowed; only *adding* a gated row is challenged.
+function maySelect(label: ScoreLabel | null, currentlyChecked: boolean): boolean {
+  if (currentlyChecked) return true;
+  if (label === "excluded_by_rules") return false;
+  if (label === "low_fit") {
+    return window.confirm("This scored Low fit. Add it to the selection anyway?");
+  }
+  return true;
+}
+// A row that select-all may bulk-tick: never a gated (excluded / low_fit) row — those are selected
+// one at a time (excluded never; low_fit behind the confirm above).
+const isBulkSelectable = (label: ScoreLabel | null) =>
+  label !== "excluded_by_rules" && label !== "low_fit";
+// The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
+const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
 
 export default function ListPage() {
   const client = useClient();
@@ -123,14 +150,6 @@ export default function ListPage() {
     () => new Map(icpOptions.map((o) => [o.id, o.label])),
     [icpOptions]
   );
-  // The client's B2B/B2C selection (brief.targetMarket) — drives the Step-1 market-exclusion sort
-  // below. Read client-side so the ordering is correct against ANY backend (incl. one that predates
-  // the `market_excluded` serialization) and stays live-reactive to a brief edit. Loaded on mount.
-  const [targetMarket, setTargetMarket] = useState<string>(() => {
-    const cached = qc.getQueryData<Awaited<ReturnType<typeof getBrief>>>(["brief", client]);
-    return typeof cached?.data?.targetMarket === "string" ? cached.data.targetMarket : "";
-  });
-
   // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
   // are loaded from the API; selection is by prospect id. Batch creation stays client-side until
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
@@ -153,7 +172,7 @@ export default function ListPage() {
   const clientRef = useRef(client);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [fFit, setFFit] = useState("");
+  const [fLabel, setFLabel] = useState(""); // "" any · a ScoreLabel · UNSCORED_LABEL (people step)
   const [fStatus, setFStatus] = useState(""); // "" all · "found" · "scored" (Enriched)
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
   const [newBatchName, setNewBatchName] = useState("");
@@ -184,7 +203,10 @@ export default function ListPage() {
   // set → collapsed, so the list opens with every company collapsed to its one-line summary.
   const [expandedCos, setExpandedCos] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
-  const [coFit, setCoFit] = useState("");
+  const [coLabel, setCoLabel] = useState(""); // "" any · a ScoreLabel · UNSCORED_LABEL (companies)
+  // Which collapsed footnote buckets (low_fit / excluded_by_rules) are expanded in the Step-1 table.
+  // Default empty → both start collapsed to a one-line count (spec §11); reset on a client switch.
+  const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(new Set());
   // Business-model filter: "" any · "B2B"/"B2C"/"Complex"/"Unknown" (the stage-0 label).
   const [coModel, setCoModel] = useState("");
   // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
@@ -225,6 +247,11 @@ export default function ListPage() {
   // (client, ICP); this state mirrors the CURRENT ICP filter's entry (see the sync effect below).
   const [scopeOverride, setScopeOverride] = useState<ScopeOverride | null>(null);
   const [scopeOpen, setScopeOpen] = useState(false);
+  // Find-history drawer (D+ Stage 1b) — read-only view of the scope lineage on `/research-runs`.
+  const [findHistoryOpen, setFindHistoryOpen] = useState(false);
+  // Scope-exhausted notice (D+ Stage 3): the last find walked to the end of this scope's Apollo
+  // result set (the page cursor reached total_pages), so there is nothing new left to find here.
+  const [scopeExhausted, setScopeExhausted] = useState(false);
   const [scopeForm, setScopeForm] = useState<ScopeForm | null>(null);
   // Which ICP the Find-Settings modal is editing (its own pick, so the operator can switch ICP
   // scopes inside the modal without touching the page filter until Save).
@@ -319,8 +346,9 @@ export default function ListPage() {
     setSearch("");
     setCoSearch("");
     setFIcp("");
-    setFFit("");
-    setCoFit("");
+    setFLabel("");
+    setCoLabel("");
+    setExpandedBuckets(new Set());
     setCoModel("");
     setCoStatus("");
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
@@ -344,7 +372,7 @@ export default function ListPage() {
         // fetchQuery serves the cached payload when fresh (instant, no request) and refetches in the
         // background when stale; the cache lives above the routes, so this is what frees a tab-switch
         // from a full reload. The lists' free DB reads are safe to background-revalidate (no credits).
-        const [ps, cs, dl, depts, ics, rs, bf] = await Promise.all([
+        const [ps, cs, dl, depts, ics, rs] = await Promise.all([
           qc.fetchQuery({ queryKey: ["prospects", client], queryFn: () => listProspects(client) }),
           qc.fetchQuery({ queryKey: ["companies", client], queryFn: () => listCompanies(client) }),
           qc.fetchQuery({
@@ -366,9 +394,6 @@ export default function ListPage() {
               queryFn: () => getResearchSpec(client),
             })
             .catch(() => null),
-          qc
-            .fetchQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) })
-            .catch(() => null), // non-fatal: no brief yet → market-exclusion sort just stays off
         ]);
         if (!alive) return;
         setProspects(ps.items);
@@ -380,7 +405,6 @@ export default function ListPage() {
         setMasterDepts(depts);
         if (ics) setIcps(ics.map(apiToIcp));
         if (rs) setSpec(rs.latest);
-        setTargetMarket(typeof bf?.data?.targetMarket === "string" ? bf.data.targetMarket : "");
       } catch (e) {
         if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
       } finally {
@@ -421,7 +445,7 @@ export default function ListPage() {
   }, [prospects]);
   // Step 2 is company-centric: the pursued companies (staged into Step 2 as `selected`, or already
   // searched → `people_found`) are the rows; each company's found people nest beneath it. `search`
-  // filters the companies; `fFit` filters the people shown within them. Ordered by enriched count,
+  // filters the companies; `fLabel` filters the people shown within them. Ordered by enriched count,
   // then total people — both descending — so the most-progressed companies surface first.
   const pursued = useMemo(
     () =>
@@ -464,17 +488,21 @@ export default function ListPage() {
     );
     return prospects.reduce((n, p) => (p.company_id && inStep2.has(p.company_id) ? n + 1 : n), 0);
   }, [companies, prospects]);
-  // Rows of a pursued company that pass the fit filter — the per-company nested list.
+  // Rows of a pursued company that pass the label filter — the per-company nested list, ordered as
+  // a call sheet (contact_now first, then score desc, newest) via compareByLabel (spec §11).
   const rowsForCompany = (id: string) =>
     (prospectsByCompany.get(id) ?? [])
-      .filter((p) => !fFit || p.fit_tier === fFit)
+      .filter(
+        (p) =>
+          !fLabel || (fLabel === UNSCORED_LABEL ? p.label === null : p.label === fLabel)
+      )
       .filter((p) => !fStatus || p.status === fStatus)
-      .sort(compareProspectRows);
+      .sort(compareByLabel);
   // People in view across all pursued companies = the unit of selection for score / enrich / batch.
   const visible = useMemo(
     () => pursued.flatMap((c) => rowsForCompany(c.id)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pursued, prospectsByCompany, fFit, fStatus]
+    [pursued, prospectsByCompany, fLabel, fStatus]
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
   // Step-2 companies that are ticked — the unit of selection for Find People.
@@ -503,11 +531,12 @@ export default function ListPage() {
     [selectedProspects]
   );
 
-  function toggleRow(id: string) {
+  function toggleRow(p: ProspectApi) {
+    if (!maySelect(p.label, checked.has(p.id))) return; // excluded locked out; low_fit confirms
     setChecked((s) => {
       const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
+      if (n.has(p.id)) n.delete(p.id);
+      else n.add(p.id);
       return n;
     });
   }
@@ -521,18 +550,10 @@ export default function ListPage() {
   }, [client, fIcp]);
 
   // ---- Stage 1: companies ----
-  // A company is market-excluded when its business model is the strict opposite of the client's
-  // selection (B2B client × B2C company, or vice-versa). Computed client-side from the visible label
-  // + brief so the sort is correct against ANY backend, and OR'd with the server's `market_excluded`
-  // (authoritative once serialized). `Complex`/`Unknown`/`Both`/unset never exclude.
-  const coExcluded = useCallback(
-    (c: CompanyApi) =>
-      !!c.market_excluded ||
-      ((targetMarket === "B2B" || targetMarket === "B2C") &&
-        (c.business_model === "B2B" || c.business_model === "B2C") &&
-        c.business_model !== targetMarket),
-    [targetMarket]
-  );
+  // Filter, then order as a call sheet by label (spec §11): contact_now → contact_soon → unscored →
+  // low_fit → excluded_by_rules, and within a bucket by score_total desc then newest (compareByLabel).
+  // The old client-side market-exclusion pinning is gone — a market-mismatched company now carries
+  // the `excluded_by_rules` label from the server, so it lands in the collapsed footnote bucket.
   const coVisible = useMemo(
     () =>
       companies
@@ -542,41 +563,36 @@ export default function ListPage() {
           const statusOk =
             !coStatus || (coStatus === "accepted" ? accepted : !accepted);
           const modelOk = !coModel || c.business_model === coModel;
-          // "Unscored" (UNSCORED_FIT) = rows still awaiting Get AI score (fit_score null). Market-
-          // excluded rows are forced to Below·0 at find time, so they read as scored, not unscored.
-          const fitOk =
-            !coFit || (coFit === UNSCORED_FIT ? c.fit_score === null : c.fit_tier === coFit);
+          // "Unscored" (UNSCORED_LABEL) = rows still awaiting a score (label null).
+          const labelOk =
+            !coLabel || (coLabel === UNSCORED_LABEL ? c.label === null : c.label === coLabel);
           const icpOk = !fIcp || c.icp_id === fIcp;
           return (
             (!coSearch || text.includes(coSearch.toLowerCase())) &&
-            fitOk &&
+            labelOk &&
             modelOk &&
             statusOk &&
             icpOk
           );
         })
-        // Order (self-sufficient here rather than relying on the backend ORDER BY — defense-in-depth,
-        // matching compareProspectRows):
-        //  1. Market-excluded rows (opposite business model to the client's targetMarket) sink to the
-        //     bottom NO MATTER WHAT — they're never worth outreach, so they never outrank a real fit.
-        //  2. Accepted (people_found) rows float to the top.
-        //  3. Within a group, highest fit_score first (nulls last).
-        .sort((a, b) => {
-          const ae = coExcluded(a);
-          const be = coExcluded(b);
-          if (ae !== be) return ae ? 1 : -1;
-          const aa = a.status === "people_found" ? 0 : 1;
-          const ba = b.status === "people_found" ? 0 : 1;
-          if (aa !== ba) return aa - ba;
-          return (b.fit_score ?? -1) - (a.fit_score ?? -1);
-        }),
-    [companies, coSearch, coFit, coModel, coStatus, fIcp, coExcluded]
+        .sort(compareByLabel),
+    [companies, coSearch, coLabel, coModel, coStatus, fIcp]
   );
+  // The filtered rows grouped into label buckets (spec §11) for the call-sheet render — action
+  // buckets shown expanded, the two footnote buckets collapsed to a count row.
+  const coBuckets = useMemo(() => groupByLabel(coVisible), [coVisible]);
   const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
   const scoringActive = scoringCoIds.size > 0;
   const scoringPeopleActive = scoringPersonIds.size > 0;
-  const coAllChecked = coVisible.length > 0 && coSelCount === coVisible.length;
+  // Select-all covers only the bulk-selectable (non-gated) rows — an excluded row can never be
+  // ticked, and a low_fit row is added one at a time behind a confirm, so neither joins select-all.
+  const coBulkSelectable = useMemo(
+    () => coVisible.filter((c) => isBulkSelectable(c.label)),
+    [coVisible]
+  );
+  const coAllChecked =
+    coBulkSelectable.length > 0 && coBulkSelectable.every((c) => companyChecked.has(c.id));
   // Sample company for the Fit-rubric preview: the first ticked row, else the first one in view. Its
   // id is sent to GET /fit-prompt?stage=company_fit so the modal shows that row's real input prompt.
   const rubricSample = useMemo(
@@ -605,10 +621,11 @@ export default function ListPage() {
     () => peopleScopeSummary(effectivePeopleScope(peopleScopeOverride, spec, fIcp || undefined)),
     [peopleScopeOverride, spec, fIcp]
   );
-  function toggleCo(id: string) {
+  function toggleCo(c: CompanyApi) {
+    if (!maySelect(c.label, companyChecked.has(c.id))) return; // excluded locked out; low_fit confirms
     setCompanyChecked((s) => {
       const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
+      n.has(c.id) ? n.delete(c.id) : n.add(c.id);
       return n;
     });
   }
@@ -619,14 +636,110 @@ export default function ListPage() {
       return n;
     });
   }
+  // Expand/collapse a Step-1 footnote bucket (low_fit / excluded_by_rules) — keyed by the label.
+  function toggleBucket(key: string) {
+    setExpandedBuckets((s) => {
+      const n = new Set(s);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+  }
   function toggleAllCo(on: boolean) {
-    const ids = coVisible.map((c) => c.id);
+    const ids = coBulkSelectable.map((c) => c.id); // gated rows never join select-all
     setCompanyChecked((s) => {
       const n = new Set(s);
       for (const id of ids) on ? n.add(id) : n.delete(id);
       return n;
     });
   }
+
+  // One Step-1 company row (the v2 call-sheet cell: label chip + score, flag marker, 4-segment
+  // subscore bar, one-line reason, and — for a contact_* row — the email trigger line). An
+  // `excluded_by_rules` row can't be ticked (decision ④); its rule shows as the reason.
+  const renderCompanyRow = (c: CompanyApi) => {
+    const excluded = c.label === "excluded_by_rules";
+    return (
+      <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
+        <td>
+          <input
+            type="checkbox"
+            className="tbl-check"
+            checked={companyChecked.has(c.id)}
+            disabled={excluded}
+            title={excluded ? "Excluded by rules — can't be selected" : undefined}
+            onChange={() => toggleCo(c)}
+          />
+        </td>
+        <td>
+          <div className="who-cell">
+            <div>
+              {c.status === "people_found" ? <span className="sel-tag">Accepted</span> : null}
+              <div className="nm">{c.name || c.domain}</div>
+              {c.country ? <div className="sub">{c.country}</div> : null}
+              {c.icp_id && icpNameById.get(c.icp_id) ? (
+                <div style={{ marginTop: 4 }}>
+                  <span className="badge badge-neutral">{icpNameById.get(c.icp_id)}</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </td>
+        <td>
+          {scoringCoIds.has(c.id) ? (
+            <span className="fit-scoring" title="AI fit-scoring in progress">
+              <span className="hs-spinner" aria-hidden="true" />
+              Scoring…
+            </span>
+          ) : (
+            <div className="ai-score-cell">
+              {c.label ? (
+                <>
+                  <span className="label-line">
+                    <LabelChip label={c.label} score={c.score_total} />
+                    <FlagMarker flags={c.flags} />
+                  </span>
+                  {hasSubs(c.subscores) ? (
+                    <SubscoreBar subscores={c.subscores} axes={COMPANY_AXES} />
+                  ) : null}
+                  {c.reason ? (
+                    <span className="score-reason" title={c.reason}>
+                      {c.reason}
+                    </span>
+                  ) : null}
+                  {(c.label === "contact_now" || c.label === "contact_soon") && c.trigger_line ? (
+                    <span className="score-trigger" title={c.trigger_line}>
+                      ↳ {c.trigger_line}
+                    </span>
+                  ) : null}
+                </>
+              ) : (
+                <span className="muted">Pending</span>
+              )}
+              {c.business_model ? (
+                <span className={clsx("badge", businessModelChip(c.business_model).cls)}>
+                  {businessModelChip(c.business_model).label}
+                </span>
+              ) : null}
+            </div>
+          )}
+        </td>
+        <td>
+          <WebLink website={c.website} domain={c.domain} />
+        </td>
+        <td className="muted">{c.industry || "—"}</td>
+        <td className="muted">{c.size || "—"}</td>
+        <td>
+          <span className={clsx("badge", SOURCE_CLS[c.source] ?? "badge-neutral")}>
+            <span className="bdot" />
+            {SOURCE_LABEL[c.source] ?? c.source}
+          </span>
+        </td>
+        <td>
+          <CompanyStudy e={c.enrichment} />
+        </td>
+      </tr>
+    );
+  };
 
   async function submitAddCompany() {
     if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
@@ -685,6 +798,7 @@ export default function ListPage() {
       );
     }
     setFindingCo(true);
+    setScopeExhausted(false); // clear last run's notice — this find gets a fresh verdict
     try {
       // The override is per (client, ICP) — read the TARGET ICP's entry (icpForFind can be the
       // auto-picked single ICP while the page filter still says "All ICPs").
@@ -697,14 +811,28 @@ export default function ListPage() {
       await reloadCompanies();
       const found = Number(job.result?.found ?? 0);
       const dropped = Number(job.result?.dropped ?? 0);
+      // D+ Stage 3 — the page cursor resumes each find at the next page; when it reaches the end of
+      // this scope's Apollo results the find comes back exhausted → show the recovery notice.
+      const exhausted = Boolean(job.result?.scope_exhausted);
+      const knownSkipped = Number(job.result?.known_skipped ?? 0);
+      setScopeExhausted(exhausted);
       if (found) {
-        const tail = dropped ? ` · ${dropped} filtered out` : "";
+        // `dropped` already counts the known-skip; call it out so a low `found` on a re-find reads
+        // as "these were already yours", not "the search is failing".
+        const bits = [
+          knownSkipped ? `${knownSkipped} already in your list` : "",
+          dropped - knownSkipped > 0 ? `${dropped - knownSkipped} filtered out` : "",
+        ].filter(Boolean);
+        const tail = bits.length ? ` · ${bits.join(" · ")}` : "";
         // Rows land unscored and stay that way (AI Score shows "Pending"); the operator scores on
         // demand by selecting rows and clicking Update AI Score. No auto-trigger.
         toast(
-          `Found ${found} ${found === 1 ? "company" : "companies"}${tail} · ` +
+          `Found ${found} new ${found === 1 ? "company" : "companies"}${tail} · ` +
             "select rows and click Update AI Score to score them"
         );
+      } else if (exhausted) {
+        // The notice below carries the recovery paths; keep the toast short.
+        toast("You've reviewed every company Apollo has for this scope — see the notice below.");
       } else if (dropped) {
         toast(
           `Apollo returned ${dropped}, but all were filtered out as duplicates or exclusions. ` +
@@ -823,6 +951,51 @@ export default function ListPage() {
         toast(
           "No companies similar to the selection were found. The seeds may be too sparse — " +
             "enrich them first (industry, size and revenue drive the match) or select more rows.",
+          "warn"
+        );
+      }
+    } catch (e) {
+      if (clientRef.current === client) {
+        toast(e instanceof Error ? e.message : "Lookalike search failed", "warn");
+      }
+    } finally {
+      if (clientRef.current === client) setFindingLookalike(false);
+    }
+  }
+
+  // D+ Stage 3 recovery — when the scope is exhausted, reuse the WINNERS: find lookalikes of every
+  // Strong/Good row (positive-signal reuse), no manual selection needed. One click from the
+  // scope-exhausted notice; hints if there are no strong rows to seed from yet.
+  async function runLookalikeOfStrong() {
+    const ids = companies
+      .filter((c) => c.label === "contact_now" || c.label === "contact_soon")
+      .map((c) => c.id);
+    if (!ids.length) {
+      return toast(
+        "No Contact-now or Contact-soon companies yet to seed lookalikes — score some rows " +
+          "first, or regenerate the scope from the Business brief.",
+        "warn"
+      );
+    }
+    setFindingLookalike(true);
+    try {
+      const job = await runScoringJob(
+        () => findLookalikesAsync(client, { company_ids: ids, icp_id: fIcp || null }),
+        "Lookalike search"
+      );
+      if (!job) return;
+      await reloadCompanies();
+      const found = Number(job.result?.found ?? 0);
+      if (found) {
+        setScopeExhausted(false); // fresh peers to review — the scope is no longer a dead end
+        toast(
+          `Found ${found} new lookalike ${found === 1 ? "company" : "companies"} of your ` +
+            "best rows · select them and click Update AI Score to score them"
+        );
+      } else {
+        toast(
+          "No new lookalikes of your Strong/Good rows — regenerate the scope from the " +
+            "Business brief to open up a fresh search.",
           "warn"
         );
       }
@@ -1287,9 +1460,13 @@ export default function ListPage() {
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={openScopeSettings}
-                  title="Edit the Apollo company-search filters used by Find Company"
+                  title={
+                    scopeOverride
+                      ? "Custom scope active — you edited these filters; Find Company uses them, not the AI spec"
+                      : "Edit the Apollo company-search filters used by Find Company"
+                  }
                 >
-                  Find Settings
+                  Find Settings{scopeOverride ? " · Custom" : ""}
                 </button>
                 <button
                   className="btn btn-primary btn-sm"
@@ -1298,6 +1475,13 @@ export default function ListPage() {
                   title="Search Apollo from the current scope · enriches only new companies"
                 >
                   {findingCo ? "Finding…" : "Find Company"}
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setFindHistoryOpen(true)}
+                  title="See every find run · the exact scope it searched, match count, and auto-widening"
+                >
+                  Find History
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1325,6 +1509,39 @@ export default function ListPage() {
                 </button>
               </div>
             </div>
+            {scopeExhausted ? (
+              <div className="se-notice" role="status">
+                <style>{SE_CSS}</style>
+                <div className="se-body">
+                  <strong>You&apos;ve reviewed every company Apollo has for this scope.</strong>{" "}
+                  Find resumes at the next page each run, and this one reached the end — there are no
+                  new companies left under these exact filters. To open up more:
+                </div>
+                <div className="se-actions">
+                  <button
+                    className="btn btn-accent btn-sm"
+                    onClick={runLookalikeOfStrong}
+                    disabled={findingLookalike || findingCo}
+                    title="Find the next batch of companies similar to your Strong/Good rows"
+                  >
+                    {findingLookalike ? "Finding…" : "Find lookalikes of your best rows"}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={openScopeSettings}
+                    title="Widen the Apollo filters, or regenerate the scope from the Business brief"
+                  >
+                    Adjust scope
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-xs se-dismiss"
+                    onClick={() => setScopeExhausted(false)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : null}
             <div className="filter-row list-toolbar">
               <div className="search">
                 <span className="si">⌕</span>
@@ -1380,13 +1597,13 @@ export default function ListPage() {
                 <option value="Complex">Complex</option>
                 <option value="Unknown">Unknown</option>
               </select>
-              <select className="select" value={coFit} onChange={(e) => setCoFit(e.target.value)}>
-                <option value="">Any fit</option>
-                <option value="Strong">Strong fit</option>
-                <option value="Good">Good fit</option>
-                <option value="Moderate">Moderate fit</option>
-                <option value="Below">Below</option>
-                <option value={UNSCORED_FIT}>Pending · unscored</option>
+              <select className="select" value={coLabel} onChange={(e) => setCoLabel(e.target.value)}>
+                <option value="">Any label</option>
+                <option value="contact_now">Contact now</option>
+                <option value="contact_soon">Contact soon</option>
+                <option value="low_fit">Low fit</option>
+                <option value="excluded_by_rules">Excluded</option>
+                <option value={UNSCORED_LABEL}>Needs score</option>
               </select>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
                 Manual Upload
@@ -1418,7 +1635,7 @@ export default function ListPage() {
                       />
                     </th>
                     <th>Company</th>
-                    <th>AI Score</th>
+                    <th>Fit</th>
                     <th>Domain</th>
                     <th>Industry</th>
                     <th>Size</th>
@@ -1428,78 +1645,46 @@ export default function ListPage() {
                 </thead>
                 {coVisible.length > 0 && (
                   <tbody>
-                    {coVisible.map((c) => (
-                      <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
-                        <td>
-                          <input
-                            type="checkbox"
-                            className="tbl-check"
-                            checked={companyChecked.has(c.id)}
-                            onChange={() => toggleCo(c.id)}
-                          />
-                        </td>
-                        <td>
-                          <div className="who-cell">
-                            <div>
-                              {c.status === "people_found" ? (
-                                <span className="sel-tag">Accepted</span>
-                              ) : null}
-                              <div className="nm">{c.name || c.domain}</div>
-                              {c.country ? <div className="sub">{c.country}</div> : null}
-                              {c.icp_id && icpNameById.get(c.icp_id) ? (
-                                <div style={{ marginTop: 4 }}>
-                                  <span className="badge badge-neutral">
-                                    {icpNameById.get(c.icp_id)}
-                                  </span>
-                                </div>
-                              ) : null}
-                            </div>
-                          </div>
-                        </td>
-                        <td>
-                          {scoringCoIds.has(c.id) ? (
-                            <span className="fit-scoring" title="AI fit-scoring in progress">
-                              <span className="hs-spinner" aria-hidden="true" />
-                              Scoring…
-                            </span>
-                          ) : (
-                            <div className="ai-score-cell">
-                              <FitScore
-                                tier={c.fit_tier}
-                                score={c.fit_score}
-                                reason={c.fit_reason}
-                              />
-                              {c.business_model ? (
-                                <span
-                                  className={clsx(
-                                    "badge",
-                                    businessModelChip(c.business_model).cls
-                                  )}
-                                >
-                                  {businessModelChip(c.business_model).label}
-                                </span>
-                              ) : null}
-                            </div>
-                          )}
-                        </td>
-                        <td>
-                          <WebLink website={c.website} domain={c.domain} />
-                        </td>
-                        <td className="muted">{c.industry || "—"}</td>
-                        <td className="muted">{c.size || "—"}</td>
-                        <td>
-                          <span
-                            className={clsx("badge", SOURCE_CLS[c.source] ?? "badge-neutral")}
+                    {/* Call sheet (spec §11): one group per label bucket. Action buckets render
+                        expanded; the two footnote buckets (low_fit / excluded_by_rules) collapse to
+                        a one-line count that expands on click. */}
+                    {BUCKET_ORDER.map((key) => {
+                      const rows = coBuckets.get(key) ?? [];
+                      if (!rows.length) return null;
+                      const collapsible = COLLAPSED_KEYS.has(key);
+                      const open = !collapsible || expandedBuckets.has(key);
+                      return (
+                        <Fragment key={key}>
+                          <tr
+                            className={clsx("bucket-head", collapsible && "bucket-head--btn")}
+                            onClick={collapsible ? () => toggleBucket(key) : undefined}
                           >
-                            <span className="bdot" />
-                            {SOURCE_LABEL[c.source] ?? c.source}
-                          </span>
-                        </td>
-                        <td>
-                          <CompanyStudy e={c.enrichment} />
-                        </td>
-                      </tr>
-                    ))}
+                            <td colSpan={8}>
+                              <span className="bucket-head-in">
+                                {collapsible ? (
+                                  <span
+                                    className={clsx("bucket-caret", open && "open")}
+                                    aria-hidden="true"
+                                  >
+                                    ▸
+                                  </span>
+                                ) : null}
+                                <span
+                                  className={clsx("bucket-dot", `bucket-dot--${key}`)}
+                                  aria-hidden="true"
+                                />
+                                <span className="bucket-name">{BUCKET_HEAD[key]}</span>
+                                <span className="bucket-ct">{rows.length}</span>
+                                {collapsible ? (
+                                  <span className="bucket-hint">{open ? "hide" : "review"}</span>
+                                ) : null}
+                              </span>
+                            </td>
+                          </tr>
+                          {open ? rows.map(renderCompanyRow) : null}
+                        </Fragment>
+                      );
+                    })}
                   </tbody>
                 )}
               </table>
@@ -1641,12 +1826,13 @@ export default function ListPage() {
                 <option value="found">Found</option>
                 <option value="scored">Enriched</option>
               </select>
-              <select className="select" value={fFit} onChange={(e) => setFFit(e.target.value)}>
-                <option value="">Any fit</option>
-                <option value="Strong">Strong fit</option>
-                <option value="Good">Good fit</option>
-                <option value="Moderate">Moderate fit</option>
-                <option value="Below">Below</option>
+              <select className="select" value={fLabel} onChange={(e) => setFLabel(e.target.value)}>
+                <option value="">Any label</option>
+                <option value="contact_now">Contact now</option>
+                <option value="contact_soon">Contact soon</option>
+                <option value="low_fit">Low fit</option>
+                <option value="excluded_by_rules">Excluded</option>
+                <option value={UNSCORED_LABEL}>Needs score</option>
               </select>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
                 Manual Upload
@@ -1676,7 +1862,7 @@ export default function ListPage() {
                     <th>Title</th>
                     <th>Status</th>
                     <th>LinkedIn</th>
-                    <th>AI Score</th>
+                    <th>Fit</th>
                   </tr>
                 </thead>
                 {pursued.length > 0 && (
@@ -1733,7 +1919,7 @@ export default function ListPage() {
                                 type="checkbox"
                                 className="tbl-check"
                                 checked={companyChecked.has(c.id)}
-                                onChange={() => toggleCo(c.id)}
+                                onChange={() => toggleCo(c)}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Select this company to find people"
                               />
@@ -1810,7 +1996,13 @@ export default function ListPage() {
                                     type="checkbox"
                                     className="tbl-check"
                                     checked={checked.has(p.id)}
-                                    onChange={() => toggleRow(p.id)}
+                                    disabled={p.label === "excluded_by_rules"}
+                                    title={
+                                      p.label === "excluded_by_rules"
+                                        ? "Excluded by rules — can't be selected"
+                                        : undefined
+                                    }
+                                    onChange={() => toggleRow(p)}
                                   />
                                 </td>
                                 <td>
@@ -1840,12 +2032,23 @@ export default function ListPage() {
                                       <span className="hs-spinner" aria-hidden="true" />
                                       Scoring…
                                     </span>
+                                  ) : p.label ? (
+                                    <div className="ai-score-cell">
+                                      <span className="label-line">
+                                        <LabelChip label={p.label} score={p.score_total} />
+                                        <FlagMarker flags={p.flags} />
+                                      </span>
+                                      {hasSubs(p.subscores) ? (
+                                        <SubscoreBar subscores={p.subscores} axes={PROSPECT_AXES} />
+                                      ) : null}
+                                      {p.reason ? (
+                                        <span className="score-reason" title={p.reason}>
+                                          {p.reason}
+                                        </span>
+                                      ) : null}
+                                    </div>
                                   ) : (
-                                    <FitScore
-                                      tier={p.fit_tier}
-                                      score={p.fit_score}
-                                      reason={p.fit_reason}
-                                    />
+                                    <span className="muted">Pending</span>
                                   )}
                                 </td>
                               </tr>
@@ -2469,6 +2672,27 @@ export default function ListPage() {
           LinkedIn URL, name + company domain, or email · rest optional · scored on save.
         </div>
       </Modal>
+
+      {findHistoryOpen ? (
+        <FindHistoryDrawer
+          onClose={() => setFindHistoryOpen(false)}
+          client={client}
+          icpNameById={icpNameById}
+        />
+      ) : null}
     </section>
   );
 }
+
+// D+ Stage 3 — scope-exhausted notice. Scoped to `.se-*` so nothing leaks to other routes (the list
+// page has no co-located stylesheet; this mirrors the FindHistoryDrawer pattern). Warn-toned but
+// calm — it's a "you're done here, try these" prompt, not an error.
+const SE_CSS = `
+.se-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 10px;
+  background: var(--warn-wash); }
+.se-body { flex: 1 1 320px; font-size: 13px; color: var(--ink); line-height: 1.45; }
+.se-body strong { color: var(--ink); }
+.se-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.se-dismiss { margin-left: 2px; }
+`;

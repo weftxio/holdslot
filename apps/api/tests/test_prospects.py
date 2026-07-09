@@ -75,12 +75,15 @@ def test_company_fit_schema_is_verdict_only():
     assert set(schema["properties"]) == {"fit_score", "fit_reason"}
 
 
-def test_business_model_schema_is_single_enum():
-    # The stage-0 classifier's schema is one enum field — nothing else (token minimization).
+def test_business_model_schema_is_three_v2_fields():
+    # Scoring v2 (spec §5): the stage-0 classifier stays tiny but now returns the B2B/B2C enum plus
+    # the two facts the v2 rules engine needs — description-derived hq_country + has_b2b_line.
     schema = fit.BUSINESS_MODEL_SCHEMA["schema"]
     assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"business_model"}
+    assert set(schema["required"]) == {"business_model", "hq_country", "has_b2b_line"}
     assert schema["properties"]["business_model"]["enum"] == ["B2B", "B2C", "Complex", "Unknown"]
+    assert schema["properties"]["hq_country"]["type"] == "string"
+    assert schema["properties"]["has_b2b_line"]["type"] == "boolean"
 
 
 def test_company_tier_derives_from_score():

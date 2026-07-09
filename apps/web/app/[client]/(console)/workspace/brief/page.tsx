@@ -70,6 +70,33 @@ function briefFromDoc(b: Awaited<ReturnType<typeof getBrief>> | null): Brief {
   };
 }
 
+// Route a scoping "gap" to the brief section that owns the missing input, so it surfaces where the
+// operator actually fixes it (e.g. `excludeCustomers` → §4 Exclusions) instead of under Prospect
+// Scope. Fields map to their section; a gap naming an ICP goes to §2 (personas); anything
+// unrecognized falls back to §1. Keys are normalized (lowercased, non-alphanumerics stripped).
+const GAP_FIELD_SECTION: Record<string, number> = {
+  companyname: 1, website: 1, sell: 1, targetmarket: 1, problem: 1, dealsize: 1, salescycle: 1,
+  industries: 2, industry: 2, companysize: 2, employees: 2, geographies: 2, geography: 2,
+  locations: 2, location: 2, jobtitles: 2, jobtitle: 2, titles: 2, seniority: 2, seniorities: 2,
+  departments: 2, department: 2, revenue: 2, revenueband: 2, revenuerange: 2, persona: 2,
+  personas: 2,
+  valueprops: 3, valueproposition: 3, proofpoints: 3, proof: 3, signals: 3, signal: 3, tone: 3,
+  languages: 3, language: 3,
+  excludecustomers: 4, customers: 4, customerlist: 4, existingcustomers: 4, payingcustomers: 4,
+  excludedeals: 4, deals: 4, competitors: 4, donotcontact: 4, exclusions: 4,
+  attendeeemails: 5, attendees: 5, availability: 5, channel: 5, contact: 5, approver: 5,
+  meetingspermonth: 6, meetings: 6, qualifieddef: 6, qualified: 6, qualification: 6,
+};
+function gapSection(g: { field?: string; icp_name?: string }): number {
+  if (g.icp_name && g.icp_name.trim()) return 2;
+  const key = (g.field || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (key in GAP_FIELD_SECTION) return GAP_FIELD_SECTION[key];
+  for (const [k, sec] of Object.entries(GAP_FIELD_SECTION)) {
+    if (k.length >= 6 && key.includes(k)) return sec;
+  }
+  return 1;
+}
+
 export default function BriefPage() {
   const client = useClient();
   // Cross-navigation cache for this page's API reads (brief/icps/spec). Keyed by client so a tab
@@ -401,11 +428,12 @@ export default function BriefPage() {
   }
 
   // Save the brief + ICPs, then kick off async structuring and poll it to completion.
-  async function runStructure() {
+  async function runStructure(icpIds: string[] = []) {
     setStructuring(true);
     try {
       await persist();
-      const job = await structureBrief(client); // 202 — returns the job to poll
+      // Empty `icpIds` scopes every ICP; a subset regenerates only those and merges into the spec.
+      const job = await structureBrief(client, icpIds); // 202 — returns the job to poll
       await pollStructuring(job, client);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Structuring failed", "warn");
@@ -506,6 +534,12 @@ export default function BriefPage() {
   const allComplete = Object.values(secComplete).every(Boolean);
   // The earliest section still missing required fields (0 = none — every section is complete).
   const firstIncompleteSec = ([1, 2, 3, 4, 5, 6] as const).find((n) => !secComplete[n]) ?? 0;
+  // AI-scoping gaps, bucketed by the brief section that owns each one (see `gapSection`), so every
+  // gap renders inside the section where the operator supplies the missing input.
+  const gapsBySection: Record<number, { ask: string; icp_name?: string }[]> = {};
+  for (const g of spec?.gaps ?? []) {
+    (gapsBySection[gapSection(g)] ??= []).push({ ask: g.ask, icp_name: g.icp_name });
+  }
   // On load / client switch, open that section (or collapse all when nothing is left). Runs once
   // per load — guarded by autoOpenedRef so a later edit completing a section won't yank it shut.
   useEffect(() => {
@@ -553,6 +587,7 @@ export default function BriefPage() {
             open={openSec === 1}
             onToggle={() => toggle(1)}
             onContinue={() => saveAndContinue(1)}
+            gaps={gapsBySection[1]}
           >
             <div className="panel-pad">
               <div className="grid2">
@@ -687,6 +722,7 @@ export default function BriefPage() {
             open={openSec === 2}
             onToggle={() => toggle(2)}
             onContinue={() => saveAndContinue(2)}
+            gaps={gapsBySection[2]}
             hideFoot
           >
             <div className="panel-pad">
@@ -905,6 +941,7 @@ export default function BriefPage() {
             open={openSec === 3}
             onToggle={() => toggle(3)}
             onContinue={() => saveAndContinue(3)}
+            gaps={gapsBySection[3]}
           >
             <div className="panel-pad">
               <div className="field">
@@ -1029,6 +1066,7 @@ export default function BriefPage() {
             open={openSec === 4}
             onToggle={() => toggle(4)}
             onContinue={() => saveAndContinue(4)}
+            gaps={gapsBySection[4]}
           >
             <div className="panel-pad">
               <div className="brief-callout">
@@ -1223,6 +1261,7 @@ export default function BriefPage() {
             open={openSec === 5}
             onToggle={() => toggle(5)}
             onContinue={() => saveAndContinue(5)}
+            gaps={gapsBySection[5]}
           >
             <div className="panel-pad">
               <div className="field">
@@ -1332,6 +1371,7 @@ export default function BriefPage() {
             open={openSec === 6}
             onToggle={() => toggle(6)}
             onContinue={() => saveAndContinue(6)}
+            gaps={gapsBySection[6]}
             last
           >
             <div className="panel-pad">

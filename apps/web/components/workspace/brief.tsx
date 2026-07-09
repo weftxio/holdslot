@@ -172,6 +172,7 @@ export function Section({
   last,
   hideFoot,
   extra,
+  gaps,
   children,
 }: {
   num: number;
@@ -185,6 +186,9 @@ export function Section({
   last?: boolean;
   hideFoot?: boolean;
   extra?: React.ReactNode;
+  // AI-scoping "gaps" routed to this section (missing/weak inputs to sharpen targeting). A header
+  // chip flags them even while the section is collapsed; the body lists them when it's open.
+  gaps?: { ask: string; icp_name?: string }[];
   children: React.ReactNode;
 }) {
   return (
@@ -207,6 +211,14 @@ export function Section({
           <h3>{title}</h3>
           <div className="ph-sub">{sub}</div>
         </div>
+        {gaps && gaps.length > 0 && (
+          <span
+            className="badge badge-warn brief-gap-chip"
+            title="AI scoping suggests sharpening this section — open to view"
+          >
+            {gaps.length} to sharpen
+          </span>
+        )}
         {count && (
           <span
             className={clsx("brief-count", count.done === count.total && "done")}
@@ -227,6 +239,26 @@ export function Section({
           ⌄
         </span>
       </div>
+      {open && gaps && gaps.length > 0 && (
+        <div className="panel-pad" style={{ paddingBottom: 0 }}>
+          <div className="brief-callout" style={{ marginBottom: 0 }}>
+            <span className="ci">!</span>
+            <div>
+              <strong>
+                {gaps.length} gap{gaps.length > 1 ? "s" : ""} to sharpen targeting
+              </strong>
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
+                {gaps.map((g, i) => (
+                  <li key={i}>
+                    {g.icp_name ? <strong>{g.icp_name} · </strong> : null}
+                    {g.ask}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
       {open && children}
       {open && !hideFoot && (
         <div className="brief-secfoot">

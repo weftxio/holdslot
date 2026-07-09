@@ -20,6 +20,7 @@ from app.models import (
     Company,
     Prospect,
     ProspectApproval,
+    ResearchRun,
     ScopeOverride,
     ScoringJob,
     Tenant,
@@ -36,7 +37,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0018_brief_structure_v7"]
+    assert _script_dir().get_heads() == ["0025_scoring_v2_rubrics"]
 
 
 def test_0011_columns_present_on_models():
@@ -102,3 +103,31 @@ def test_0016_phase_d_models_match_migration():
     assert "uq_approval_template_tenant" in {
         c.name for c in ApprovalTemplate.__table__.constraints
     }
+
+
+def test_0019_scope_lineage_columns_present_on_models():
+    """0019 adds the three nullable scope-lineage columns to research_run — the ORM must reflect
+    them (the Find-history drawer + Stage-3 page cursor read these)."""
+    cols = ResearchRun.__table__.columns
+    assert "filter_body" in cols
+    assert "scope_source" in cols
+    assert "result_meta" in cols
+    # All nullable — pre-0019 runs read NULL, no backfill.
+    assert cols["filter_body"].nullable
+    assert cols["scope_source"].nullable
+    assert cols["result_meta"].nullable
+
+
+def test_0024_v2_label_columns_present_on_models():
+    """0024 adds the scoring-v2 contract columns (label/score_total on both) + the label-bucketed
+    list index — the ORM must reflect the same end state. All nullable (no backfill). `verified` was
+    dropped 2026-07-09 (founder: not meaningful) — it must exist on neither model."""
+    for model in (Company, Prospect):
+        cols = model.__table__.columns
+        assert "label" in cols and cols["label"].nullable
+        assert "score_total" in cols and cols["score_total"].nullable
+        assert "verified" not in cols
+    # New label index on both; the v1 fit index still present (dropped later, in 0026).
+    assert "ix_company_tenant_label" in {i.name for i in Company.__table__.indexes}
+    assert "ix_prospect_tenant_label" in {i.name for i in Prospect.__table__.indexes}
+    assert "ix_company_tenant_fit" in {i.name for i in Company.__table__.indexes}

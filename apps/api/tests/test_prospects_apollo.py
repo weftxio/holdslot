@@ -113,6 +113,27 @@ def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
         return dict(_CANNED_FIT)
 
     monkeypatch.setattr(apollo, "search_companies", lambda body, *, max_results=100: orgs)
+    # D+ Stage 4 tech resolver — the find only calls this when an ICP carries `technologies` or a
+    # bad-tech correlation exists (neither in these fixtures), but stub it so the flow stays
+    # network-free regardless.
+    monkeypatch.setattr(apollo, "supported_technologies_csv", lambda: "cleaned_name,uid\n")
+    # find-company calls search_companies_meta (rows + first-page telemetry) — stub a minimal meta.
+    monkeypatch.setattr(
+        apollo,
+        "search_companies_meta",
+        lambda body, *, max_results=100, start_page=1: (
+            orgs,
+            {
+                "total_entries": len(orgs),
+                "breadcrumbs": [],
+                "pages_fetched": 1,
+                "end_page": start_page,  # Stage 3 page cursor
+            },
+        ),
+    )
+    # Stage 1b relax-ladder probe (per_page=1 count) — stub a healthy count so the ladder stays
+    # dormant and the executed body / found counts these tests assert on are unchanged.
+    monkeypatch.setattr(apollo, "count_companies", lambda body: 500)
     # Enrich is best-effort; patch to the same orgs so the merge path runs without a network call.
     monkeypatch.setattr(apollo, "enrich_organizations", lambda domains: orgs)
     monkeypatch.setattr(apollo, "search_people", lambda body, *, max_results=100: people)
@@ -169,11 +190,12 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     icps_ctx = seen_targeting[0].get("icps") or []
     assert any(d.get("maturity") == "growth" for d in icps_ctx), seen_targeting[0]
 
-    # Re-find re-upserts the same orgs (stamping apollo_org_id), creates NO duplicates, and does not
-    # re-score (already scored). Existing companies survive the dedupe instead of being dropped.
+    # D+ Stage 3 — a re-find of the SAME scope skips orgs already stored ($0 invariant) and returns
+    # only NET-NEW rows. Our fake returns the same 2 orgs regardless of page, so both are
+    # known-skipped: found=0, known_skipped=2, NO duplicates, no re-processing of the existing rows.
     r2 = client.post(f"/{slug}/companies/find-company",
                      json={"limit": 10, "icp_id": icp_id}, headers=_auth(token))
-    assert r2.json()["found"] == 2  # upserted, not dropped
+    assert r2.json()["found"] == 0 and r2.json()["known_skipped"] == 2
     assert len(client.get(f"/{slug}/companies", headers=_auth(token)).json()) == 2  # no dups
 
     # Stage Alpha into Step 2 (discovered → selected). Find-people is driven by explicit company_ids
@@ -226,6 +248,58 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["credits_spent"] == 0  # already enriched → skipped, no double-charge
+
+
+def test_refind_advances_cursor_and_skips_known(owner_member, monkeypatch):
+    """D+ Stage 3 — a repeat find of the SAME scope resumes at the next page (never re-buys page 1),
+    the known-org skip drops page-overlap rows, and a returning row costs $0 (no re-classify)."""
+    from app.domains.prospects import fit
+    from app.integrations.apollo import client as apollo
+
+    client, slug, token, icp_id = owner_member
+    _patch_apollo_and_fit(monkeypatch, orgs=[], people=[], match={})  # base stubs; overridden below
+    monkeypatch.setattr(apollo, "enrich_organizations", lambda domains: [])  # search rows suffice
+
+    pages: list[int] = []
+
+    def _paged(body, *, max_results=100, start_page=1):
+        pages.append(start_page)
+        if start_page == 1:
+            rows = [{"id": "org-1", "name": "One", "primary_domain": "one.com"}]
+        else:  # page 2: Apollo ordering drift re-surfaces org-1 (overlap) + a genuinely new org-2
+            rows = [
+                {"id": "org-1", "name": "One", "primary_domain": "one.com"},
+                {"id": "org-2", "name": "Two", "primary_domain": "two.com"},
+            ]
+        meta = {"total_entries": 5, "breadcrumbs": [], "pages_fetched": 1,
+                "end_page": start_page, "total_pages": 5}
+        return rows, meta
+
+    classified: list[dict] = []
+
+    def _classify(**k):
+        classified.append(k.get("company") or {})
+        return {"business_model": "B2B", "llm_call_id": None, "model": "t", "cost_usd": 0.0}
+
+    monkeypatch.setattr(apollo, "search_companies_meta", _paged)
+    monkeypatch.setattr(fit, "classify_business_model", _classify)
+
+    # Run 1 — fetches page 1 (org-1), classifies it once.
+    r1 = client.post(f"/{slug}/companies/find-company",
+                     json={"limit": 10, "icp_id": icp_id}, headers=_auth(token)).json()
+    assert pages == [1] and r1["found"] == 1
+    assert len(classified) == 1  # org-1 classified
+
+    # Run 2 — the cursor resumes at page 2 (page 1 never re-bought); org-1 re-surfaces but is
+    # known-skipped ($0: NOT re-classified), only the NEW org-2 lands and is classified.
+    r2 = client.post(f"/{slug}/companies/find-company",
+                     json={"limit": 10, "icp_id": icp_id}, headers=_auth(token)).json()
+    assert pages == [1, 2]  # resumed at page 2 — the cursor advanced
+    assert r2["found"] == 1 and r2["known_skipped"] == 1  # only org-2 is new; org-1 skipped
+    assert len(classified) == 2  # +1 (org-2 only) — org-1 was NOT re-classified (the $0 invariant)
+    assert not r2["scope_exhausted"]  # page 2 of 5 — more to walk
+    domains = {c["domain"] for c in client.get(f"/{slug}/companies", headers=_auth(token)).json()}
+    assert domains == {"one.com", "two.com"}  # both stored exactly once
 
 
 def test_find_company_requires_spec(owner_member, monkeypatch):
@@ -329,11 +403,16 @@ def test_multi_icp_find_runs_icp_by_icp(owner_member_v4, monkeypatch):
     company_bodies: list[dict] = []
     people_bodies: list[dict] = []
 
-    def _search_companies(body, *, max_results=100):
+    def _search_companies_meta(body, *, max_results=100, start_page=1):
         company_bodies.append(body)
         if "insurance" in (body.get("q_organization_keyword_tags") or []):
-            return [{"id": "org-A", "name": "Alpha Ins", "primary_domain": "alpha-ins.com"}]
-        return [{"id": "org-B", "name": "Beta Brokers", "primary_domain": "beta-brokers.com"}]
+            rows = [{"id": "org-A", "name": "Alpha Ins", "primary_domain": "alpha-ins.com"}]
+        else:
+            rows = [{"id": "org-B", "name": "Beta Brokers", "primary_domain": "beta-brokers.com"}]
+        return rows, {
+            "total_entries": len(rows), "breadcrumbs": [], "pages_fetched": 1,
+            "end_page": start_page,
+        }
 
     def _search_people(body, *, max_results=100):
         people_bodies.append(body)
@@ -343,7 +422,10 @@ def test_multi_icp_find_runs_icp_by_icp(owner_member_v4, monkeypatch):
              "organization": {"name": org}, "has_email": True}
         ]
 
-    monkeypatch.setattr(apollo, "search_companies", _search_companies)
+    monkeypatch.setattr(apollo, "search_companies_meta", _search_companies_meta)
+    # Healthy count → the Stage 1b relax ladder stays dormant, so each ICP's executed body is the
+    # un-relaxed one this test asserts on (keyword-tag routing intact).
+    monkeypatch.setattr(apollo, "count_companies", lambda body: 500)
     monkeypatch.setattr(apollo, "enrich_organizations", lambda domains: [])
     monkeypatch.setattr(apollo, "search_people", _search_people)
     monkeypatch.setattr(

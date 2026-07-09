@@ -50,6 +50,17 @@ class ResearchJobOut(BaseModel):
     error: str | None = None
 
 
+class StructureIn(BaseModel):
+    """Optional body for `POST /brief/structure`: `icp_ids` selects which ICP profiles to (re)scope.
+
+    Empty / omitted → scope every ICP (a full generation, fresh validation + suggestions). A strict
+    subset → regenerate only those ICPs' targeting and splice them into the latest spec, leaving the
+    untouched profiles' scope (and the brief-level validation) exactly as they were.
+    """
+
+    icp_ids: list[str] | None = None
+
+
 class ScopingPromptOut(BaseModel):
     """The exact LLM prompt that `POST /brief/structure` would send — for operator inspection.
 

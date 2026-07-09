@@ -10,6 +10,10 @@ Design invariants:
     "violation of provider Terms Of Service" for this account's jurisdiction (Hong Kong — the
     same restriction that drove the Bedrock→OpenRouter override). Every model default here MUST
     route to a non-US provider (Qwen / Llama / DeepSeek / Mistral). See `phase-b-openrouter-...`.
+  * **Consistent host** — a soft pin (`PREFERRED_PROVIDERS`, fallback ON) keeps every call on the
+    same host so behaviour is stable run-to-run. NB: DeepSeek's OWN endpoint can't serve our strict
+    `json_schema` (no `structured_outputs`), so we pin a capable third-party host — see
+    `_build_body`.
   * **Observability built in** — every call persists an append-only `LlmCall` row (served
     model, tokens, cost, latency, status, retries, raw completion) in its OWN transaction, so
     telemetry is durable even when the caller's request later fails. The row id is returned so
@@ -144,21 +148,43 @@ def _ensure_json_mention(messages: list[dict]) -> list[dict]:
     return [*messages, {"role": "system", "content": "Respond with a single JSON object."}]
 
 
+# Soft host pin for provider consistency. We route every call to the SAME host so scoping/scoring
+# behaves identically run-to-run, instead of OpenRouter picking a different re-host each time.
+# ⚠️ Why not DeepSeek's own endpoint: `deepseek/deepseek-v4-pro`'s first-party "DeepSeek" host
+# advertises `response_format` but NOT `structured_outputs`, so our strict `json_schema`
+# (`strict:true`) calls can NEVER route to it under `require_parameters:true` — a hard pin there
+# 404s ("No endpoints found"). So we pin a third-party host that DOES support strict structured
+# outputs + reasoning (Fireworks; Together / DeepInfra / Alibaba are equivalent swaps). SOFT =
+# `allow_fallbacks:true`: prefer this host, but if it's briefly down OpenRouter still falls back to
+# another capable host rather than failing the call. A model this host can't serve also just falls
+# back. Callers can override the host per-purpose via `extra_body["provider"]` (deep-merges below).
+PREFERRED_PROVIDERS = ["Fireworks"]
+
+
 def _build_body(
     messages: list[dict], schema: dict, models: list[str], extra_body: dict | None = None
 ) -> dict:
     body = {
         "models": models,
-        "provider": {"require_parameters": True},
+        "provider": {
+            "require_parameters": True,
+            "order": PREFERRED_PROVIDERS,
+            "allow_fallbacks": True,
+        },
         "response_format": {"type": "json_schema", "json_schema": schema},
         "messages": _ensure_json_mention(messages),
         "usage": {"include": True},
     }
     # Per-purpose knobs the caller pins (Phase C): `temperature`, provider-specific
     # `enable_thinking:false` (Qwen), `reasoning` effort + `plugins:[{id:"web"}]` (DeepSeek
-    # sourcing). Merged generically so a new purpose needs no adapter change.
+    # sourcing). Merged generically so a new purpose needs no adapter change. A `provider` sub-block
+    # is DEEP-merged so a caller can pin a host without dropping the base `require_parameters`.
     if extra_body:
-        body.update(extra_body)
+        override = dict(extra_body)
+        prov = override.pop("provider", None)
+        body.update(override)
+        if prov:
+            body["provider"] = {**body["provider"], **prov}
     return body
 
 

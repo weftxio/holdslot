@@ -47,6 +47,17 @@ class CompanyOut(BaseModel):
     # pins these to the bottom regardless of sort; the gate already forced fit_score=0/Below.
     market_excluded: bool = False
     reason_tags: list[str] = []
+    # Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label contract, additive alongside the
+    # v1 fit_* fields through the cutover. `label` is null until the row is (re)scored ("needs
+    # re-score"); `reason` is the always-populated one-liner; `subscores` is the 4-axis 1–5 map;
+    # `flags` non-blocking markers; `icp` the A/B badge; `trigger_line` the email hook (spec §11).
+    label: str | None = None
+    score_total: int | None = None
+    reason: str = ""
+    subscores: dict = Field(default_factory=dict)
+    flags: list[str] = []
+    icp: str | None = None
+    trigger_line: str = ""
     enrichment: CompanyEnrichment = Field(default_factory=CompanyEnrichment)
     source: str = ""
     status: str = ""
@@ -88,9 +99,12 @@ class CompanyFindIn(BaseModel):
     `company_search_params`/`intent_filters` are an OPTIONAL operator override (the Settings modal):
     when present they replace the spec's blocks for *this call only* — the spec stays the AI source
     of truth, the override is the manual tuning. Omitted → the saved spec is used unchanged.
+
+    `limit` defaults to the async ceiling (`FIND_COMPANY_LIMIT`); the web app omits it so an async
+    find targets the full width. The synchronous route re-clamps to `SYNC_FIND_COMPANY_LIMIT`.
     """
 
-    limit: int = 25
+    limit: int = 100
     icp_id: str | None = None
     company_search_params: dict | None = None
     intent_filters: dict | None = None
@@ -252,6 +266,14 @@ class ProspectOut(BaseModel):
     fit_tier: str | None = None
     fit_reason: str = ""
     reason_tags: list[str] = []
+    # Scoring v2 (people tier — the company label caps the person). Additive alongside v1 fit_*;
+    # null `label` until (re)scored.
+    label: str | None = None
+    score_total: int | None = None
+    reason: str = ""
+    subscores: dict = Field(default_factory=dict)
+    flags: list[str] = []
+    icp: str | None = None
     source: str = ""
     status: str = ""
     created_at: str | None = None
@@ -286,17 +308,25 @@ class CompanyPage(BaseModel):
 
 
 class FindResult(BaseModel):
-    """Result of a find run: the run id + counts + the rows that landed (best fit first)."""
+    """Result of a find run: the run id + counts + the rows that landed (best fit first).
+
+    D+ Stage 3: `scope_exhausted` = the page cursor reached the end of this scope's Apollo results
+    (the "regenerate" signal); `known_skipped` = rows dropped as already stored for the tenant (the
+    $0 invariant — never re-enriched/re-classified/re-stamped)."""
 
     run_id: str
     found: int
     dropped: int
     companies: list[CompanyOut] = []
     prospects: list[ProspectOut] = []
+    scope_exhausted: bool = False
+    known_skipped: int = 0
 
 
 class ResearchRunOut(BaseModel):
-    """One research run; `cost_per_accepted` is the derived $/accepted."""
+    """One research run; `cost_per_accepted` is the derived $/accepted. The `scope_source` /
+    `filter_body` / `result_meta` fields (D+ Stage 1, migration 0019) feed the Find-history drawer —
+    they are None for runs recorded before 0019."""
 
     run_id: str
     source: str
@@ -306,6 +336,10 @@ class ResearchRunOut(BaseModel):
     rows_accepted: int
     cost_usd: float | None = None
     cost_per_accepted: float | None = None
+    icp_id: str | None = None
+    scope_source: str | None = None
+    filter_body: dict | None = None
+    result_meta: dict | None = None
     created_at: str | None = None
 
 

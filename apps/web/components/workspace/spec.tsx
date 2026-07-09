@@ -11,9 +11,12 @@ import {
   getScopingPrompt,
   saveScopingSystemPrompt,
 } from "@/lib/api";
+import type { ScoreLabel, Subscores } from "@/lib/api";
 import type { Range } from "@/lib/workspace/types";
 import {
+  AXIS_LABEL,
   FIT_CHIP,
+  LABEL_META,
   empBand,
   fmtGrowth,
   fmtRevenue,
@@ -27,6 +30,23 @@ import {
 // the AI left blank is a normal state, so it reads as a muted dash, not a placeholder box).
 function Dash() {
   return <span className="muted">—</span>;
+}
+// "Jul 9, 2:14 PM GMT+8" from an ISO instant, rendered in the VIEWER's own timezone; "" when unusable.
+function whenLabel(iso?: string | null): string {
+  if (!iso) return "";
+  // A timezone-naive ISO string (no trailing Z / ±HH:MM — the Data API strips the offset off our
+  // UTC timestamps) would otherwise be parsed as browser-LOCAL, showing the raw UTC digits. Pin it
+  // to UTC so toLocaleString then converts it into the viewer's own zone.
+  const hasTz = /[zZ]$/.test(iso) || /T.*[+-]\d{2}:?\d{2}$/.test(iso);
+  const d = new Date(hasTz ? iso : iso + "Z");
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
   if (!items || !items.length) return <Dash />;
@@ -71,6 +91,54 @@ export function SpecHead({ children }: { children: ReactNode }) {
 // A plain text value, or the quiet muted dash when empty (0 and false are real values).
 function Val({ children }: { children: ReactNode }) {
   return children == null || children === "" ? <Dash /> : <>{children}</>;
+}
+
+// --- Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label UI pieces ----
+
+// The label chip (spec §11) — replaces the 0–100 AI Score chip. Shows the label + the 4–20 total
+// when scored. Chip text/color come from LABEL_META; the ICP badge is folded in separately.
+export function LabelChip({ label, score }: { label: ScoreLabel; score?: number | null }) {
+  const m = LABEL_META[label];
+  return (
+    <span className={clsx("label-chip", m.cls)}>
+      {m.text}
+      {score != null ? ` · ${score}` : ""}
+    </span>
+  );
+}
+
+// The 4-segment subscore bar (spec §11) — a compact equalizer, one segment per axis filled to its
+// 1–5 value, each segment tooltip'd with its axis name + value. `axes` is the tier's axis order.
+export function SubscoreBar({
+  subscores,
+  axes,
+}: {
+  subscores: Subscores;
+  axes: readonly string[];
+}) {
+  return (
+    <span className="subscore-bar" role="img" aria-label="subscores">
+      {axes.map((ax) => {
+        const v = Math.max(1, Math.min(subscores?.[ax] ?? 1, 5));
+        return (
+          <span key={ax} className="subscore-seg" title={`${AXIS_LABEL[ax] ?? ax}: ${v}/5`}>
+            <span className="subscore-fill" style={{ height: `${(v / 5) * 100}%` }} />
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
+// Non-blocking flag marker (spec §10) — a small warn glyph + count; the full flag list is the
+// tooltip. Renders nothing when a row has no flags.
+export function FlagMarker({ flags }: { flags: string[] }) {
+  if (!flags?.length) return null;
+  return (
+    <span className="flag-marker" title={flags.join(", ")} aria-label={`${flags.length} flags`}>
+      ⚑ {flags.length}
+    </span>
+  );
 }
 
 export function FitScore({
@@ -261,6 +329,10 @@ export function LinkedInLink({ url }: { url?: string }) {
 type SpecTargetingBlock = {
   icp_id?: string;
   icp_name?: string;
+  // UTC ISO 8601 build time of THIS block (server-stamped, per ICP). In a selective re-scope an
+  // un-touched ICP keeps its earlier stamp; absent only on old pre-stamp specs (then no time shows,
+  // never a borrowed/shared one — the UI reads this field alone).
+  generated_at?: string;
   company_search_params?: {
     q_organization_keyword_tags?: string[];
     organization_num_employees_ranges?: string[];
@@ -286,12 +358,13 @@ type SpecTargetingBlock = {
 
 // The three review grids (company / people / intent) for ONE targeting block. A v4 block is
 // headed by its ICP name (multi-ICP scopes render one group per profile); the v3 single block
-// keeps the original unnamed headings.
-function TargetingSections({ b }: { b: SpecTargetingBlock }) {
+// keeps the original unnamed headings. `hideName` drops the ICP-name prefix on the inner
+// headings when the block is wrapped in a collapsible whose header already names the ICP.
+function TargetingSections({ b, hideName }: { b: SpecTargetingBlock; hideName?: boolean }) {
   const cs = b.company_search_params ?? {};
   const ppl = b.people_search_params ?? {};
   const intent = b.intent_filters?.company ?? {};
-  const head = (label: string) => (b.icp_name ? `${b.icp_name} · ${label}` : label);
+  const head = (label: string) => (b.icp_name && !hideName ? `${b.icp_name} · ${label}` : label);
   return (
     <>
       <SpecHead>{head("Company search · firmographics")}</SpecHead>
@@ -359,7 +432,8 @@ export function SpecReview({
   structuring: boolean;
   saving: boolean;
   ready: boolean;
-  onStructure: () => void;
+  // `icpIds` restricts the run to those ICP profiles (a selective re-scope); empty → every ICP.
+  onStructure: (icpIds: string[]) => void;
   onAcceptIcp: (s: IcpSuggestion) => void;
   // The client's ICP profiles (id + display name) — drives the panel's ICP filter even when the
   // stored scope predates per-ICP generation (a legacy scope has no blocks to derive names from).
@@ -381,9 +455,9 @@ export function SpecReview({
     setPromptErr(null);
     setSaveMsg(null);
     try {
-      // The panel's ICP filter narrows the previewed INPUT to that profile (review lens only —
-      // the live Generate always sends every ICP).
-      const p = await getScopingPrompt(client, viewIcp || undefined);
+      // The previewed INPUT is always the full brief + every ICP — the live Generate sends the
+      // same, and there is no per-ICP review lens.
+      const p = await getScopingPrompt(client);
       setPrompt(p);
       setSystemDraft(p.system);
       setIsCustom(p.system_is_custom);
@@ -450,10 +524,8 @@ export function SpecReview({
           intent_filters: s.intent_filters,
         },
       ];
-  // Multi-ICP review filter: pick one ICP profile or view all. Options come from the client's
-  // live ICP list (so the filter shows even over a legacy pre-multi-ICP scope), with the blocks'
-  // own echoed names as fallback when the caller passes none.
-  const [viewIcp, setViewIcp] = useState("");
+  // Per-ICP coverage badges (which profiles this scope covers). Options come from the client's
+  // live ICP list, with the blocks' own echoed names as fallback when the caller passes none.
   const isPerIcp = Boolean(s.icp_targeting?.length);
   const blockNames = new Map(
     blocks
@@ -463,20 +535,41 @@ export function SpecReview({
   const icpOptions = icps.length
     ? icps
     : [...blockNames].map(([id, name]) => ({ id, name }));
-  const icpLabel = (id: string) =>
-    icps.find((o) => o.id === id)?.name ?? blockNames.get(id) ?? "ICP";
-  // What the sections show for the current selection:
-  //  · All ICPs → every block (a v3 scope's single merged block reads as one unnamed group)
-  //  · one ICP × v4 → that ICP's block, or a "no scope yet · regenerate" callout when missing
-  //  · one ICP × v3 → the merged block + a "legacy scope, applies to all ICPs" callout
-  const matched = viewIcp && isPerIcp ? blocks.filter((b) => (b.icp_id ?? "") === viewIcp) : blocks;
-  const shownBlocks = matched;
-  const missingIcpScope = Boolean(viewIcp) && isPerIcp && matched.length === 0;
-  const legacyScopeNote = Boolean(viewIcp) && !isPerIcp;
+  // Every block is rendered; each ICP's detail is individually collapsible (default collapsed —
+  // `openScopes` starts empty, so the scope opens with every ICP's targeting folded away).
+  const shownBlocks = blocks;
+  const [openScopes, setOpenScopes] = useState<Set<string>>(new Set());
+  const toggleScope = (key: string) =>
+    setOpenScopes((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  // Which ICP profiles the next AI Scoping run regenerates (checkbox per ICP row). Empty = every
+  // ICP (a full generation). Ids that no longer exist are filtered out at run time.
+  const [selectedIcps, setSelectedIcps] = useState<Set<string>>(new Set());
+  const toggleSelect = (id: string) =>
+    setSelectedIcps((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
   const val = s.icp_validation ?? {};
   const profiles = val.customer_profiles ?? [];
   const cp = s.credit_policy ?? {};
   const blocked = structuring || saving || !ready;
+  // Per-ICP rows drive the collapsible list AND the selection: shown when the client has ICP
+  // profiles and the scope is per-ICP (v4) — or before any scope exists, so a freshly-created ICP
+  // reads as "No AI scope yet" and can be generated on its own. A legacy v3 (merged) spec falls
+  // back to the unnamed merged block(s) below.
+  const showPerIcp = icpOptions.length > 0 && (isPerIcp || !spec);
+  const perIcpRows = icpOptions.map((o) => ({
+    id: o.id,
+    name: o.name,
+    block: blocks.find((b) => (b.icp_id ?? "") === o.id) ?? null,
+  }));
+  const selectedList = icpOptions.filter((o) => selectedIcps.has(o.id)).map((o) => o.id);
+  const runScoping = () => onStructure(selectedList);
   return (
     <>
     <div className="panel" style={{ marginTop: 18 }}>
@@ -487,46 +580,9 @@ export function SpecReview({
             Complete all 6 sections of the brief first. We summarize the full brief to source
             prospects.
           </div>
-          {/* Per-ICP coverage at a glance: which profiles the CURRENT scope covers (✓), which
-              were added after the last generation (needs a regenerate), or — for a legacy
-              pre-multi-ICP scope — that one merged scope still applies to every profile. */}
-          {spec && icpOptions.length > 0 && (
-            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-              {icpOptions.map((o) =>
-                !isPerIcp ? (
-                  <span key={o.id} className="badge badge-warn">
-                    {o.name} · merged scope
-                  </span>
-                ) : blockNames.has(o.id) ? (
-                  <span key={o.id} className="badge badge-ok">
-                    {o.name} ✓
-                  </span>
-                ) : (
-                  <span key={o.id} className="badge badge-warn">
-                    {o.name} · no scope yet
-                  </span>
-                )
-              )}
-            </div>
-          )}
         </div>
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
           <div className="row" style={{ gap: 8 }}>
-            {icpOptions.length > 1 && (
-              <select
-                className="select"
-                value={viewIcp}
-                onChange={(e) => setViewIcp(e.target.value)}
-                title="Review the generated scope (and the View-prompt input) for one ICP profile, or all"
-              >
-                <option value="">All ICPs</option>
-                {icpOptions.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    {o.name}
-                  </option>
-                ))}
-              </select>
-            )}
             <button
               type="button"
               className="btn btn-ghost btn-sm"
@@ -542,7 +598,9 @@ export function SpecReview({
               title={
                 !ready
                   ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
-                  : "Summarize this brief with AI into a prospect scope."
+                  : selectedList.length
+                    ? "Regenerate the AI scope for only the selected ICP(s)."
+                    : "Summarize this brief with AI into a prospect scope for every ICP."
               }
             >
               <button
@@ -550,55 +608,144 @@ export function SpecReview({
                 className="btn btn-accent btn-sm"
                 disabled={blocked}
                 style={blocked ? { pointerEvents: "none" } : undefined}
-                onClick={onStructure}
+                onClick={runScoping}
               >
-                {structuring ? "Generating…" : spec ? "Regenerate Scope" : "Generate Scope"}
+                {structuring ? "Generating…" : "AI Scoping"}
               </button>
             </span>
           </div>
-          {/* Time-demand note: scoping runs DeepSeek V4 Pro (deep reasoning + web search) on a
-              background worker, so it takes ~1 min — but the user is never blocked while it runs.
-              Shown only while a run is in flight; hidden once it completes. */}
-          {structuring && (
+          {/* Time-demand note while running; otherwise a one-line reminder of what the next run
+              covers — the selected ICP(s), or every ICP when none are ticked. */}
+          {structuring ? (
             <div
               className="ph-sub"
               style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
             >
-              ⏱ Generating… ~1 min · runs in the background, keep working
+              {selectedList.length > 1
+                ? `⏱ Generating… ~1 min per ICP · runs in the background, keep working`
+                : `⏱ Generating… ~1 min · runs in the background, keep working`}
             </div>
-          )}
+          ) : showPerIcp ? (
+            <div
+              className="ph-sub"
+              style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
+            >
+              {selectedList.length
+                ? `Scopes ${selectedList.length} selected ICP${
+                    selectedList.length > 1 ? "s, one at a time" : ""
+                  }`
+                : "Scopes every ICP · tick ICPs below to scope only those"}
+            </div>
+          ) : null}
         </div>
       </div>
-      {!spec ? (
-        <div className="panel-pad">
+      <div className="panel-pad">
+        {showPerIcp ? (
+          // One collapsible per ICP profile: the name + an AI-scope status badge head each row, and
+          // a checkbox ticks it for the next AI Scoping run. Rows WITH a generated block expand to
+          // the targeting detail (folded by default); rows without read "No AI scope yet".
+          perIcpRows.map((row) => {
+            const open = openScopes.has(row.id);
+            const has = Boolean(row.block);
+            const checked = selectedIcps.has(row.id);
+            // This ICP block's OWN build time — never a shared fallback, so a re-scope of one ICP
+            // can't make an untouched ICP look re-stamped. A block with no stamp (old pre-stamp
+            // spec) shows no time until it's individually scoped.
+            const when = has ? whenLabel(row.block?.generated_at) : "";
+            return (
+              <div className={clsx("scope-acc", open && has && "open")} key={row.id}>
+                <div className="scope-acc-head">
+                  <input
+                    type="checkbox"
+                    className="tbl-check"
+                    checked={checked}
+                    onChange={() => toggleSelect(row.id)}
+                    title="Select this ICP for the next AI Scoping run"
+                  />
+                  <button
+                    type="button"
+                    className="scope-acc-toggle"
+                    aria-expanded={open && has}
+                    disabled={!has}
+                    onClick={() => has && toggleScope(row.id)}
+                  >
+                    <span
+                      className={clsx("scope-acc-caret", open && has && "open")}
+                      aria-hidden="true"
+                      style={{ visibility: has ? undefined : "hidden" }}
+                    >
+                      ▸
+                    </span>
+                    <span className="scope-acc-title">{row.name}</span>
+                    <span className={"badge badge-" + (has ? "ok" : "warn")}>
+                      {has ? "AI scope ✓" : "No AI scope yet"}
+                    </span>
+                    {has && (
+                      <span className="scope-acc-hint">
+                        {open ? "Hide targeting" : "Show targeting"}
+                      </span>
+                    )}
+                  </button>
+                  {when && (
+                    <span className="scope-acc-when" title="When this ICP's scope was generated">
+                      Generated {when}
+                    </span>
+                  )}
+                </div>
+                {open && has && (
+                  <div className="scope-acc-body">
+                    <TargetingSections b={row.block!} hideName />
+                  </div>
+                )}
+              </div>
+            );
+          })
+        ) : !spec ? (
           <div className="sum-empty">
             Not generated yet · fill in the brief, then generate your Apollo-ready scope.
           </div>
-        </div>
-      ) : (
-        <div className="panel-pad">
-          {legacyScopeNote && (
-            <div className="brief-callout">
-              <span className="ci">!</span>
-              <div>
-                <strong>This scope predates per-ICP generation</strong> — it was built from all
-                ICPs merged, so the same scope applies to {icpLabel(viewIcp)} and every other
-                profile. Click Regenerate Scope to generate one scope per ICP.
+        ) : (
+          // Legacy v3 (merged) or brief-only spec: the single unnamed block reads as one group.
+          shownBlocks.map((b, i) => {
+            const key = b.icp_id || `blk-${i}`;
+            const open = openScopes.has(key);
+            const title = b.icp_name || "Merged scope · applies to all ICPs";
+            const when = whenLabel(b.generated_at);
+            return (
+              <div className={clsx("scope-acc", open && "open")} key={key}>
+                <div className="scope-acc-head">
+                  <button
+                    type="button"
+                    className="scope-acc-toggle"
+                    aria-expanded={open}
+                    onClick={() => toggleScope(key)}
+                  >
+                    <span className={clsx("scope-acc-caret", open && "open")} aria-hidden="true">
+                      ▸
+                    </span>
+                    <span className="scope-acc-title">{title}</span>
+                    <span className="scope-acc-hint">
+                      {open ? "Hide targeting" : "Show targeting"}
+                    </span>
+                  </button>
+                  {when && (
+                    <span className="scope-acc-when" title="When this scope was generated">
+                      Generated {when}
+                    </span>
+                  )}
+                </div>
+                {open && (
+                  <div className="scope-acc-body">
+                    <TargetingSections b={b} hideName />
+                  </div>
+                )}
               </div>
-            </div>
-          )}
-          {missingIcpScope ? (
-            <div className="brief-callout">
-              <span className="ci">!</span>
-              <div>
-                <strong>No scope for {icpLabel(viewIcp)} yet</strong> — this profile was added
-                after the last generation. Click Regenerate Scope to include it.
-              </div>
-            </div>
-          ) : (
-            shownBlocks.map((b, i) => <TargetingSections key={b.icp_id || i} b={b} />)
-          )}
+            );
+          })
+        )}
 
+        {spec && (
+          <>
           <SpecHead>ICP validation · who actually pays</SpecHead>
           <div className="icp-grid">
             <SpecCell label="Paying-customer summary">
@@ -649,24 +796,8 @@ export function SpecReview({
             </SpecCell>
           </div>
 
-          {spec.gaps.length > 0 && (
-            <div className="brief-callout" style={{ marginTop: 8 }}>
-              <span className="ci">!</span>
-              <div>
-                <strong>
-                  {spec.gaps.length} gap{spec.gaps.length > 1 ? "s" : ""} to sharpen targeting
-                </strong>
-                <ul style={{ margin: "8px 0 0", paddingLeft: 18 }}>
-                  {spec.gaps.map((g, i) => (
-                    <li key={i}>
-                      <strong>{g.field}</strong>
-                      {g.icp_name ? ` · ${g.icp_name}` : ""} — {g.ask}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </div>
-          )}
+          {/* Scoping gaps are NOT shown here — each is routed to the brief section that owns the
+              missing input (see gapSection in brief/page.tsx) so the operator fixes it in place. */}
           {(spec.icp_suggestions ?? []).map((sug, i) => (
             <div className="icp-suggest" key={i}>
               <div className="is-head">
@@ -718,8 +849,9 @@ export function SpecReview({
               )}
             </div>
           ))}
-        </div>
-      )}
+          </>
+        )}
+      </div>
     </div>
 
       <Modal
@@ -744,9 +876,7 @@ export function SpecReview({
               <span className="badge badge-info">model · {prompt.model.join(" → ")}</span>
               <span className="badge badge-neutral">purpose · {prompt.purpose}</span>
               <span className="badge badge-neutral">{prompt.prompt_version}</span>
-              <span className={"badge badge-" + (viewIcp ? "warn" : "neutral")}>
-                input · {viewIcp ? icpLabel(viewIcp) : "all ICPs"}
-              </span>
+              <span className="badge badge-neutral">input · all ICPs</span>
             </div>
             <div className="prompt-cols">
               {/* LEFT — System prompt: editable + Save (adjust for testing; saved per client). */}
@@ -782,9 +912,7 @@ export function SpecReview({
               <div className="prompt-col">
                 <div className="prompt-col-head">
                   <label>Input prompt</label>
-                  <span className="ph-sub">
-                    read-only · brief + {viewIcp ? `${icpLabel(viewIcp)} only` : "all ICPs"}
-                  </span>
+                  <span className="ph-sub">read-only · brief + all ICPs</span>
                 </div>
                 <pre className="prompt-pre">{prompt.user}</pre>
               </div>
@@ -792,9 +920,6 @@ export function SpecReview({
             <div className="ph-sub prompt-hint">
               Edits are saved for this client and used on the next Generate Scope. Save the default
               text to reset.
-              {viewIcp
-                ? ` · Input shown for ${icpLabel(viewIcp)} only — the live Generate always sends every ICP and returns one scope per ICP.`
-                : ""}
             </div>
           </>
         ) : null}

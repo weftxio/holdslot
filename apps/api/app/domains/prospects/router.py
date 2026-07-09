@@ -12,8 +12,10 @@ explicit step (`/companies/rescore`, `/prospects/rescore`), and `confirm_enrich`
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -33,7 +35,16 @@ from app.domains.briefs.research_spec import (
     targeting_for_icp,
 )
 from app.domains.icps import icp_docs
-from app.domains.prospects import apollo_map, find, fit, lookalike, scoring
+from app.domains.prospects import (
+    apollo_map,
+    feedback,
+    find,
+    fit,
+    labeling,
+    lookalike,
+    scoring,
+    tech_vocab,
+)
 from app.domains.prospects.identity import normalize_domain, normalize_email
 from app.domains.prospects.schemas import (
     CompanyEnrichIn,
@@ -104,7 +115,22 @@ _VALID_STAGES = (COMPANY_STAGE, PROSPECT_STAGE)
 # scored row is one blocking LLM call — so a single request must bound how many it does. Larger sets
 # are drained over repeated calls (find_people advances each processed org to `people_found`; the
 # operator re-clicks to continue). Keep the product (calls × ~1-2s) comfortably under 30s.
-MAX_COMPANIES_PER_FIND = 15  # company-search rows scored per find-company request
+MAX_COMPANIES_PER_FIND = 15  # LLM-scored companies per RESCORE/update request (30s sync cap)
+# D+ Stage 1b — find-company fetches + stage-0-classifies this many rows. Fit-scoring is deferred to
+# the async rescore path, so find is latency-bound (classify+enrich), NOT credit-bound (company
+# search + org enrich are FREE on this account). The find-company path is ASYNC (a background
+# scoring_job, not the 30s request), so the ceiling is the worker/Lambda budget — Stage 1b lifts it
+# to 100 to hit the ≥3× rows/find KPI. The sync `/find-company` route is clamped separately below.
+FIND_COMPANY_LIMIT = int(os.environ.get("HOLDSLOT_FIND_COMPANY_LIMIT", "100"))
+# The synchronous `/find-company` route (tests / back-compat; the web app uses the async variant)
+# still runs classify+enrich inline behind the 30s API-Gateway cap, so it keeps the pre-1b ceiling.
+SYNC_FIND_COMPANY_LIMIT = int(os.environ.get("HOLDSLOT_SYNC_FIND_COMPANY_LIMIT", "25"))
+# D+ Stage 1b relax ladder. A company search returning fewer than FIND_RELAX_MIN matches auto-widens
+# one deterministic rung at a time (see `_company_relax_ladder`) so a find never dead-ends on an
+# over-narrow AI scope (KPI: <10% zero-result finds). FIND_OVER_BROAD flags a scope so loose the
+# result is noise (surfaced in the Find-history drawer, not auto-narrowed). Both env-tunable.
+FIND_RELAX_MIN = int(os.environ.get("HOLDSLOT_FIND_RELAX_MIN", "25"))
+FIND_OVER_BROAD = int(os.environ.get("HOLDSLOT_FIND_OVER_BROAD", "100000"))
 MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apollo call each)
 MAX_PEOPLE_PER_FIND = 15  # LLM-scored people per RESCORE request (30s sync cap; the spend)
 MAX_PEOPLE_PER_FIND_RUN = 250  # unscored people landed per find-people request (free, no LLM)
@@ -164,6 +190,63 @@ def _build_exclusions(brief: Brief | None, spec: ResearchSpec | None):
 
 def _exclusions(db: Session, tenant_id):
     return _build_exclusions(_latest_brief(db, tenant_id), _latest_spec(db, tenant_id))
+
+
+def _feedback_rows(db: Session, tenant_id) -> list[dict]:
+    """The tenant's scored companies as the plain rows `feedback.py` aggregates over (D+ Stage 3/4):
+    tier + market flag + country + descriptive keywords/industry + enrich technology names. Only
+    scored rows carry signal."""
+    rows = db.execute(
+        select(
+            Company.fit_tier, Company.fit_components, Company.country,
+            Company.industry, Company.evidence,
+        ).where(Company.tenant_id == tenant_id, Company.fit_tier.is_not(None))
+    ).all()
+    return [
+        {
+            "tier": tier,
+            "market_excluded": (comps or {}).get("market_excluded"),
+            "country": country,
+            "industry": industry,
+            "keywords": (evidence or {}).get("keywords") or [],
+            "technologies": (evidence or {}).get("technology_names") or [],
+        }
+        for tier, comps, country, industry, evidence in rows
+    ]
+
+
+def _resolve_tech(names: list[str]) -> list[str]:
+    """Free-text tech names → Apollo tech UIDs via the cached `supported_technologies_csv` vocab
+    (D+ Stage 4). Best-effort: an Apollo/transport failure or empty vocab degrades to 'no tech
+    filter' (never crashes the find). Returns the ordered, de-duped UID hit list; ambiguous/miss
+    names are dropped (never guessed) — see `tech_vocab.resolve`."""
+    clean = [n for n in names if n and str(n).strip()]
+    if not clean:
+        return []
+    try:
+        vocab = tech_vocab.parse_vocab(apollo.supported_technologies_csv())
+    except apollo.ApolloError as e:
+        log.warning("tech vocab unavailable — skipping tech filter: %s", e)
+        return []
+    return tech_vocab.resolve(clean, vocab).uids
+
+
+def _merge_uids(filter_body: dict, key: str, uids: list[str]) -> dict:
+    """Merge `uids` into `filter_body[key]`, de-duped and order-preserving (existing first)."""
+    if not uids:
+        return filter_body
+    existing = filter_body.get(key) or []
+    return {**filter_body, key: list(dict.fromkeys([*existing, *uids]))}
+
+
+def _drop_conflicts(values: list[str], reserved: set[str], *, fold: bool = False) -> list[str]:
+    """Drop any `values` entry that also appears in `reserved` — the self-contradiction guard for
+    the two server-added filter pairs: never exclude a location the scope includes, never forbid a
+    tech UID the ICP requires (either would AND include∩exclude to zero results). `fold` case-folds
+    the membership test for location names; tech UIDs come pre-normalized so match exactly."""
+    if fold:
+        return [v for v in values if str(v).strip().lower() not in reserved]
+    return [v for v in values if v not in reserved]
 
 
 # W7 — only the FIT-relevant brief fields reach the paid scorer (founder-approved keep-list,
@@ -274,6 +357,13 @@ def _prospect_out(p: Prospect) -> ProspectOut:
         fit_tier=p.fit_tier,
         fit_reason=comps.get("fit_reason", ""),
         reason_tags=comps.get("reason_tags", []),
+        # Scoring v2 — label/score_total from columns; reason/subscores/flags/icp from components.
+        label=p.label,
+        score_total=p.score_total,
+        reason=p.fit_reason or comps.get("reason", "") or comps.get("fit_reason", ""),
+        subscores=comps.get("subscores", {}),
+        flags=comps.get("flags", []),
+        icp=comps.get("icp"),
         source=p.source,
         status=p.status,
         created_at=p.created_at.isoformat() if p.created_at else None,
@@ -354,6 +444,14 @@ def _company_out(c: Company) -> CompanyOut:
         business_model=comps.get("business_model", ""),
         market_excluded=bool(comps.get("market_excluded", False)),
         reason_tags=comps.get("reason_tags", []),
+        # Scoring v2 — label/score_total from the columns; the rest from components.
+        label=c.label,
+        score_total=c.score_total,
+        reason=c.fit_reason or comps.get("reason", "") or comps.get("fit_reason", ""),
+        subscores=comps.get("subscores", {}),
+        flags=comps.get("flags", []),
+        icp=comps.get("icp"),
+        trigger_line=comps.get("trigger_line", ""),
         enrichment=_company_enrichment(c.evidence),
         source=c.source,
         status=c.status,
@@ -431,12 +529,320 @@ def _apply_company_score(c: Company, scored: dict) -> float:
     return float(scored.get("cost_usd") or 0.0)
 
 
+# --- scoring v2 — the label engine (docs/holdslot-scoring-spec-v2.md) ---------------------------
+# The v2 rescore path: the free deterministic gates (rules → data → size) run FIRST; the paid
+# web-grounded score call fires ONLY on a gate-survivor (spec §3 re-order — a rule-killed row is
+# never web-checked). The Verdict is persisted to the v2 columns (`label`/`score_total`) +
+# `fit_components`; the v1 `fit_*` columns are left untouched (expand → cutover → contract).
+
+
+def _rules_config(brief: Brief | None, spec: ResearchSpec | None) -> labeling.RulesConfig:
+    """The client's v2 `RulesConfig` (spec §5) — market from the brief, geographies from the spec's
+    search HQ filter, excluded domains from the `excludeCustomers` set (decision ⑧-B: the client's
+    'who to avoid' domains become the client-exclusion set — labeled `excluded_by_rules`, not
+    dropped). Company rows are matched by domain, which the exclusion set carries reliably."""
+    ex = _build_exclusions(brief, spec)
+    return labeling.build_rules_config(
+        brief.data if brief else {},
+        spec.spec if spec else {},
+        excluded_domains=tuple(ex.domains),
+    )
+
+
+def _company_det_inputs(c: Company) -> dict:
+    """The deterministic `assign_label` inputs from a company row: the stage-0 classification (in
+    `fit_components`: business_model / hq_country / has_b2b_line) + firmographics + the raw Apollo
+    headcount. The caller adds the client-wide `config` + `size_ceiling`."""
+    comps = c.fit_components or {}
+    ev = c.evidence or {}
+    return {
+        "business_model": comps.get("business_model") or "Unknown",
+        "has_b2b_line": bool(comps.get("has_b2b_line")),
+        "hq_country": comps.get("hq_country") or "",
+        "industry": c.industry,
+        "website": c.website,
+        "name": c.name,
+        "domain": c.domain,
+        "field_country": c.country,
+        "headcount": ev.get("estimated_num_employees"),
+    }
+
+
+def _apply_company_verdict(
+    c: Company, verdict: labeling.Verdict, *, signals: dict | None = None
+) -> None:
+    """Persist a v2 `Verdict` on a company row: `label`/`score_total` cols · reason→`fit_reason`
+    · subscores/flags/icp/trigger_line/liveness→`fit_components`. `signals` present = the web score
+    call ran (adds trigger_line + the liveness verdict). v1 `fit_*` untouched."""
+    comps = dict(c.fit_components or {})
+    comps["reason"] = verdict.reason
+    comps["flags"] = verdict.flags
+    comps["icp"] = verdict.icp
+    if verdict.subscores is not None:
+        comps["subscores"] = verdict.subscores
+    if signals is not None:
+        comps["trigger_line"] = signals.get("trigger_line", "")
+        comps["liveness"] = signals.get("liveness", {})
+    c.label = verdict.label
+    c.score_total = verdict.score_total
+    if verdict.reason:
+        c.fit_reason = verdict.reason
+    c.fit_components = comps
+
+
+def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
+    """v2 rescore (spec §3): deterministic gates on every row → the paid web score on survivors →
+    persist the `Verdict`. Records one `research_run` for cost; returns `{scored, failed, cost}`.
+    Slow (web + reasoning) — async path only. Mirrors `_score_companies` wave mechanics."""
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, fit.COMPANY_SCORE_STAGE)
+    rubric_body = rubric.body if rubric else ""
+    config = _rules_config(brief, spec)
+    ceiling = labeling.size_ceiling_from_spec(spec.spec if spec else {})
+    targeting_cache: dict[str | None, dict] = {}
+
+    def _targeting_for(icp_id) -> dict:
+        key = str(icp_id) if icp_id else None
+        if key not in targeting_cache:
+            targeting_cache[key] = _build_targeting(
+                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
+            )
+        return targeting_cache[key]
+
+    # Pass 1 — free deterministic gates. A caught row (excluded_by_rules / low_fit) is labeled now
+    # and never web-checked; a survivor (label None) goes to the paid pass.
+    survivors: list[Company] = []
+    for c in rows:
+        v = labeling.assign_label(config=config, size_ceiling=ceiling, **_company_det_inputs(c))
+        if v.label is not None:
+            _apply_company_verdict(c, v)
+        else:
+            survivors.append(c)
+
+    # Pass 2 — the paid web-grounded liveness + score call, survivors only.
+    jobs = [
+        (
+            c,
+            (
+                lambda payload=_company_payload(c), targeting=_targeting_for(c.icp_id): (
+                    fit.company_score_v2(
+                        tenant_id=tenant_id,
+                        rubric_body=rubric_body,
+                        company=payload,
+                        targeting=targeting,
+                    )
+                )
+            ),
+        )
+        for c in survivors
+    ]
+    cost = 0.0
+    web_scored = 0
+    for c, signals in _score_concurrently(jobs):
+        if signals is None:
+            continue
+        v = labeling.assign_label(
+            config=config,
+            size_ceiling=ceiling,
+            **_company_det_inputs(c),
+            liveness=signals["liveness"],
+            icp_match=signals["icp_match"],
+            subscores=signals["subscores"],
+            extra_flags=signals["flags"],
+        )
+        _apply_company_verdict(c, v, signals=signals)
+        cost += float(signals.get("cost_usd") or 0.0)
+        web_scored += 1
+
+    db.add(
+        ResearchRun(
+            tenant_id=tenant_id,
+            run_id=_apollo_run_id(),
+            spec_version=spec.version if spec else None,
+            source="rescore",
+            rubric_version=fit.SCORE_RUBRIC_VERSION,
+            rows_pushed=len(rows),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for c in rows:
+        db.refresh(c)
+    web_failed = len(survivors) - web_scored
+    return {
+        "scored": len(rows) - web_failed,  # gated rows + web successes both carry a label
+        "failed": web_failed,
+        "cost_usd": round(cost, 6),
+    }
+
+
+def _label_companies_deterministic(
+    db: Session, tenant_id, rows: list[Company], *, brief: Brief | None = None, spec=None
+) -> None:
+    """Find-time v2 labeling (spec §3 free gates + ⑧-B). After stage-0 classify has stamped
+    business_model / hq_country / has_b2b_line, run the deterministic ladder (rules → data → size)
+    on each NEW row so `excluded_by_rules` / `low_fit` show immediately — no rescore click, no spend
+    (no web call). A survivor (label None) stays "needs re-score" until the paid pass. Idempotent:
+    the gate verdict is a pure function of the row + config. `brief`/`spec` are passed in when the
+    caller already has them (the find path), else fetched."""
+    if not rows:
+        return
+    brief = brief if brief is not None else _latest_brief(db, tenant_id)
+    spec = spec if spec is not None else _latest_spec(db, tenant_id)
+    config = _rules_config(brief, spec)
+    ceiling = labeling.size_ceiling_from_spec(spec.spec if spec else {})
+    for c in rows:
+        v = labeling.assign_label(config=config, size_ceiling=ceiling, **_company_det_inputs(c))
+        if v.label is not None:
+            _apply_company_verdict(c, v)
+
+
+def _prospect_v2_payload(enrichment: dict | None, company: Company | None) -> dict:
+    """The person facts the v2 people scorer judges — decision-maker signals + the parent company's
+    LABEL (not the v1 fit verdict). The company label caps the person server-side; the model reads
+    it only as context and does NOT re-judge the company."""
+    payload = _prospect_payload(enrichment, company)
+    payload.pop("company_fit", None)  # v1 verdict — the v2 people call never re-judges the company
+    if company is not None:
+        payload["company_label"] = company.label
+        payload["company_reason"] = company.fit_reason or ""
+    return payload
+
+
+def _apply_prospect_verdict(p: Prospect, verdict: labeling.Verdict) -> None:
+    """Persist a v2 people `Verdict`: `label`/`score_total` columns + reason/subscores/flags into
+    `fit_components` (+ `fit_reason` parity)."""
+    comps = dict(p.fit_components or {})
+    comps["reason"] = verdict.reason
+    comps["flags"] = verdict.flags
+    if verdict.subscores is not None:
+        comps["subscores"] = verdict.subscores
+    p.label = verdict.label
+    p.score_total = verdict.score_total
+    if verdict.reason:
+        p.fit_reason = verdict.reason
+    p.fit_components = comps
+
+
+def _score_prospects_v2(db: Session, tenant_id, rows: list[Prospect]) -> dict:
+    """v2 people rescore: the company label caps each person (spec people-tier). Deterministic gates
+    (parent-excluded / avoided title / missing title-or-contact) run free; survivors get the no-web
+    people-axis score. Returns `{scored, failed, cost_usd}`."""
+    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
+    rubric = _latest_doc(db, tenant_id, fit.PROSPECT_SCORE_STAGE)
+    rubric_body = rubric.body if rubric else ""
+    # avoidTitles are PER-ICP (ICP docs), keyed by icp id — mirrors find.filter_people (the people
+    # find path), not the brief. A title avoided in one profile must not gate another.
+    avoid_by_icp = {
+        d["id"]: tuple(t for t in (d.get("avoidTitles") or []) if t)
+        for d in icp_docs(db, tenant_id, None)
+    }
+
+    def _avoid_for(p: Prospect) -> tuple[str, ...]:
+        return avoid_by_icp.get(str(p.icp_id), ()) if p.icp_id else ()
+
+    company_ids = {p.company_id for p in rows if p.company_id}
+    companies = (
+        {
+            c.id: c
+            for c in db.execute(
+                select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(company_ids))
+            ).scalars()
+        }
+        if company_ids
+        else {}
+    )
+    targeting_cache: dict[str | None, dict] = {}
+
+    def _targeting_for(icp_id) -> dict:
+        key = str(icp_id) if icp_id else None
+        if key not in targeting_cache:
+            targeting_cache[key] = _build_targeting(
+                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
+            )
+        return targeting_cache[key]
+
+    def _det(p: Prospect) -> labeling.Verdict:
+        e = p.enrichment or {}
+        company = companies.get(p.company_id)
+        return labeling.assign_person_label(
+            company_label=company.label if company else None,
+            title=e.get("title"),
+            has_contact=bool(e.get("email")),
+            avoid_titles=_avoid_for(p),
+        )
+
+    # Pass 1 — deterministic people gates.
+    survivors: list[Prospect] = []
+    for p in rows:
+        v = _det(p)
+        if v.label is not None:
+            _apply_prospect_verdict(p, v)
+        else:
+            survivors.append(p)
+
+    # Pass 2 — the no-web people-axis score on survivors.
+    jobs = [
+        (
+            p,
+            (
+                lambda payload=_prospect_v2_payload(p.enrichment, companies.get(p.company_id)),
+                targeting=_targeting_for(p.icp_id): fit.prospect_score_v2(
+                    tenant_id=tenant_id,
+                    rubric_body=rubric_body,
+                    enrichment=payload,
+                    targeting=targeting,
+                )
+            ),
+        )
+        for p in survivors
+    ]
+    cost = 0.0
+    web_scored = 0
+    for p, scored in _score_concurrently(jobs):
+        if scored is None:
+            continue
+        company = companies.get(p.company_id)
+        e = p.enrichment or {}
+        v = labeling.assign_person_label(
+            company_label=company.label if company else None,
+            title=e.get("title"),
+            has_contact=bool(e.get("email")),
+            avoid_titles=_avoid_for(p),
+            subscores=scored["subscores"],
+            reason=scored["reason"],
+            flags=scored["flags"],
+        )
+        _apply_prospect_verdict(p, v)
+        cost += float(scored.get("cost_usd") or 0.0)
+        web_scored += 1
+
+    db.add(
+        ResearchRun(
+            tenant_id=tenant_id,
+            run_id=_apollo_run_id(),
+            spec_version=spec.version if spec else None,
+            source="rescore",
+            rubric_version=fit.SCORE_RUBRIC_VERSION,
+            rows_pushed=len(rows),
+            cost_usd=round(cost, 6),
+        )
+    )
+    db.commit()
+    for p in rows:
+        db.refresh(p)
+    web_failed = len(survivors) - web_scored
+    return {"scored": len(rows) - web_failed, "failed": web_failed, "cost_usd": round(cost, 6)}
+
+
 # A full find can score up to MAX_*_PER_FIND rows; a *sequential* LLM call per row overruns the 30s
 # API Gateway sync cap (→ 503). The LLM client is stdlib-urllib with its own telemetry session per
 # call, so the calls are thread-safe — we fan them out, then apply each result on the main thread
-# (ORM mutation stays single-threaded). Workers ≥ the per-find cap so the whole batch scores in ONE
-# wave: with DeepSeek V4 Pro reasoning ON the wall-clock is ~one reasoning call, not stacked waves.
-_SCORE_WORKERS = MAX_COMPANIES_PER_FIND
+# (ORM mutation stays single-threaded). The concurrency WAVE WIDTH — deliberately decoupled from the
+# find-company row cap (D+ Stage 1a `FIND_COMPANY_LIMIT`) so widening the find never fans out an
+# unbounded number of concurrent LLM calls. Sized to the sync rescore batch
+# (`MAX_COMPANIES_PER_FIND`) so THAT path still scores in one reasoning wave. Env-tunable.
+_SCORE_WORKERS = int(os.environ.get("HOLDSLOT_SCORE_WORKERS", str(MAX_COMPANIES_PER_FIND)))
 
 
 def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
@@ -485,6 +891,10 @@ def classify_companies(tenant_id, rows: list[Company], brief: Brief | None) -> f
         business_model = res.get("business_model") or "Unknown"
         comps = dict(c.fit_components or {})
         comps["business_model"] = business_model
+        # v2 (scoring-spec-v2 §5) — stash the description-derived HQ country + B2B-line guard so
+        # the v2 rules engine reads them at label time. Additive; v1's market gate below unchanged.
+        comps["hq_country"] = res.get("hq_country") or ""
+        comps["has_b2b_line"] = bool(res.get("has_b2b_line"))
         # Gate at find/add time: fit_score=None means an excluded row is buried (Below·0) up-front,
         # while a non-excluded row is left UNSCORED for the on-demand "Get AI score" pass.
         score, tier, excluded, reason = fit.apply_market_gate(
@@ -578,6 +988,8 @@ def add_company(
     # so the manual row carries its Model chip immediately and is market-gated like a found row. A
     # re-add that already has a label is skipped by classify_companies (idempotent).
     classify_companies(ctx.tenant.id, [company], _latest_brief(db, ctx.tenant.id))
+    # Scoring v2: stamp the free deterministic label so a manual row shows its v2 verdict too.
+    _label_companies_deterministic(db, ctx.tenant.id, [company])
     db.commit()
     db.refresh(company)
     return _company_out(company)
@@ -712,14 +1124,23 @@ def find_company(
     Rows come back UNSCORED (`score=False`): fit-scoring a fresh batch is the slow step and would
     blow the 30s gateway cap, so the web app fires scoring in the background (chunked `/rescore`)
     and shows a per-row "Scoring…" status. The scoring spend is then booked under `rescore` runs.
+
+    This synchronous route is clamped to `SYNC_FIND_COMPANY_LIMIT` (the pre-1b ceiling); the web app
+    uses `/find-company-async` (worker, no 30s cap), which reaches `FIND_COMPANY_LIMIT`.
     """
-    return _find_company_core(db, ctx.tenant.id, body.model_dump())
+    return _find_company_core(db, ctx.tenant.id, body.model_dump(), ceiling=SYNC_FIND_COMPANY_LIMIT)
 
 
-def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
+def _find_company_core(
+    db: Session, tenant_id, params: dict, *, ceiling: int | None = None
+) -> FindResult:
     """Flow-A find from the latest spec (the sync endpoint's body — `limit`, `icp_id`, and the
     optional `company_search_params` / `intent_filters` Settings overrides). Shared by the sync
     `/companies/find-company` endpoint and the W4 async worker. Rows land UNSCORED.
+
+    `ceiling` caps the rows: the async worker passes the full `FIND_COMPANY_LIMIT` (bounded by the
+    Lambda timeout, not the 30s gateway); the sync route passes the smaller sync cap. Defaults to
+    `FIND_COMPANY_LIMIT` when unset.
 
     Multi-ICP (spec v4): the find is ICP-scoped — `icp_id` picks which ICP's targeting block runs.
     A single-block spec resolves without one (and the row still gets labeled from the block); a
@@ -749,9 +1170,10 @@ def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
             icp = uuid.UUID(str(block["icp_id"]))
         except ValueError:
             icp = None
+    ceiling = ceiling if ceiling is not None else FIND_COMPANY_LIMIT
     credit = blob.get("credit_policy") or {}
-    hard_cap = min(MAX_COMPANIES_PER_FIND, credit.get("max_companies", 500))
-    limit = max(1, min(params.get("limit") or 25, hard_cap))
+    hard_cap = min(ceiling, credit.get("max_companies", 500))
+    limit = max(1, min(params.get("limit") or ceiling, hard_cap))
     # Operator override (Settings modal) wins over the AI spec for *this call only*; an omitted
     # block falls back to the spec. `_clean` in apollo_map drops empty filters, so a cleared field
     # simply widens the search.
@@ -760,6 +1182,36 @@ def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
     o_intent = params.get("intent_filters")
     intent = o_intent if o_intent is not None else (block.get("intent_filters") or {})
     filter_body = apollo_map.map_company_filter(csp, intent)
+    # Conditional negative signal — only for the AI scope; a custom company override is the source
+    # of truth and left untouched. Stage 3: when bad rows cluster on one country, drop it via
+    # `organization_not_locations`. Stage 4: resolve tech vocabulary → the two Apollo tech UID
+    # filters (positive from the ICP's required stack, negative from bad-row-correlated tech).
+    if o_csp is None:
+        rows = _feedback_rows(db, tenant_id)
+        # Never exclude a country the scope explicitly targets — a bad-row cluster on the SAME
+        # country the AI is searching (e.g. a single-market client whose early rows all scored
+        # Below) would AND `organization_not_locations` against `organization_locations` and zero
+        # the search un-relaxably. Drop the contradiction (case-folded country match).
+        locs = filter_body.get("organization_locations") or []
+        targeted = {str(loc).strip().lower() for loc in locs}
+        drop = feedback.cluster_exclusions(rows).get("organization_not_locations") or []
+        drop = _drop_conflicts(drop, targeted, fold=True)
+        filter_body = _merge_uids(filter_body, "organization_not_locations", drop)
+        # D+ Stage 4 — positive tech: the scoped ICP's `technologies` → companies USING that stack.
+        icp_tech = [t for d in icp_docs(db, tenant_id, icp) for t in (d.get("technologies") or [])]
+        pos_tech = _resolve_tech(icp_tech)
+        filter_body = _merge_uids(filter_body, "currently_using_any_of_technology_uids", pos_tech)
+        # D+ Stage 4 — negative tech: stacks that correlated with bad rows → companies NOT using
+        # them (clears the Stage-3 deferral; `negative_technologies` gives names, resolved here).
+        # Drop any UID also required by the ICP — require+forbid the same stack zeroes the search.
+        neg_tech = _drop_conflicts(
+            _resolve_tech(feedback.negative_technologies(rows)), set(pos_tech)
+        )
+        filter_body = _merge_uids(
+            filter_body, "currently_not_using_any_of_technology_uids", neg_tech
+        )
+    # `custom` when the operator supplied any override params (Settings modal), else the AI block.
+    scope_source = "custom" if (o_csp is not None or o_intent is not None) else "ai"
     return _run_company_find(
         db,
         tenant_id,
@@ -768,8 +1220,169 @@ def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
         limit=limit,
         icp=icp,
         source="apollo",
+        scope_source=scope_source,
         score=False,
+        use_cursor=True,  # Stage 3 — repeat find resumes at the next page (never re-buys page 1)
+        skip_known=True,  # Stage 3 — returning orgs are skipped ($0: no re-enrich/classify/stamp)
     )
+
+
+def _body_hash(filter_body: dict) -> str:
+    """Stable short hash of an executed Apollo body — the page-cursor key (D+ Stage 3): an identical
+    scope re-run resolves to the same hash so the find can resume at the next page."""
+    blob = json.dumps(filter_body, sort_keys=True, default=str)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+# --------------------------------------------------------------------- D+ Stage 3 · page cursor
+# Apollo has no exclude-by-id, so a repeat find with an unchanged scope would re-buy page 1 forever.
+# The cursor recycles that: each run records the last page it reached (`page_cursor` in the run),
+# and the next run of the SAME resolved body (matched by `body_hash`) resumes at the next page. A
+# changed scope has a different hash → no prior cursor → starts at page 1 (reset is inherent). When
+# the cursor reaches `total_pages` the scope is exhausted → the "regenerate" signal.
+_CURSOR_SCAN_LIMIT = 50  # tenant's recent runs scanned to find this scope's cursor (small N)
+
+
+def _cursor_decision(prior_meta: dict | None) -> tuple[int, bool]:
+    """(resume_page, prior_exhausted) from the latest same-scope run's result_meta. No prior → page
+    1. A prior run flagged `scope_exhausted` → the full set was already walked (caller
+    short-circuits). A prior `page_cursor` → resume at the next page so page 1 is never re-bought.
+    """
+    if not prior_meta:
+        return 1, False
+    if prior_meta.get("scope_exhausted"):
+        return 1, True
+    cursor = prior_meta.get("page_cursor")
+    if isinstance(cursor, int) and cursor >= 1:
+        return cursor + 1, False
+    return 1, False
+
+
+def _resume_page(db: Session, tenant_id, body_hash: str) -> tuple[int, bool]:
+    """DB-side of the page cursor: the most-recent run for THIS exact resolved scope (matched by
+    `result_meta.body_hash`) decides where to resume. Scanned in Python over the tenant's recent
+    runs (small N) so it stays dialect-agnostic — no JSONB `->>` on the RDS Data API path."""
+    recent = (
+        db.execute(
+            select(ResearchRun.result_meta)
+            .where(ResearchRun.tenant_id == tenant_id)
+            .order_by(ResearchRun.created_at.desc())
+            .limit(_CURSOR_SCAN_LIMIT)
+        )
+        .scalars()
+        .all()
+    )
+    for meta in recent:
+        if (meta or {}).get("body_hash") == body_hash:
+            return _cursor_decision(meta)
+    return 1, False
+
+
+# --------------------------------------------------------------------- D+ Stage 1b · relax ladder
+# A thin/empty company search auto-widens one deterministic rung at a time so a find never dead-ends
+# on an over-narrow AI scope. The ladder is pure (no I/O) + terminal (≤3 rungs) so its ordering is
+# unit-tested without Apollo. `_resolve_company_scope` drives it, probing `total_entries` per rung
+# (FREE — `count_companies`, per_page=1), stopping at the first rung that clears FIND_RELAX_MIN.
+
+
+def _widen_employee_ranges(ranges: list[str]) -> list[str]:
+    """Proportionally widen each Apollo `"lo,hi"` employee range — halve the floor (≥1), double the
+    ceiling — so the size band keeps its center but admits neighbours. Deterministic; a malformed
+    entry is passed through untouched."""
+    out: list[str] = []
+    for r in ranges:
+        try:
+            lo_s, hi_s = str(r).split(",", 1)
+            lo, hi = int(lo_s), int(hi_s)
+        except (ValueError, AttributeError):
+            out.append(r)
+            continue
+        out.append(f"{max(1, lo // 2)},{hi * 2}")
+    return out
+
+
+def _weakest_keyword(tags: list[str]) -> str:
+    """The 'weakest' keyword to drop first: the longest tag — the most specific phrase narrows the
+    match hardest. Deterministic — ties break on the later position in the list."""
+    weakest_i = max(range(len(tags)), key=lambda i: (len(tags[i]), i))
+    return tags[weakest_i]
+
+
+def _company_relax_ladder(filter_body: dict):
+    """Yield `(step_label, relaxed_body)` rungs for a thin search — deterministic, cumulative (each
+    rung further relaxes the previous), terminal (≤3 rungs): drop `revenue_range` → widen the
+    employee ranges → drop the weakest keyword tag. A rung with nothing to change is skipped, so
+    every yielded rung is a genuine widening (never a no-op re-probe).
+    """
+    cur = dict(filter_body)
+    if "revenue_range" in cur:
+        cur = {k: v for k, v in cur.items() if k != "revenue_range"}
+        yield "drop_revenue_range", cur
+    ranges = cur.get("organization_num_employees_ranges")
+    if ranges:
+        widened = _widen_employee_ranges(ranges)
+        if widened != ranges:
+            cur = {**cur, "organization_num_employees_ranges": widened}
+            yield "widen_size", cur
+    tags = cur.get("q_organization_keyword_tags")
+    if tags:
+        weakest = _weakest_keyword(tags)
+        remaining = [t for t in tags if t != weakest]
+        if remaining:
+            cur = {**cur, "q_organization_keyword_tags": remaining}
+        else:
+            cur = {k: v for k, v in cur.items() if k != "q_organization_keyword_tags"}
+        yield f"drop_keyword:{weakest}", cur
+
+
+def _resolve_company_scope(filter_body: dict) -> tuple[dict, int, list[str], int]:
+    """Fetch-page-1-then-assess relax loop (D+ Stage 1b). Probe `total_entries` (FREE, per_page=1)
+    on the executed body; while it's under FIND_RELAX_MIN, widen one rung and re-probe. Returns
+    `(resolved_body, relax_level, relax_steps, total_entries)`; level 0 means the scope already had
+    enough breadth. A probe failure never blocks the find (the real fetch surfaces any hard Apollo
+    error): the loop stops and the caller runs the current body.
+    """
+    resolved = filter_body
+    try:
+        total = apollo.count_companies(resolved)
+    except apollo.ApolloError:
+        return resolved, 0, [], 0
+    if total >= FIND_RELAX_MIN:
+        return resolved, 0, [], total
+    steps: list[str] = []
+    for label, body in _company_relax_ladder(filter_body):
+        try:
+            t = apollo.count_companies(body)
+        except apollo.ApolloError:
+            break
+        resolved, total = body, t
+        steps.append(label)
+        if total >= FIND_RELAX_MIN:
+            break
+    return resolved, len(steps), steps, total
+
+
+# D+ Stage 2 — APAC broadening. Apollo's revenue coverage is sparse in APAC, so a `revenue_range`
+# filter silently zeroes otherwise-valid orgs there; for an APAC-located scope we drop revenue up
+# front, not waiting for the thin-relax ladder to reach it. Country match is comma-token exact (so
+# "kowloon, hong kong" trips on "hong kong", but no substring hits like "china" in "indochina").
+_APAC_LOCATIONS = frozenset(
+    {
+        "hong kong", "singapore", "japan", "china", "south korea", "korea", "taiwan",
+        "india", "indonesia", "malaysia", "thailand", "vietnam", "philippines", "australia",
+        "new zealand", "pakistan", "bangladesh", "sri lanka", "cambodia", "myanmar", "laos",
+        "brunei", "mongolia", "macau", "macao", "nepal",
+    }
+)
+
+
+def _is_apac(locations) -> bool:
+    """True if any Apollo location names an APAC country (case-insensitive, comma-token match)."""
+    for loc in locations or []:
+        for token in str(loc).lower().split(","):
+            if token.strip() in _APAC_LOCATIONS:
+                return True
+    return False
 
 
 def _run_company_find(
@@ -781,8 +1394,11 @@ def _run_company_find(
     limit: int,
     icp: uuid.UUID | None,
     source: str,
+    scope_source: str | None = None,
     seen_domains: set[str] | None = None,
     score: bool = True,
+    use_cursor: bool = False,
+    skip_known: bool = False,
 ) -> FindResult:
     """The Flow-A tail shared by find-company and find-lookalikes: Apollo search → suppress + dedupe
     → enrich NEW survivors → upsert + concurrent fit-score → one `research_run`.
@@ -791,38 +1407,82 @@ def _run_company_find(
     `source` tags the run (`apollo` vs `lookalike`) so the cost scoreboard separates the two doors.
     `spec` may be None (lookalike needs no spec); its version/prompt stamp the run only when set.
     `seen_domains` are domains to DROP from the result (Lookalike passes the tenant's existing
-    domains so the seeds + already-listed peers fall out and only NET-NEW companies come back; find
-    passes None so an existing org is re-upserted/re-stamped instead). `score=False` upserts the new
-    rows UNSCORED and returns immediately (Lookalike: fit-scoring a fresh batch is the slow part and
-    would blow the 30s gateway cap, so the web app triggers it in the background via `/rescore` and
-    shows a per-row "Scoring…" status). Latency of each stage is logged.
+    domains so the seeds + already-listed peers fall out and only NET-NEW companies come back).
+    `score=False` upserts the new rows UNSCORED and returns immediately (Lookalike: fit-scoring a
+    fresh batch is the slow part and would blow the 30s gateway cap, so the web app triggers it in
+    the background via `/rescore` and shows a per-row "Scoring…" status).
+
+    D+ Stage 3: `use_cursor` resumes an unchanged scope at its stored page cursor (find-company), so
+    a repeat find advances instead of re-buying page 1; `skip_known` drops orgs already stored for
+    the tenant BEFORE enrich/classify/upsert so a returning row costs $0 (never re-enriched, never
+    re-classified, never re-stamped) and the find returns only NET-NEW rows. Latency is logged.
     """
     t0 = time.monotonic()
-    # W8 — serve a recent identical company search from the warm-container cache (the search is the
-    # Apollo credit spend), so a re-run of the same scope inside the TTL doesn't pay twice.
-    search_key = json.dumps([filter_body, limit], sort_keys=True, default=str)
-    rows = _COMPANY_SEARCH_CACHE.get(search_key)
-    cache_hit = rows is not None
-    if not cache_hit:
-        try:
-            rows = apollo.search_companies(filter_body, max_results=limit)
-        except apollo.ApolloError as e:
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, f"apollo company search failed: {e}"
-            ) from e
-        _COMPANY_SEARCH_CACHE.set(search_key, rows)
-    t_search = time.monotonic() - t0
+    # D+ Stage 2 — APAC broadening: Apollo's revenue coverage is sparse across APAC, so a
+    # `revenue_range` filter silently zeroes otherwise-valid orgs there. For an APAC-located scope
+    # we drop revenue up front (before the thin-relax ladder would reach it) so the search sees the
+    # full APAC population, not just the few orgs Apollo happens to hold revenue for. Recorded in
+    # result_meta.apac for the drawer/telemetry.
+    apac = _is_apac(filter_body.get("organization_locations"))
+    if apac and "revenue_range" in filter_body:
+        filter_body = {k: v for k, v in filter_body.items() if k != "revenue_range"}
+    # D+ Stage 1b — fetch-page-1-then-assess relax ladder: widen a thin/empty scope one rung at a
+    # time so a find never dead-ends on an over-narrow AI scope (KPI: <10% zero-result finds). The
+    # probes are FREE (per_page=1); `resolved_body` is what actually executes (and the run stores it
+    # as override-proof lineage); `relax_level`/`relax_steps` record how far it widened.
+    resolved_body, relax_level, relax_steps, _ = _resolve_company_scope(filter_body)
+    t_relax = time.monotonic() - t0
+    # D+ Stage 3 — page cursor: an unchanged scope resumes at the page after the last one fetched,
+    # so a repeat find advances instead of re-buying page 1. A scope already walked to exhaustion
+    # short-circuits (no re-buy) and just re-flags "regenerate".
+    body_hash = _body_hash(resolved_body)
+    resume_page, prior_exhausted = (
+        _resume_page(db, tenant_id, body_hash) if use_cursor else (1, False)
+    )
+    if prior_exhausted:
+        rows, search_meta, cache_hit = [], {"scope_exhausted": True}, False
+    else:
+        # W8 — serve a recent identical page from the warm-container cache so a re-run of the same
+        # scope+page inside the TTL avoids the round-trip. `search_companies_meta` returns rows AND
+        # the first-fetched-page meta (`total_entries`/`breadcrumbs`/`total_pages`/`end_page`) for
+        # D+ scope lineage, off the same call (no extra request); the tuple is cached together.
+        search_key = json.dumps([resolved_body, limit, resume_page], sort_keys=True, default=str)
+        cached = _COMPANY_SEARCH_CACHE.get(search_key)
+        cache_hit = cached is not None
+        if cache_hit:
+            rows, search_meta = cached
+        else:
+            try:
+                rows, search_meta = apollo.search_companies_meta(
+                    resolved_body, max_results=limit, start_page=resume_page
+                )
+            except apollo.ApolloError as e:
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY, f"apollo company search failed: {e}"
+                ) from e
+            _COMPANY_SEARCH_CACHE.set(search_key, (rows, search_meta))
+    t_search = time.monotonic() - t0 - t_relax
 
     parsed = [apollo_map.parse_company(r) for r in rows]
-    # Dedupe within this batch + drop `seen_domains`. find passes None → an org already in the
-    # tenant is upserted (apollo_org_id re-stamped), not dropped. Lookalike passes the tenant
-    # domains, so seeds + already-listed peers drop here and `found` reflects only new companies.
+    # Dedupe within this batch + drop `seen_domains` (Lookalike passes the tenant domains, so seeds
+    # + already-listed peers drop here and `found` reflects only new companies).
     survivors, dropped = find.filter_companies(
         parsed, _exclusions(db, tenant_id), seen_domains=seen_domains
     )
-    # Enrich ONLY companies new to this tenant — an existing row would re-enrich to the same
-    # firmographics and burn an Apollo credit. The 'Update Field' button refreshes existing rows.
-    _enrich_survivors(_new_survivors(db, tenant_id, survivors))
+    # D+ Stage 3 — known-org skip ($0 invariant): drop orgs already stored for this tenant (by
+    # domain OR apollo_org_id) BEFORE enrich/classify/upsert, so a returning row is never
+    # re-enriched, re-classified, or re-stamped — it stays pinned + labelled as-is. This is the
+    # page-overlap safety net (Apollo ordering can drift) that makes a repeat find return only NEW.
+    # Companies new to this tenant (by domain OR apollo_org_id), computed ONCE. Enrich only these —
+    # an existing row would re-enrich to the same firmographics and burn an Apollo credit (the
+    # 'Update Field' button is the deliberate refresh path). Stage 3 `skip_known` also DROPS the
+    # returning orgs from the batch so a repeat find returns only NET-NEW rows at $0.
+    new_survivors = _new_survivors(db, tenant_id, survivors)
+    known_skipped = 0
+    if skip_known:
+        known_skipped = len(survivors) - len(new_survivors)
+        survivors = new_survivors
+    _enrich_survivors(new_survivors)
     t_enrich = time.monotonic() - t0 - t_search
 
     run_id = _apollo_run_id()
@@ -841,6 +1501,9 @@ def _run_company_find(
     # so the B2B/B2C label — and the market gate — is present BEFORE any AI scoring. Opposite-market
     # rows are gated into Below·0 here, dropping out of the `fit_score is None` set scored below.
     cost += classify_companies(tenant_id, companies, brief)
+    # Scoring v2 (spec §3 + ⑧-B): stamp the free deterministic label (rules/data/size) at find time
+    # so excluded_by_rules / low_fit — incl. the kept client-excluded rows — show without a rescore.
+    _label_companies_deterministic(db, tenant_id, companies, brief=brief, spec=spec)
 
     # Score the unscored rows concurrently (re-finds don't re-spend on already-scored rows). The
     # scoring payload is built here on the main thread so no lazy ORM load runs off-thread; results
@@ -868,10 +1531,13 @@ def _run_company_find(
             cost += _apply_company_score(c, scored)
     t_total = time.monotonic() - t0
     log.info(
-        "company-find[%s]: apollo=%d search=%.1fs%s survivors=%d enrich=%.1fs scored=%d "
-        "score=%.1fs total=%.1fs%s",
+        "company-find[%s]: apollo=%d relax=%.1fs(L%d%s) search=%.1fs%s survivors=%d enrich=%.1fs "
+        "scored=%d score=%.1fs total=%.1fs%s",
         source,
         len(rows),
+        t_relax,
+        relax_level,
+        ":" + ">".join(relax_steps) if relax_steps else "",
         t_search,
         " (cached)" if cache_hit else "",
         len(survivors),
@@ -883,6 +1549,35 @@ def _run_company_find(
     )
 
     spec_blob = spec.spec if spec else {}
+    total_entries = search_meta.get("total_entries")
+    # D+ Stage 3 — exhaustion: the cursor reached the last page of this scope's result set (or a
+    # prior run already had). Terminal signal for the "scope exhausted → regenerate" notice; a
+    # changed scope (new body_hash) resets it. `page_cursor` = last page fetched (the resume key).
+    end_page = search_meta.get("end_page")
+    total_pages = search_meta.get("total_pages")
+    scope_exhausted = bool(
+        prior_exhausted
+        or (end_page is not None and total_pages is not None and end_page >= total_pages)
+    )
+    # D+ Stage 1 — snapshot the EXECUTED body + the search-response signal (override-proof lineage).
+    # Stage 1b adds the relax trail + the over-broad flag; Stage 3 adds the page cursor
+    # (`page_cursor`/`resume_page`/`total_pages`) + `scope_exhausted` + `known_skipped`.
+    result_meta = {
+        "total_entries": total_entries,
+        "breadcrumbs": search_meta.get("breadcrumbs") or [],
+        "pages_fetched": search_meta.get("pages_fetched"),
+        "relax_level": relax_level,
+        "relax_steps": relax_steps,
+        "over_broad": (total_entries or 0) > FIND_OVER_BROAD,
+        "apac": apac,  # Stage 2 — APAC scope, so revenue_range was dropped up front
+        "body_hash": body_hash,  # the page-cursor key (Stage 3)
+        "resume_page": resume_page,  # page this run started at (Stage 3)
+        "page_cursor": end_page,  # last page reached → next run resumes at +1 (Stage 3)
+        "total_pages": total_pages,
+        "scope_exhausted": scope_exhausted,
+        "known_skipped": known_skipped,
+        "cache_hit": cache_hit,
+    }
     db.add(
         ResearchRun(
             tenant_id=tenant_id,
@@ -896,6 +1591,9 @@ def _run_company_find(
             rubric_version=fit.RUBRIC_VERSION,
             rows_pushed=len(companies),
             cost_usd=round(cost, 6),
+            filter_body=resolved_body,
+            scope_source=scope_source,
+            result_meta=result_meta,
         )
     )
     db.commit()
@@ -905,8 +1603,10 @@ def _run_company_find(
     return FindResult(
         run_id=run_id,
         found=len(companies),
-        dropped=len(dropped),
+        dropped=len(dropped) + known_skipped,
         companies=[_company_out(c) for c in companies],
+        scope_exhausted=scope_exhausted,
+        known_skipped=known_skipped,
     )
 
 
@@ -986,6 +1686,7 @@ def _lookalike_core(db: Session, tenant_id, params: dict) -> FindResult:
         limit=LOOKALIKE_LIMIT,
         icp=icp,
         source="lookalike",
+        scope_source="lookalike",
         seen_domains=seen_domains,
         score=False,
     )
@@ -1261,7 +1962,7 @@ def run_rescore_companies(db: Session, tenant_id, params: dict) -> dict:
     )
     if not rows:
         return {"scored": 0, "failed": 0, "cost_usd": 0.0}
-    return _score_companies(db, tenant_id, rows)
+    return _score_companies_v2(db, tenant_id, rows)  # scoring v2 cutover (v1 _score_companies dead)
 
 
 def run_rescore_prospects(db: Session, tenant_id, params: dict) -> dict:
@@ -1280,13 +1981,19 @@ def run_rescore_prospects(db: Session, tenant_id, params: dict) -> dict:
     )
     if not rows:
         return {"scored": 0, "failed": 0, "cost_usd": 0.0}
-    return _score_prospects(db, tenant_id, rows)
+    return _score_prospects_v2(db, tenant_id, rows)  # scoring v2 cutover (v1 _score_prospects dead)
 
 
 def run_find_company(db: Session, tenant_id, params: dict) -> dict:
     """W4 handler (`KIND_FIND_COMPANY`): Apollo Flow-A find (rows land UNSCORED)."""
     fr = _find_company_core(db, tenant_id, params)
-    return {"found": fr.found, "dropped": fr.dropped, "run_id": fr.run_id}
+    return {
+        "found": fr.found,
+        "dropped": fr.dropped,
+        "run_id": fr.run_id,
+        "scope_exhausted": fr.scope_exhausted,  # Stage 3 — surface the "regenerate" signal
+        "known_skipped": fr.known_skipped,
+    }
 
 
 def run_find_lookalikes(db: Session, tenant_id, params: dict) -> dict:
@@ -1564,6 +2271,10 @@ def list_research_runs(
                 rows_accepted=r.rows_accepted,
                 cost_usd=cost,
                 cost_per_accepted=per,
+                icp_id=str(r.icp_id) if r.icp_id else None,
+                scope_source=r.scope_source,
+                filter_body=r.filter_body,
+                result_meta=r.result_meta,
                 created_at=r.created_at.isoformat() if r.created_at else None,
             )
         )
@@ -1693,34 +2404,49 @@ def add_prospect(
 
 # --------------------------------------------------------------- Stage 2: Apollo Flow B (find)
 
-# Auto-relax order: Apollo AND's the two persona facets, so a strict Management-Level ∩ Department
-# combo can be empty at a small org even when each facet alone has people (the Luma case). When the
-# strict combo returns 0 we widen by dropping ONE facet — department-only, then seniority-only — but
-# never all the way to org-only (that would dump interns/irrelevant roles, defeating "suitable").
+# Auto-relax order (D+ Stage 2 — "Query = rubric"): `person_titles` is the precise, rubric-aligned
+# persona lever (the fit rubric scores a 14-pt title dimension), so the ladder queries titles FIRST
+# — strict (include_similar_titles=false) then fuzzy (=true) — before dropping to Apollo's two
+# native facets: seniority×department (both AND'd), then seniority alone. Apollo AND's the facets,
+# so a strict combo can be empty at a small org even when each facet alone has people (Luma); the
+# descent guarantees suitable people still surface, but never widens all the way to org-only
+# (that would dump interns/irrelevant roles, defeating "suitable"). No-op rungs (params that lack
+# the lever) are skipped, so the ladder is exactly the rungs the spec can actually express.
+def _people_ladder(people_params: dict) -> list[tuple[dict, str]]:
+    """The ordered (params, level) rungs for one org's people search — titles first, facets as the
+    fallback. Deterministic + terminal; skips rungs the params can't fill."""
+    titles = people_params.get("person_titles") or []
+    sen = people_params.get("person_seniorities") or []
+    dep = people_params.get("person_department_or_subdepartments") or []
+    rungs: list[tuple[dict, str]] = []
+    if titles:
+        rungs.append(({**people_params, "include_similar_titles": False}, "titles_strict"))
+        rungs.append(({**people_params, "include_similar_titles": True}, "titles_fuzzy"))
+    # Facet rungs drop titles so a stale title match doesn't AND against the facet fallback.
+    facet_base = {**people_params, "person_titles": []}
+    if sen and dep:
+        rungs.append((facet_base, "seniority_dept"))
+    if sen:
+        rungs.append(({**facet_base, "person_department_or_subdepartments": []}, "seniority_only"))
+    return rungs or [(people_params, "as_is")]
+
+
 def _search_people_relaxed(
     people_params: dict, org_id: str, per_company: int
 ) -> tuple[list[dict], dict, str]:
-    """Search one org, widening the persona facets until people appear. → (rows, body_sent, level).
+    """Search one org, descending the persona ladder until people appear → (rows, body_sent, level).
 
-    `level` is a short tag for diagnostics: "strict" (both facets), "dept_only" / "seniority_only"
-    (one facet dropped), or "as_is" (the spec had ≤1 facet, so nothing to relax)."""
-    sen = people_params.get("person_seniorities") or []
-    dep = people_params.get("person_department_or_subdepartments") or []
-    if sen and dep:
-        attempts = [
-            (people_params, "strict"),
-            ({**people_params, "person_seniorities": []}, "dept_only"),
-            ({**people_params, "person_department_or_subdepartments": []}, "seniority_only"),
-        ]
-    else:
-        attempts = [(people_params, "as_is")]
+    `level` is a short diagnostic tag: titles_strict / titles_fuzzy (person_titles, exact then
+    similar), seniority_dept / seniority_only (facet fallback), or "as_is" (the spec carried no
+    persona lever, so nothing to relax)."""
     last_body: dict = {}
-    for params, level in attempts:
+    level = "as_is"
+    for params, level in _people_ladder(people_params):
         last_body = apollo_map.map_people_filter(params, org_id=org_id)
         rows = apollo.search_people(last_body, max_results=per_company)
         if rows:
             return rows, last_body, level
-    return [], last_body, attempts[-1][1]
+    return [], last_body, level
 
 
 @router.post("/{client}/people/find-people", response_model=FindResult)

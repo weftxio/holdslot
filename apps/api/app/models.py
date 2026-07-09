@@ -384,6 +384,15 @@ class Company(Base):
             text("fit_score DESC NULLS LAST"),
             text("created_at DESC"),
         ),
+        # Scoring v2 (0024) — label-bucketed feed: filter/group by label, best score first. Coexists
+        # with ix_company_tenant_fit through the cutover; 0026 drops the v1 one.
+        Index(
+            "ix_company_tenant_label",
+            "tenant_id",
+            "label",
+            text("score_total DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
@@ -411,6 +420,12 @@ class Company(Base):
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    # Scoring v2 (0024, docs/holdslot-scoring-spec-v2.md) — the 4-label contract, alongside v1
+    # fit_*. `label` NULL = "needs re-score" (no backfill); `score_total` is the 4–20 subscore sum.
+    # Subscores/flags/reason/icp/liveness live in `fit_components`; `fit_reason` = the v2 `reason`.
+    # (The spec's `verified` bool was dropped 2026-07-09 — not meaningful; see 0024.)
+    label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    score_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evidence: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
@@ -439,6 +454,14 @@ class Prospect(Base):
             "ix_prospect_tenant_fit",
             "tenant_id",
             text("fit_score DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
+        # Scoring v2 (0024) — label-bucketed feed, mirrors company. 0026 drops the v1 fit index.
+        Index(
+            "ix_prospect_tenant_label",
+            "tenant_id",
+            "label",
+            text("score_total DESC NULLS LAST"),
             text("created_at DESC"),
         ),
     )
@@ -471,6 +494,11 @@ class Prospect(Base):
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
+    # Scoring v2 (0024) — the 4-label contract for people (spec people-tier; company label caps the
+    # person). `label` NULL = needs re-score; `score_total` is the 4–20 sum. subscores/flags/reason/
+    # icp live in `fit_components`.
+    label: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    score_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     source: Mapped[str] = mapped_column(String(32), nullable=False)  # apollo | manual
     source_lineage: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
@@ -511,6 +539,12 @@ class ResearchRun(Base):
     rows_pushed: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     rows_accepted: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     cost_usd: Mapped[float | None] = mapped_column(Numeric(14, 8), nullable=True)
+    # D+ Stage 1 (0019) — scope lineage + search-response telemetry, all nullable / no backfill.
+    # filter_body = exact executed Apollo body · scope_source = ai|custom|lookalike ·
+    # result_meta = total_entries / breadcrumbs / pages_fetched / relax_level / body_hash.
+    filter_body: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    scope_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    result_meta: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = _created_at()
 
 

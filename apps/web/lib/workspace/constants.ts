@@ -1,8 +1,11 @@
 import {
   type BatchApi,
   type BriefDoc,
+  type CompanyApi,
   type IcpApi,
   type ProspectApi,
+  type ScoreLabel,
+  type Subscores,
   type ResearchSpecResult,
 } from "@/lib/api";
 import { type ExclRow, parseExclusionCsv } from "@/lib/csv";
@@ -348,6 +351,90 @@ export const FIT_CHIP: Record<string, string> = {
   Moderate: "fit-chip--moderate",
   Below: "fit-chip--below",
 };
+
+// --- Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label system ------
+// Chip text/color + sort rank per label. `rank` orders the list feed (spec §11): actions first,
+// footnotes last. A null label = "needs re-score" — ranked between the actionable and the collapsed
+// buckets (rank 1.5) so it stays visible and prompts a score, never buried.
+export const LABEL_META: Record<ScoreLabel, { text: string; cls: string; rank: number }> = {
+  contact_now: { text: "Contact now", cls: "label-chip--now", rank: 0 },
+  contact_soon: { text: "Contact soon", cls: "label-chip--soon", rank: 1 },
+  low_fit: { text: "Low fit", cls: "label-chip--low", rank: 2 },
+  excluded_by_rules: { text: "Excluded", cls: "label-chip--excluded", rank: 3 },
+};
+export const UNSCORED_RANK = 1.5; // null label sits between contact_soon and low_fit
+
+export function labelRank(label: ScoreLabel | null): number {
+  return label ? LABEL_META[label].rank : UNSCORED_RANK;
+}
+
+// Human labels for the four subscore axes (both tiers) — the subscore-bar segment tooltips.
+export const AXIS_LABEL: Record<string, string> = {
+  deal_fit: "Deal fit",
+  outbound_gap: "Outbound gap",
+  trigger: "Trigger",
+  reachability: "Reachability",
+  persona_fit: "Persona fit",
+  authority: "Authority",
+};
+// Per-tier subscore axis ORDER for the 4-segment SubscoreBar (matches the backend
+// SUBSCORE_AXES / SUBSCORE_AXES_PEOPLE in labeling.py). Company scores the deal; a person
+// inherits the company label but scores their own persona/authority.
+export const COMPANY_AXES = ["deal_fit", "outbound_gap", "trigger", "reachability"] as const;
+export const PROSPECT_AXES = ["persona_fit", "authority", "trigger", "reachability"] as const;
+
+// List-feed comparator (both companies + prospects carry label/score_total): label rank, then
+// higher score_total first within a bucket, then newest. Replaces the v1 fit_score comparator.
+export function compareByLabel(
+  a: { label: ScoreLabel | null; score_total: number | null; created_at: string | null },
+  b: { label: ScoreLabel | null; score_total: number | null; created_at: string | null },
+): number {
+  const r = labelRank(a.label) - labelRank(b.label);
+  if (r !== 0) return r;
+  const sa = a.score_total ?? -1;
+  const sb = b.score_total ?? -1;
+  if (sa !== sb) return sb - sa;
+  return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+}
+
+// The two collapsed buckets (spec §11) — shown as one summary count row, expandable.
+export const COLLAPSED_LABELS: ScoreLabel[] = ["low_fit", "excluded_by_rules"];
+
+// The list-feed bucket render order (spec §11): the two action buckets, then the not-yet-scored
+// rows, then the two collapsed footnotes. `null` labels group under the "unscored" key (groupByLabel).
+export const BUCKET_ORDER: (ScoreLabel | "unscored")[] = [
+  "contact_now",
+  "contact_soon",
+  "unscored",
+  "low_fit",
+  "excluded_by_rules",
+];
+// Group-header text per bucket (LABEL_META covers the four labels; the null bucket needs its own).
+export const BUCKET_HEAD: Record<ScoreLabel | "unscored", string> = {
+  contact_now: "Contact now",
+  contact_soon: "Contact soon",
+  unscored: "Needs score",
+  low_fit: "Low fit",
+  excluded_by_rules: "Excluded by rules",
+};
+// The Step-1/Step-2 label-filter dropdown sentinel for the null ("not yet scored") bucket — a value
+// that can't collide with a real ScoreLabel, so the predicate can special-case it.
+export const UNSCORED_LABEL = "__unscored";
+
+// Group a set of rows by label (null → the "unscored" key), preserving per-bucket order.
+export function groupByLabel<T extends { label: ScoreLabel | null }>(
+  rows: T[],
+): Map<ScoreLabel | "unscored", T[]> {
+  const out = new Map<ScoreLabel | "unscored", T[]>();
+  for (const r of rows) {
+    const key = r.label ?? "unscored";
+    (out.get(key) ?? out.set(key, []).get(key)!).push(r);
+  }
+  return out;
+}
+// Referenced so `CompanyApi`/`Subscores` imports are used even before the table wiring lands.
+export type LabeledCompany = Pick<CompanyApi, "label" | "score_total" | "subscores">;
+export type SubscoreMap = Subscores;
 
 // Compact currency / growth formatters for the Enrichment cell.
 export function fmtRevenue(n: number | null): string {

@@ -251,6 +251,51 @@ export type ResearchSpecResult = {
 };
 export type ResearchSpecList = { latest: ResearchSpecResult | null; versions: number[] };
 
+// One find run's scope lineage (D+ Stage 1) — the Find-history drawer's row shape. `filter_body` is
+// the EXACTLY-executed Apollo body (override-proof, post-relax); `result_meta` carries the search
+// signal: `total_entries` (full match count), `breadcrumbs` (Apollo's echo of each filter), the
+// relax trail (`relax_level`/`relax_steps`), and the `over_broad` flag. All null for pre-0019 runs.
+export type ResearchRunApi = {
+  run_id: string;
+  source: string; // apollo · lookalike · rescore · enrich
+  prompt_version: string | null;
+  rubric_version: string | null;
+  rows_pushed: number;
+  rows_accepted: number;
+  cost_usd: number | null;
+  cost_per_accepted: number | null;
+  icp_id: string | null;
+  scope_source: string | null; // ai · custom · lookalike · null (non-Apollo run)
+  filter_body: Record<string, unknown> | null;
+  result_meta: {
+    total_entries?: number | null;
+    breadcrumbs?: { label?: string; signal_field_name?: string; value?: string; display_name?: string }[];
+    pages_fetched?: number | null;
+    relax_level?: number | null;
+    relax_steps?: string[];
+    over_broad?: boolean;
+    apac?: boolean; // Stage 2 — APAC scope, revenue_range dropped up front
+    // Stage 3 page cursor: this run fetched pages resume_page..page_cursor; scope_exhausted once the
+    // cursor reaches total_pages; known_skipped = rows already stored, skipped ($0 invariant).
+    resume_page?: number | null;
+    page_cursor?: number | null;
+    total_pages?: number | null;
+    scope_exhausted?: boolean;
+    known_skipped?: number;
+    body_hash?: string;
+    cache_hit?: boolean;
+  } | null;
+  created_at: string | null;
+};
+
+// The find-run ledger, newest first — the Find-history drawer reads this to answer "what did this
+// search actually ask, and how broad was it?" (source · ICP · spec vN · ai/custom · rows · matches).
+export async function listResearchRuns(client: string): Promise<ResearchRunApi[]> {
+  const r = await authFetch(`/${client}/research-runs`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 export async function getBrief(client: string): Promise<BriefResult> {
   const r = await authFetch(`/${client}/brief`);
   if (!r.ok) throw new Error(await detail(r));
@@ -310,8 +355,14 @@ export type ResearchJob = {
   error: string | null;
 };
 
-export async function structureBrief(client: string): Promise<ResearchJob> {
-  const r = await authFetch(`/${client}/brief/structure`, { method: "POST", json: true });
+// `icpIds` restricts the run to those ICP profiles (a selective re-scope) — the worker regenerates
+// only their targeting and splices it into the latest spec. Omit / empty → scope every ICP.
+export async function structureBrief(client: string, icpIds?: string[]): Promise<ResearchJob> {
+  const r = await authFetch(`/${client}/brief/structure`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ icp_ids: icpIds && icpIds.length ? icpIds : null }),
+  });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
@@ -400,6 +451,11 @@ export async function saveScopingSystemPrompt(
 
 // --- Phase C (S2) — Prospects: Apollo find + enrich --------------------------
 
+// Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label verdict replaces the 0–100 AI Score.
+// `null` label = not yet (re)scored ("needs re-score"). Sort/UI priority: now → soon → low → excluded.
+export type ScoreLabel = "contact_now" | "contact_soon" | "low_fit" | "excluded_by_rules";
+export type Subscores = Record<string, number>; // axis → 1–5 (company: deal_fit/outbound_gap/…)
+
 export type ProspectApi = {
   id: string;
   identity_key: string;
@@ -419,6 +475,13 @@ export type ProspectApi = {
   fit_tier: string | null;
   fit_reason: string;
   reason_tags: string[];
+  // Scoring v2 (additive alongside v1 fit_* through the cutover).
+  label: ScoreLabel | null;
+  score_total: number | null;
+  reason: string;
+  subscores: Subscores;
+  flags: string[];
+  icp: string | null;
   source: string; // "apollo" | "manual"
   status: string; // "found" | "confirmed" | "scored" | "score_error" | ...
   created_at: string | null;
@@ -441,6 +504,14 @@ export type CompanyApi = {
   business_model: string; // "B2B" | "B2C" | "Complex" | "Unknown" | "" (unscored / pre-label)
   market_excluded: boolean; // B2B/B2C gate fired (opposite-market) → pinned to the bottom of Step 1
   reason_tags: string[];
+  // Scoring v2 (additive alongside v1 fit_* through the cutover).
+  label: ScoreLabel | null;
+  score_total: number | null;
+  reason: string;
+  subscores: Subscores;
+  flags: string[];
+  icp: string | null;
+  trigger_line: string; // the email hook shown on an expanded contact_* row (spec §11)
   enrichment: CompanyEnrichment;
   source: string; // "apollo" | "manual"
   status: string; // "discovered" | "people_found" | ...

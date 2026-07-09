@@ -24,7 +24,14 @@ from app.domains.prospects.suppression import Candidate, ExclusionSet
 def filter_companies(
     parsed: list[dict], exclusions: ExclusionSet, seen_domains: set[str] | None = None
 ) -> tuple[list[dict], list[tuple[dict, str]]]:
-    """→ (survivors, dropped[(row, reason)]). Dedupe is by domain within the batch + vs `seen`."""
+    """→ (survivors, dropped[(row, reason)]). Dedupe is by domain within the batch + vs `seen`.
+
+    Scoring-v2 decision ⑧-B: a client-excluded domain is **no longer dropped** — it is KEPT as a
+    survivor tagged `client_excluded=True`, so the find enriches it and the label engine marks it
+    `excluded_by_rules "rule: client exclusion"` downstream (spec §5 "never delete a row"; the
+    excluded set is also in `RulesConfig`, so the label is deterministic). Only no-domain rows and
+    domain duplicates drop here. The Step-2 people/enrich suppression is unchanged (still
+    hard-blocks — enrich spends credits per person)."""
     seen = set(seen_domains or set())
     survivors: list[dict] = []
     dropped: list[tuple[dict, str]] = []
@@ -33,13 +40,12 @@ def filter_companies(
         if not domain:
             dropped.append((row, "no_domain"))
             continue
-        if exclusions.blocks(Candidate(domain=domain)):
-            dropped.append((row, "excluded_domain"))
-            continue
         if domain in seen:
             dropped.append((row, "duplicate"))
             continue
         seen.add(domain)
+        if exclusions.blocks(Candidate(domain=domain)):
+            row["client_excluded"] = True  # kept + labeled excluded_by_rules downstream (⑧-B)
         survivors.append(row)
     return survivors, dropped
 

@@ -62,10 +62,15 @@ def map_company_filter(company_search_params: dict, intent_filters: dict | None 
 def map_people_filter(people_search_params: dict, org_id: str | None = None) -> dict:
     """Build one `mixed_people/api_search` request body, scoped to a SINGLE org.
 
-    Personas are Apollo's two native facets — `person_seniorities` (Management Level) ×
-    `person_department_or_subdepartments` (Department/Job Function) — NOT free-text `person_titles`:
-    exact-title matching AND's to zero against any org whose people use different title wording (the
-    Luma bug), whereas the facet enums match Apollo's normalized taxonomy regardless of local style.
+    D+ Stage 2 — the persona is expressed as `person_titles` (the precise buying-role wordings
+    that map 1:1 to the fit rubric's 14-pt title dimension) PLUS Apollo's two native facets —
+    `person_seniorities` (Management Level) × `person_department_or_subdepartments` (Department/Job
+    Function). The relax ladder (`_people_ladder`) decides which to send per rung: it queries titles
+    first (strict then fuzzy via `include_similar_titles`), then falls back to the facets so an org
+    whose people use non-standard title wording still yields people (the old Luma over-constraint is
+    now a fallback, not a dead end). This builder just forwards whatever the caller's params carry —
+    `include_similar_titles` rides through only when titles are present (Apollo defaults it true, so
+    a strict rung must send an explicit `false`; without titles the toggle is meaningless).
 
     Flow B loops the selected companies and calls this once per `org_id`, so each returned person's
     company is known from the loop (C0: search output has no `organization_id`). `org_id` is
@@ -73,10 +78,14 @@ def map_people_filter(people_search_params: dict, org_id: str | None = None) -> 
     """
     ps = people_search_params or {}
     body = {
+        "person_titles": ps.get("person_titles"),
         "person_seniorities": ps.get("person_seniorities"),
         "person_department_or_subdepartments": ps.get("person_department_or_subdepartments"),
         "organization_ids": [org_id] if org_id else None,
     }
+    # _clean keeps an explicit False, so a strict rung's include_similar_titles=false survives.
+    if ps.get("person_titles") and "include_similar_titles" in ps:
+        body["include_similar_titles"] = ps["include_similar_titles"]
     # Org-context filters (profile keyword / location / employee size) only make sense for a BROAD
     # people search. Once an exact org is pinned via `organization_ids`, re-applying them just
     # over-constrains that one org to zero people (e.g. a small HK insurer fails a US/larger-company
@@ -191,6 +200,54 @@ def parse_enrich(row: dict) -> dict:
         "country": row.get("country"),
         "evidence": evidence,
     }
+
+
+# Apollo employee-count → a coarse band string (D+ Stage 4 customer anchors). Coarse on purpose:
+# the anchor grounds the scope's `organization_num_employees_ranges`, and a rough band ("201-500")
+# is the useful signal, not the exact headcount. Ascending upper bounds; last is the open top.
+_EMPLOYEE_BANDS = (
+    (10, "1-10"), (50, "11-50"), (200, "51-200"), (500, "201-500"),
+    (1000, "501-1000"), (5000, "1001-5000"), (10000, "5001-10000"),
+)
+
+
+def _employee_band(n) -> str:
+    """Employee count → a coarse band string ("201-500"), or "" when unknown."""
+    try:
+        count = int(n)
+    except (TypeError, ValueError):
+        return ""
+    if count <= 0:
+        return ""
+    for upper, label in _EMPLOYEE_BANDS:
+        if count <= upper:
+            return label
+    return "10000+"
+
+
+def parse_org_anchor(row: dict) -> dict:
+    """One `organizations/enrich` org → a compact 'customer anchor' (D+ Stage 4 vocabulary
+    grounding): the real firmographics of a paying customer, fed to the scoping model as evidence so
+    the next scope's keyword/size targeting is grounded in who ACTUALLY buys — not a guess.
+
+    Descriptive fields only (industry name / industries / a few keywords / an employee band) — the
+    scorable, LLM-useful signal. `industry_tag_id` is parsed too (Apollo's opaque id) but is an
+    undocumented, fixture-verified experiment: it is NOT fed to the model (which has no field for
+    it) — the scope grounds on the human-readable industry/keywords. Empty fields are omitted so an
+    un-enriched anchor contributes nothing (the 'no empty blocks' rule)."""
+    row = row or {}
+    domain = normalize_domain(row.get("primary_domain") or row.get("website_url"))
+    industries = [i for i in (row.get("industries") or []) if i]
+    keywords = [k for k in (row.get("keywords") or []) if k][:12]
+    anchor = {
+        "domain": domain or "",
+        "industry": row.get("industry") or "",
+        "industries": industries,
+        "keywords": keywords,
+        "employee_band": _employee_band(row.get("estimated_num_employees")),
+        "industry_tag_id": row.get("industry_tag_id") or "",  # parsed; experiment-only, not emitted
+    }
+    return {k: v for k, v in anchor.items() if v}
 
 
 def parse_person(row: dict) -> dict:

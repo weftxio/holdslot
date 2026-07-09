@@ -68,13 +68,20 @@ def reset_key() -> None:
 
 
 def _request(
-    method: str, path: str, *, body: dict | None = None, timeout: int = DEFAULT_TIMEOUT
-) -> dict:
+    method: str,
+    path: str,
+    *,
+    body: dict | None = None,
+    timeout: int = DEFAULT_TIMEOUT,
+    raw: bool = False,
+) -> dict | str:
     """One `X-Api-Key` request (POST with a JSON body, or GET with the query baked into `path`);
     retry transient 429/5xx with linear backoff. A 401/403 drops the cached key (so a rotation is
-    picked up next call) and raises immediately."""
+    picked up next call) and raises immediately. `raw=True` returns the response body as text
+    (for the CSV vocabulary endpoint) instead of JSON-decoding it."""
     data = json.dumps(body).encode() if body is not None else None
-    headers = {"X-Api-Key": _api_key(), "Accept": "application/json"}
+    accept = "text/csv" if raw else "application/json"
+    headers = {"X-Api-Key": _api_key(), "Accept": accept}
     if data is not None:
         headers["Content-Type"] = "application/json"
     for attempt in range(_MAX_RETRIES + 1):
@@ -83,7 +90,8 @@ def _request(
         )
         try:
             with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode())
+                text = r.read().decode()
+                return text if raw else json.loads(text)
         except urllib.error.HTTPError as e:
             if e.code in (401, 403):
                 reset_key()
@@ -110,33 +118,89 @@ def _get(path: str, query: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict:
     return _request("GET", f"{path}?{urllib.parse.urlencode(query)}", timeout=timeout)
 
 
-def _paginate(path: str, filter_body: dict, *, key: str, max_results: int) -> list[dict]:
-    """POST `path` page by page, collecting `resp[key]` until `max_results` (or the data ends)."""
+def _paginate(
+    path: str, filter_body: dict, *, key: str, max_results: int, start_page: int = 1
+) -> tuple[list[dict], dict]:
+    """POST `path` page by page from `start_page`, collecting `resp[key]` until `max_results` (or
+    the data ends).
+
+    Returns `(rows, meta)`. `meta` is read off the FIRST FETCHED page's response — no extra call —
+    for D+ scope-lineage telemetry: `total_entries` (full match count → width / over-broad signal),
+    `breadcrumbs` (Apollo's echo of how it read each filter), `total_pages`, `pages_fetched` (count
+    fetched this call), and `end_page` (the last page number reached — the D+ Stage 3 page cursor:
+    a repeat find resumes at `end_page + 1` so page 1 is never re-bought).
+    """
     rows: list[dict] = []
-    page = 1
+    start_page = max(1, start_page)
+    meta: dict = {
+        "total_entries": None,
+        "breadcrumbs": [],
+        "pages_fetched": 0,
+        "total_pages": None,
+        "start_page": start_page,
+        "end_page": start_page - 1,  # nothing fetched yet
+    }
+    page = start_page
     while len(rows) < max_results and page <= PAGE_HARD_CAP:
         per_page = min(PER_PAGE_MAX, max_results - len(rows))
         resp = _post(path, {**filter_body, "page": page, "per_page": per_page})
         batch = resp.get(key) or []
         rows.extend(batch)
         pagination = resp.get("pagination") or {}
+        meta["pages_fetched"] = page - start_page + 1
+        meta["end_page"] = page
+        if page == start_page:  # first fetched page carries the scope-wide signals
+            meta["total_entries"] = pagination.get("total_entries")
+            meta["breadcrumbs"] = resp.get("breadcrumbs") or []
+            meta["total_pages"] = pagination.get("total_pages")
         total_pages = pagination.get("total_pages")
         if not batch or (total_pages is not None and page >= total_pages):
             break
         page += 1
-    return rows[:max_results]
+    return rows[:max_results], meta
 
 
 def search_companies(filter_body: dict, *, max_results: int = 100) -> list[dict]:
-    """`mixed_companies/search` (credit-consuming) → `organizations` rows, capped at max_results."""
-    return _paginate(
+    """`mixed_companies/search` (FREE — no credits) → `organizations` rows, capped at max_results.
+
+    Rows-only wrapper over `search_companies_meta` for callers that don't need the telemetry.
+    """
+    rows, _ = _paginate(
         "mixed_companies/search", filter_body, key="organizations", max_results=max_results
     )
+    return rows
+
+
+def search_companies_meta(
+    filter_body: dict, *, max_results: int = 100, start_page: int = 1
+) -> tuple[list[dict], dict]:
+    """As `search_companies`, but also returns the first-fetched-page `meta` (`total_entries` /
+    `breadcrumbs` / `total_pages` / `pages_fetched` / `end_page`) for D+ scope lineage — off the
+    same response, no extra call. `start_page` resumes an unchanged scope at its cursor."""
+    return _paginate(
+        "mixed_companies/search",
+        filter_body,
+        key="organizations",
+        max_results=max_results,
+        start_page=start_page,
+    )
+
+
+def count_companies(filter_body: dict) -> int:
+    """Total companies matching `filter_body`, no rows fetched (per_page=1) → `pagination.
+    total_entries` (FREE — company search costs no credits). The D+ Stage 1b relax-ladder probe:
+    assess a scope's breadth per rung before the full fetch (fetch-page-1-then-assess).
+    """
+    r = _post("mixed_companies/search", {**filter_body, "page": 1, "per_page": 1})
+    return int((r.get("pagination") or {}).get("total_entries") or 0)
 
 
 def search_people(filter_body: dict, *, max_results: int = 100) -> list[dict]:
     """`mixed_people/api_search` (0 cr, master key) → `people` rows. One org per call (Flow B)."""
-    return _paginate("mixed_people/api_search", filter_body, key="people", max_results=max_results)
+    rows, _ = _paginate(
+        "mixed_people/api_search", filter_body, key="people", max_results=max_results
+    )
+    return rows
 
 
 def count_people(filter_body: dict) -> int:
@@ -194,13 +258,31 @@ def match_person(
     return resp.get("person") or {}
 
 
+@lru_cache(maxsize=1)
+def supported_technologies_csv() -> str:
+    """`GET auth/supported_technologies_csv` → the canonical technology vocabulary as raw CSV text
+    (D+ Stage 4 tech→UID resolver). Cached once per warm container (SnapStart-safe — no network at
+    import; the ~thousands-of-rows list is static). `prospects.tech_vocab.parse_vocab` parses it;
+    `reset_tech_vocab()` clears the cache for tests. A transport error propagates as `ApolloError`
+    so a resolver caller can degrade to 'no tech filter' rather than crash the find."""
+    return _request("GET", "auth/supported_technologies_csv", raw=True, timeout=DEFAULT_TIMEOUT)
+
+
+def reset_tech_vocab() -> None:
+    supported_technologies_csv.cache_clear()
+
+
 __all__ = [
     "search_companies",
+    "search_companies_meta",
+    "count_companies",
     "search_people",
     "count_people",
     "enrich_organizations",
     "match_person",
+    "supported_technologies_csv",
     "reset_key",
+    "reset_tech_vocab",
     "ApolloError",
     "BASE_URL",
     "PER_PAGE_MAX",

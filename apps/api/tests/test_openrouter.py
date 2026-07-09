@@ -32,6 +32,36 @@ def _fake_resp(content: str) -> dict:
     }
 
 
+def test_provider_soft_pins_preferred_host():
+    """Every call soft-pins the preferred host: order + allow_fallbacks:true (never a hard 404)."""
+    from app.integrations.openrouter import client as c
+
+    body = c._build_body(MESSAGES, PROBE_SCHEMA, ["deepseek/deepseek-v4-pro"])
+    assert body["provider"] == {
+        "require_parameters": True,
+        "order": ["Fireworks"],
+        "allow_fallbacks": True,
+    }
+
+
+def test_extra_body_provider_deep_merges_over_base():
+    """A caller's provider knob deep-merges over the base host pin, keeping the other keys."""
+    from app.integrations.openrouter import client as c
+
+    body = c._build_body(
+        MESSAGES,
+        PROBE_SCHEMA,
+        ["deepseek/deepseek-v4-pro"],
+        extra_body={"temperature": 0, "provider": {"order": ["Together"]}},
+    )
+    assert body["temperature"] == 0
+    assert body["provider"] == {
+        "require_parameters": True,
+        "order": ["Together"],  # caller override wins
+        "allow_fallbacks": True,
+    }
+
+
 def test_import_is_lazy_no_network_or_secret():
     """Importing the adapter must not load config (SnapStart invariant)."""
     import importlib

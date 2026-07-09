@@ -10,19 +10,24 @@ from app.domains.prospects import find
 from app.domains.prospects.suppression import ExclusionSet
 
 
-def test_filter_companies_drops_excluded_dupes_and_domainless():
+def test_filter_companies_keeps_excluded_tagged_drops_dupes_and_domainless():
+    # Scoring-v2 ⑧-B: a client-excluded domain is KEPT (tagged), not dropped — the label engine
+    # marks it excluded_by_rules downstream ("never delete a row"). Only dupes + domainless drop.
     exclusions = ExclusionSet(domains={"customer.com"})
     parsed = [
         {"apollo_org_id": "1", "domain": "good.com"},
-        {"apollo_org_id": "2", "domain": "customer.com"},  # existing customer → dropped
+        {"apollo_org_id": "2", "domain": "customer.com"},  # existing customer → KEPT + tagged
         {"apollo_org_id": "3", "domain": "good.com"},  # dup of #1 within batch → dropped
         {"apollo_org_id": "4", "domain": ""},  # no domain → dropped
         {"apollo_org_id": "5", "domain": "seen.com"},  # already in DB → dropped
     ]
     survivors, dropped = find.filter_companies(parsed, exclusions, seen_domains={"seen.com"})
-    assert [s["apollo_org_id"] for s in survivors] == ["1"]
-    assert len(dropped) == 4
-    assert {r for _, r in dropped} == {"excluded_domain", "duplicate", "no_domain"}
+    assert [s["apollo_org_id"] for s in survivors] == ["1", "2"]  # excluded row survives
+    excluded = next(s for s in survivors if s["apollo_org_id"] == "2")
+    assert excluded.get("client_excluded") is True
+    assert survivors[0].get("client_excluded") is None  # a clean row is not tagged
+    assert len(dropped) == 3
+    assert {r for _, r in dropped} == {"duplicate", "no_domain"}
 
 
 def test_filter_people_dedupes_by_apollo_id_and_drops_idless():

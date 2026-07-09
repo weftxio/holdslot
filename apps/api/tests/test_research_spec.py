@@ -31,6 +31,7 @@ def _company_params() -> dict:
 
 def _people_params() -> dict:
     return {
+        "person_titles": ["Head of Sales", "VP Sales", "Chief Revenue Officer"],
         "person_seniorities": ["c_suite", "vp", "head"],
         "person_department_or_subdepartments": ["master_sales", "master_marketing"],
         "q_keywords": "insurance insurtech",
@@ -167,7 +168,7 @@ def test_assemble_merges_server_credit_policy_not_llm():
     assert spec["credit_policy"] == RS.CREDIT_POLICY  # server-set, deterministic
     assert spec["credit_policy"]["email_status_filter"] == ["verified"]
     assert spec["credit_policy"]["phone"] is False
-    assert spec["spec_version"] == RS.SPEC_VERSION == 5
+    assert spec["spec_version"] == RS.SPEC_VERSION == 6
     assert [b["icp_id"] for b in spec["icp_targeting"]] == [ICP_A, ICP_B]
     assert spec["icp_targeting"][0]["company_search_params"][
         "q_organization_keyword_tags"
@@ -290,15 +291,50 @@ def test_build_messages_injects_today():
     assert '"today": "2026-06-22"' in msgs[1]["content"]
 
 
+# --- merge_targeting — selective (per-ICP) re-scope splice ------------------------------
+
+
+def test_merge_targeting_replaces_only_regenerated_block():
+    # Re-scoped ICP_A only: its fresh block replaces the old, ICP_B's prior block carries over, and
+    # the input order is preserved.
+    prior = {"icp_targeting": [_block(ICP_A, "Insurers"), _block(ICP_B, "Brokers")]}
+    fresh_a = _block(ICP_A, "Insurers")
+    fresh_a["company_search_params"]["q_organization_keyword_tags"] = ["regenerated"]
+    merged = RS.merge_targeting(prior, [fresh_a], [ICP_A, ICP_B])
+    assert [b["icp_id"] for b in merged] == [ICP_A, ICP_B]
+    assert merged[0]["company_search_params"]["q_organization_keyword_tags"] == ["regenerated"]
+    assert merged[1]["icp_id"] == ICP_B  # untouched profile preserved verbatim
+
+
+def test_merge_targeting_adds_first_scope_for_unscoped_icp():
+    # ICP_B had no prior block ("no AI scope yet"); scoping it adds the block, keeps ICP_A.
+    prior = {"icp_targeting": [_block(ICP_A, "Insurers")]}
+    merged = RS.merge_targeting(prior, [_block(ICP_B, "Brokers")], [ICP_A, ICP_B])
+    assert [b["icp_id"] for b in merged] == [ICP_A, ICP_B]
+
+
+def test_merge_targeting_drops_icp_absent_from_input_order():
+    # An ICP deleted from the brief (not in doc_order) falls out even if it had a prior block.
+    prior = {"icp_targeting": [_block(ICP_A, "Insurers"), _block(ICP_B, "Brokers")]}
+    merged = RS.merge_targeting(prior, [], [ICP_A])
+    assert [b["icp_id"] for b in merged] == [ICP_A]
+
+
+def test_merge_targeting_no_prior_blocks_yields_fresh_only():
+    merged = RS.merge_targeting({}, [_block(ICP_A, "Insurers")], [ICP_A, ICP_B])
+    assert [b["icp_id"] for b in merged] == [ICP_A]  # ICP_B has neither → omitted
+
+
 def test_default_prompt_matches_seed_file():
     # The code fallback (runtime) and the migration's DB seed source must be identical, or a saved
     # default would differ from the seeded `briefing` row. They have no other binding — assert it.
     from pathlib import Path
 
     seed = (
-        Path(__file__).resolve().parents[3] / "docs" / "prompts" / "brief-structure-v7.md"
+        Path(__file__).resolve().parents[3] / "docs" / "prompts" / "brief-structure-v11.md"
     ).read_text(encoding="utf-8")
     assert seed.strip() == RS.DEFAULT_SYSTEM_PROMPT.strip()
+    assert RS.PROMPT_VERSION == "brief-structure-v11"
 
 
 def test_default_prompt_teaches_per_icp_output():
@@ -317,6 +353,46 @@ def test_default_prompt_never_mentions_date_windows():
     assert "latest_funding_date_range" not in p
     assert "organization_job_posted_at_range" not in p
     assert "recency_window" not in p
+
+
+def test_default_prompt_folds_avoidance_into_keyword_yield():
+    # v11 removed the redundant avoid_keywords block: keyword_yield is now the SOLE keyword-feedback
+    # signal, so the prompt must no longer mention avoid_keywords / NEGATIVE EVIDENCE, but its yield
+    # block must still teach avoidance (a 0%-yield keyword is the negative to drop).
+    p = RS.DEFAULT_SYSTEM_PROMPT
+    assert "avoid_keywords" not in p
+    assert "NEGATIVE EVIDENCE" not in p
+    assert "KEYWORD YIELD" in p
+    assert "signal to AVOID" in p
+
+
+def test_default_prompt_teaches_stage4_grounding_and_server_set_tech():
+    # D+ Stage 4 — the prompt must teach the two new learning blocks and that tech UIDs are server-
+    # set (never model-emitted, or strict validation would reject them).
+    p = RS.DEFAULT_SYSTEM_PROMPT
+    assert "keyword_yield" in p and "KEYWORD YIELD" in p
+    assert "customer_anchors" in p and "CUSTOMER ANCHORS" in p
+    assert "technology-UID filters" in p  # the "do NOT emit" server-set instruction
+
+
+def test_build_messages_carries_keyword_yield_and_anchors_only_when_present():
+    # D+ Stage 4 — the yield table + customer anchors ride in the payload, only when non-empty.
+    base = RS.build_messages({"companyName": "X"}, [])
+    assert "keyword_yield" not in base[1]["content"]
+    assert "customer_anchors" not in base[1]["content"]
+    rich = RS.build_messages(
+        {"companyName": "X"},
+        [],
+        keyword_yield=[{"keyword": "fintech", "good": 3, "total": 4, "yield_pct": 75}],
+        customer_anchors=[{"domain": "acme.com", "industry": "software", "keywords": ["b2b saas"]}],
+    )
+    body = rich[1]["content"]
+    assert '"keyword_yield"' in body and "fintech" in body
+    assert '"customer_anchors"' in body and "acme.com" in body
+    # Empty lists stay out (no empty block).
+    empty = RS.build_messages({"companyName": "X"}, [], keyword_yield=[], customer_anchors=[])
+    assert "keyword_yield" not in empty[1]["content"]
+    assert "customer_anchors" not in empty[1]["content"]
 
 
 # --- gated integration ---------------------------------------------------------
@@ -405,7 +481,7 @@ def test_structure_endpoint_versions_and_links_telemetry():
         s1 = latest["latest"]
         assert s1["version"] == 1
         # Schema-valid v4 spec, server-set credit policy, one block per ICP with ids echoed.
-        assert s1["spec"]["spec_version"] == 5
+        assert s1["spec"]["spec_version"] == 6
         assert s1["spec"]["credit_policy"]["email_status_filter"] == ["verified"]
         blocks = s1["spec"]["icp_targeting"]
         assert [b["icp_id"] for b in blocks] == icp_ids  # both ICPs covered, input order

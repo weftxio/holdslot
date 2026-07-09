@@ -7,7 +7,7 @@
 > doc wins**, and schema changes are recorded **here first**.
 >
 > **A–D are LIVE** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the Alembic
-> migrations **through `0016`**, the live Aurora head — Lambda **v55**). C is the **Apollo-only**
+> migrations **through `0018`** (`0017`/`0018` are data-only prompt re-seeds) — Lambda **v59**). C is the **Apollo-only**
 > find → score → select → enrich loop (see [`initial-build-plan.md`](initial-build-plan.md) → Phase C); the
 > 2026-06-25 modularization + W0–W8 pass added the perf indexes + `prospect.fit_reason` (`0014`) and the
 > `scoring_job` async ledger (`0015`); `scope_override` (`0012`) is also defined below.
@@ -16,12 +16,29 @@
 > present, 20 application tables). Phase D (S3 · Sendout batch + client approval) adds **4 tables** — `batch`,
 > `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
 > row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
-> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0018`.**
+> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0025`.**
 >
-> **Multi-ICP scoping (2026-07-06)** — `research_spec.spec` is now **v5**: `icp_targeting[]` carries one
-> Apollo targeting block per ICP, and the intent DATE windows are removed (hiring titles only — see the
-> `research_spec` section below). No table changes — `spec` is JSONB; `0017`/`0018` are data-only
-> (re-seed the `briefing` prompt to `brief-structure-v6` → `v7` for tenants still on a shipped default).
+> **Multi-ICP scoping (2026-07-06 → D+ Stage 4 2026-07-08)** — `research_spec.spec` is now **v6**:
+> `icp_targeting[]` carries one Apollo targeting block per ICP, the intent DATE windows are removed
+> (hiring titles only), and **`people_search_params.person_titles[]`** is added (D+ Stage 2 "Query =
+> rubric": the query now sends the titles the fit rubric scores). D+ Stages 3 & 4 add no OUTPUT field
+> (still v6) — only INPUT prompt blocks in Regenerate: `avoid_keywords[]` (Stage 3) +
+> `keyword_yield[]` / `customer_anchors[]` (Stage 4). No table changes — `spec` is JSONB;
+> `0017`/`0018`/`0020`/`0021`/**`0022`** are data-only (re-seed the `briefing` prompt
+> `brief-structure-v6` → `v7` → `v8` → `v9` → **`v10`** for tenants still on a shipped default). The
+> people relax ladder queries titles first (`titles_strict → titles_fuzzy`) then falls back to the two
+> facets (`seniority×dept → seniority_only`). Stage 4 also emits the two Apollo tech-UID filters
+> (`currently_using`/`currently_not_using_any_of_technology_uids`), resolved server-side by
+> `prospects/tech_vocab` from `auth/supported_technologies_csv` (never model-emitted).
+>
+> **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
+> `research_run` gains **`filter_body`** JSONB (the exact executed Apollo body; find-people stores
+> `{"per_org": {domain: {body, relax}}}`, ≤8 orgs/run) · **`scope_source`** varchar(16) (`ai` · `custom` ·
+> `lookalike` · NULL for non-Apollo runs) · **`result_meta`** JSONB (`total_entries` · `breadcrumbs` echo ·
+> `pages_fetched` · `relax_level` · `over_broad` · `apac` · `body_hash` · **Stage 3 page cursor:**
+> `resume_page` · `page_cursor` · `total_pages` · `scope_exhausted` · `known_skipped`). The cursor is
+> read back by `_resume_page` (scan latest same-`body_hash` run) — no new column. No other table changes. See
+> [`initial-build-plan.md`](initial-build-plan.md) → *Prospect-scope alignment build (D+)*.
 
 ## The governing boundary
 
@@ -55,7 +72,7 @@ every Search/Match call 403s (`API_INACCESSIBLE`) — only `organizations/enrich
 ### Endpoints (confirmed from Apollo docs + live-API deep research 2026-06-21)
 | Purpose | Endpoint | Credits | Returns |
 |---|---|---|---|
-| Find Company | `POST /api/v1/mixed_companies/search` | **⚠️ plan credits** (Apollo's current docs list it as credit-consuming — the old "search is free" model is retired; **confirm exact cost at C0**) | org rows (firmographics, `apollo_org_id`) |
+| Find Company | `POST /api/v1/mixed_companies/search` | **0 — FREE** (founder Apollo-dashboard confirm 2026-07-08; the public "charged per page" pricing doc does NOT apply to this Professional + master-key account). Search width is **not** a cost constraint — the D+ cap is bound by **sync find-path latency vs the 30s gateway**, not credits | org rows (firmographics, `apollo_org_id`) |
 | Find People | `POST /api/v1/mixed_people/api_search` | **0** | person rows, **no email/phone**; needs master key |
 | Enrich | `POST /api/v1/people/match` | **1/email · 8/phone** | verified email/phone/provider for ONE person |
 
@@ -75,8 +92,7 @@ them with no vocabulary translation — it only merges server config (`credit_po
 | `organization_num_employees_ranges[]` | array of `"min,max"` strings | `company_search_params.organization_num_employees_ranges` |
 | `organization_locations[]` | lowercase free text (country/US-state/city) | `company_search_params.organization_locations` |
 | `revenue_range[min]` / `[max]` | int (plan-gated) | `company_search_params.revenue_range {min,max}` |
-| `latest_funding_date_range[min]` / `[max]` | `YYYY-MM-DD` | `intent_filters.company.latest_funding_date_range` |
-| `q_organization_job_titles[]` · `organization_job_posted_at_range[min/max]` | free text · date | `intent_filters.company.*` (hiring signal) |
+| `q_organization_job_titles[]` | free text | `intent_filters.company.q_organization_job_titles` (hiring signal — the funding/jobs-posted **date windows were removed in spec v5**; `map_company_filter` never forwards them) |
 | `page` / `per_page` (≤100) | int | paginate to `credit_policy.max_companies` |
 
 **Find People (`mixed_people/api_search`) ← `spec.people_search_params` + selected orgs**
@@ -92,12 +108,16 @@ them with no vocabulary translation — it only merges server config (`credit_po
 | `contact_email_status[]` | enum: verified·unverified·likely to engage·unavailable | `credit_policy.email_status_filter` (server-set) |
 | `page` / `per_page` (≤100) | int | paginate to `credit_policy.max_people` |
 
-> **⚠️ Phase C build — verify against live fixtures before hard-coding (research-flagged unconfirmed):**
-> (1) the funding-**stage** filter — likely key `organization_latest_funding_stage_cd[]`, but the exact key
-> and its code values (string vs numeric) are **not authoritatively published**; (2) `person_departments`/
-> `person_functions` are **UI-only — not API request params** (hence departments is DB-side here); (3)
-> there is **no API title-exclude and no per-company cap param** (both DB-side); (4) company-search credit
-> consumption — confirm at C0. Lock `apollo_map` to what the C0 fixtures actually accept/return.
+> **⚠️ Verified against Apollo's official OpenAPI spec (2026-07-08) + what still needs live fixtures:**
+> (1) the funding-**stage** filter (`organization_latest_funding_stage_cd[]`) is **not in the documented
+> spec** — treat as unavailable; (2) `person_department_or_subdepartments` (which the code sends today) is
+> **not a documented API param** — whether it filters at all is unverified → live A/B in D+ Stage 1;
+> (3) there is **no API title-exclude, no per-company cap, and no exclude-by-id/keyword/industry** — the
+> only exclusion params are `organization_not_locations[]` + `currently_not_using_any_of_technology_uids[]`
+> (negative filtering stays DB/pipeline-side → D+ Stage 3); (4) company-search credits **confirmed:
+> charged per page when results are returned**; (5) `person_titles[]` is fuzzy by default —
+> `include_similar_titles=false` gives strict matching (D+ Stage 2 adds titles to the people query);
+> technologies have a canonical vocabulary at `auth/supported_technologies_csv` (D+ Stage 4 resolver).
 
 ### Company search → `company` row (`apollo_map.parse_company`, pure, fixture-tested)
 | Apollo field | → our field |
@@ -137,8 +157,9 @@ the sync response — off at MVP, so the sync email path is all we wire:
 | `email`/provider source | `enrichment.provider` |
 
 ### Credit discipline (enforced in code)
-1. **People search is 0 credits; company search consumes plan credits** (confirm cost at C0) — paginate
-   company search only to `max_results`, cache/dedup rows, and **never call `people/match` before gate 2**.
+1. **BOTH searches are FREE (0 credits) — founder-confirmed 2026-07-08.** Only `people/match` (enrich)
+   spends. So width/pagination is unconstrained by cost; **never call `people/match` before gate 2** is the
+   one hard credit rule. (Find-width is instead bound by sync find-path latency vs the 30s gateway — D+.)
 2. **Exclusion / existing-customer filtering + all `⊘` post-filters are DB-side** (the `suppression.py`
    gate + result post-filter), not extra API calls.
 3. **Dedup before enrich** on `apollo_person_id` / `identity_key` — a person already enriched is never
@@ -149,7 +170,7 @@ the sync response — off at MVP, so the sync email path is all we wire:
 
 # Part 2 — Internal database
 
-## Entity-relationship overview (20 tables · head `0016`)
+## Entity-relationship overview (20 tables · head `0025`)
 
 Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, the W4
 async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
@@ -445,10 +466,12 @@ apply DB-side on every search.
 | `linkedin_url` | varchar nullable | company LinkedIn |
 | `name` | varchar | |
 | `industry`, `size`, `country` | varchar nullable | firmographics from Apollo company search |
-| `fit_score` | int nullable | company-level fit (reuses `fit.py`, persona lines omitted) |
-| `fit_tier` | varchar nullable | Strong/Good/Moderate/Below |
-| `fit_reason` | text nullable | "why a fit" (client-facing) |
-| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; also the **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict). The label is set by a **dedicated stage-0 classifier** (`company_model` purpose) at find/lookalike/manual-add time — BEFORE scoring — not by `company_fit` (which now only reads it for the gate); see Phase B/C refinement in [`initial-build-plan.md`](initial-build-plan.md) |
+| `fit_score` | int nullable | **v1** company-level fit (reuses `fit.py`, persona lines omitted) — kept alongside v2 through the cutover, dropped in `0026` |
+| `fit_tier` | varchar nullable | **v1** Strong/Good/Moderate/Below (→ `0026`) |
+| `fit_reason` | text nullable | "why a fit" (client-facing); **scoring v2 reuses this column** for its `reason` enum-string |
+| `label` | varchar(32) nullable | **scoring v2** (`0024`, spec [`holdslot-scoring-spec-v2.md`](holdslot-scoring-spec-v2.md)) — the 4-label verdict `contact_now`/`contact_soon`/`low_fit`/`excluded_by_rules`; **NULL = "needs re-score"** (no backfill, decision ②). Index `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` |
+| `score_total` | int nullable | **scoring v2** — sum of the 4 subscores, 4–20 (≥16 `contact_now` · ≥10 `contact_soon` · else `low_fit`) |
+| `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; the **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict), set by a **dedicated stage-0 classifier** (`company_model` purpose) at find/lookalike/manual-add time — BEFORE scoring; **scoring v2** additionally stores `subscores` (`deal_fit`/`outbound_gap`/`trigger`/`reachability`), `flags[]`, `trigger_line`, and the `liveness` verdict here. See Phase B/C + the D+ scoring-v2 addendum in [`initial-build-plan.md`](initial-build-plan.md) |
 | `evidence` | JSONB (default `{}`) | citations / extras (revenue, employee count, locality) |
 | `source` | varchar | `apollo` \| `manual` |
 | `status` | varchar | `discovered` → `selected` → `people_found` → `archived` (selection lives here — no separate `selected` column) |
@@ -468,10 +491,12 @@ apply DB-side on every search.
 | `identity_key` | varchar **idx** | normalized LinkedIn / `domain\|last\|first` / email — **dedupe + future `person` FK seam** |
 | `enrichment` | JSONB | raw Apollo search/match row; no S3 at MVP volume |
 | `email_valid` | bool | |
-| `fit_score` | int nullable | |
-| `fit_tier` | varchar | Strong/Good/Moderate/Below |
-| `fit_components` | JSONB | the 12 rubric line-items + reason tags |
-| `fit_reason` | text nullable | "why a fit" client-facing copy (→ Phase D); a real column (`0014`, parity with `company.fit_reason`) — populated on next rescore, no backfill |
+| `fit_score` | int nullable | **v1** (→ `0026`) |
+| `fit_tier` | varchar | **v1** Strong/Good/Moderate/Below (→ `0026`) |
+| `fit_components` | JSONB | the 12 v1 rubric line-items + reason tags; **scoring v2** stores the persona `subscores` (`persona_fit`/`authority`/`trigger`/`reachability`) + `flags[]` here |
+| `fit_reason` | text nullable | "why a fit" client-facing copy; **scoring v2 reuses this column** for its `reason` (`0014`, parity with `company.fit_reason`) — populated on next rescore, no backfill |
+| `label` | varchar(32) nullable | **scoring v2** (`0024`) — same 4-label verdict, **extrapolated** from the company label + the person's own persona axes (no per-person web call); the company label **caps** the person's. NULL = "needs re-score" |
+| `score_total` | int nullable | **scoring v2** — sum of the 4 persona axes, 4–20 |
 | `source` | varchar | `apollo` \| `manual` (origin, not transport) |
 | `source_lineage` | JSONB | run + rubric version |
 | `status` | varchar | `found`→`confirmed`(to enrich)→`scored`; `suppressed`/`score_error` (string, not enum) |
@@ -492,6 +517,9 @@ apply DB-side on every search.
 | `prompt_version`, `rubric_version` | varchar nullable | which spec (`brief-structure`) / fit-rubric (`company_fit`/`prospect_fit`) versions ran |
 | `rows_pushed`, `rows_accepted` | int | the run's scoreboard (found / scored) |
 | `cost_usd` | numeric nullable | LLM spend → per-run $/accepted (Apollo enrich-credit cost not stored — reconcile from the Apollo dashboard) |
+| `filter_body` ⬜ `0019` | JSONB nullable | the **executed** Apollo request body (override-proof lineage); find-people stores `{"per_org": {domain: {body, relax}}}`, ≤8 orgs/run |
+| `scope_source` ⬜ `0019` | varchar(16) nullable | `ai` · `custom` (any operator-supplied params) · `lookalike` · NULL for non-Apollo runs |
+| `result_meta` ⬜ `0019` | JSONB nullable | search-response signal + cursor telemetry, captured off the fetch response (no extra Apollo call): `total_entries` · `breadcrumbs` echo · `pages_fetched` · `relax_level` · filter-body hash + **page cursor** (repeat find with an unchanged body resumes at the next page — D+ Stage 3) |
 | `created_at` | timestamptz | |
 
 ### `prompt` ⬜ MVP — append-only per-client prompt store (renamed from `sourcing_doc`, `0010`)
@@ -657,10 +685,18 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260625_0014_perf_indexes_fit_reason` ✅ | C (W1) | composite `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` indexes on `prospect`+`company`; **drop** 4 UNIQUE-covered single-col indexes; add `prospect.fit_reason`; attach `scope_override.updated_at` trigger. Reversible. |
 | `20260625_0015_scoring_job` ✅ | C (W4) | `scoring_job` async fit-scoring job ledger + `ix_scoring_job_tenant_kind`; one in-flight per (tenant, kind) |
 | `20260625_0016_phase_d_batch_approval` ✅ | D | `batch`, `prospect_approval` ⭐, `approval_link`, `approval_template` + indexes/unique keys (**applied to dev Aurora** — head `0016`, verified live) |
+| `20260708_0019_scope_lineage` ✅(dev) | C/D+ | `research_run.filter_body` + `scope_source` + `result_meta` — executed-body lineage + search-response signal + page-cursor telemetry (alignment build Stage 1) |
+| `20260708_0020..0023_brief_structure_v8..v11` ✅(dev) | D+ | data-only `briefing` prompt re-seeds: `v8` (Stage 2 person_titles), `v9` (Stage 3 avoid_keywords), `v10` (Stage 4 keyword_yield + customer_anchors + server-set tech UIDs), **`v11`**. Append-only where the tenant's latest prompt equals a shipped default; founder edits untouched |
+| `20260709_0024_scoring_v2_labels` ✅(dev) | D+ v2 | **scoring v2** — `label` varchar(32) + `score_total` int on **company AND prospect** + the `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` index on both. **No backfill** (labels start NULL). v1 `fit_*` untouched (dropped in `0026`) |
+| `20260709_0025_scoring_v2_rubrics` ✅(dev) | D+ v2 | data-only — seed the new `company_score` + `prospect_score` prompt stages (the v2 axis rubrics) per tenant from the shipped `docs/prompts/{company,prospect}-score-v1.md` |
+| *(next)* `0026_scoring_v2_contract` | D+ v2 | **after UAT** — drop v1 `fit_score`/`fit_tier` + their indexes, `reason_tags`, `outreach_outcome` (the contraction pass) |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0016`** (Lambda v55). All migrations `0001`→`0016` applied to dev Aurora (verified
-2026-07-01: head `0016`, 20 application tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
+**Live Aurora head: `0025`** (Lambda **v67**, deployed 2026-07-09 — D+ Stages 1-4 + scoring v2). `0024`/`0025`
+are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill). All migrations `0001`→`0025`
+applied to dev Aurora. Earlier: `0017`/
+`0018` are data-only prompt re-seeds; table count verified 2026-07-01 at head `0016`: 20 application
+tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
 retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01
 refinements (delete batch, re-send-reopen) are also **code-only** (delete rides the existing `0016` FK
 cascade). The 2026-07 **B2B/B2C market gate** (`brief.data.targetMarket` + `company.fit_components.business_model`

@@ -1,0 +1,14 @@
+cleaned_name,uid,category
+Salesforce,salesforce,CRM
+Salesforce Commerce Cloud,salesforce_commerce_cloud,E-commerce Platforms
+HubSpot,hubspot,Marketing Automation
+HubSpot CRM,hubspot_crm,CRM
+Marketo,marketo,Marketing Automation
+.NET,net,Frameworks and Programming Languages
+Segment,segment,Analytics and Tracking
+Segment.io,segment_io,Analytics and Tracking
+Stripe,stripe,Payments
+Shopify,shopify,E-commerce Platforms
+Snowflake,snowflake,Data Warehouse
+Google Analytics,google_analytics,Analytics and Tracking
+Adobe Analytics,adobe_analytics,Analytics and Tracking
