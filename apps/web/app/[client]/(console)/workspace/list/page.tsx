@@ -83,11 +83,10 @@ import {
 } from "@/lib/workspace/constants";
 import {
   CompanyStudy,
-  FlagMarker,
   LabelChip,
   LinkedInLink,
   SpecHead,
-  SubscoreBar,
+  SubscoreList,
   WebLink,
 } from "@/components/workspace";
 
@@ -112,6 +111,43 @@ const isBulkSelectable = (label: ScoreLabel | null) =>
   label !== "excluded_by_rules" && label !== "low_fit";
 // The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
 const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
+
+// A footnote bucket (low_fit / excluded_by_rules) is sub-grouped by WHY each row landed there, so
+// the operator can scan the rejection reasons at a glance (spec §9). A gate-killed row carries a
+// canonical reason string ("wrong vertical", "too large", "rule: B2B only", …); a low_fit row that
+// was actually SCORED low (a real score_total, free-text reason) has no canonical tag, so all such
+// rows fold into one "Low score" group instead of fragmenting into one-off reasons.
+function prettyReason(reason: string): string {
+  const s = (reason || "").trim().replace(/^rule:\s*/i, "").replace(/_/g, " ");
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
+}
+type SubGroup = { key: string; label: string; rows: CompanyApi[] };
+function subGroupsOf(rows: CompanyApi[]): SubGroup[] {
+  const groups = new Map<string, SubGroup>();
+  for (const c of rows) {
+    const scoredLow = c.label === "low_fit" && c.score_total != null;
+    const key = scoredLow ? "__scored_low" : (c.reason || "").trim().toLowerCase() || "__other";
+    const label = scoredLow ? "Low score" : prettyReason(c.reason) || "Other";
+    const g = groups.get(key);
+    if (g) g.rows.push(c);
+    else groups.set(key, { key, label, rows: [c] });
+  }
+  // Biggest group first — the most common rejection reason is what the operator most wants to see.
+  return [...groups.values()].sort((a, b) => b.rows.length - a.rows.length);
+}
+
+// Step-1 row order: Accepted companies (already staged to Step 2 → status "people_found") sort to
+// the top, then by total 4-axis score (score_total, out of 20) desc, then newest. Label bucketing
+// (groupByLabel) is applied AFTER this sort, so in the rendered call sheet this governs order WITHIN
+// each bucket — Accepted rows head each section, then descend by score.
+function compareCompanyRows(a: CompanyApi, b: CompanyApi): number {
+  const accepted = (c: CompanyApi) => (c.status === "people_found" ? 0 : 1);
+  if (accepted(a) !== accepted(b)) return accepted(a) - accepted(b);
+  const sa = a.score_total ?? -1;
+  const sb = b.score_total ?? -1;
+  if (sa !== sb) return sb - sa;
+  return (b.created_at ?? "").localeCompare(a.created_at ?? "");
+}
 
 export default function ListPage() {
   const client = useClient();
@@ -207,6 +243,10 @@ export default function ListPage() {
   // Which collapsed footnote buckets (low_fit / excluded_by_rules) are expanded in the Step-1 table.
   // Default empty → both start collapsed to a one-line count (spec §11); reset on a client switch.
   const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(new Set());
+  // Which reason sub-groups inside those buckets are expanded — keyed `${bucket}::${reasonKey}`.
+  // Default empty → each reason opens collapsed to its count, so expanding a bucket shows the
+  // per-reason breakdown rather than dumping every row (the point of the sub-layer).
+  const [expandedSubs, setExpandedSubs] = useState<Set<string>>(new Set());
   // Business-model filter: "" any · "B2B"/"B2C"/"Complex"/"Unknown" (the stage-0 label).
   const [coModel, setCoModel] = useState("");
   // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
@@ -349,6 +389,7 @@ export default function ListPage() {
     setFLabel("");
     setCoLabel("");
     setExpandedBuckets(new Set());
+    setExpandedSubs(new Set());
     setCoModel("");
     setCoStatus("");
     setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
@@ -551,9 +592,10 @@ export default function ListPage() {
 
   // ---- Stage 1: companies ----
   // Filter, then order as a call sheet by label (spec §11): contact_now → contact_soon → unscored →
-  // low_fit → excluded_by_rules, and within a bucket by score_total desc then newest (compareByLabel).
-  // The old client-side market-exclusion pinning is gone — a market-mismatched company now carries
-  // the `excluded_by_rules` label from the server, so it lands in the collapsed footnote bucket.
+  // low_fit → excluded_by_rules (the bucket order, applied by groupByLabel). Within each bucket,
+  // Accepted rows (people_found) sort first, then by total score (/20) desc, then newest
+  // (compareCompanyRows). The old client-side market-exclusion pinning is gone — a market-mismatched
+  // company now carries the `excluded_by_rules` label from the server, so it lands in that footnote.
   const coVisible = useMemo(
     () =>
       companies
@@ -575,7 +617,7 @@ export default function ListPage() {
             icpOk
           );
         })
-        .sort(compareByLabel),
+        .sort(compareCompanyRows),
     [companies, coSearch, coLabel, coModel, coStatus, fIcp]
   );
   // The filtered rows grouped into label buckets (spec §11) for the call-sheet render — action
@@ -644,6 +686,14 @@ export default function ListPage() {
       return n;
     });
   }
+  // Expand/collapse one reason sub-group inside a footnote bucket — keyed `${bucket}::${reasonKey}`.
+  function toggleSub(key: string) {
+    setExpandedSubs((s) => {
+      const n = new Set(s);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+  }
   function toggleAllCo(on: boolean) {
     const ids = coBulkSelectable.map((c) => c.id); // gated rows never join select-all
     setCompanyChecked((s) => {
@@ -653,11 +703,13 @@ export default function ListPage() {
     });
   }
 
-  // One Step-1 company row (the v2 call-sheet cell: label chip + score, flag marker, 4-segment
-  // subscore bar, one-line reason, and — for a contact_* row — the email trigger line). An
-  // `excluded_by_rules` row can't be ticked (decision ④); its rule shows as the reason.
+  // One Step-1 company row (the v2 call-sheet cell: label chip + score, the four subscores as a text
+  // list, and — for non-contact rows — a one-line reason). An `excluded_by_rules` row can't be ticked
+  // (decision ④); its rule shows as the reason.
   const renderCompanyRow = (c: CompanyApi) => {
     const excluded = c.label === "excluded_by_rules";
+    const contact = c.label === "contact_now" || c.label === "contact_soon";
+    const icpLabel = c.icp_id ? icpNameById.get(c.icp_id) : undefined;
     return (
       <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
         <td>
@@ -675,10 +727,12 @@ export default function ListPage() {
             <div>
               {c.status === "people_found" ? <span className="sel-tag">Accepted</span> : null}
               <div className="nm">{c.name || c.domain}</div>
-              {c.country ? <div className="sub">{c.country}</div> : null}
-              {c.icp_id && icpNameById.get(c.icp_id) ? (
-                <div style={{ marginTop: 4 }}>
-                  <span className="badge badge-neutral">{icpNameById.get(c.icp_id)}</span>
+              {icpLabel || c.country ? (
+                <div className="sub who-meta">
+                  {icpLabel ? (
+                    <span className="badge badge-neutral icp-badge">{icpLabel}</span>
+                  ) : null}
+                  {c.country ? <span>{c.country}</span> : null}
                 </div>
               ) : null}
             </div>
@@ -696,37 +750,37 @@ export default function ListPage() {
                 <>
                   <span className="label-line">
                     <LabelChip label={c.label} score={c.score_total} />
-                    <FlagMarker flags={c.flags} />
                   </span>
                   {hasSubs(c.subscores) ? (
-                    <SubscoreBar subscores={c.subscores} axes={COMPANY_AXES} />
+                    <SubscoreList subscores={c.subscores} axes={COMPANY_AXES} />
                   ) : null}
-                  {c.reason ? (
+                  {/* The grey reason line is hidden for the two contact buckets (kept for
+                      low_fit / excluded, where "why" is the whole point). */}
+                  {c.reason && !contact ? (
                     <span className="score-reason" title={c.reason}>
                       {c.reason}
-                    </span>
-                  ) : null}
-                  {(c.label === "contact_now" || c.label === "contact_soon") && c.trigger_line ? (
-                    <span className="score-trigger" title={c.trigger_line}>
-                      ↳ {c.trigger_line}
                     </span>
                   ) : null}
                 </>
               ) : (
                 <span className="muted">Pending</span>
               )}
-              {c.business_model ? (
-                <span className={clsx("badge", businessModelChip(c.business_model).cls)}>
-                  {businessModelChip(c.business_model).label}
-                </span>
-              ) : null}
             </div>
           )}
         </td>
         <td>
           <WebLink website={c.website} domain={c.domain} />
         </td>
-        <td className="muted">{c.industry || "—"}</td>
+        <td className="muted">
+          <div>{c.industry || "—"}</div>
+          {c.business_model ? (
+            <div className="ind-model">
+              <span className={clsx("badge", businessModelChip(c.business_model).cls)}>
+                {businessModelChip(c.business_model).label}
+              </span>
+            </div>
+          ) : null}
+        </td>
         <td className="muted">{c.size || "—"}</td>
         <td>
           <span className={clsx("badge", SOURCE_CLS[c.source] ?? "badge-neutral")}>
@@ -740,6 +794,32 @@ export default function ListPage() {
       </tr>
     );
   };
+
+  // The expanded body of a footnote bucket (low_fit / excluded_by_rules): one count row per rejection
+  // reason (indented under the bucket head), each expanding to the companies under that reason. Only
+  // called for the two collapsible buckets — the action buckets render flat via renderCompanyRow.
+  const renderSubGroups = (bucketKey: string, rows: CompanyApi[]) =>
+    subGroupsOf(rows).map((g) => {
+      const subKey = `${bucketKey}::${g.key}`;
+      const open = expandedSubs.has(subKey);
+      return (
+        <Fragment key={subKey}>
+          <tr className="bucket-sub bucket-head--btn" onClick={() => toggleSub(subKey)}>
+            <td colSpan={8}>
+              <span className="bucket-head-in bucket-sub-in">
+                <span className={clsx("bucket-caret", open && "open")} aria-hidden="true">
+                  ▸
+                </span>
+                <span className="bucket-sub-name">{g.label}</span>
+                <span className="bucket-ct">{g.rows.length}</span>
+                <span className="bucket-hint">{open ? "hide" : "review"}</span>
+              </span>
+            </td>
+          </tr>
+          {open ? g.rows.map(renderCompanyRow) : null}
+        </Fragment>
+      );
+    });
 
   async function submitAddCompany() {
     if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
@@ -1652,43 +1732,47 @@ export default function ListPage() {
                 </thead>
                 {coVisible.length > 0 && (
                   <tbody>
-                    {/* Call sheet (spec §11): one group per label bucket. Action buckets render
-                        expanded; the two footnote buckets (low_fit / excluded_by_rules) collapse to
-                        a one-line count that expands on click. */}
+                    {/* Call sheet (spec §11): one group per label bucket. EVERY bucket header is a
+                        collapse toggle, and ALL buckets default CLOSED to a one-line count — the
+                        operator expands the bucket they want to work. `expandedBuckets` holds the
+                        expanded keys. Footnotes (low_fit / excluded) expand to a per-reason
+                        breakdown; the rest expand to a flat row list. */}
                     {BUCKET_ORDER.map((key) => {
                       const rows = coBuckets.get(key) ?? [];
                       if (!rows.length) return null;
-                      const collapsible = COLLAPSED_KEYS.has(key);
-                      const open = !collapsible || expandedBuckets.has(key);
+                      const footnote = COLLAPSED_KEYS.has(key); // low_fit / excluded_by_rules
+                      const open = expandedBuckets.has(key);
                       return (
                         <Fragment key={key}>
                           <tr
-                            className={clsx("bucket-head", collapsible && "bucket-head--btn")}
-                            onClick={collapsible ? () => toggleBucket(key) : undefined}
+                            className="bucket-head bucket-head--btn"
+                            onClick={() => toggleBucket(key)}
                           >
                             <td colSpan={8}>
                               <span className="bucket-head-in">
-                                {collapsible ? (
-                                  <span
-                                    className={clsx("bucket-caret", open && "open")}
-                                    aria-hidden="true"
-                                  >
-                                    ▸
-                                  </span>
-                                ) : null}
+                                <span
+                                  className={clsx("bucket-caret", open && "open")}
+                                  aria-hidden="true"
+                                >
+                                  ▸
+                                </span>
                                 <span
                                   className={clsx("bucket-dot", `bucket-dot--${key}`)}
                                   aria-hidden="true"
                                 />
                                 <span className="bucket-name">{BUCKET_HEAD[key]}</span>
                                 <span className="bucket-ct">{rows.length}</span>
-                                {collapsible ? (
-                                  <span className="bucket-hint">{open ? "hide" : "review"}</span>
-                                ) : null}
+                                <span className="bucket-hint">
+                                  {open ? "hide" : footnote ? "review" : "show"}
+                                </span>
                               </span>
                             </td>
                           </tr>
-                          {open ? rows.map(renderCompanyRow) : null}
+                          {open
+                            ? footnote
+                              ? renderSubGroups(key, rows)
+                              : rows.map(renderCompanyRow)
+                            : null}
                         </Fragment>
                       );
                     })}
@@ -2043,10 +2127,9 @@ export default function ListPage() {
                                     <div className="ai-score-cell">
                                       <span className="label-line">
                                         <LabelChip label={p.label} score={p.score_total} />
-                                        <FlagMarker flags={p.flags} />
                                       </span>
                                       {hasSubs(p.subscores) ? (
-                                        <SubscoreBar subscores={p.subscores} axes={PROSPECT_AXES} />
+                                        <SubscoreList subscores={p.subscores} axes={PROSPECT_AXES} />
                                       ) : null}
                                       {p.reason ? (
                                         <span className="score-reason" title={p.reason}>

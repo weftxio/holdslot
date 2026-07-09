@@ -107,9 +107,10 @@ export function LabelChip({ label, score }: { label: ScoreLabel; score?: number 
   );
 }
 
-// The 4-segment subscore bar (spec §11) — a compact equalizer, one segment per axis filled to its
-// 1–5 value, each segment tooltip'd with its axis name + value. `axes` is the tier's axis order.
-export function SubscoreBar({
+// The four subscores (spec §11) as a plain text list — one "Axis  n/5" line per axis, in the tier's
+// axis order. Replaces the old equalizer bar: the numbers are read directly, not inferred from bar
+// heights. `axes` is the tier's axis order (company vs. person).
+export function SubscoreList({
   subscores,
   axes,
 }: {
@@ -117,26 +118,16 @@ export function SubscoreBar({
   axes: readonly string[];
 }) {
   return (
-    <span className="subscore-bar" role="img" aria-label="subscores">
+    <span className="subscore-list">
       {axes.map((ax) => {
         const v = Math.max(1, Math.min(subscores?.[ax] ?? 1, 5));
         return (
-          <span key={ax} className="subscore-seg" title={`${AXIS_LABEL[ax] ?? ax}: ${v}/5`}>
-            <span className="subscore-fill" style={{ height: `${(v / 5) * 100}%` }} />
+          <span key={ax} className="subscore-item">
+            <span className="subscore-ax">{AXIS_LABEL[ax] ?? ax}</span>
+            <span className="subscore-val">{v}/5</span>
           </span>
         );
       })}
-    </span>
-  );
-}
-
-// Non-blocking flag marker (spec §10) — a small warn glyph + count; the full flag list is the
-// tooltip. Renders nothing when a row has no flags.
-export function FlagMarker({ flags }: { flags: string[] }) {
-  if (!flags?.length) return null;
-  return (
-    <span className="flag-marker" title={flags.join(", ")} aria-label={`${flags.length} flags`}>
-      ⚑ {flags.length}
     </span>
   );
 }
