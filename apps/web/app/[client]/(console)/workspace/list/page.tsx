@@ -21,7 +21,8 @@ import {
   awaitScoringJob,
   createBatch as apiCreateBatch,
   deletePeopleScopeOverride,
-  enrichProspects,
+  deleteScopeOverride,
+  enrichScoreProspectsAsync,
   findCompaniesAsync,
   findLookalikesAsync,
   findPeople,
@@ -29,13 +30,14 @@ import {
   getPeopleDepartments,
   getPeopleScopeOverride,
   getResearchSpec,
+  getScopeOverride,
   getSourcingDocs,
-  LIST_CEILING,
   listCompanies,
   listIcps,
   listProspects,
   peopleFacets,
   putPeopleScopeOverride,
+  putScopeOverride,
   rescoreCompaniesAsync,
   rescoreProspectsAsync,
   saveSourcingDoc,
@@ -63,7 +65,6 @@ import {
   SOURCE_CLS,
   SOURCE_LABEL,
   STATUS_LABEL,
-  UNSCORED_LABEL,
   apiToIcp,
   businessModelChip,
   clearScoring,
@@ -72,12 +73,13 @@ import {
   effectiveScope,
   formToOverride,
   formToPeopleOverride,
+  clearMigratedScope,
   groupByLabel,
   humanizeFacet,
-  loadScopeOverride,
+  markScopeMigrationDone,
+  pendingLocalScopeMigrations,
   peopleScopeSummary,
   peopleScopeToForm,
-  saveScopeOverride,
   scopeSummary,
   scopeToForm,
 } from "@/lib/workspace/constants";
@@ -105,12 +107,11 @@ function maySelect(label: ScoreLabel | null, currentlyChecked: boolean): boolean
   }
   return true;
 }
-// A row that select-all may bulk-tick: never a gated (excluded / low_fit) row — those are selected
-// one at a time (excluded never; low_fit behind the confirm above).
-const isBulkSelectable = (label: ScoreLabel | null) =>
-  label !== "excluded_by_rules" && label !== "low_fit";
 // The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
 const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
+// Find People searches one Apollo call per org; the server caps a single request at MAX_ORGS_PER_FIND
+// (8) orgs, so the FE chunks a larger selection into 8-org calls threaded by one group_id.
+const FIND_ORGS_CHUNK = 8;
 
 // A footnote bucket (low_fit / excluded_by_rules) is sub-grouped by WHY each row landed there, so
 // the operator can scan the rejection reasons at a glance (spec §9). A gate-killed row carries a
@@ -191,8 +192,7 @@ export default function ListPage() {
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
   const [prospects, setProspects] = useState<ProspectApi[]>(
     () =>
-      qc.getQueryData<{ items: ProspectApi[]; truncated: boolean }>(["prospects", client])?.items ??
-      []
+      qc.getQueryData<{ items: ProspectApi[] }>(["prospects", client])?.items ?? []
   );
   const [prospectsLoading, setProspectsLoading] = useState(
     () => !qc.getQueryData(["prospects", client])
@@ -200,15 +200,11 @@ export default function ListPage() {
   const [companiesLoading, setCompaniesLoading] = useState(
     () => !qc.getQueryData(["companies", client])
   );
-  // W5 — true when the feed has more rows than the LIST_CEILING we auto-load (drives the notice).
-  const [prospectsTruncated, setProspectsTruncated] = useState(false);
-  const [companiesTruncated, setCompaniesTruncated] = useState(false);
   // Tracks the live client so an async reload/handler that resolves *after* a client switch can
   // bail before writing the previous client's data into the new client's view.
   const clientRef = useRef(client);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
-  const [fLabel, setFLabel] = useState(""); // "" any · a ScoreLabel · UNSCORED_LABEL (people step)
   const [fStatus, setFStatus] = useState(""); // "" all · "found" · "scored" (Enriched)
   const [fIcp, setFIcp] = useState(""); // an ICP id (or "")
   const [newBatchName, setNewBatchName] = useState("");
@@ -231,15 +227,13 @@ export default function ListPage() {
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
   const [companies, setCompanies] = useState<CompanyApi[]>(
     () =>
-      qc.getQueryData<{ items: CompanyApi[]; truncated: boolean }>(["companies", client])?.items ??
-      []
+      qc.getQueryData<{ items: CompanyApi[] }>(["companies", client])?.items ?? []
   );
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
   // set → collapsed, so the list opens with every company collapsed to its one-line summary.
   const [expandedCos, setExpandedCos] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
-  const [coLabel, setCoLabel] = useState(""); // "" any · a ScoreLabel · UNSCORED_LABEL (companies)
   // Which collapsed footnote buckets (low_fit / excluded_by_rules) are expanded in the Step-1 table.
   // Default empty → both start collapsed to a one-line count (spec §11); reset on a client switch.
   const [expandedBuckets, setExpandedBuckets] = useState<Set<string>>(new Set());
@@ -247,11 +241,8 @@ export default function ListPage() {
   // Default empty → each reason opens collapsed to its count, so expanding a bucket shows the
   // per-reason breakdown rather than dumping every row (the point of the sub-layer).
   const [expandedSubs, setExpandedSubs] = useState<Set<string>>(new Set());
-  // Business-model filter: "" any · "B2B"/"B2C"/"Complex"/"Unknown" (the stage-0 label).
-  const [coModel, setCoModel] = useState("");
   // Status filter: "" all · "accepted" = people_found (the Accepted tag) · "pending" = not yet.
   const [coStatus, setCoStatus] = useState("");
-  const [enriching, setEnriching] = useState(false);
   const [findingCo, setFindingCo] = useState(false);
   const [updatingFields, setUpdatingFields] = useState(false);
   const [findingLookalike, setFindingLookalike] = useState(false);
@@ -301,10 +292,6 @@ export default function ListPage() {
   const [icpNeedsPick, setIcpNeedsPick] = useState(false);
   // Same, for the Step-2 Apollo people-search filters.
   const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
-  // The saved override is hydrated from the server on mount; until it resolves we don't yet know the
-  // real scope, so the Find-Settings gear stays disabled to avoid showing (or saving over) the wrong
-  // scope. On a load failure it stays false and a warning is surfaced — never a silent AI-scope view.
-  const [pplScopeLoaded, setPplScopeLoaded] = useState(false);
   const [peopleScopeOpen, setPeopleScopeOpen] = useState(false);
   const [peopleScopeForm, setPeopleScopeForm] = useState<PeopleScopeForm | null>(null);
   const [masterDepts, setMasterDepts] = useState<FacetOption[]>([]); // 14 masters, from the backend
@@ -330,12 +317,11 @@ export default function ListPage() {
     try {
       // Let errors propagate — a failed reload must surface, never silently blank the list
       // (which reads as "no prospects" and tempts a re-import / re-spend).
-      const { items: ps, truncated } = await listProspects(client);
+      const { items: ps } = await listProspects(client);
       if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
       setProspects(ps);
-      setProspectsTruncated(truncated);
       setChecked(new Set());
-      qc.setQueryData(["prospects", client], { items: ps, truncated }); // keep the nav cache fresh
+      qc.setQueryData(["prospects", client], { items: ps }); // keep the nav cache fresh
     } catch (e) {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh prospects", "warn");
@@ -348,11 +334,10 @@ export default function ListPage() {
   async function reloadCompanies() {
     setCompaniesLoading(true);
     try {
-      const { items: cs, truncated } = await listCompanies(client);
+      const { items: cs } = await listCompanies(client);
       if (clientRef.current !== client) return;
       setCompanies(cs);
-      setCompaniesTruncated(truncated);
-      qc.setQueryData(["companies", client], { items: cs, truncated }); // keep the nav cache fresh
+      qc.setQueryData(["companies", client], { items: cs }); // keep the nav cache fresh
     } catch (e) {
       if (clientRef.current === client) {
         toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
@@ -386,28 +371,17 @@ export default function ListPage() {
     setSearch("");
     setCoSearch("");
     setFIcp("");
-    setFLabel("");
-    setCoLabel("");
     setExpandedBuckets(new Set());
     setExpandedSubs(new Set());
-    setCoModel("");
     setCoStatus("");
-    setPeopleScopeOverride(null); // hydrated from the server below (replaces the old localStorage)
-    setPplScopeLoaded(false); // gate the Find-Settings gear until the saved scope is known
-    setProspectsTruncated(false); // cleared until the new client's feed reports its own cap
-    setCompaniesTruncated(false);
+    setPeopleScopeOverride(null); // hydrated from the server by the (client, fIcp) effect below
     let alive = true;
     // Show the list spinner only when there's nothing cached for this client; a warm tab-return
     // renders the cached rows immediately (the fetchQuery calls below resolve from cache, no request).
     setCompaniesLoading(!qc.getQueryData(["companies", client]));
     setProspectsLoading(!qc.getQueryData(["prospects", client]));
-    // The saved people-scope override is fetched on its own track: unlike the lists (a failure there
-    // just warns), a failed/slow override fetch must NOT silently present the AI scope — find_people
-    // still applies the saved DB row, so we keep the gear disabled and surface a warning instead.
-    const ovP = qc.fetchQuery({
-      queryKey: ["people-scope-override", client],
-      queryFn: () => getPeopleScopeOverride(client),
-    });
+    // The saved people-scope override is loaded on its own (client, fIcp) track below (per-ICP), so
+    // it's not fetched here.
     (async () => {
       try {
         // fetchQuery serves the cached payload when fresh (instant, no request) and refetches in the
@@ -438,9 +412,7 @@ export default function ListPage() {
         ]);
         if (!alive) return;
         setProspects(ps.items);
-        setProspectsTruncated(ps.truncated);
         setCompanies(cs.items);
-        setCompaniesTruncated(cs.truncated);
         setDocs(dl);
         setRubricDraft(dl?.company_fit?.body ?? "");
         setMasterDepts(depts);
@@ -455,16 +427,6 @@ export default function ListPage() {
         }
       }
     })();
-    (async () => {
-      try {
-        const pplOv = await ovP;
-        if (!alive) return;
-        setPeopleScopeOverride(pplOv ? { people_search_params: pplOv } : null);
-        setPplScopeLoaded(true);
-      } catch {
-        if (alive) toast("Couldn’t load saved person filters · reload to edit them", "warn");
-      }
-    })();
     return () => {
       alive = false;
     };
@@ -472,6 +434,25 @@ export default function ListPage() {
     // client change.
   }, [client, qc, toast]);
   /* eslint-enable react-hooks/set-state-in-effect */
+
+  // The Step-2 people-scope override is persisted server-side per (tenant, ICP) — re-fetch it on
+  // (client, fIcp) change so the "Custom" badge + summary reflect the selected ICP's own tuning and
+  // follow the operator across browsers. Re-running here also RETRIES a failed load automatically
+  // (switch ICP or client, or click the gear which re-seeds) — a single fetch failure no longer
+  // disables the gear for the whole session. find_people reads the same DB row, so this is display.
+  useEffect(() => {
+    let alive = true;
+    getPeopleScopeOverride(client, fIcp || undefined)
+      .then((b) => {
+        if (alive) setPeopleScopeOverride(b ? { people_search_params: b } : null);
+      })
+      .catch(() => {
+        if (alive) toast("Couldn’t load saved person filters · try again", "warn");
+      });
+    return () => {
+      alive = false;
+    };
+  }, [client, fIcp, toast]);
 
   // Prospects grouped by their company id (robust — the company label can drift; the id can't).
   const prospectsByCompany = useMemo(() => {
@@ -529,28 +510,25 @@ export default function ListPage() {
     );
     return prospects.reduce((n, p) => (p.company_id && inStep2.has(p.company_id) ? n + 1 : n), 0);
   }, [companies, prospects]);
-  // Rows of a pursued company that pass the label filter — the per-company nested list, ordered as
-  // a call sheet (contact_now first, then score desc, newest) via compareByLabel (spec §11).
+  // Rows of a pursued company that pass the status filter — the per-company nested list, ordered as
+  // a call sheet (contact_now first, then score desc, newest) via compareByLabel (spec §11). Label
+  // filtering is done by the in-table bucket expand/collapse, not a dropdown (v2 toolbar).
   const rowsForCompany = (id: string) =>
     (prospectsByCompany.get(id) ?? [])
-      .filter(
-        (p) =>
-          !fLabel || (fLabel === UNSCORED_LABEL ? p.label === null : p.label === fLabel)
-      )
       .filter((p) => !fStatus || p.status === fStatus)
       .sort(compareByLabel);
   // People in view across all pursued companies = the unit of selection for score / enrich / batch.
   const visible = useMemo(
     () => pursued.flatMap((c) => rowsForCompany(c.id)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [pursued, prospectsByCompany, fLabel, fStatus]
+    [pursued, prospectsByCompany, fStatus]
   );
   const selCount = visible.filter((p) => checked.has(p.id)).length;
   // Step-2 companies that are ticked — the unit of selection for Find People.
   const pplCoSel = pursued.filter((c) => companyChecked.has(c.id));
-  // Step-2 dock: enrich and batch are mutually exclusive — find before enrich, enrich before
-  // batch. Computed over the WHOLE selection (not the filtered view) so a filter change can't
-  // drop checked rows. `confirmEnrich`/`createBatch` re-derive from the same rule.
+  // Step-2 dock: reveal-&-score before batch — find people → reveal & score → batch. Computed over
+  // the WHOLE selection (not the filtered view) so a filter change can't drop checked rows.
+  // `runRevealScore`/`createBatch` re-derive from the same rule.
   const selectedProspects = useMemo(
     () => prospects.filter((p) => checked.has(p.id)),
     [prospects, checked]
@@ -563,7 +541,6 @@ export default function ListPage() {
     () => selectedProspects.filter((p) => p.status === ENRICHED_STATUS),
     [selectedProspects]
   );
-  const canEnrich = toEnrich.length > 0;
   // Batch only once EVERY selected person is enriched (a verified email) — closes the gap where an
   // enrich_failed (no-email) row slipped through the old "nothing still needs enrich" gate.
   const canBatch = useMemo(
@@ -582,12 +559,66 @@ export default function ListPage() {
     });
   }
 
-  // The Step-1 manual scope override is stored per (client, ICP) — re-read it whenever either
-  // changes (covers mount + client switch too) so the active-filters summary and the next Find
-  // reflect the selected ICP's own tuning.
+  // U1.6 — one-time migration of the Step-1 company scope from its old per-(client, ICP) localStorage
+  // home to the server, so a find reads the operator's saved tuning server-side instead of silently
+  // falling back to the broad AI scope (the regression that dumped a page of new "Needs score" rows).
+  // Idempotent (per-client done-flag); a failed PUT keeps its local key for a later retry.
   useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setScopeOverride(loadScopeOverride(client, fIcp || undefined));
+    const pending = pendingLocalScopeMigrations(client);
+    if (!pending.length) {
+      markScopeMigrationDone(client);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      let migrated = 0;
+      for (const { key, icpId, override } of pending) {
+        try {
+          await putScopeOverride(client, "company", override as Record<string, unknown>, icpId);
+          clearMigratedScope(key);
+          migrated += 1;
+        } catch {
+          /* leave the local key; the next load retries the remaining entries */
+        }
+      }
+      if (migrated === pending.length) markScopeMigrationDone(client);
+      if (!alive || clientRef.current !== client) return;
+      if (migrated) {
+        try {
+          const b = await getScopeOverride(client, "company", fIcp || undefined);
+          if (clientRef.current === client) setScopeOverride(b ? (b as ScopeOverride) : null);
+        } catch {
+          /* the hydration effect below will resolve it */
+        }
+        toast(
+          `Restored your saved company search filters (${migrated} ICP${migrated === 1 ? "" : "s"}) ` +
+            "to your account · finds now use them, not the AI scope"
+        );
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+    // fIcp is only read for the post-migration refresh; the done-flag prevents re-running per ICP.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [client, toast]);
+
+  // The Step-1 manual scope override is persisted server-side per (tenant, ICP) — re-fetch it
+  // whenever the client or the selected ICP changes (covers mount + client switch too) so the
+  // active-filters summary + "Custom" badge reflect that ICP's own tuning, following the operator
+  // across browsers. The next Find reads the same DB row server-side, so this is display-only.
+  useEffect(() => {
+    let alive = true;
+    getScopeOverride(client, "company", fIcp || undefined)
+      .then((b) => {
+        if (alive) setScopeOverride(b ? (b as ScopeOverride) : null);
+      })
+      .catch(() => {
+        if (alive) setScopeOverride(null);
+      });
+    return () => {
+      alive = false;
+    };
   }, [client, fIcp]);
 
   // ---- Stage 1: companies ----
@@ -604,37 +635,32 @@ export default function ListPage() {
           const accepted = c.status === "people_found";
           const statusOk =
             !coStatus || (coStatus === "accepted" ? accepted : !accepted);
-          const modelOk = !coModel || c.business_model === coModel;
-          // "Unscored" (UNSCORED_LABEL) = rows still awaiting a score (label null).
-          const labelOk =
-            !coLabel || (coLabel === UNSCORED_LABEL ? c.label === null : c.label === coLabel);
           const icpOk = !fIcp || c.icp_id === fIcp;
           return (
             (!coSearch || text.includes(coSearch.toLowerCase())) &&
-            labelOk &&
-            modelOk &&
             statusOk &&
             icpOk
           );
         })
         .sort(compareCompanyRows),
-    [companies, coSearch, coLabel, coModel, coStatus, fIcp]
+    [companies, coSearch, coStatus, fIcp]
   );
   // The filtered rows grouped into label buckets (spec §11) for the call-sheet render — action
   // buckets shown expanded, the two footnote buckets collapsed to a count row.
   const coBuckets = useMemo(() => groupByLabel(coVisible), [coVisible]);
-  const coSelCount = coVisible.filter((c) => companyChecked.has(c.id)).length;
+  // The ticked companies that still exist — the unit every Step-1 selection action runs on. Computed
+  // over the WHOLE selection (not the filtered view), mirroring Step-2's `selectedProspects`, so a
+  // filter change never silently drops a tick AND the displayed count always equals what runs (fixes
+  // the "Get AI score 3 · actually runs 9" gap where the count was visible∩checked but the handler
+  // used every checked id).
+  const coSel = useMemo(
+    () => companies.filter((c) => companyChecked.has(c.id)),
+    [companies, companyChecked]
+  );
+  const coSelCount = coSel.length;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
   const scoringActive = scoringCoIds.size > 0;
   const scoringPeopleActive = scoringPersonIds.size > 0;
-  // Select-all covers only the bulk-selectable (non-gated) rows — an excluded row can never be
-  // ticked, and a low_fit row is added one at a time behind a confirm, so neither joins select-all.
-  const coBulkSelectable = useMemo(
-    () => coVisible.filter((c) => isBulkSelectable(c.label)),
-    [coVisible]
-  );
-  const coAllChecked =
-    coBulkSelectable.length > 0 && coBulkSelectable.every((c) => companyChecked.has(c.id));
   // Sample company for the Fit-rubric preview: the first ticked row, else the first one in view. Its
   // id is sent to GET /fit-prompt?stage=company_fit so the modal shows that row's real input prompt.
   const rubricSample = useMemo(
@@ -663,6 +689,14 @@ export default function ListPage() {
     () => peopleScopeSummary(effectivePeopleScope(peopleScopeOverride, spec, fIcp || undefined)),
     [peopleScopeOverride, spec, fIcp]
   );
+  // The ICP the next Find Company will target, shown on the Find button face (v2 toolbar): the
+  // picked filter ICP, or the sole ICP when there's only one. Null on a multi-ICP scope with no
+  // pick yet → the button reads "Find companies" and clicking flags the ICP filter to choose.
+  const coTargetIcpName = fIcp
+    ? icpNameById.get(fIcp)
+    : icpOptions.length === 1
+      ? icpOptions[0].label
+      : null;
   function toggleCo(c: CompanyApi) {
     if (!maySelect(c.label, companyChecked.has(c.id))) return; // excluded locked out; low_fit confirms
     setCompanyChecked((s) => {
@@ -691,14 +725,6 @@ export default function ListPage() {
     setExpandedSubs((s) => {
       const n = new Set(s);
       n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
-  }
-  function toggleAllCo(on: boolean) {
-    const ids = coBulkSelectable.map((c) => c.id); // gated rows never join select-all
-    setCompanyChecked((s) => {
-      const n = new Set(s);
-      for (const id of ids) on ? n.add(id) : n.delete(id);
       return n;
     });
   }
@@ -880,11 +906,11 @@ export default function ListPage() {
     setFindingCo(true);
     setScopeExhausted(false); // clear last run's notice — this find gets a fresh verdict
     try {
-      // The override is per (client, ICP) — read the TARGET ICP's entry (icpForFind can be the
-      // auto-picked single ICP while the page filter still says "All ICPs").
-      const ov = loadScopeOverride(client, icpForFind || undefined);
       const job = await runScoringJob(
-        () => findCompaniesAsync(client, { icp_id: icpForFind || null, ...(ov ?? {}) }),
+        // The saved override is read server-side from the DB (single source of truth), so a stale
+        // in-memory copy in one tab can't shadow a save/reset done in another. find-company falls
+        // back to the DB override → AI spec when no body override is given.
+        () => findCompaniesAsync(client, { icp_id: icpForFind || null }),
         "Find companies"
       );
       if (!job) return;
@@ -916,12 +942,12 @@ export default function ListPage() {
       } else if (dropped) {
         toast(
           `Apollo returned ${dropped}, but all were filtered out as duplicates or exclusions. ` +
-            "Adjust the scope in ⚙ Settings.",
+            "Adjust the scope in ⚙ Scope.",
           "warn"
         );
       } else {
         toast(
-          "No companies matched the current scope. Loosen the filters in ⚙ Settings " +
+          "No companies matched the current scope. Loosen the filters in ⚙ Scope " +
             "(geo, size, keywords, or the funding/hiring windows).",
           "warn"
         );
@@ -941,7 +967,7 @@ export default function ListPage() {
   // selection is refused with a message rather than silently split.
   function runRescore() {
     if (rescoringCoRef.current) return; // block a double-click before the button disables
-    const ids = [...companyChecked];
+    const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to re-score", "warn");
     if (ids.length > SCORE_BATCH_MAX) {
       return toast(`Score at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
@@ -957,11 +983,26 @@ export default function ListPage() {
     });
   }
 
+  // Bucket CTA (decision ②): score the next wave of the "Needs score" bucket without ticking rows —
+  // takes the first SCORE_BATCH_MAX unscored companies and scores them on one background job. The
+  // operator clicks again to drain the rest (each wave is a paid LLM call, capped so no click ever
+  // over-spends). Rows show "Scoring…"; scoreCompaniesJob reloads + reports on completion.
+  function scoreUnscoredWave() {
+    if (rescoringCoRef.current) return; // block a double-click before the button disables
+    const wave = (coBuckets.get("unscored") ?? []).slice(0, SCORE_BATCH_MAX).map((c) => c.id);
+    if (!wave.length) return;
+    toast(`Scoring ${wave.length} ${wave.length === 1 ? "company" : "companies"} in the background…`);
+    rescoringCoRef.current = true;
+    void scoreCompaniesJob(wave).finally(() => {
+      rescoringCoRef.current = false;
+    });
+  }
+
   // "Update Field" — re-enrich Apollo firmographics for the selected rows. Each call spends Apollo
   // credits, so it is deliberate/manual (Find Companies enriches only new rows). Async (W4),
   // capped at SCORE_BATCH_MAX rows per job.
   async function runUpdateFields() {
-    const ids = [...companyChecked];
+    const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to update", "warn");
     if (ids.length > SCORE_BATCH_MAX) {
       return toast(`Update at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
@@ -1007,7 +1048,7 @@ export default function ListPage() {
   // and stay that way (AI Score shows "Pending") — the operator scores on demand via Update AI
   // Score. The toast tells the outcomes apart: new / all-listed / none.
   async function runLookalike() {
-    const ids = [...companyChecked];
+    const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to find lookalikes", "warn");
     setFindingLookalike(true);
     try {
@@ -1093,13 +1134,15 @@ export default function ListPage() {
   }
 
   // ---- Settings (find-company scope) handlers ----
-  // The modal edits ONE ICP's filters at a time (its own dropdown switches between them); each
-  // ICP's tuning is stored under its own (client, ICP) key and shadows only that ICP's AI block.
-  function seedScopeForm(icp: string) {
+  // The modal edits ONE ICP's filters at a time (its own dropdown switches between them); each ICP's
+  // tuning is persisted server-side under (tenant, "company", ICP) and shadows only that ICP's AI
+  // block — so tuning one ICP never clobbers another, and the tuning follows the operator across
+  // browsers. Reads/writes go through the generic scope-override endpoint.
+  async function seedScopeForm(icp: string) {
+    const block = await getScopeOverride(client, "company", icp || undefined).catch(() => null);
+    if (clientRef.current !== client) return;
     setScopeForm(
-      scopeToForm(
-        effectiveScope(loadScopeOverride(client, icp || undefined), spec, icp || undefined)
-      )
+      scopeToForm(effectiveScope(block ? (block as ScopeOverride) : null, spec, icp || undefined))
     );
   }
   function openScopeSettings() {
@@ -1107,43 +1150,62 @@ export default function ListPage() {
     // ICP-scoped Find would actually run.
     const icp = fIcp || icpOptions[0]?.id || "";
     setScopeIcp(icp);
-    seedScopeForm(icp);
+    setScopeForm(null); // cleared until the server round-trip resolves (modal shows a loading state)
+    void seedScopeForm(icp);
     setScopeOpen(true);
   }
   function switchScopeIcp(icp: string) {
     // Switching ICP re-seeds the form from THAT ICP's saved override / AI block (unsaved edits to
     // the previous ICP are discarded — Save first to keep them).
     setScopeIcp(icp);
-    seedScopeForm(icp);
+    setScopeForm(null);
+    void seedScopeForm(icp);
   }
-  function saveScopeSettings() {
+  async function saveScopeSettings() {
     if (!scopeForm) return;
     const ov = formToOverride(scopeForm);
-    saveScopeOverride(client, ov, scopeIcp || undefined);
-    setScopeOverride(ov);
-    // The next Find should target the ICP whose filters were just saved — sync the page filter.
-    if (scopeIcp && scopeIcp !== fIcp) setFIcp(scopeIcp);
-    setScopeOpen(false);
-    const label = scopeIcp ? icpNameById.get(scopeIcp) : null;
-    toast(
-      label
-        ? `Search filters saved for ${label} · used on the next Find`
-        : "Search filters saved · used on the next Find"
-    );
+    try {
+      // The server reflects what it stored: null when an all-empty form was treated as a revert to
+      // the AI scope, else the saved block. Mirror it so the UI never disagrees.
+      const saved = await putScopeOverride(client, "company", ov, scopeIcp || undefined);
+      if (clientRef.current !== client) return;
+      // The next Find should target the ICP whose filters were just saved — sync the page filter.
+      // If the target ICP is unchanged, the fIcp effect won't refire, so set the page copy directly.
+      if (scopeIcp && scopeIcp !== fIcp) setFIcp(scopeIcp);
+      else setScopeOverride(saved ? (saved as ScopeOverride) : null);
+      setScopeOpen(false);
+      const label = scopeIcp ? icpNameById.get(scopeIcp) : null;
+      toast(
+        saved
+          ? label
+            ? `Search filters saved for ${label} · used on the next Find`
+            : "Search filters saved · used on the next Find"
+          : "No filters selected · reverted to the AI-generated scope"
+      );
+    } catch (e) {
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Couldn’t save search filters", "warn");
+    }
   }
-  function resetScopeSettings() {
-    saveScopeOverride(client, null, scopeIcp || undefined);
-    if (scopeIcp) saveScopeOverride(client, null); // clear the legacy ICP-less entry too
-    setScopeOverride(loadScopeOverride(client, fIcp || undefined)); // resync the page's copy
-    seedScopeForm(scopeIcp);
-    toast("Reverted to the AI-generated scope");
+  async function resetScopeSettings() {
+    try {
+      await deleteScopeOverride(client, "company", scopeIcp || undefined);
+      if (clientRef.current !== client) return;
+      if (!scopeIcp || scopeIcp === fIcp) setScopeOverride(null);
+      void seedScopeForm(scopeIcp);
+      toast("Reverted to the AI-generated scope");
+    } catch (e) {
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Couldn’t reset search filters", "warn");
+    }
   }
 
-  // Step 1 → Step 2: stage the ticked companies (discovered → selected) so they appear in the Step-2
-  // table as "Pending" rows, then switch to Step 2. No Apollo call yet — people are found there, per
-  // company. The ticks carry over (companyChecked is shared) so Find People is one click away.
+  // Step 1 → Step 2: MERGED stage→find (decision ③). Stage the ticked companies (discovered →
+  // selected) so they appear in the Step-2 table, switch to Step 2, THEN immediately find people at
+  // them — chunked 8-orgs-per-call under one group_id — so sourcing people is one click, not two.
+  // People land UNSCORED ("Pending"); the operator reveals + scores them via Reveal & score.
   async function stageForPeople() {
-    const ids = [...companyChecked];
+    const ids = coSel.map((c) => c.id);
     if (!ids.length) return;
     setStaging(true);
     try {
@@ -1152,8 +1214,22 @@ export default function ListPage() {
       setListStage("people");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Couldn’t move companies to Step 2", "warn");
-    } finally {
       setStaging(false);
+      return;
+    }
+    setStaging(false);
+    // The find is a second phase: if staging succeeded but the find fails, the rows are already in
+    // Step 2 (re-runnable via the Find People button) — so surface the find error without undoing.
+    setFindingPpl(true);
+    setFindingPplIds(new Set(ids));
+    try {
+      const { found, dropped } = await findPeopleFor(ids, crypto.randomUUID());
+      reportFindPeople(found, dropped);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Find people failed — retry with Find People", "warn");
+    } finally {
+      setFindingPpl(false);
+      setFindingPplIds(new Set());
     }
   }
 
@@ -1180,42 +1256,59 @@ export default function ListPage() {
     }
   }
 
-  // Flow B — find people at the ticked Step-2 companies (free; enrichment is the credit spend). The
-  // search is driven by the explicit company ids, so a row can be re-searched after loosening the
-  // filters. People land UNSCORED ("Pending") — the operator scores them via Get AI score.
+  // Flow B core — find people across `ids` (free; enrichment is the credit spend). Chunks the ids
+  // into MAX_ORGS_PER_FIND-sized calls (server cap) under ONE `groupId` so the history drawer threads
+  // them as a single find. The saved override is NOT sent in the body: the server reads it from the
+  // DB (the single source of truth), so a stale in-memory copy in one tab can't shadow a save/reset
+  // in another. People land UNSCORED ("Pending") — the operator reveals + scores via Reveal & score.
+  // Returns totals; the CALLER owns the toast + the finding flags.
+  async function findPeopleFor(ids: string[], groupId: string) {
+    let found = 0;
+    let dropped = 0;
+    for (let i = 0; i < ids.length; i += FIND_ORGS_CHUNK) {
+      const res = await findPeople(client, {
+        company_ids: ids.slice(i, i + FIND_ORGS_CHUNK),
+        icp_id: fIcp || null,
+        group_id: groupId,
+      });
+      found += res.found;
+      dropped += res.dropped;
+    }
+    await Promise.all([reloadProspects(), reloadCompanies()]);
+    return { found, dropped };
+  }
+  // Report the outcome of a people-find (shared by the merged stage→find and the manual re-run).
+  function reportFindPeople(found: number, dropped: number) {
+    if (found) {
+      const tail = dropped ? ` · ${dropped} filtered out` : "";
+      toast(
+        `Found ${found} ${found === 1 ? "person" : "people"}${tail} · ` +
+          "select them and click Reveal & score to reveal their emails and score them"
+      );
+    } else if (dropped) {
+      toast(
+        `Apollo returned ${dropped}, but all were filtered out (already imported, no Apollo id, ` +
+          "or an avoided title). Adjust the personas in ⚙ Personas.",
+        "warn"
+      );
+    } else {
+      toast(
+        "No people matched — even after widening. Pick different Management Level / Department " +
+          "facets in ⚙ Personas (the live counts show where people actually are).",
+        "warn"
+      );
+    }
+  }
+  // Manual re-run: find people at the ticked Step-2 companies. `runFindPeople` re-searches by
+  // explicit id, so a row can be re-searched after loosening the personas.
   async function runFindPeople() {
     const ids = pplCoSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies in the list to find people", "warn");
     setFindingPpl(true);
     setFindingPplIds(new Set(ids));
     try {
-      // The saved override is NOT sent in the body: the server reads it from the DB (the single
-      // source of truth), so a stale in-memory copy in one tab can't shadow a save/reset done in
-      // another. find_people falls back to the DB override → AI spec when no body override is given.
-      const res = await findPeople(client, {
-        company_ids: ids,
-        icp_id: fIcp || null,
-      });
-      await Promise.all([reloadProspects(), reloadCompanies()]);
-      if (res.found) {
-        const tail = res.dropped ? ` · ${res.dropped} filtered out` : "";
-        toast(
-          `Found ${res.found} ${res.found === 1 ? "person" : "people"}${tail} · ` +
-            "select them and click Get AI score to score them"
-        );
-      } else if (res.dropped) {
-        toast(
-          `Apollo returned ${res.dropped}, but all were filtered out (already imported, no Apollo id, ` +
-            "or an avoided title). Adjust the Management Level / Department in ⚙ Settings.",
-          "warn"
-        );
-      } else {
-        toast(
-          "No people matched — even after widening. Pick different Management Level / Department " +
-            "facets in ⚙ Settings (the live counts show where people actually are).",
-          "warn"
-        );
-      }
+      const { found, dropped } = await findPeopleFor(ids, crypto.randomUUID());
+      reportFindPeople(found, dropped);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Find people failed", "warn");
     } finally {
@@ -1224,24 +1317,80 @@ export default function ListPage() {
     }
   }
 
-  // Step-2 'Get AI score' — re-score the checked people on one async background job (W4), per-row
-  // "Scoring…". Each call is a paid LLM request; capped at SCORE_BATCH_MAX rows (a bigger selection
-  // is refused with a message rather than silently split).
-  function runScorePeople() {
+  // Step-2 'Reveal & score' — the merged people action (W4, per-row "Scoring…"). Reveals verified
+  // emails for the selected people (Apollo people/match, the credit spend) THEN scores them on the
+  // revealed data, in ONE background job. Reveal-first is the point: scoring a pre-reveal row gates on
+  // missing contact/seniority/dept → a degraded label. Enrich is idempotent, so a selection that's
+  // already revealed just re-scores (0 credits). Capped at SCORE_BATCH_MAX (a bigger selection is
+  // refused, not split). `toEnrich.length` = the rows that will actually spend a credit.
+  function runRevealScore() {
     if (rescoringPplRef.current) return; // block a double-click before the button disables
     const picked = selectedProspects;
-    if (!picked.length) return toast("Select people to score", "warn");
+    if (!picked.length) return toast("Select people to reveal & score", "warn");
     if (picked.length > SCORE_BATCH_MAX) {
-      return toast(`Score at most ${SCORE_BATCH_MAX} people at a time — narrow your selection.`, "warn");
+      return toast(
+        `Reveal & score at most ${SCORE_BATCH_MAX} people at a time — narrow your selection.`,
+        "warn"
+      );
     }
-    toast(`Scoring ${picked.length} ${picked.length === 1 ? "person" : "people"} in the background…`);
+    const spend = toEnrich.length;
+    const noun = picked.length === 1 ? "person" : "people";
+    toast(
+      spend
+        ? `Revealing emails + scoring ${picked.length} ${noun} in the background · ${spend} credit${
+            spend === 1 ? "" : "s"
+          }…`
+        : `Scoring ${picked.length} ${noun} in the background…`
+    );
     rescoringPplRef.current = true;
     // Clear the selection once dispatched — rows track progress via `scoringPersonIds`; `picked` is
     // already captured so the in-flight job is unaffected. Frees the tick-list for the next batch.
     setChecked(new Set());
-    void scorePeopleJob(picked.map((p) => ({ id: p.id, key: p.identity_key }))).finally(() => {
+    void revealScoreJob(picked.map((p) => ({ id: p.id, key: p.identity_key }))).finally(() => {
       rescoringPplRef.current = false;
     });
+  }
+
+  // Reveal + score a set of people on one async background job (W4). Rows show "Scoring…" until it
+  // settles; the worker owns the batch (survives a tab close), and we reload once on completion.
+  async function revealScoreJob(rows: { id: string; key: string }[]) {
+    const ids = rows.map((r) => r.id);
+    setScoringPersonIds((prev) => new Set([...prev, ...ids]));
+    try {
+      const job = await runScoringJob(
+        () => enrichScoreProspectsAsync(client, rows.map((r) => r.key)),
+        "Reveal & score"
+      );
+      if (clientRef.current !== client) return;
+      if (job) {
+        await reloadProspects();
+        const r = job.result as {
+          enriched?: number;
+          credits_spent?: number;
+          scored?: number;
+          failed?: number;
+          enrich_failed?: number;
+        };
+        const enriched = Number(r.enriched ?? 0);
+        const credits = Number(r.credits_spent ?? 0);
+        const scored = Number(r.scored ?? 0);
+        const failed = Number(r.failed ?? 0) + Number(r.enrich_failed ?? 0);
+        const failTail = failed ? ` · ${failed} failed` : "";
+        toast(
+          enriched
+            ? `Revealed ${enriched} · scored ${scored} · ${credits} credit${
+                credits === 1 ? "" : "s"
+              }${failTail}`
+            : `Scored ${scored}${failTail}`,
+          failed ? "warn" : undefined
+        );
+      }
+    } catch (e) {
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Reveal & score failed", "warn");
+    } finally {
+      if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
+    }
   }
 
   // Score a set of people on one async background job (W4). Rows show "Scoring…" until it settles;
@@ -1287,10 +1436,20 @@ export default function ListPage() {
       if (clientRef.current === client) setPplFacetsLoading(false);
     }
   }
-  function openPeopleScopeSettings() {
-    setPeopleScopeForm(
-      peopleScopeToForm(effectivePeopleScope(peopleScopeOverride, spec, fIcp || undefined))
-    );
+  async function openPeopleScopeSettings() {
+    // Re-fetch the saved override fresh so the modal always seeds from the true server state for the
+    // selected ICP — this is also the retry path if the background load failed. Fall back to the
+    // in-memory copy on error rather than blocking the operator.
+    let ov = peopleScopeOverride;
+    try {
+      const b = await getPeopleScopeOverride(client, fIcp || undefined);
+      if (clientRef.current !== client) return;
+      ov = b ? { people_search_params: b } : null;
+      setPeopleScopeOverride(ov);
+    } catch {
+      /* keep the in-memory copy; still open the modal so a load blip never locks the operator out */
+    }
+    setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(ov, spec, fIcp || undefined)));
     setPplFacets(null);
     setPeopleScopeOpen(true);
     void loadPeopleFacets();
@@ -1311,14 +1470,16 @@ export default function ListPage() {
     try {
       // The server reflects what it stored: null when an all-empty selection was treated as a revert
       // to the AI scope, else the saved params. Mirror that exactly so the UI never disagrees.
-      const saved = await putPeopleScopeOverride(client, ov.people_search_params);
+      const saved = await putPeopleScopeOverride(client, ov.people_search_params, fIcp || undefined);
       if (clientRef.current !== client) return; // client switched mid-save — drop the stale write
       setPeopleScopeOverride(saved ? { people_search_params: saved } : null);
-      qc.setQueryData(["people-scope-override", client], saved); // sync the nav cache
       setPeopleScopeOpen(false);
+      const label = fIcp ? icpNameById.get(fIcp) : null;
       toast(
         saved
-          ? "Person filters saved · used on the next Find People"
+          ? label
+            ? `Person filters saved for ${label} · used on the next Find People`
+            : "Person filters saved · used on the next Find People"
           : "No filters selected · reverted to the AI-generated person scope"
       );
     } catch (e) {
@@ -1332,10 +1493,9 @@ export default function ListPage() {
     if (savingPplScope) return;
     setSavingPplScope(true);
     try {
-      await deletePeopleScopeOverride(client);
+      await deletePeopleScopeOverride(client, fIcp || undefined);
       if (clientRef.current !== client) return; // client switched mid-reset — drop the stale write
       setPeopleScopeOverride(null);
-      qc.setQueryData(["people-scope-override", client], null); // sync the nav cache
       setPeopleScopeForm(
         peopleScopeToForm(effectivePeopleScope(null, spec, fIcp || undefined))
       );
@@ -1370,44 +1530,6 @@ export default function ListPage() {
       toast(e instanceof Error ? e.message : "Add failed", "warn");
     } finally {
       setSavingPerson(false);
-    }
-  }
-
-  // The enrich gate — confirm the selected scored people for enrichment. (The paid Apollo
-  // people/match enrichment is wired server-side in Phase C; this flips status for now.)
-  async function confirmEnrich() {
-    if (enriching) return;
-    const keys = toEnrich.map((p) => p.identity_key);
-    if (!keys.length) return toast("Select found people to confirm for enrichment", "warn");
-    setEnriching(true);
-    // Chunk under the server's MAX_ENRICH_PER_REQUEST (15): each request is the credit spend, so a
-    // small chunk keeps every call well under the 30s gateway cap and bounds per-request spend. The
-    // server returns spend counts per chunk (even on partial Apollo failure), so totals are exact.
-    const CHUNK = 10;
-    let confirmed = 0,
-      enriched = 0,
-      credits = 0,
-      failed = 0;
-    try {
-      for (let i = 0; i < keys.length; i += CHUNK) {
-        const res = await enrichProspects(client, keys.slice(i, i + CHUNK));
-        confirmed += res.confirmed;
-        enriched += res.enriched;
-        credits += res.credits_spent;
-        failed += res.failed;
-        await reloadProspects(); // reflect each chunk as it lands
-      }
-      const spent = `${credits} credit${credits === 1 ? "" : "s"} spent`;
-      const failTail = failed ? ` · ${failed} failed` : "";
-      toast(
-        enriched ? `Enriched ${enriched} · ${spent}${failTail}` : `Confirmed ${confirmed}${failTail}`,
-        failed ? "warn" : undefined
-      );
-    } catch (e) {
-      await reloadProspects(); // surface whatever earlier chunks already committed
-      toast(e instanceof Error ? e.message : "Confirm failed", "warn");
-    } finally {
-      setEnriching(false);
     }
   }
 
@@ -1506,36 +1628,13 @@ export default function ListPage() {
             </button>
           </div>
           <div className="head-actions">
-            <button className="btn btn-ghost btn-sm" onClick={openRubric}>
-              Fit Rubric
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={openRubric}
+              title="Edit the versioned AI scoring rubric that Get AI score runs against"
+            >
+              Edit scoring rubric
             </button>
-            {listStage === "companies" ? (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={runRescore}
-                disabled={!coSelCount || scoringActive || findingPpl}
-                title="Re-run fit scoring for the selected companies · one paid LLM call each"
-              >
-                {scoringActive
-                  ? "Scoring…"
-                  : coSelCount
-                    ? `Get AI score ${coSelCount}`
-                    : "Get AI score"}
-              </button>
-            ) : (
-              <button
-                className="btn btn-ghost btn-sm"
-                onClick={runScorePeople}
-                disabled={!selCount || scoringPeopleActive || findingPpl}
-                title="Run fit scoring for the selected people · one paid LLM call each"
-              >
-                {scoringPeopleActive
-                  ? "Scoring…"
-                  : selCount
-                    ? `Get AI score ${selCount}`
-                    : "Get AI score"}
-              </button>
-            )}
           </div>
         </div>
 
@@ -1545,57 +1644,82 @@ export default function ListPage() {
               <h3>Find companies likely to buy</h3>
               <div className="band-actions">
                 <button
-                  className="btn btn-primary btn-sm"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setFindHistoryOpen(true)}
+                  title="Every find run · the exact scope it searched, match count, and spend"
+                >
+                  History
+                </button>
+                <button
+                  className="btn btn-ghost btn-sm"
                   onClick={openScopeSettings}
                   title={
                     scopeOverride
-                      ? "Custom scope active — you edited these filters; Find Company uses them, not the AI spec"
-                      : "Edit the Apollo company-search filters used by Find Company"
+                      ? "Custom scope active — Find uses your edited filters, not the AI spec"
+                      : "Edit the Apollo company-search filters Find uses (saved per ICP)"
                   }
                 >
-                  Find Settings{scopeOverride ? " · Custom" : ""}
+                  Scope{scopeOverride ? " · Custom" : ""}
                 </button>
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={runFindCompanies}
                   disabled={findingCo}
-                  title="Search Apollo from the current scope · enriches only new companies"
+                  title="Search Apollo for the target ICP's scope · free · enriches only new companies"
                 >
-                  {findingCo ? "Finding…" : "Find Company"}
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setFindHistoryOpen(true)}
-                  title="See every find run · the exact scope it searched, match count, and auto-widening"
-                >
-                  Find History
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={runLookalike}
-                  disabled={!coSelCount || findingLookalike || findingCo}
-                  title="Find the next batch of companies similar to the selected rows · spends Apollo credits"
-                >
-                  {findingLookalike
+                  {findingCo
                     ? "Finding…"
-                    : coSelCount
-                      ? `Find Lookalike ${coSelCount}`
-                      : "Find Lookalike"}
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={runUpdateFields}
-                  disabled={!coSelCount || updatingFields || findingCo}
-                  title="Re-enrich Apollo firmographics for the selected companies · spends Apollo credits"
-                >
-                  {updatingFields
-                    ? "Updating…"
-                    : coSelCount
-                      ? `Enrichment ${coSelCount}`
-                      : "Enrichment"}
+                    : coTargetIcpName
+                      ? `Find · ${coTargetIcpName}`
+                      : "Find company"}
                 </button>
               </div>
             </div>
+            {/* Selection bar (v2 toolbar): actions that act on the ticked rows appear only when a
+                selection exists — Get AI score / lookalikes / refresh — so the primary band stays a
+                clean "find" zone. `coSelCount` is visible∩checked, and every action below runs on
+                that same set, so the count on the button always matches what runs (no "Score 3 runs
+                9" drift). */}
+            {coSelCount > 0 && (
+              <div className="list-band sel-band">
+                <style>{SEL_CSS}</style>
+                <span className="sel-count">
+                  <b>{coSelCount}</b> selected
+                </span>
+                <div className="band-actions">
+                  <button
+                    className="btn btn-primary btn-sm"
+                    onClick={runRescore}
+                    disabled={scoringActive || findingPpl}
+                    title="Run the paid AI fit score for the selected companies (≤15 per run)"
+                  >
+                    {scoringActive ? "Scoring…" : `Get AI score ${coSelCount}`}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={runLookalike}
+                    disabled={findingLookalike || findingCo}
+                    title="Find the next batch of companies similar to the selected rows"
+                  >
+                    {findingLookalike ? "Finding…" : `Find lookalikes ${coSelCount}`}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={runUpdateFields}
+                    disabled={updatingFields || findingCo}
+                    title="Re-enrich Apollo firmographics for the selected companies · spends credits"
+                  >
+                    {updatingFields ? "Updating…" : `Refresh company data ${coSelCount}`}
+                  </button>
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => setCompanyChecked(new Set())}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+            )}
             {scopeExhausted ? (
               <div className="se-notice" role="status">
                 <style>{SE_CSS}</style>
@@ -1673,34 +1797,12 @@ export default function ListPage() {
                 <option value="accepted">Accepted</option>
                 <option value="pending">Pending</option>
               </select>
-              <select
-                className="select"
-                value={coModel}
-                onChange={(e) => setCoModel(e.target.value)}
-              >
-                <option value="">All Business</option>
-                <option value="B2B">B2B</option>
-                <option value="B2C">B2C</option>
-                <option value="Complex">Complex</option>
-                <option value="Unknown">Unknown</option>
-              </select>
-              <select className="select" value={coLabel} onChange={(e) => setCoLabel(e.target.value)}>
-                <option value="">Any label</option>
-                <option value="contact_now">Contact now</option>
-                <option value="contact_soon">Contact soon</option>
-                <option value="low_fit">Low fit</option>
-                <option value="excluded_by_rules">Excluded</option>
-                <option value={UNSCORED_LABEL}>Needs score</option>
-              </select>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
                 Manual Upload
               </button>
             </div>
             <div className="countrow">
               <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
-              {companiesTruncated && (
-                <span className="muted">&nbsp;·&nbsp;showing first {LIST_CEILING}</span>
-              )}
             </div>
             <div className="list-body">
               {coBusy && (
@@ -1713,14 +1815,7 @@ export default function ListPage() {
               <table className="tbl">
                 <thead>
                   <tr>
-                    <th style={{ width: 34 }}>
-                      <input
-                        type="checkbox"
-                        className="tbl-check"
-                        checked={coAllChecked}
-                        onChange={(e) => toggleAllCo(e.target.checked)}
-                      />
-                    </th>
+                    <th style={{ width: 34 }} />
                     <th>Company</th>
                     <th>Fit</th>
                     <th>Domain</th>
@@ -1765,6 +1860,22 @@ export default function ListPage() {
                                 <span className="bucket-hint">
                                   {open ? "hide" : footnote ? "review" : "show"}
                                 </span>
+                                {key === "unscored" && (
+                                  <button
+                                    className="btn btn-accent btn-xs"
+                                    style={{ marginLeft: "auto" }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      scoreUnscoredWave();
+                                    }}
+                                    disabled={scoringActive || findingPpl}
+                                    title="Run the paid AI fit score for the next batch of unscored companies (≤15 per run)"
+                                  >
+                                    {scoringActive
+                                      ? "Scoring…"
+                                      : `Score next ${Math.min(rows.length, SCORE_BATCH_MAX)} →`}
+                                  </button>
+                                )}
                               </span>
                             </td>
                           </tr>
@@ -1789,10 +1900,10 @@ export default function ListPage() {
                       {fIcp && icpNameById.get(fIcp) ? ` · ${icpNameById.get(fIcp)}` : ""} ·{" "}
                       {coScopeSummary}.
                       <br />
-                      Too few results? Widen them in ⚙ Settings, or + Add company manually.
+                      Too few results? Widen them in ⚙ Scope, or + Add company manually.
                     </>
                   ) : (
-                    <>Set your filters in ⚙ Settings, or + Add company manually. Finding is free.</>
+                    <>Set your filters in ⚙ Scope, or + Add company manually. Finding is free.</>
                   )}
                 </div>
               )}
@@ -1827,46 +1938,27 @@ export default function ListPage() {
           <>
             <div className="list-band">
               <h3>Find the right person</h3>
+              <span className="band-sub">Personas auto-matched per company ICP</span>
               <div className="band-actions">
                 <button
-                  className="btn btn-primary btn-sm"
-                  onClick={openPeopleScopeSettings}
-                  disabled={!pplScopeLoaded}
-                  title={
-                    pplScopeLoaded
-                      ? "Edit the Apollo people-search filters used by Find People"
-                      : "Loading your saved person filters…"
-                  }
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => void openPeopleScopeSettings()}
+                  title="Edit the Apollo people-search personas Find People uses (saved per ICP)"
                 >
-                  Find Settings
+                  {peopleScopeOverride ? "Personas · Custom" : "Personas"}
+                  {coTargetIcpName ? ` · ${coTargetIcpName}` : ""}
                 </button>
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={runFindPeople}
                   disabled={findingPpl || !pplCoSel.length}
-                  title="Find people at the ticked companies (free; enrich spends credits)"
+                  title="Re-find people at the ticked companies (free; reveal emails spends credits)"
                 >
                   {findingPpl
                     ? "Finding…"
                     : pplCoSel.length
                       ? `Find People ${pplCoSel.length}`
                       : "Find People"}
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={confirmEnrich}
-                  disabled={!canEnrich || enriching}
-                  title={
-                    canEnrich
-                      ? "Enrich the selected Found people · spends Apollo credits"
-                      : "Select people marked Found to enrich them."
-                  }
-                >
-                  {enriching
-                    ? "Confirming…"
-                    : toEnrich.length
-                      ? `Enrichment ${toEnrich.length}`
-                      : "Enrichment"}
                 </button>
                 <button
                   className="btn btn-ghost btn-sm"
@@ -1917,14 +2009,6 @@ export default function ListPage() {
                 <option value="found">Found</option>
                 <option value="scored">Enriched</option>
               </select>
-              <select className="select" value={fLabel} onChange={(e) => setFLabel(e.target.value)}>
-                <option value="">Any label</option>
-                <option value="contact_now">Contact now</option>
-                <option value="contact_soon">Contact soon</option>
-                <option value="low_fit">Low fit</option>
-                <option value="excluded_by_rules">Excluded</option>
-                <option value={UNSCORED_LABEL}>Needs score</option>
-              </select>
               <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
                 Manual Upload
               </button>
@@ -1932,9 +2016,6 @@ export default function ListPage() {
             <div className="countrow">
               <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>&nbsp;people&nbsp;·&nbsp;
               <b>{selCount}</b>&nbsp;selected
-              {prospectsTruncated && (
-                <span className="muted">&nbsp;·&nbsp;showing first {LIST_CEILING}</span>
-              )}
             </div>
             <div className="list-body">
               {pplBusy && (
@@ -2131,11 +2212,6 @@ export default function ListPage() {
                                       {hasSubs(p.subscores) ? (
                                         <SubscoreList subscores={p.subscores} axes={PROSPECT_AXES} />
                                       ) : null}
-                                      {p.reason ? (
-                                        <span className="score-reason" title={p.reason}>
-                                          {p.reason}
-                                        </span>
-                                      ) : null}
                                     </div>
                                   ) : (
                                     <span className="muted">Pending</span>
@@ -2162,7 +2238,7 @@ export default function ListPage() {
                         <>
                           <br />
                           Person filters{peopleScopeOverride ? " (custom)" : ""} · {pplScopeSummary}
-                          . Adjust them in ⚙ Settings.
+                          . Adjust them in ⚙ Personas.
                         </>
                       ) : null}
                     </>
@@ -2176,12 +2252,12 @@ export default function ListPage() {
                 {selectedProspects.length ? (
                   <>
                     <b>{selectedProspects.length}</b> selected
-                    {toEnrich.length && enrichedSel.length ? (
-                      <span className="sub"> · {toEnrich.length} need enrichment first</span>
+                    {toEnrich.length ? (
+                      <span className="sub"> · {toEnrich.length} need email reveal</span>
                     ) : null}
                   </>
                 ) : (
-                  "Select people to create batch"
+                  "Select people to score, reveal emails, and batch"
                 )}
               </span>
               {selectedProspects.length ? (
@@ -2190,6 +2266,27 @@ export default function ListPage() {
                 </button>
               ) : null}
               <span className="dock-spacer" />
+              {/* People-selection funnel (left→right): reveal & score → create batch. One merged
+                  action — reveal verified emails (the ONLY Apollo credit spend, 1cr/email) THEN AI-score
+                  on the revealed data, since scoring a pre-reveal row gates on missing contact. When the
+                  selection is already revealed it's a pure re-score (0 credits), so the label drops the
+                  "Reveal &" / credit count. */}
+              <button
+                className="btn btn-accent btn-sm"
+                onClick={runRevealScore}
+                disabled={!selectedProspects.length || scoringPeopleActive || findingPpl}
+                title={
+                  toEnrich.length
+                    ? "Reveal verified emails for the selected people (1 Apollo credit each), then AI-score them on the revealed data · ≤15 per run"
+                    : "AI-score the selected people (already revealed — no credits) · ≤15 per run"
+                }
+              >
+                {scoringPeopleActive
+                  ? "Working…"
+                  : toEnrich.length
+                    ? `Reveal & score ${selectedProspects.length} · ${toEnrich.length} credits`
+                    : `Score ${selectedProspects.length}`}
+              </button>
               <div className={clsx("dock-act", canBatch ? "on" : "off")}>
                 <input
                   className="input dock-name"
@@ -2207,8 +2304,8 @@ export default function ListPage() {
                     canBatch
                       ? ""
                       : toEnrich.length
-                        ? "Enrich the Found people first — only enriched people can be batched."
-                        : "Select enriched people to batch them."
+                        ? "Reveal & score the Found people first — only revealed people can be batched."
+                        : "Select people with a revealed email to batch them."
                   }
                 >
                   Create batch →
@@ -2330,6 +2427,7 @@ export default function ListPage() {
           </>
         }
       >
+        {!scopeForm && <p className="muted">Loading the ICP’s saved filters…</p>}
         {scopeForm && (
           <>
             <div
@@ -2777,6 +2875,14 @@ export default function ListPage() {
 // D+ Stage 3 — scope-exhausted notice. Scoped to `.se-*` so nothing leaks to other routes (the list
 // page has no co-located stylesheet; this mirrors the FindHistoryDrawer pattern). Warn-toned but
 // calm — it's a "you're done here, try these" prompt, not an error.
+// The v2 selection bar — a slim cerulean-wash strip that appears only when rows are ticked, holding
+// the actions that act on the selection (kept out of the primary "find" band above).
+const SEL_CSS = `
+.sel-band { background: var(--cerulean-wash); }
+.sel-band .sel-count { font-size: 13px; font-weight: 650; color: var(--ink); }
+.sel-band .sel-count b { color: var(--cerulean-deep); }
+`;
+
 const SE_CSS = `
 .se-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
   margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 10px;

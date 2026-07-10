@@ -3,7 +3,7 @@
 Machine-consumable axis anchors for the **stage-2 people scorer** (`prospect_score_v2`). Consumed as
 **data** (founder-editable without code) — seeded as `prompt` stage `prospect_score`, version 1.
 
-> **People tier — HoldSlot extrapolation.** `docs/holdslot-scoring-spec-v2.md` defines the company
+> **People tier — HoldSlot extrapolation.** `docs/initial-build-plan.md §D+.2` defines the company
 > tier only; this mirrors its shape onto a person-shaped axis set (four axes, 1–5, sum 4–20, same
 > ≥16 / ≥10 thresholds). **No web search per person** (the token win — the company already carries a
 > web-verified label). **The company label CAPS the person** server-side: a person can never be more

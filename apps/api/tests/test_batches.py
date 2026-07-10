@@ -39,7 +39,6 @@ def test_company_descriptor_firmographics_only():
 def _fake_prospect():
     return SimpleNamespace(
         id=uuid.uuid4(),
-        fit_tier="Strong",
         fit_reason="Active in your category; right seniority.",
         enrichment={
             "full_name": "Sarah Khan",
@@ -72,7 +71,6 @@ def test_masked_serializer_is_allow_list_no_clear_text():
     assert out.name == "Sarah K."
     assert out.company_descriptor == "SaaS · 200-500 · US"
     assert out.title == "VP Marketing"
-    assert out.fit_tier == "Strong"
     assert out.id == str(approval.id)
 
     # withheld: every clear-text identity/contact vector
@@ -223,7 +221,7 @@ def test_batch_end_to_end_create_send_view_decide():
     for i in range(2):
         p = Prospect(
             tenant_id=tenant.id, company_id=company.id, identity_key=f"d-{suffix}-{i}",
-            source="manual", status="scored", fit_tier="Strong", fit_reason="great fit",
+            source="manual", status="scored", fit_reason="great fit",
             enrichment={
                 "full_name": f"Sarah Khan{i}", "title": "VP", "seniority": "vp",
                 "email": f"sarah{i}@northwind.example", "linkedin_url": "https://linkedin.com/in/x",
@@ -321,7 +319,7 @@ def test_delete_batch_cascades_isolates_and_scopes():
     for i in range(3):
         p = Prospect(
             tenant_id=tenant.id, company_id=company.id, identity_key=f"del-{suffix}-{i}",
-            source="manual", status="scored", fit_tier="Strong", fit_reason="great fit",
+            source="manual", status="scored", fit_reason="great fit",
             enrichment={"full_name": f"Sarah Khan{i}", "title": "VP"},
         )
         db.add(p)
@@ -434,7 +432,7 @@ def test_resend_reopens_rejected_batch_but_approved_stays_final():
     for i in range(2):
         p = Prospect(
             tenant_id=tenant.id, company_id=company.id, identity_key=f"re-{suffix}-{i}",
-            source="manual", status="scored", fit_tier="Strong", fit_reason="fit",
+            source="manual", status="scored", fit_reason="fit",
             enrichment={"full_name": f"Lee Wong{i}", "title": "VP", "seniority": "vp",
                         "company": "Reopen Co", "domain": "reopen.example"},
         )

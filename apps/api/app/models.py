@@ -376,16 +376,8 @@ class Company(Base):
         UniqueConstraint("tenant_id", "domain", name="uq_company_tenant_domain"),
         UniqueConstraint("tenant_id", "apollo_org_id", name="uq_company_tenant_apollo_org"),
         Index("ix_company_tenant_id", "tenant_id"),
-        # List feed sorts by (tenant, fit_score desc nulls last, created_at desc) — migration 0014.
-        # (ix_company_domain dropped: covered by uq_company_tenant_domain.)
-        Index(
-            "ix_company_tenant_fit",
-            "tenant_id",
-            text("fit_score DESC NULLS LAST"),
-            text("created_at DESC"),
-        ),
-        # Scoring v2 (0024) — label-bucketed feed: filter/group by label, best score first. Coexists
-        # with ix_company_tenant_fit through the cutover; 0026 drops the v1 one.
+        # Scoring v2 (0024) — label-bucketed feed: filter/group by label, best score first. The v1
+        # `ix_company_tenant_fit` (fit_score) was dropped in V2-4 (migration 0026).
         Index(
             "ix_company_tenant_label",
             "tenant_id",
@@ -414,16 +406,14 @@ class Company(Base):
     industry: Mapped[str | None] = mapped_column(String(255), nullable=True)
     size: Mapped[str | None] = mapped_column(String(64), nullable=True)
     country: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fit_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
     fit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    # Scoring v2 (0024, docs/holdslot-scoring-spec-v2.md) — the 4-label contract, alongside v1
-    # fit_*. `label` NULL = "needs re-score" (no backfill); `score_total` is the 4–20 subscore sum.
-    # Subscores/flags/reason/icp/liveness live in `fit_components`; `fit_reason` = the v2 `reason`.
-    # (The spec's `verified` bool was dropped 2026-07-09 — not meaningful; see 0024.)
+    # Scoring v2 (0024, docs/initial-build-plan.md §D+.2) — the 4-label contract (the v1 fit_score/
+    # fit_tier columns were retired in V2-4 / 0026). `label` NULL = "needs re-score" (no backfill);
+    # `score_total` is the 4–20 subscore sum. Subscores/flags/reason/icp/liveness live in
+    # `fit_components`; `fit_reason` = the v2 `reason`.
     label: Mapped[str | None] = mapped_column(String(32), nullable=True)
     score_total: Mapped[int | None] = mapped_column(Integer, nullable=True)
     evidence: Mapped[dict] = mapped_column(
@@ -448,15 +438,8 @@ class Prospect(Base):
         UniqueConstraint("tenant_id", "identity_key", name="uq_prospect_tenant_identity"),
         Index("ix_prospect_tenant_id", "tenant_id"),
         Index("ix_prospect_apollo_person_id", "tenant_id", "apollo_person_id"),
-        # List feed sorts by (tenant, fit_score desc nulls last, created_at desc) — migration 0014.
-        # (ix_prospect_identity_key dropped: covered by uq_prospect_tenant_identity.)
-        Index(
-            "ix_prospect_tenant_fit",
-            "tenant_id",
-            text("fit_score DESC NULLS LAST"),
-            text("created_at DESC"),
-        ),
-        # Scoring v2 (0024) — label-bucketed feed, mirrors company. 0026 drops the v1 fit index.
+        # Scoring v2 (0024) — label-bucketed feed, mirrors company. The v1 `ix_prospect_tenant_fit`
+        # (fit_score) was dropped in V2-4 (migration 0026).
         Index(
             "ix_prospect_tenant_label",
             "tenant_id",
@@ -486,10 +469,9 @@ class Prospect(Base):
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
     email_valid: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
-    fit_score: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    fit_tier: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    # Plain-text fit rationale — parity with company.fit_reason (added in migration 0014). Populated
-    # on the next rescore; the structured per-line detail still lives in fit_components.
+    # Plain-text fit rationale — parity with company.fit_reason. Populated on the next rescore; the
+    # structured per-line detail still lives in fit_components. (The v1 fit_score/fit_tier columns
+    # were retired in V2-4 / migration 0026 — the verdict is `label`/`score_total` below.)
     fit_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     fit_components: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
@@ -503,8 +485,7 @@ class Prospect(Base):
     source_lineage: Mapped[dict] = mapped_column(
         JSONB, nullable=False, server_default=text("'{}'::jsonb")
     )
-    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="new")
-    outreach_outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="found")
     last_enriched_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

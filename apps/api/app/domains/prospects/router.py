@@ -22,7 +22,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.core.cache import TTLCache
@@ -66,13 +65,13 @@ from app.domains.prospects.schemas import (
     PeopleFacetsIn,
     PeopleFacetsOut,
     PeopleFindIn,
-    PeopleScopeOverrideIn,
-    PeopleScopeOverrideOut,
     ProspectManualIn,
     ProspectOut,
     ProspectPage,
     ProspectRescoreIn,
     ResearchRunOut,
+    ScopeOverrideIn,
+    ScopeOverrideOut,
     ScoringJobOut,
     SourcingDocIn,
     SourcingDocList,
@@ -179,16 +178,86 @@ def _latest_spec(db: Session, tenant_id) -> ResearchSpec | None:
 
 
 SCOPE_KIND_PEOPLE = "people"  # ScopeOverride.kind for the Step-2 Find Settings facets
+SCOPE_KIND_COMPANY = "company"  # ScopeOverride.kind for the Step-1 Find Settings facets
+_SCOPE_GLOBAL = "*"  # by_icp key for an ICP-less (single-ICP / legacy) override
 
 
-def _people_scope_override(db: Session, tenant_id) -> ScopeOverride | None:
-    """The tenant's persisted Step-2 people-scope override (the Find Settings the operator saved),
-    or None → use the AI scope. Single row per (tenant, kind)."""
+def _scope_override_row(db: Session, tenant_id, kind: str) -> ScopeOverride | None:
+    """The tenant's single ScopeOverride row for this pipeline step (`people`/`company`), or None.
+    The row holds a per-ICP map (`params.by_icp`); resolve one ICP's block with
+    `_scope_override_block`."""
     return db.execute(
         select(ScopeOverride).where(
-            ScopeOverride.tenant_id == tenant_id, ScopeOverride.kind == SCOPE_KIND_PEOPLE
+            ScopeOverride.tenant_id == tenant_id, ScopeOverride.kind == kind
         )
     ).scalar_one_or_none()
+
+
+def _scope_override_block(row: ScopeOverride | None, icp_id) -> dict | None:
+    """The saved manual override block for ONE ICP (`{people_search_params}` for people;
+    `{company_search_params, intent_filters}` for company), or None → use the AI scope.
+
+    Reads the per-ICP map (`params.by_icp`, keyed by ICP id string). A legacy FLAT payload — one
+    saved before per-ICP keying — is treated as a global fallback that applies to any ICP until it
+    is re-saved per-ICP (the first per-ICP save supersedes it)."""
+    if row is None:
+        return None
+    params = row.params or {}
+    by_icp = params.get("by_icp")
+    if by_icp is None:
+        return params or None  # legacy flat payload → global fallback
+    if icp_id is not None:
+        hit = by_icp.get(str(icp_id))
+        if hit is not None:
+            return hit  # per-ICP override wins
+    return by_icp.get(_SCOPE_GLOBAL)  # ICP-less global entry as the fallback (or None → AI scope)
+
+
+def _has_scope_value(v) -> bool:
+    """True if a save payload carries any actual facet value (recursing into nested dicts). An
+    all-empty block — every leaf array/number empty/None — is a revert, not a stored override that
+    would silently widen every search."""
+    if isinstance(v, dict):
+        return any(_has_scope_value(x) for x in v.values())
+    if isinstance(v, (list, tuple, set, str)):
+        return len(v) > 0
+    return v is not None
+
+
+def _merge_scope_map(params: dict | None, icp_id, block: dict | None) -> dict | None:
+    """Set (or clear, when `block` is None) one ICP's entry in a (tenant, kind) row's per-ICP map.
+    Returns the new `params` payload, or None when the map is empty (→ delete the row). A legacy
+    FLAT payload (no `by_icp`) is discarded here: the first per-ICP write supersedes it. Other ICPs'
+    entries are always preserved."""
+    by_icp = dict((params or {}).get("by_icp") or {})
+    key = str(icp_id) if icp_id is not None else _SCOPE_GLOBAL
+    if block is None:
+        by_icp.pop(key, None)
+    else:
+        by_icp[key] = block
+    return {"by_icp": by_icp} if by_icp else None
+
+
+def _write_scope_override(db: Session, tenant_id, kind: str, icp_id, block: dict | None) -> None:
+    """Upsert (or clear) one ICP's entry in the (tenant, kind) override row's per-ICP map. When the
+    map empties the row is deleted (→ full AI scope)."""
+    row = _scope_override_row(db, tenant_id, kind)
+    payload = _merge_scope_map(row.params if row else None, icp_id, block)
+    if payload is None:
+        if row is not None:
+            db.delete(row)
+            db.commit()
+        return
+    if row is None:
+        db.add(ScopeOverride(tenant_id=tenant_id, kind=kind, params=payload))
+    else:
+        row.params = payload
+    db.commit()
+
+
+def _require_scope_kind(kind: str) -> None:
+    if kind not in (SCOPE_KIND_PEOPLE, SCOPE_KIND_COMPANY):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown scope kind")
 
 
 def _build_exclusions(brief: Brief | None, spec: ResearchSpec | None):
@@ -200,25 +269,23 @@ def _exclusions(db: Session, tenant_id):
 
 
 def _feedback_rows(db: Session, tenant_id) -> list[dict]:
-    """The tenant's scored companies as the plain rows `feedback.py` aggregates over (D+ Stage 3/4):
-    tier + market flag + country + descriptive keywords/industry + enrich technology names. Only
-    scored rows carry signal."""
+    """The tenant's labeled companies as the rows `feedback.py` aggregates over (D+ Stage 3/4):
+    the v2 `label` (won = contact_now/contact_soon, lost = low_fit/excluded_by_rules) + country +
+    descriptive keywords/industry + enrich technology names. Only labeled rows carry signal."""
     rows = db.execute(
         select(
-            Company.fit_tier, Company.fit_components, Company.country,
-            Company.industry, Company.evidence,
-        ).where(Company.tenant_id == tenant_id, Company.fit_tier.is_not(None))
+            Company.label, Company.country, Company.industry, Company.evidence,
+        ).where(Company.tenant_id == tenant_id, Company.label.is_not(None))
     ).all()
     return [
         {
-            "tier": tier,
-            "market_excluded": (comps or {}).get("market_excluded"),
+            "label": label,
             "country": country,
             "industry": industry,
             "keywords": (evidence or {}).get("keywords") or [],
             "technologies": (evidence or {}).get("technology_names") or [],
         }
-        for tier, comps, country, industry, evidence in rows
+        for label, country, industry, evidence in rows
     ]
 
 
@@ -271,8 +338,8 @@ _SCORING_BRIEF_FIELDS = frozenset(
         "valueProps",
         "signals",
         "qualifiedDef",
-        # B2B / B2C / Both — drives the market hard gate in fit.score_company (partner request,
-        # 2026-07). Must reach the scorer's targeting.brief slice for the gate to read it.
+        # B2B / B2C / Both — drives the v2 market gate (labeling.build_rules_config reads it from
+        # the brief). Must reach the scorer's targeting.brief slice for the gate to read it.
         "targetMarket",
     }
 )
@@ -360,10 +427,7 @@ def _prospect_out(p: Prospect) -> ProspectOut:
         title=e.get("title", ""),
         company_industry=e.get("company_industry", ""),
         company_size=e.get("company_size", ""),
-        fit_score=p.fit_score,
-        fit_tier=p.fit_tier,
         fit_reason=comps.get("fit_reason", ""),
-        reason_tags=comps.get("reason_tags", []),
         # Scoring v2 — label/score_total from columns; reason/subscores/flags/icp from components.
         label=p.label,
         score_total=p.score_total,
@@ -396,7 +460,7 @@ def list_prospects(
             select(Prospect)
             .where(Prospect.tenant_id == ctx.tenant.id)
             .order_by(
-                Prospect.fit_score.desc().nullslast(),
+                Prospect.score_total.desc().nullslast(),
                 Prospect.created_at.desc(),
                 Prospect.id.desc(),
             )
@@ -445,12 +509,8 @@ def _company_out(c: Company) -> CompanyOut:
         industry=c.industry or "",
         size=c.size or "",
         country=c.country or "",
-        fit_score=c.fit_score,
-        fit_tier=c.fit_tier,
         fit_reason=c.fit_reason or comps.get("fit_reason", ""),
         business_model=comps.get("business_model", ""),
-        market_excluded=bool(comps.get("market_excluded", False)),
-        reason_tags=comps.get("reason_tags", []),
         # Scoring v2 — label/score_total from the columns; the rest from components.
         label=c.label,
         score_total=c.score_total,
@@ -500,10 +560,10 @@ def _classify_payload(c: Company) -> dict:
 
 def _prospect_payload(enrichment: dict | None, company: Company | None) -> dict:
     """The person facts the stage-2 rubric scores against — the decision-maker signals (title,
-    seniority, department, email) PLUS the parent company's firmographics and its stage-1 fit
-    verdict, so a person is judged as a decision-maker INSIDE an already-qualified account. Apollo
-    obfuscates seniority/department until enrich, so those stay empty pre-enrich (rubric Unknown
-    policy applies); the intended persona scope reaches the model via the targeting `spec` block."""
+    seniority, department, email) PLUS the parent company's firmographics + its v2 `label` (which
+    caps the person), so a person is judged as a decision-maker INSIDE an already-qualified account.
+    Apollo obfuscates seniority/department until enrich, so those stay empty pre-enrich (rubric
+    Unknown policy applies); the persona scope reaches the model via the targeting `spec`."""
     e = dict(enrichment or {})
     payload = {
         "full_name": e.get("full_name", ""),
@@ -519,24 +579,14 @@ def _prospect_payload(enrichment: dict | None, company: Company | None) -> dict:
         "company_size": e.get("company_size", ""),
     }
     if company is not None:
-        payload["company_fit"] = {
-            "score": company.fit_score,
-            "tier": company.fit_tier,
-            "reason": company.fit_reason or (company.fit_components or {}).get("fit_reason", ""),
-        }
+        payload["company_label"] = company.label
+        payload["company_reason"] = company.fit_reason or (company.fit_components or {}).get(
+            "reason", ""
+        )
     return payload
 
 
-def _apply_company_score(c: Company, scored: dict) -> float:
-    """Write a company fit result onto the row in place; return the call's cost_usd."""
-    c.fit_score = scored["fit_score"]
-    c.fit_tier = scored["fit_tier"]
-    c.fit_components = scored["fit_components"]
-    c.fit_reason = scored["fit_reason"]
-    return float(scored.get("cost_usd") or 0.0)
-
-
-# --- scoring v2 — the label engine (docs/holdslot-scoring-spec-v2.md) ---------------------------
+# --- scoring v2 — the label engine (docs/initial-build-plan.md §D+.2) ---------------------------
 # The v2 rescore path: the free deterministic gates (rules → data → size) run FIRST; the paid
 # web-grounded score call fires ONLY on a gate-survivor (spec §3 re-order — a rule-killed row is
 # never web-checked). The Verdict is persisted to the v2 columns (`label`/`score_total`) +
@@ -725,14 +775,10 @@ def _label_companies_deterministic(
 
 def _prospect_v2_payload(enrichment: dict | None, company: Company | None) -> dict:
     """The person facts the v2 people scorer judges — decision-maker signals + the parent company's
-    LABEL (not the v1 fit verdict). The company label caps the person server-side; the model reads
-    it only as context and does NOT re-judge the company."""
-    payload = _prospect_payload(enrichment, company)
-    payload.pop("company_fit", None)  # v1 verdict — the v2 people call never re-judges the company
-    if company is not None:
-        payload["company_label"] = company.label
-        payload["company_reason"] = company.fit_reason or ""
-    return payload
+    LABEL (not a fit score). The company label caps the person server-side; the model reads it only
+    as context and does NOT re-judge the company. (Now identical to `_prospect_payload`, which since
+    V2-4 carries `company_label`/`company_reason` directly; kept as the v2 call site's name.)"""
+    return _prospect_payload(enrichment, company)
 
 
 def _apply_prospect_verdict(p: Prospect, verdict: labeling.Verdict) -> None:
@@ -890,16 +936,16 @@ def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
 
 
 def classify_companies(tenant_id, rows: list[Company], brief: Brief | None) -> float:
-    """Stage-0 — stamp the B2B/B2C `business_model` label on every row that lacks one (idempotent,
-    so a re-find never re-classifies) via a dedicated minimal LLM call, and apply the market gate at
-    find/add time: an opposite-market company is buried into Below·0 HERE, before any (paid) AI
-    scoring, and pinned to the bottom of Step 1. Returns the total cost_usd to book onto the run.
+    """Stage-0 — stamp `business_model` (+ the description-derived `hq_country` and
+    `has_b2b_line`) on every row that lacks one (idempotent, so a re-find never re-classifies) via a
+    dedicated minimal LLM call. These three facts feed the v2 rules engine — the market/geo/Luma
+    gates run in `_label_companies_deterministic` (called right after this in the find path), which
+    stamps `excluded_by_rules` on an opposite-market row. Returns the total cost_usd for the run.
 
     One concurrent wave (the LLM client is thread-safe); the ORM mutation stays on the calling
     thread (results applied in the loop below). Does NOT commit — the caller owns the transaction. A
     per-row classify failure is absorbed (row kept unlabeled), never fatal.
     """
-    target_market = ((brief.data if brief else None) or {}).get("targetMarket")
     todo = [c for c in rows if not (c.fit_components or {}).get("business_model")]
     jobs = [
         (
@@ -914,25 +960,12 @@ def classify_companies(tenant_id, rows: list[Company], brief: Brief | None) -> f
     for c, res in _score_concurrently(jobs):
         if res is None:
             continue
-        business_model = res.get("business_model") or "Unknown"
         comps = dict(c.fit_components or {})
-        comps["business_model"] = business_model
-        # v2 (scoring-spec-v2 §5) — stash the description-derived HQ country + B2B-line guard so
-        # the v2 rules engine reads them at label time. Additive; v1's market gate below unchanged.
+        # The three facts the v2 rules engine reads at label time (`_company_det_inputs`): the
+        # B2B/B2C model + the description-derived HQ country (geo rule) + the B2B-line Luma guard.
+        comps["business_model"] = res.get("business_model") or "Unknown"
         comps["hq_country"] = res.get("hq_country") or ""
         comps["has_b2b_line"] = bool(res.get("has_b2b_line"))
-        # Gate at find/add time: fit_score=None means an excluded row is buried (Below·0) up-front,
-        # while a non-excluded row is left UNSCORED for the on-demand "Get AI score" pass.
-        score, tier, excluded, reason = fit.apply_market_gate(
-            business_model=business_model,
-            target_market=target_market,
-            fit_score=None,
-            fit_reason=comps.get("fit_reason", ""),
-        )
-        comps["market_excluded"] = excluded
-        if excluded:
-            comps["fit_reason"] = reason
-            c.fit_score, c.fit_tier, c.fit_reason = score, tier, reason
         c.fit_components = comps
         cost += float(res.get("cost_usd") or 0.0)
     return cost
@@ -956,7 +989,7 @@ def list_companies(
             select(Company)
             .where(Company.tenant_id == ctx.tenant.id)
             .order_by(
-                Company.fit_score.desc().nullslast(),
+                Company.score_total.desc().nullslast(),
                 Company.created_at.desc(),
                 Company.id.desc(),
             )
@@ -1132,31 +1165,6 @@ def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
     return company
 
 
-@router.post("/{client}/companies/find-company", response_model=FindResult)
-def find_company(
-    body: CompanyFindIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> FindResult:
-    """Flow A — Apollo company search from the latest ResearchSpec → suppress → enrich → upsert.
-
-    The search params are the chosen ICP's `company_search_params` + `intent_filters` from the
-    latest spec (already Apollo-shaped, resolved via `targeting_for_icp` — v3 single-block specs
-    fall back to their merged block);
-    existing-customer domains and same-batch dupes are dropped before any row is stored. Survivors
-    are upserted (a previously-known company is re-stamped with its `apollo_org_id`, not skipped).
-    Capped at `MAX_COMPANIES_PER_FIND` per request. Records one `research_run` (source=apollo).
-
-    Rows come back UNSCORED (`score=False`): fit-scoring a fresh batch is the slow step and would
-    blow the 30s gateway cap, so the web app fires scoring in the background (chunked `/rescore`)
-    and shows a per-row "Scoring…" status. The scoring spend is then booked under `rescore` runs.
-
-    This synchronous route is clamped to `SYNC_FIND_COMPANY_LIMIT` (the pre-1b ceiling); the web app
-    uses `/find-company-async` (worker, no 30s cap), which reaches `FIND_COMPANY_LIMIT`.
-    """
-    return _find_company_core(db, ctx.tenant.id, body.model_dump(), ceiling=SYNC_FIND_COMPANY_LIMIT)
-
-
 def _find_company_core(
     db: Session, tenant_id, params: dict, *, ceiling: int | None = None
 ) -> FindResult:
@@ -1200,19 +1208,25 @@ def _find_company_core(
     credit = blob.get("credit_policy") or {}
     hard_cap = min(ceiling, credit.get("max_companies", 500))
     limit = max(1, min(params.get("limit") or ceiling, hard_cap))
-    # Operator override (Settings modal) wins over the AI spec for *this call only*; an omitted
-    # block falls back to the spec. `_clean` in apollo_map drops empty filters, so a cleared field
-    # simply widens the search.
+    # Precedence: a per-call override in the request body (Settings modal) → the tenant's SAVED
+    # per-ICP company override (persisted server-side, survives across browsers) → the AI spec.
+    # `_clean` in apollo_map drops empty filters, so a cleared field simply widens the search.
     o_csp = params.get("company_search_params")
-    csp = o_csp if o_csp is not None else (block.get("company_search_params") or {})
     o_intent = params.get("intent_filters")
+    if o_csp is None and o_intent is None:
+        saved = _scope_override_block(_scope_override_row(db, tenant_id, SCOPE_KIND_COMPANY), icp)
+        if saved is not None:
+            o_csp = saved.get("company_search_params")
+            o_intent = saved.get("intent_filters")
+    has_override = o_csp is not None or o_intent is not None
+    csp = o_csp if o_csp is not None else (block.get("company_search_params") or {})
     intent = o_intent if o_intent is not None else (block.get("intent_filters") or {})
     filter_body = apollo_map.map_company_filter(csp, intent)
-    # Conditional negative signal — only for the AI scope; a custom company override is the source
-    # of truth and left untouched. Stage 3: when bad rows cluster on one country, drop it via
-    # `organization_not_locations`. Stage 4: resolve tech vocabulary → the two Apollo tech UID
-    # filters (positive from the ICP's required stack, negative from bad-row-correlated tech).
-    if o_csp is None:
+    # Conditional negative signal — only for the AI scope; a custom company override (per-call OR
+    # saved) is the source of truth and left untouched. Stage 3: when bad rows cluster on one
+    # country, drop it via `organization_not_locations`. Stage 4: resolve tech vocabulary → the two
+    # Apollo tech UID filters (positive from the ICP's required stack, negative from bad-row tech).
+    if not has_override:
         rows = _feedback_rows(db, tenant_id)
         # Never exclude a country the scope explicitly targets — a bad-row cluster on the SAME
         # country the AI is searching (e.g. a single-market client whose early rows all scored
@@ -1236,8 +1250,8 @@ def _find_company_core(
         filter_body = _merge_uids(
             filter_body, "currently_not_using_any_of_technology_uids", neg_tech
         )
-    # `custom` when the operator supplied any override params (Settings modal), else the AI block.
-    scope_source = "custom" if (o_csp is not None or o_intent is not None) else "ai"
+    # `custom` when a per-call OR saved override supplied the scope (Settings modal), else AI block.
+    scope_source = "custom" if has_override else "ai"
     return _run_company_find(
         db,
         tenant_id,
@@ -1247,7 +1261,6 @@ def _find_company_core(
         icp=icp,
         source="apollo",
         scope_source=scope_source,
-        score=False,
         use_cursor=True,  # Stage 3 — repeat find resumes at the next page (never re-buys page 1)
         skip_known=True,  # Stage 3 — returning orgs are skipped ($0: no re-enrich/classify/stamp)
     )
@@ -1422,21 +1435,19 @@ def _run_company_find(
     source: str,
     scope_source: str | None = None,
     seen_domains: set[str] | None = None,
-    score: bool = True,
     use_cursor: bool = False,
     skip_known: bool = False,
 ) -> FindResult:
     """The Flow-A tail shared by find-company and find-lookalikes: Apollo search → suppress + dedupe
-    → enrich NEW survivors → upsert + concurrent fit-score → one `research_run`.
+    → enrich NEW survivors → upsert + stage-0 classify + deterministic label → one `research_run`.
 
     `filter_body` is already Apollo-shaped (the caller builds it from the spec or from seed rows);
     `source` tags the run (`apollo` vs `lookalike`) so the cost scoreboard separates the two doors.
     `spec` may be None (lookalike needs no spec); its version/prompt stamp the run only when set.
     `seen_domains` are domains to DROP from the result (Lookalike passes the tenant's existing
     domains so the seeds + already-listed peers fall out and only NET-NEW companies come back).
-    `score=False` upserts the new rows UNSCORED and returns immediately (Lookalike: fit-scoring a
-    fresh batch is the slow part and would blow the 30s gateway cap, so the web app triggers it in
-    the background via `/rescore` and shows a per-row "Scoring…" status).
+    NEW rows land UNSCORED (v2: `label` NULL) — the paid web-grounded score is a separate on-demand
+    async pass (`run_rescore_companies` → `_score_companies_v2`); find never scores inline.
 
     D+ Stage 3: `use_cursor` resumes an unchanged scope at its stored page cursor (find-company), so
     a repeat find advances instead of re-buying page 1; `skip_known` drops orgs already stored for
@@ -1513,9 +1524,6 @@ def _run_company_find(
 
     run_id = _apollo_run_id()
     brief = _latest_brief(db, tenant_id)
-    targeting = _build_targeting(brief, spec, icp_docs(db, tenant_id, icp), icp)
-    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
-    rubric_body = rubric.body if rubric else ""
     cost = 0.0
     companies: list[Company] = []
     for p in survivors:
@@ -1524,41 +1532,17 @@ def _run_company_find(
         companies.append(c)
 
     # Stage-0: classify the business model of every NEW row up-front (a dedicated minimal LLM call)
-    # so the B2B/B2C label — and the market gate — is present BEFORE any AI scoring. Opposite-market
-    # rows are gated into Below·0 here, dropping out of the `fit_score is None` set scored below.
+    # so the B2B/B2C label — and the market gate — is present BEFORE any scoring.
     cost += classify_companies(tenant_id, companies, brief)
     # Scoring v2 (spec §3 + ⑧-B): stamp the free deterministic label (rules/data/size) at find time
     # so excluded_by_rules / low_fit — incl. the kept client-excluded rows — show without a rescore.
+    # A survivor (label NULL) lands UNSCORED — the paid web-grounded score is a separate on-demand
+    # async pass (run_rescore_companies → _score_companies_v2); find never scores inline (v2).
     _label_companies_deterministic(db, tenant_id, companies, brief=brief, spec=spec)
-
-    # Score the unscored rows concurrently (re-finds don't re-spend on already-scored rows). The
-    # scoring payload is built here on the main thread so no lazy ORM load runs off-thread; results
-    # are applied back here too. Sequential scoring of a full batch overruns the 30s gateway cap.
-    t_pre_score = time.monotonic() - t0
-    to_score = (
-        [(c, _company_payload(c)) for c in companies if c.fit_score is None] if score else []
-    )
-    jobs = [
-        (
-            c,
-            (
-                lambda payload=payload: fit.score_company(
-                    tenant_id=tenant_id,
-                    rubric_body=rubric_body,
-                    company=payload,
-                    targeting=targeting,
-                )
-            ),
-        )
-        for c, payload in to_score
-    ]
-    for c, scored in _score_concurrently(jobs):
-        if scored is not None:
-            cost += _apply_company_score(c, scored)
     t_total = time.monotonic() - t0
     log.info(
         "company-find[%s]: apollo=%d relax=%.1fs(L%d%s) search=%.1fs%s survivors=%d enrich=%.1fs "
-        "scored=%d score=%.1fs total=%.1fs%s",
+        "total=%.1fs%s",
         source,
         len(rows),
         t_relax,
@@ -1568,8 +1552,6 @@ def _run_company_find(
         " (cached)" if cache_hit else "",
         len(survivors),
         t_enrich,
-        len(to_score),
-        t_total - t_pre_score,
         t_total,
         " ⚠OVER-30s-GATEWAY-CAP" if t_total > 28 else "",
     )
@@ -1614,7 +1596,7 @@ def _run_company_find(
             prompt_version=(
                 f"spec-v{spec_blob['spec_version']}" if spec_blob.get("spec_version") else None
             ),
-            rubric_version=fit.RUBRIC_VERSION,
+            rubric_version=fit.SCORE_RUBRIC_VERSION,
             rows_pushed=len(companies),
             cost_usd=round(cost, 6),
             filter_body=resolved_body,
@@ -1625,7 +1607,7 @@ def _run_company_find(
     db.commit()
     for c in companies:
         db.refresh(c)
-    companies.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
+    companies.sort(key=lambda c: (c.score_total is None, -(c.score_total or 0)))
     return FindResult(
         run_id=run_id,
         found=len(companies),
@@ -1634,30 +1616,6 @@ def _run_company_find(
         scope_exhausted=scope_exhausted,
         known_skipped=known_skipped,
     )
-
-
-@router.post("/{client}/companies/find-lookalikes", response_model=FindResult)
-def find_lookalikes(
-    body: CompanyLookalikeIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> FindResult:
-    """Lookalike (C7) — find the next batch of peers of the selected stage-1 rows.
-
-    Apollo has no native lookalike API, so the selected rows' firmographics are aggregated
-    HoldSlot-side (`lookalike.build_lookalike_filter`) into a normal company-search filter, then run
-    through the same Flow-A tail as find-company. The tenant's existing domains are passed as
-    `seen_domains`, so the seeds + any already-listed peers drop out → the result is the genuinely
-    NEW *next* batch (≤`LOOKALIKE_LIMIT`, often fewer). The run is tagged `source=lookalike`; the
-    new rows themselves keep `source=apollo`.
-
-    Rows come back UNSCORED (`score=False`): fit-scoring a batch of brand-new companies is the slow
-    step and would exceed the 30s gateway cap, so the web app fires the scoring in the background
-    (chunked `/rescore` calls) and shows a per-row "Scoring…" status until each lands.
-    """
-    if not body.company_ids:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
-    return _lookalike_core(db, ctx.tenant.id, body.model_dump())
 
 
 def _lookalike_core(db: Session, tenant_id, params: dict) -> FindResult:
@@ -1714,7 +1672,6 @@ def _lookalike_core(db: Session, tenant_id, params: dict) -> FindResult:
         source="lookalike",
         scope_source="lookalike",
         seen_domains=seen_domains,
-        score=False,
     )
 
 
@@ -1869,113 +1826,11 @@ def preview_fit_prompt(
     return _company_fit_prompt(db, ctx.tenant.id, sample_id)
 
 
-def _score_companies(db: Session, tenant_id, rows: list[Company]) -> dict:
-    """Re-score the given company rows against the current rubric + per-row ICP targeting, record
-    one `research_run` (source=rescore) for cost, and return run counts (`{scored, failed,
-    cost_usd}`). Shared by the sync `/companies/rescore` endpoint and the W4 async worker — both
-    load the (tenant-scoped) rows first; this owns the scoring fan-out + persistence.
-
-    ICP docs differ per row, so targeting is built once per distinct icp_id on the CALLING thread
-    (the off-thread score jobs close over plain data, never the session). Mirrors find/add scoring.
-    """
-    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
-    rubric = _latest_doc(db, tenant_id, COMPANY_STAGE)
-    rubric_body = rubric.body if rubric else ""
-    targeting_cache: dict[str | None, dict] = {}
-
-    def _targeting_for(icp_id) -> dict:
-        key = str(icp_id) if icp_id else None
-        if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(
-                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
-            )
-        return targeting_cache[key]
-
-    jobs = [
-        (
-            c,
-            (
-                lambda payload=_company_payload(c), targeting=_targeting_for(c.icp_id): (
-                    fit.score_company(
-                        tenant_id=tenant_id,
-                        rubric_body=rubric_body,
-                        company=payload,
-                        targeting=targeting,
-                    )
-                )
-            ),
-        )
-        for c in rows
-    ]
-    cost = 0.0
-    scored_n = 0
-    for c, scored in _score_concurrently(jobs):
-        if scored is not None:
-            cost += _apply_company_score(c, scored)
-            scored_n += 1
-
-    db.add(
-        ResearchRun(
-            tenant_id=tenant_id,
-            run_id=_apollo_run_id(),
-            spec_version=spec.version if spec else None,
-            source="rescore",
-            rubric_version=fit.RUBRIC_VERSION,
-            rows_pushed=len(rows),
-            cost_usd=round(cost, 6),
-        )
-    )
-    db.commit()
-    for c in rows:
-        db.refresh(c)
-    return {"scored": scored_n, "failed": len(rows) - scored_n, "cost_usd": round(cost, 6)}
-
-
-@router.post("/{client}/companies/rescore", response_model=list[CompanyOut])
-def rescore_companies(
-    body: CompanyRescoreIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> list[CompanyOut]:
-    """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
-    selection), ignoring the `fit_score is None` gate that find-company uses. Run this after the
-    rubric or the scoring prompt changes so existing rows reflect the new scoring.
-
-    Bounded by `MAX_COMPANIES_PER_FIND` (the 30s API-Gateway sync cap) — a larger selection is
-    rejected, not silently truncated. For an unbounded batch use the async kick-off
-    (`/companies/rescore-async`, W4), which runs the same `_score_companies` off the request path.
-    """
-    if not body.ids:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
-    if len(body.ids) > MAX_COMPANIES_PER_FIND:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"re-score at most {MAX_COMPANIES_PER_FIND} companies per request",
-        )
-    ids = _parse_ids(body.ids)
-    rows = (
-        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
-        .scalars()
-        .all()
-    )
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
-    _score_companies(db, ctx.tenant.id, rows)
-    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
-    return [_company_out(c) for c in rows]
-
-
-# --------------------------------------------------- W4: async scoring jobs (kick-off + poll)
-# A scoring batch fans out one (slow, reasoning) LLM call per row; past ~15 rows it overruns the 30s
-# API-Gateway sync cap, and the prior client-driven chunk loop dies if the tab closes. The async
-# path runs the SAME scoring on a background worker (see domains/prospects/scoring.py).
-
-# Selection-based async jobs (the "Get AI score" buttons + "Update Field") batch at most this many
-# rows per job — the FE messages when a larger selection is picked. find/lookalike keep their own
-# find limits. Capped to `_SCORE_WORKERS` so the batch runs in ONE concurrent wave: a reasoning
-# `company_fit` call is ~70s, and 2 waves (the old cap of 20 vs 15 workers) overran the Lambda
-# and left the worker killed mid-batch → a zombie `running` job. One wave ≈ one call's wall-clock,
-# well inside the timeout. (scoring.py's reaper backstops any residual overrun.)
+# Selection-based async jobs (the bucket "Score next 15" CTAs + "Reveal & score" + "Update Field")
+# batch at most this many rows per job — the FE messages when a larger selection is picked. Sized to
+# one concurrent scoring WAVE (`_SCORE_WORKERS`): a reasoning `company_score` call is ~70s, and two
+# waves overran the Lambda and left the worker killed mid-batch → a zombie `running` job. One wave ≈
+# one call's wall-clock, well inside the timeout. (scoring.py's reaper backstops any overrun.)
 ASYNC_BATCH_MAX = _SCORE_WORKERS  # 15
 
 
@@ -2012,6 +1867,50 @@ def run_rescore_prospects(db: Session, tenant_id, params: dict) -> dict:
     if not rows:
         return {"scored": 0, "failed": 0, "cost_usd": 0.0}
     return _score_prospects_v2(db, tenant_id, rows)  # scoring v2 cutover (v1 _score_prospects dead)
+
+
+def run_enrich_score_prospects(db: Session, tenant_id, params: dict) -> dict:
+    """W4 handler (`KIND_ENRICH_SCORE_PROSPECTS`) — the combined 'Reveal & score': reveal verified
+    emails (Apollo `people/match`, the credit spend) for the identity_keys, THEN score them on the
+    revealed data, in one job. Reveal-first is the whole point: Apollo obfuscates
+    seniority/department/email until match, so scoring a pre-reveal row gates on missing contact and
+    lands a degraded label. Idempotent on the enrich side (an already-revealed row never re-spends),
+    so a re-run just re-scores. Bounded by `ASYNC_BATCH_MAX` (one wave). Returns the merged counts
+    `{requested, enriched, credits_spent, enrich_failed, scored, failed, cost_usd}`."""
+    keys = [str(k) for k in (params.get("identity_keys") or [])][:ASYNC_BATCH_MAX]
+    zero = {
+        "requested": 0,
+        "enriched": 0,
+        "credits_spent": 0,
+        "enrich_failed": 0,
+        "scored": 0,
+        "failed": 0,
+        "cost_usd": 0.0,
+    }
+    if not keys:
+        return zero
+    rows = (
+        db.execute(
+            select(Prospect).where(
+                Prospect.tenant_id == tenant_id, Prospect.identity_key.in_(keys)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not rows:
+        return zero
+    enr = _enrich_prospects(db, rows, str(params.get("slug") or ""))
+    sc = _score_prospects_v2(db, tenant_id, rows)  # reads the just-revealed enrichment (email/dept)
+    return {
+        "requested": len(rows),
+        "enriched": enr["enriched"],
+        "credits_spent": enr["credits_spent"],
+        "enrich_failed": enr["failed"],
+        "scored": sc["scored"],
+        "failed": sc["failed"],
+        "cost_usd": sc["cost_usd"],
+    }
 
 
 def run_find_company(db: Session, tenant_id, params: dict) -> dict:
@@ -2053,6 +1952,7 @@ def run_update_fields(db: Session, tenant_id, params: dict) -> dict:
 SCORING_HANDLERS = {
     scoring.KIND_RESCORE_COMPANIES: run_rescore_companies,
     scoring.KIND_RESCORE_PROSPECTS: run_rescore_prospects,
+    scoring.KIND_ENRICH_SCORE_PROSPECTS: run_enrich_score_prospects,
     scoring.KIND_FIND_COMPANY: run_find_company,
     scoring.KIND_FIND_LOOKALIKES: run_find_lookalikes,
     scoring.KIND_UPDATE_FIELDS: run_update_fields,
@@ -2123,6 +2023,38 @@ def rescore_prospects_async(
         )
     job = scoring.enqueue_scoring(
         db, ctx.tenant.id, scoring.KIND_RESCORE_PROSPECTS, {"identity_keys": body.identity_keys}
+    )
+    return _scoring_job_out(job)
+
+
+@router.post(
+    "/{client}/prospects/enrich-score-async",
+    response_model=ScoringJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def enrich_score_prospects_async(
+    body: ProspectRescoreIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> ScoringJobOut:
+    """Kick off the combined **'Reveal & score'** (W4): reveal verified emails for the selected
+    people (Apollo `people/match` — the credit spend), THEN score them on the revealed data, in ONE
+    job.
+    Replaces the separate reveal + rescore clicks — scoring pre-reveal gates on missing contact, so
+    reveal must come first. Capped at `ASYNC_BATCH_MAX`; the enrich side is idempotent so a re-run
+    over already-revealed rows just re-scores (no spend). Mirrors `rescore_prospects_async`."""
+    if not body.identity_keys:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
+    if len(body.identity_keys) > ASYNC_BATCH_MAX:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"reveal & score at most {ASYNC_BATCH_MAX} people at a time",
+        )
+    job = scoring.enqueue_scoring(
+        db,
+        ctx.tenant.id,
+        scoring.KIND_ENRICH_SCORE_PROSPECTS,
+        {"identity_keys": body.identity_keys, "slug": ctx.tenant.slug},
     )
     return _scoring_job_out(job)
 
@@ -2204,39 +2136,6 @@ def scoring_job_status(
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such job")
     return _scoring_job_out(job)
-
-
-@router.post("/{client}/companies/update-fields", response_model=list[CompanyOut])
-def update_company_fields(
-    body: CompanyEnrichIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> list[CompanyOut]:
-    """'Update Field' — re-enrich Apollo firmographics for an explicit set of selected companies
-    (industry/size/country + the evidence study fields). This is the deliberate, on-demand credit
-    spend; find-company only enriches NEW rows so an existing org is never re-enriched for free.
-
-    One `organizations/enrich` call per distinct domain (concurrent). Bounded by
-    `MAX_COMPANIES_PER_FIND` (the 30s sync cap) — a larger selection is rejected, not truncated.
-    """
-    if not body.ids:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no company ids")
-    if len(body.ids) > MAX_COMPANIES_PER_FIND:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"update at most {MAX_COMPANIES_PER_FIND} companies per request",
-        )
-    ids = _parse_ids(body.ids)
-    rows = (
-        db.execute(select(Company).where(Company.tenant_id == ctx.tenant.id, Company.id.in_(ids)))
-        .scalars()
-        .all()
-    )
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching companies")
-    _update_fields_core(db, ctx.tenant.id, rows)
-    rows.sort(key=lambda c: (c.fit_score is None, -(c.fit_score or 0)))
-    return [_company_out(c) for c in rows]
 
 
 def _update_fields_core(db: Session, tenant_id, rows: list[Company]) -> dict:
@@ -2519,7 +2418,7 @@ def find_people(
                 Company.id.in_(ids),
                 Company.apollo_org_id.is_not(None),
             )
-            .order_by(Company.fit_score.desc().nullslast())
+            .order_by(Company.score_total.desc().nullslast())
             .limit(MAX_ORGS_PER_FIND)
         )
         .scalars()
@@ -2530,23 +2429,28 @@ def find_people(
             status.HTTP_400_BAD_REQUEST, "the selected companies have no Apollo id to search"
         )
 
-    # Precedence: a per-call override in the request → the tenant's saved Find-Settings override
-    # (persisted server-side, survives across browsers) → the AI spec, resolved PER COMPANY from
-    # each org's own ICP (the multi-ICP "find ICP by ICP": a mixed selection searches each org
-    # with its own personas in one click; `body.icp_id`, when set, pins one ICP for the whole
-    # call). `_clean` in apollo_map drops empty filters, so a cleared field widens the search.
-    # `organization_ids` is never taken from here: the per-org loop sets it.
-    if body.people_search_params is not None:
-        base_params = body.people_search_params
-    else:
-        saved = _people_scope_override(db, ctx.tenant.id)
-        base_params = (saved.params or {}).get("people_search_params") if saved else None
+    # Precedence, resolved PER COMPANY from each org's own ICP (the multi-ICP "find ICP by ICP": a
+    # mixed selection searches each org with its own personas in one click; `body.icp_id`, when set,
+    # pins one ICP for the whole call): a per-call override in the request body → the tenant's SAVED
+    # Find-Settings override FOR THAT ICP (persisted server-side, per-ICP — so tuning one ICP's
+    # personas never clobbers another's) → the AI spec block for that ICP. `_clean` drops empty
+    # filters, so a cleared field widens; `organization_ids` is never taken from here (the loop sets
+    # it).
     call_icp = uuid.UUID(body.icp_id) if body.icp_id else None
+    saved_row = (
+        None
+        if body.people_search_params is not None
+        else _scope_override_row(db, ctx.tenant.id, SCOPE_KIND_PEOPLE)
+    )
 
     def _people_params_for(comp: Company) -> dict:
-        if base_params is not None:  # operator override applies to every org in the call
-            return base_params
-        block = targeting_for_icp(spec_blob, call_icp or comp.icp_id)
+        if body.people_search_params is not None:  # per-call pin → every org in the call
+            return body.people_search_params
+        icp = call_icp or comp.icp_id
+        saved = _scope_override_block(saved_row, icp)
+        if saved is not None:
+            return saved.get("people_search_params") or {}
+        block = targeting_for_icp(spec_blob, icp)
         if block is None:
             # Unlabeled/unknown-ICP company under a multi-ICP scope: fall back to the FIRST
             # block — people search is free and a reviewable near-miss beats a hard fail.
@@ -2568,6 +2472,7 @@ def find_people(
     avoid_by_icp = {d["id"]: [t for t in (d.get("avoidTitles") or []) if t] for d in docs}
     new_rows: list[tuple[dict, Company]] = []
     dropped_total = 0
+    per_org_meta: dict[str, dict] = {}  # U2 lineage — domain → executed body + relax + counts
     for comp in selected:
         if len(new_rows) >= MAX_PEOPLE_PER_FIND_RUN:
             continue  # batch full — leave this org as-is (still "Pending") for the next run
@@ -2600,6 +2505,12 @@ def find_people(
             len(dropped),
             {k: v for k, v in pbody.items() if k != "organization_ids"},
         )
+        per_org_meta[comp.domain or str(comp.apollo_org_id)] = {
+            "body": {k: v for k, v in pbody.items() if k != "organization_ids"},
+            "relax": relax,
+            "raw": len(rows),
+            "survivors": len(survivors),
+        }
         for p in survivors:
             if len(new_rows) >= MAX_PEOPLE_PER_FIND_RUN:
                 break
@@ -2641,6 +2552,9 @@ def find_people(
         prospects.append(prospect)
 
     # Find is free and unscored, so cost is 0 — the scoring spend is booked under the rescore run.
+    # U2 lineage: the per-org executed bodies (`filter_body.per_org`) + run summary (`result_meta`)
+    # feed the Find-history drawer; `group_id` (FE-minted) threads the chunked calls of one merged
+    # stage→find so N 8-org chunks collapse to one history entry.
     db.add(
         ResearchRun(
             tenant_id=ctx.tenant.id,
@@ -2648,15 +2562,27 @@ def find_people(
             spec_version=spec.version,
             icp_id=icp,
             source="apollo",
-            rubric_version=fit.RUBRIC_VERSION,
+            rubric_version=fit.SCORE_RUBRIC_VERSION,
             rows_pushed=len(prospects),
             cost_usd=0.0,
+            filter_body={"per_org": per_org_meta},
+            scope_source=(
+                "custom"
+                if (body.people_search_params is not None or saved_row is not None)
+                else "ai"
+            ),
+            result_meta={
+                "orgs_searched": len(selected),
+                "people_found": len(prospects),
+                "dropped": dropped_total,
+                "group_id": body.group_id,
+            },
         )
     )
     db.commit()
     for p in prospects:
         db.refresh(p)
-    prospects.sort(key=lambda p: (p.fit_score is None, -(p.fit_score or 0)))
+    prospects.sort(key=lambda p: (p.score_total is None, -(p.score_total or 0)))
     return FindResult(
         run_id=run_id,
         found=len(prospects),
@@ -2751,52 +2677,39 @@ def people_facets(
     return out
 
 
-@router.get("/{client}/people/scope-override", response_model=PeopleScopeOverrideOut)
-def get_people_scope_override(
+@router.get("/{client}/scope-override", response_model=ScopeOverrideOut)
+def get_scope_override(
+    kind: str = SCOPE_KIND_PEOPLE,
+    icp_id: str | None = None,
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
-) -> PeopleScopeOverrideOut:
-    """The tenant's saved Step-2 Find Settings (people facets), or null params when none is saved
-    (→ the Workspace shows the AI scope). Persisted server-side so it follows the operator across
-    browsers/devices."""
-    row = _people_scope_override(db, ctx.tenant.id)
-    params = (row.params or {}).get("people_search_params") if row else None
-    return PeopleScopeOverrideOut(people_search_params=params)
+) -> ScopeOverrideOut:
+    """The tenant's saved Find-Settings override for one pipeline step + ICP (`kind`=people|company,
+    `icp_id` optional), or null when none is saved (→ the Workspace shows the AI scope). Persisted
+    server-side so a saved tuning follows the operator across browsers/devices, per ICP."""
+    _require_scope_kind(kind)
+    block = _scope_override_block(_scope_override_row(db, ctx.tenant.id, kind), icp_id)
+    return ScopeOverrideOut(params=block)
 
 
-@router.put("/{client}/people/scope-override", response_model=PeopleScopeOverrideOut)
-def save_people_scope_override(
-    body: PeopleScopeOverrideIn,
+@router.put("/{client}/scope-override", response_model=ScopeOverrideOut)
+def save_scope_override(
+    body: ScopeOverrideIn,
+    kind: str = SCOPE_KIND_PEOPLE,
+    icp_id: str | None = None,
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
-) -> PeopleScopeOverrideOut:
-    """Save the Step-2 Find Settings as the tenant's people-scope override. It then wins over the AI
-    spec on every Find People until reset.
+) -> ScopeOverrideOut:
+    """Save the Find Settings as the tenant's override for one (step, ICP). It then wins over the AI
+    spec on every Find for that ICP until reset.
 
-    An EMPTY payload (no seniority/department chosen) is a revert, not a save: it deletes any saved
-    row so the next Find People falls back to the AI scope — same as the 'Reset to AI scope' button.
-    Persisting an all-empty override would otherwise silently widen every search to the whole org.
-    A non-empty payload is UPSERTed atomically (ON CONFLICT) so concurrent saves can't race the
-    unique (tenant, kind) constraint into a 500."""
-    psp = body.people_search_params or {}
-    if not any(psp.values()):
-        row = _people_scope_override(db, ctx.tenant.id)
-        if row is not None:
-            db.delete(row)
-            db.commit()
-        return PeopleScopeOverrideOut(people_search_params=None)
-    payload = {"people_search_params": body.people_search_params}
-    stmt = (
-        pg_insert(ScopeOverride)
-        .values(tenant_id=ctx.tenant.id, kind=SCOPE_KIND_PEOPLE, params=payload)
-        .on_conflict_do_update(
-            constraint="uq_scope_override_tenant_kind",
-            set_={"params": payload, "updated_at": func.now()},
-        )
-    )
-    db.execute(stmt)
-    db.commit()
-    return PeopleScopeOverrideOut(people_search_params=body.people_search_params)
+    An EMPTY payload (no facet chosen) is a revert, not a save: it drops this ICP's entry so the
+    next Find falls back to the AI scope — same as DELETE. Persisting an all-empty override would
+    otherwise silently widen every search. Other ICPs' saved overrides are left untouched."""
+    _require_scope_kind(kind)
+    block = body.params if _has_scope_value(body.params) else None
+    _write_scope_override(db, ctx.tenant.id, kind, icp_id, block)
+    return ScopeOverrideOut(params=block)
 
 
 @router.get("/{client}/people/departments", response_model=list[FacetOption])
@@ -2809,131 +2722,110 @@ def people_departments(
     return [FacetOption(value=d, label=_facet_label(d)) for d in MASTER_DEPARTMENTS]
 
 
-@router.delete("/{client}/people/scope-override", status_code=status.HTTP_204_NO_CONTENT)
-def reset_people_scope_override(
+@router.delete("/{client}/scope-override", status_code=status.HTTP_204_NO_CONTENT)
+def reset_scope_override(
+    kind: str = SCOPE_KIND_PEOPLE,
+    icp_id: str | None = None,
     ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
     db: Session = Depends(get_db),
 ) -> None:
-    """Discard the saved Step-2 override → Find People reverts to the AI scope. Idempotent: a no-op
-    when nothing is saved."""
-    row = _people_scope_override(db, ctx.tenant.id)
-    if row is not None:
-        db.delete(row)
-        db.commit()
+    """Discard the saved override for one (step, ICP) → that ICP's Find reverts to the AI scope.
+    Idempotent; leaves other ICPs' overrides intact."""
+    _require_scope_kind(kind)
+    _write_scope_override(db, ctx.tenant.id, kind, icp_id, None)
 
 
-def _score_prospects(db: Session, tenant_id, rows: list[Prospect]) -> dict:
-    """Re-score the given prospect rows against the current people rubric + per-row ICP targeting,
-    record one `research_run` (source=rescore), and return counts (`{scored, failed, cost_usd}`).
-    Shared by the sync `/prospects/rescore` endpoint and the W4 async worker — both load the
-    (tenant-scoped) rows first; this owns the scoring fan-out + persistence (mirror companies).
+def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
+    """Apollo `people/match` on `rows` — reveal a verified email (the only credit spend) and write
+    it back, moving the row to `scored`. Shared by the sync `/prospects/enrich` gate and the async
+    reveal-&-score worker; the caller owns loading + the per-request cap.
 
-    Parent companies are loaded once so each person is scored with its account's firmographics + the
-    stage-1 fit verdict (a decision-maker INSIDE an already-qualified company). Targeting is built
-    once per distinct icp_id on the CALLING thread; the off-thread score jobs close over plain data.
+    **Idempotent + concurrent (the credit-safety contract):** `last_enriched_at` gates a re-spend,
+    so a row already matched (even one Apollo returned no email for) is confirmed without a second
+    charge; a manual row (no `apollo_person_id`) is confirmed without a match call. The match calls
+    fan out on a thread pool (HTTP-only; ORM writes stay single-threaded), then results applied +
+    committed once. A per-row Apollo error counts in `failed` (row → `enrich_failed`); the spend
+    counts are always returned. Returns `{confirmed, enriched, credits_spent, failed}`.
     """
-    brief, spec = _latest_brief(db, tenant_id), _latest_spec(db, tenant_id)
-    rubric = _latest_doc(db, tenant_id, PROSPECT_STAGE)
-    rubric_body = rubric.body if rubric else ""
-    company_ids = {p.company_id for p in rows if p.company_id}
-    companies = (
-        {
-            c.id: c
-            for c in db.execute(
-                select(Company).where(Company.tenant_id == tenant_id, Company.id.in_(company_ids))
-            ).scalars()
-        }
-        if company_ids
-        else {}
-    )
-    targeting_cache: dict[str | None, dict] = {}
-
-    def _targeting_for(icp_id) -> dict:
-        key = str(icp_id) if icp_id else None
-        if key not in targeting_cache:
-            targeting_cache[key] = _build_targeting(
-                brief, spec, icp_docs(db, tenant_id, icp_id), icp_id
-            )
-        return targeting_cache[key]
-
-    jobs = [
-        (
-            p,
-            (
-                lambda payload=_prospect_payload(p.enrichment, companies.get(p.company_id)),
-                targeting=_targeting_for(p.icp_id): fit.score(
-                    tenant_id=tenant_id,
-                    rubric_body=rubric_body,
-                    enrichment=payload,
-                    targeting=targeting,
-                )
-            ),
-        )
-        for p in rows
-    ]
-    cost = 0.0
-    scored_n = 0
-    for p, scored in _score_concurrently(jobs):
-        if scored is not None:
-            p.fit_score = scored["fit_score"]
-            p.fit_tier = scored["fit_tier"]
-            p.fit_reason = scored.get("fit_reason", "")  # column parity (migration 0014); see W2
-            p.fit_components = scored["fit_components"]
-            cost += float(scored.get("cost_usd") or 0.0)
-            scored_n += 1
-
-    db.add(
-        ResearchRun(
-            tenant_id=tenant_id,
-            run_id=_apollo_run_id(),
-            spec_version=spec.version if spec else None,
-            source="rescore",
-            rubric_version=fit.RUBRIC_VERSION,
-            rows_pushed=len(rows),
-            cost_usd=round(cost, 6),
-        )
-    )
-    db.commit()
+    # Partition: rows that need a paid match call vs rows that confirm without spending (manual rows
+    # with no apollo_person_id, or rows already enriched).
+    to_match: list[Prospect] = []
     for p in rows:
-        db.refresh(p)
-    return {"scored": scored_n, "failed": len(rows) - scored_n, "cost_usd": round(cost, 6)}
-
-
-@router.post("/{client}/prospects/rescore", response_model=list[ProspectOut])
-def rescore_prospects(
-    body: ProspectRescoreIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> list[ProspectOut]:
-    """Step-2 'Get AI score' — re-run people fit scoring for an explicit set of prospects (by
-    identity key), against the current rubric. Mirrors `rescore_companies`: people land unscored
-    from find, so this is how a person gets a fit tier; re-running after a rubric change re-scores.
-
-    Bounded by `MAX_PEOPLE_PER_FIND` (the 30s sync cap) — a larger selection is rejected, not
-    truncated. For a larger batch use the async kick-off (`/prospects/rescore-async`, W4).
-    """
-    if not body.identity_keys:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
-    if len(body.identity_keys) > MAX_PEOPLE_PER_FIND:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"re-score at most {MAX_PEOPLE_PER_FIND} people per request",
+        # Credit-safety gate (idempotency): `last_enriched_at` is stamped on every completed
+        # Apollo match, even one that charged a credit but returned no verified email. Gate on
+        # it so a re-submit never re-charges such a row. (Gating on email presence alone silently
+        # re-spent a credit on every matched-but-no-email row when the founder re-clicked Enrich.)
+        already_enriched = p.last_enriched_at is not None or bool(
+            p.email_valid or (p.enrichment or {}).get("email")
         )
-    rows = (
-        db.execute(
-            select(Prospect).where(
-                Prospect.tenant_id == ctx.tenant.id,
-                Prospect.identity_key.in_(body.identity_keys),
-            )
+        if not p.apollo_person_id or already_enriched:
+            if p.status == "found":
+                p.status = "confirmed"
+            continue
+        to_match.append(p)
+
+    # Fan out the slow Apollo match calls concurrently (HTTP-bound, thread-safe); collect results
+    # before touching the ORM so DB writes stay single-threaded.
+    matched_by_pid: dict[str, dict | Exception] = {}
+    if to_match:
+        with ThreadPoolExecutor(max_workers=min(_ENRICH_WORKERS, len(to_match))) as ex:
+            futs = {
+                ex.submit(
+                    apollo.match_person, p.apollo_person_id, reveal_email=True, reveal_phone=False
+                ): p
+                for p in to_match
+            }
+            for fut in as_completed(futs):
+                p = futs[fut]
+                try:
+                    matched_by_pid[p.apollo_person_id] = fut.result()
+                except apollo.ApolloError as exc:  # counted as `failed`, never a lost-spend 502
+                    matched_by_pid[p.apollo_person_id] = exc
+
+    enriched = credits = failed = 0
+    for p in to_match:
+        res = matched_by_pid.get(p.apollo_person_id)
+        if isinstance(res, Exception):
+            log.warning("enrich[%s]: match errored person=%s: %s", slug, p.apollo_person_id, res)
+            p.status = "enrich_failed"
+            failed += 1
+            continue
+        matched = apollo_map.parse_match(res)
+        if not matched.get("apollo_person_id"):
+            log.warning("enrich[%s]: no apollo match person=%s", slug, p.apollo_person_id)
+            p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
+            failed += 1
+            continue
+        credits += 1  # one reveal_personal_emails credit
+        e = dict(p.enrichment or {})
+        e.update(
+            full_name=matched.get("full_name") or e.get("full_name", ""),
+            email=matched.get("email", ""),
+            linkedin_url=matched.get("linkedin_url", ""),
+            departments=matched.get("departments", []),
         )
-        .scalars()
-        .all()
+        p.enrichment = e
+        p.email_valid = bool(matched.get("email_valid"))
+        p.last_enriched_at = func.now()
+        p.status = "scored"
+        enriched += 1
+    db.commit()  # one commit; the cap bounds any crash-window re-spend to ≤ MAX_ENRICH_PER_REQUEST
+    # Credit-spend audit trail (the only place HoldSlot spends an Apollo credit).
+    log.info(
+        "enrich[%s]: rows=%d to_match=%d enriched=%d credits=%d failed=%d",
+        slug,
+        len(rows),
+        len(to_match),
+        enriched,
+        credits,
+        failed,
     )
-    if not rows:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "no matching prospects")
-    _score_prospects(db, ctx.tenant.id, rows)
-    rows.sort(key=lambda p: (p.fit_score is None, -(p.fit_score or 0)))
-    return [_prospect_out(p) for p in rows]
+    return {
+        "confirmed": len(rows),
+        "enriched": enriched,
+        "credits_spent": credits,
+        "failed": failed,
+    }
 
 
 @router.post("/{client}/prospects/enrich", response_model=EnrichResult)
@@ -2974,84 +2866,4 @@ def confirm_enrich(
         .scalars()
         .all()
     )
-    # Partition: rows that need a paid match call vs rows that confirm without spending (manual rows
-    # with no apollo_person_id, or rows already enriched).
-    to_match: list[Prospect] = []
-    for p in rows:
-        # Credit-safety gate (idempotency): `last_enriched_at` is stamped on every completed
-        # Apollo match, even one that charged a credit but returned no verified email. Gate on
-        # it so a re-submit never re-charges such a row. (Gating on email presence alone silently
-        # re-spent a credit on every matched-but-no-email row when the founder re-clicked Enrich.)
-        already_enriched = p.last_enriched_at is not None or bool(
-            p.email_valid or (p.enrichment or {}).get("email")
-        )
-        if not p.apollo_person_id or already_enriched:
-            if p.status == "found":
-                p.status = "confirmed"
-            continue
-        to_match.append(p)
-
-    # Fan out the slow Apollo match calls concurrently (HTTP-bound, thread-safe); collect results
-    # before touching the ORM so DB writes stay single-threaded.
-    matched_by_pid: dict[str, dict | Exception] = {}
-    if to_match:
-        with ThreadPoolExecutor(max_workers=min(_ENRICH_WORKERS, len(to_match))) as ex:
-            futs = {
-                ex.submit(
-                    apollo.match_person, p.apollo_person_id, reveal_email=True, reveal_phone=False
-                ): p
-                for p in to_match
-            }
-            for fut in as_completed(futs):
-                p = futs[fut]
-                try:
-                    matched_by_pid[p.apollo_person_id] = fut.result()
-                except apollo.ApolloError as exc:  # counted as `failed`, never a lost-spend 502
-                    matched_by_pid[p.apollo_person_id] = exc
-
-    enriched = credits = failed = 0
-    for p in to_match:
-        res = matched_by_pid.get(p.apollo_person_id)
-        if isinstance(res, Exception):
-            log.warning(
-                "enrich[%s]: match errored person=%s: %s", ctx.tenant.slug, p.apollo_person_id, res
-            )
-            p.status = "enrich_failed"
-            failed += 1
-            continue
-        matched = apollo_map.parse_match(res)
-        if not matched.get("apollo_person_id"):
-            log.warning(
-                "enrich[%s]: no apollo match person=%s", ctx.tenant.slug, p.apollo_person_id
-            )
-            p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
-            failed += 1
-            continue
-        credits += 1  # one reveal_personal_emails credit
-        e = dict(p.enrichment or {})
-        e.update(
-            full_name=matched.get("full_name") or e.get("full_name", ""),
-            email=matched.get("email", ""),
-            linkedin_url=matched.get("linkedin_url", ""),
-            departments=matched.get("departments", []),
-        )
-        p.enrichment = e
-        p.email_valid = bool(matched.get("email_valid"))
-        p.last_enriched_at = func.now()
-        p.status = "scored"
-        enriched += 1
-    db.commit()  # one commit; the cap bounds any crash-window re-spend to ≤ MAX_ENRICH_PER_REQUEST
-    # Credit-spend audit trail (the only place HoldSlot spends an Apollo credit) — see W3 for the
-    # standardized request-scoped logging this anticipates.
-    log.info(
-        "enrich[%s]: rows=%d to_match=%d enriched=%d credits=%d failed=%d",
-        ctx.tenant.slug,
-        len(rows),
-        len(to_match),
-        enriched,
-        credits,
-        failed,
-    )
-    return EnrichResult(
-        confirmed=len(rows), enriched=enriched, credits_spent=credits, failed=failed
-    )
+    return EnrichResult(**_enrich_prospects(db, rows, ctx.tenant.slug))

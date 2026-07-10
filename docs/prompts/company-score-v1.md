@@ -1,7 +1,7 @@
 # Company Score Rubric v1 (scoring v2, 2026-07-09)
 
 Machine-consumable axis anchors for the **stage-1 company scorer** (`company_score_v2`), transcribed
-from `docs/holdslot-scoring-spec-v2.md` §8. Consumed as **data** (founder-editable without code) —
+from the scoring v2 spec (`docs/initial-build-plan.md` §D+.2). Consumed as **data** (founder-editable without code) —
 seeded as `prompt` stage `company_score`, version 1. The scorer reads the latest version as its
 scoring framework; a re-weighting is a doc edit, never a code change.
 

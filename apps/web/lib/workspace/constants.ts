@@ -62,18 +62,6 @@ export const SOURCE_LABEL: Record<string, string> = {
 // People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
 export const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
 export const ENRICHED_STATUS = "scored";
-// Prospect-list ordering: Enriched (status `scored`) first, then AI Score (highest → lowest,
-// unscored sink), then remaining status (Found before anything else).
-const STATUS_SORT: Record<string, number> = { scored: 0, found: 1 };
-export function compareProspectRows(a: ProspectApi, b: ProspectApi): number {
-  const ae = a.status === ENRICHED_STATUS ? 0 : 1;
-  const be = b.status === ENRICHED_STATUS ? 0 : 1;
-  if (ae !== be) return ae - be; // Enriched on top
-  const sa = a.fit_score ?? -1;
-  const sb = b.fit_score ?? -1;
-  if (sb !== sa) return sb - sa; // then AI Score desc
-  return (STATUS_SORT[a.status] ?? 2) - (STATUS_SORT[b.status] ?? 2);
-}
 export const BATCH_STATUS_CLS: Record<string, string> = {
   Approved: "badge-ok",
   Rejected: "badge-danger",
@@ -352,7 +340,7 @@ export const FIT_CHIP: Record<string, string> = {
   Below: "fit-chip--below",
 };
 
-// --- Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label system ------
+// --- Scoring v2 (docs/initial-build-plan.md §D+.2) — the 4-label system ------
 // Chip text/color + sort rank per label. `rank` orders the list feed (spec §11): actions first,
 // footnotes last. A null label = "needs re-score" — ranked between the actionable and the collapsed
 // buckets (rank 1.5) so it stays visible and prompts a score, never buried.
@@ -488,6 +476,40 @@ export function saveScopeOverride(client: string, v: ScopeOverride | null, icpId
   } catch {
     /* ignore */
   }
+}
+// U1.6 — one-time migration of the Step-1 company scope from its old localStorage home (per
+// (client, ICP)) to the server, so a find reads the operator's tuning server-side instead of
+// silently falling back to the broad AI scope. `pendingLocalScopeMigrations` returns each stored
+// entry (with its ICP + storage key); the caller PUTs it, then calls `clearMigratedScope(key)`. A
+// per-client done-flag keeps it idempotent.
+const SCOPE_MIGRATED_KEY = (client: string) => `holdslot_scope_migrated_${client}`;
+export function pendingLocalScopeMigrations(
+  client: string
+): { key: string; icpId?: string; override: ScopeOverride }[] {
+  if (typeof window === "undefined") return [];
+  if (localStorage.getItem(SCOPE_MIGRATED_KEY(client))) return [];
+  const base = `holdslot_scope_${client}`;
+  const out: { key: string; icpId?: string; override: ScopeOverride }[] = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    // exact base (legacy ICP-less) or `${base}:${icpId}` — never another client whose slug extends
+    // this one, and never the done-flag itself.
+    if (!key || (key !== base && !key.startsWith(`${base}:`))) continue;
+    const icpId = key === base ? undefined : key.slice(base.length + 1);
+    try {
+      const v = JSON.parse(localStorage.getItem(key) || "null");
+      if (v && typeof v === "object") out.push({ key, icpId, override: v as ScopeOverride });
+    } catch {
+      /* skip a corrupt entry */
+    }
+  }
+  return out;
+}
+export function clearMigratedScope(key: string) {
+  if (typeof window !== "undefined") localStorage.removeItem(key);
+}
+export function markScopeMigrationDone(client: string) {
+  if (typeof window !== "undefined") localStorage.setItem(SCOPE_MIGRATED_KEY(client), "1");
 }
 const csvToArr = (s: string) =>
   s

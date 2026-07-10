@@ -1,4 +1,4 @@
-"""Scoring v2 — the deterministic label engine (docs/holdslot-scoring-spec-v2.md).
+"""Scoring v2 — the deterministic label engine (docs/initial-build-plan.md §D+.2).
 
 Pure, no DB, no LLM, no network → the whole gate ladder is exercised off the spec's §12 fixture.
 The two paid signals (liveness verdict; ICP-match + subscores) are passed in as data, so this proves

@@ -4,7 +4,7 @@ Revision ID: 0024_scoring_v2_labels
 Revises: 0023_brief_structure_v11
 Create Date: 2026-07-09
 
-D+ tiering v2 (docs/holdslot-scoring-spec-v2.md) replaces the 0–100 `AI Score` with a 4-label
+D+ tiering v2 (docs/initial-build-plan.md §D+.2) replaces the 0–100 `AI Score` with a 4-label
 system (`contact_now` / `contact_soon` / `low_fit` / `excluded_by_rules`). This is the EXPAND step
 of an expand→cutover→contract cutover: it ADDS the v2 columns alongside the live v1 `fit_score` /
 `fit_tier` (both stay until the contraction migration 0026, after UAT sign-off), so nothing the

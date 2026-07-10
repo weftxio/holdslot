@@ -7,11 +7,15 @@ from __future__ import annotations
 
 from app.domains.prospects import feedback
 
+# V2-4: feedback.py now classifies won/lost by the v2 `label`, not the v1 tier. Map the old tier
+# labels the cases use → the equivalent v2 label (a market-gated row → excluded_by_rules).
+_TIER_TO_LABEL = {"Below": "low_fit", "Strong": "contact_now", "Good": "contact_soon"}
+
 
 def _row(tier, *, market_excluded=False, keywords=None, industry="", country="", technologies=None):
+    label = "excluded_by_rules" if market_excluded else _TIER_TO_LABEL.get(tier, tier)
     return {
-        "tier": tier,
-        "market_excluded": market_excluded,
+        "label": label,
         "keywords": keywords or [],
         "industry": industry,
         "country": country,

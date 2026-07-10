@@ -211,21 +211,20 @@ def _insert_spec(db: Session, tenant_id, spec, gaps, icp_suggestions, result) ->
 
 
 def _scored_company_rows(db: Session, tenant_id) -> list[dict]:
-    """The tenant's scored companies as the plain rows `feedback.py` aggregates over (tier + market
-    flag + descriptive keywords/industry). Shared by the avoid-keyword + keyword-yield feedback."""
+    """The tenant's labeled companies as the rows `feedback.py` aggregates over (the v2 `label`
+    + descriptive keywords/industry). Shared by the avoid-keyword + keyword-yield feedback."""
     rows = db.execute(
-        select(Company.fit_tier, Company.fit_components, Company.industry, Company.evidence).where(
-            Company.tenant_id == tenant_id, Company.fit_tier.is_not(None)
+        select(Company.label, Company.industry, Company.evidence).where(
+            Company.tenant_id == tenant_id, Company.label.is_not(None)
         )
     ).all()
     return [
         {
-            "tier": tier,
-            "market_excluded": (comps or {}).get("market_excluded"),
+            "label": label,
             "industry": industry,
             "keywords": (evidence or {}).get("keywords") or [],
         }
-        for tier, comps, industry, evidence in rows
+        for label, industry, evidence in rows
     ]
 
 

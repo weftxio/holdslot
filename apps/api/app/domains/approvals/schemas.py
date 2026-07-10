@@ -16,7 +16,6 @@ class ApprovalProspect(BaseModel):
     company_descriptor: str  # "SaaS · 200–500 · US" — firmographics, NOT the exact company
     title: str = ""
     seniority: str = ""
-    fit_tier: str | None = None
     fit_reason: str = ""
     decision: str
 

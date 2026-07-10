@@ -25,17 +25,35 @@ class _FakeDb:
         pass
 
 
-def test_registry_maps_all_five_surfaces():
+def test_registry_maps_all_surfaces():
     # The worker dispatches on scoring_job.kind via this registry; every surface must be wired.
     kinds = {
         scoring.KIND_RESCORE_COMPANIES,
         scoring.KIND_RESCORE_PROSPECTS,
+        scoring.KIND_ENRICH_SCORE_PROSPECTS,  # merged 'Reveal & score' (reveal-then-score, one job)
         scoring.KIND_FIND_COMPANY,
         scoring.KIND_FIND_LOOKALIKES,
         scoring.KIND_UPDATE_FIELDS,
     }
     assert kinds <= set(SCORING_HANDLERS)
     assert all(callable(SCORING_HANDLERS[k]) for k in kinds)
+
+
+def test_enrich_score_handler_empty_keys_is_dbless_zero():
+    # Empty identity_keys short-circuit to the zero-count contract BEFORE any DB access — so the
+    # merged result shape is pinned without needing Aurora (the round-trip itself is dev-QA'd).
+    from app.domains.prospects.router import run_enrich_score_prospects
+
+    out = run_enrich_score_prospects(None, None, {"identity_keys": []})
+    assert out == {
+        "requested": 0,
+        "enriched": 0,
+        "credits_spent": 0,
+        "enrich_failed": 0,
+        "scored": 0,
+        "failed": 0,
+        "cost_usd": 0.0,
+    }
 
 
 def test_scoring_job_out_idle():

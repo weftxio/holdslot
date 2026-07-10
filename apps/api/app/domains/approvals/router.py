@@ -64,7 +64,6 @@ def _masked(
         company_descriptor=descriptor,
         title=e.get("title", ""),
         seniority=e.get("seniority", ""),
-        fit_tier=prospect.fit_tier,
         fit_reason=prospect.fit_reason or comps.get("fit_reason", ""),
         decision=approval.decision,
     )
@@ -95,7 +94,7 @@ def view_approval(token: str, db: Session = Depends(get_db)) -> ApprovalView:
         .join(Prospect, Prospect.id == ProspectApproval.prospect_id)
         .outerjoin(Company, Company.id == Prospect.company_id)
         .where(ProspectApproval.batch_id == batch.id, ProspectApproval.decision != svc.REMOVED)
-        .order_by(Company.name.asc().nullslast(), Prospect.fit_score.desc().nullslast())
+        .order_by(Company.name.asc().nullslast(), Prospect.score_total.desc().nullslast())
     ).all()
     prospects = [_masked(a, p, c) for a, p, c in rows]
     return ApprovalView(

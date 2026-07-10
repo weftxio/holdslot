@@ -37,7 +37,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0025_scoring_v2_rubrics"]
+    assert _script_dir().get_heads() == ["0026_scoring_v2_contraction"]
 
 
 def test_0011_columns_present_on_models():
@@ -59,13 +59,14 @@ def test_0012_scope_override_model_matches_migration():
 
 def test_0014_fit_reason_and_index_cleanup():
     """0014 adds prospect.fit_reason (parity with company) + the composite list-sort indexes, and
-    drops the UNIQUE-covered single-column indexes — the ORM must reflect the same end state."""
+    drops the UNIQUE-covered single-column indexes — the ORM must reflect the same end state. (The
+    0014 fit-score sort indexes `ix_*_tenant_fit` were themselves dropped in 0026 / V2-4.)"""
     assert "fit_reason" in Prospect.__table__.columns
     p_idx = {i.name for i in Prospect.__table__.indexes}
-    assert "ix_prospect_tenant_fit" in p_idx
+    assert "ix_prospect_tenant_fit" not in p_idx  # dropped in 0026 (V2-4 contraction)
     assert "ix_prospect_identity_key" not in p_idx
     c_idx = {i.name for i in Company.__table__.indexes}
-    assert "ix_company_tenant_fit" in c_idx
+    assert "ix_company_tenant_fit" not in c_idx  # dropped in 0026 (V2-4 contraction)
     assert "ix_company_domain" not in c_idx
     assert "ix_brief_tenant_id" not in {i.name for i in Brief.__table__.indexes}
 
@@ -127,7 +128,9 @@ def test_0024_v2_label_columns_present_on_models():
         assert "label" in cols and cols["label"].nullable
         assert "score_total" in cols and cols["score_total"].nullable
         assert "verified" not in cols
-    # New label index on both; the v1 fit index still present (dropped later, in 0026).
+        # V2-4 (0026) retired the v1 verdict columns — label/score_total are the whole contract now.
+        assert "fit_score" not in cols and "fit_tier" not in cols
+    # The label-bucketed index on both; the v1 fit index was dropped in 0026 (V2-4).
     assert "ix_company_tenant_label" in {i.name for i in Company.__table__.indexes}
     assert "ix_prospect_tenant_label" in {i.name for i in Prospect.__table__.indexes}
-    assert "ix_company_tenant_fit" in {i.name for i in Company.__table__.indexes}
+    assert "ix_company_tenant_fit" not in {i.name for i in Company.__table__.indexes}

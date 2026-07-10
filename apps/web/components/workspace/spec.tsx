@@ -93,7 +93,7 @@ function Val({ children }: { children: ReactNode }) {
   return children == null || children === "" ? <Dash /> : <>{children}</>;
 }
 
-// --- Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label UI pieces ----
+// --- Scoring v2 (docs/initial-build-plan.md §D+.2) — the 4-label UI pieces ----
 
 // The label chip (spec §11) — replaces the 0–100 AI Score chip. Shows the label + the 4–20 total
 // when scored. Chip text/color come from LABEL_META; the ICP badge is folded in separately.

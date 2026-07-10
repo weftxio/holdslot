@@ -63,16 +63,7 @@ def test_extract_exclusions_from_brief_text_and_spec():
     assert all("." in d for d in ex.domains)
 
 
-# --------------------------------------------------------------- company fit collapse (stage 1)
-
-
-def test_company_fit_schema_is_verdict_only():
-    # Company scoring stays minimal AND no longer classifies: the model returns just the verdict
-    # (score + reason). The B2B/B2C label is a separate stage-0 call now (BUSINESS_MODEL_SCHEMA).
-    schema = fit.COMPANY_FIT_JSON_SCHEMA["schema"]
-    assert schema["additionalProperties"] is False
-    assert set(schema["required"]) == {"fit_score", "fit_reason"}
-    assert set(schema["properties"]) == {"fit_score", "fit_reason"}
+# --------------------------------------------------------------- stage-0 business-model classifier
 
 
 def test_business_model_schema_is_three_v2_fields():
@@ -84,17 +75,6 @@ def test_business_model_schema_is_three_v2_fields():
     assert schema["properties"]["business_model"]["enum"] == ["B2B", "B2C", "Complex", "Unknown"]
     assert schema["properties"]["hq_country"]["type"] == "string"
     assert schema["properties"]["has_b2b_line"]["type"] == "boolean"
-
-
-def test_company_tier_derives_from_score():
-    # The tier policy thresholds apply to the model's 0–100 company score directly.
-    assert fit.tier_for(80) == "Strong"
-    assert fit.tier_for(60) == "Good"
-    assert fit.tier_for(45) == "Moderate"
-    assert fit.tier_for(10) == "Below"
-
-
-# ------------------------------------------------------ company market hard gate (B2B/B2C, stage 1)
 
 
 class _StubResult:
@@ -111,65 +91,6 @@ def _stub_company_call(monkeypatch, data: dict):
     monkeypatch.setattr(fit, "structured_completion", lambda **kw: _StubResult(data))
 
 
-def _score_company(targeting: dict, business_model: str = "Unknown"):
-    # `business_model` is no longer emitted by the LLM — score_company reads it from the company
-    # payload (stamped by the stage-0 classifier) to re-apply the market gate.
-    return fit.score_company(
-        tenant_id="t",
-        rubric_body="",
-        company={"domain": "x.example", "business_model": business_model},
-        targeting=targeting,
-    )
-
-
-def test_company_market_gate_excludes_opposite_market(monkeypatch):
-    # A B2C company scored for a B2B client is forced into the Below band (0) and stamped — before
-    # any person is sourced or enriched. The business_model label is preserved for audit.
-    _stub_company_call(monkeypatch, {"fit_score": 85, "fit_reason": "Strong firmographic fit."})
-    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="B2C")
-    assert out["fit_score"] == 0 and out["fit_tier"] == "Below"
-    assert out["fit_components"]["market_excluded"] is True
-    assert out["fit_components"]["business_model"] == "B2C"
-    assert out["fit_reason"].startswith("Excluded: B2C-only company for a B2B client.")
-
-
-def test_company_market_gate_keeps_matching_market(monkeypatch):
-    # A B2B company for a B2B client keeps its verdict; no gate.
-    _stub_company_call(monkeypatch, {"fit_score": 85, "fit_reason": "Strong fit."})
-    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="B2B")
-    assert out["fit_score"] == 85 and out["fit_tier"] == "Strong"
-    assert out["fit_components"]["market_excluded"] is False
-
-
-def test_company_market_gate_ignores_unknown_and_both(monkeypatch):
-    # `Unknown` is never gated (a mixed company surfaces for a human); a `Both`/absent targetMarket
-    # disables the gate entirely even for a confirmed opposite-market company.
-    _stub_company_call(monkeypatch, {"fit_score": 70, "fit_reason": "Fits."})
-    out = _score_company({"brief": {"targetMarket": "B2B"}}, business_model="Unknown")
-    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
-
-    out = _score_company({"brief": {"targetMarket": "Both"}}, business_model="B2C")
-    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
-    out = _score_company({"brief": {}}, business_model="B2C")
-    assert out["fit_score"] == 70 and out["fit_components"]["market_excluded"] is False
-
-
-def test_apply_market_gate_find_time_buries_opposite_and_leaves_others_unscored():
-    # find/add-time gate (fit_score=None): an opposite-market row is buried into Below·0 up-front;
-    # a non-excluded row stays UNSCORED (tier None) for the on-demand AI-score pass.
-    s, t, ex, r = fit.apply_market_gate(
-        business_model="B2C", target_market="B2B", fit_score=None, fit_reason=""
-    )
-    assert (s, t, ex) == (0, "Below", True) and r.startswith("Excluded:")
-    assert fit.apply_market_gate(
-        business_model="B2B", target_market="B2B", fit_score=None, fit_reason=""
-    ) == (None, None, False, "")
-    # Complex / Unknown never gate, even when typed opposite the target market.
-    assert fit.apply_market_gate(
-        business_model="Complex", target_market="B2B", fit_score=None, fit_reason=""
-    )[2] is False
-
-
 def test_classify_business_model_returns_label(monkeypatch):
     # The stage-0 classifier reads the single enum out of its own minimal call.
     _stub_company_call(monkeypatch, {"business_model": "Complex"})
@@ -183,43 +104,3 @@ def test_model_messages_stay_minimal():
     assert len(msgs) == 2 and msgs[0]["role"] == "system"
     joined = msgs[0]["content"] + msgs[1]["content"]
     assert "RUBRIC" not in joined and "TARGETING" not in joined
-
-
-# --------------------------------------------------------------------------- fit collapse (C3)
-
-
-def test_fit_collapse_clamps_caps_and_tiers():
-    # Over-max sub-scores are clamped; each dimension capped; total drives the tier.
-    components = {
-        "company": {"industry": 99, "size": 12, "maturity": 8, "tech": 4},  # clamps to 40
-        "persona": {"title": 14, "seniority": 8, "department": 5, "economic_buyer": 3},  # 30
-        "timing": {"primary_trigger": 12, "secondary_signal": 6, "engagement": 2},  # 20
-        "data": {"email_deliverability": 6, "profile_completeness": 4},  # 10
-    }
-    score, tier, normalized = fit.collapse(components)
-    assert score == 100 and tier == "Strong"
-    assert normalized["company"]["industry"] == 16  # clamped to its max
-
-    assert fit.tier_for(74) == "Good" and fit.tier_for(54) == "Moderate"
-    assert fit.tier_for(39) == "Below"
-
-
-def test_fit_collapse_tolerates_missing_components():
-    score, tier, normalized = fit.collapse({})
-    assert score == 0 and tier == "Below"
-    assert normalized["company"]["industry"] == 0
-
-
-def test_fit_schema_is_strict():
-    schema = fit.FIT_JSON_SCHEMA["schema"]
-    assert schema["additionalProperties"] is False
-    # `fit_tier`/`fit_score` are model-committed (anchor the reason to the chip); the server still
-    # recomputes both authoritatively from `components`.
-    assert set(schema["required"]) == {
-        "components",
-        "reasons",
-        "reason_tags",
-        "fit_reason",
-        "fit_tier",
-        "fit_score",
-    }

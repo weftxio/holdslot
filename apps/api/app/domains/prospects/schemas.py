@@ -37,20 +37,14 @@ class CompanyOut(BaseModel):
     industry: str = ""
     size: str = ""
     country: str = ""
-    fit_score: int | None = None
-    fit_tier: str | None = None
     fit_reason: str = ""
-    # Stage-1 B2B/B2C label (B2B · B2C · Complex · Unknown; "" if scored before the label shipped).
-    # Drives the market gate + the Step-1 model chip. Empty until the row is (re)scored.
+    # Stage-1 B2B/B2C label (B2B · B2C · Complex · Unknown; "" if classified before the label
+    # shipped). Feeds the v2 market gate + the Step-1 model chip. Empty until the row is classified.
     business_model: str = ""
-    # True when the B2B/B2C gate fired (opposite-market company for this client). The Step-1 table
-    # pins these to the bottom regardless of sort; the gate already forced fit_score=0/Below.
-    market_excluded: bool = False
-    reason_tags: list[str] = []
-    # Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label contract, additive alongside the
-    # v1 fit_* fields through the cutover. `label` is null until the row is (re)scored ("needs
-    # re-score"); `reason` is the always-populated one-liner; `subscores` is the 4-axis 1–5 map;
-    # `flags` non-blocking markers; `icp` the A/B badge; `trigger_line` the email hook (spec §11).
+    # Scoring v2 (build plan §D+.2) — the 4-label contract (the v1 0–100 fit_* fields
+    # were retired in V2-4). `label` is null until (re)scored ("needs re-score"); `reason`
+    # is the always-populated one-liner; `subscores` is the 4-axis 1–5 map; `flags` non-blocking
+    # markers; `icp` the A/B badge; `trigger_line` the email hook (spec §11).
     label: str | None = None
     score_total: int | None = None
     reason: str = ""
@@ -129,6 +123,9 @@ class PeopleFindIn(BaseModel):
     icp_id: str | None = None
     people_search_params: dict | None = None
     company_ids: list[str] = Field(default_factory=list)
+    # FE-minted uuid threading the chunked calls of one merged stage→find (U3 runs find-people in
+    # 8-org chunks); stored in `research_run.result_meta.group_id` so the drawer collapses them.
+    group_id: str | None = None
 
 
 class PeopleFacetsIn(BaseModel):
@@ -171,18 +168,18 @@ class PeopleFacetsOut(BaseModel):
     departments: list[DepartmentFacet]
 
 
-class PeopleScopeOverrideIn(BaseModel):
-    """Save the Step-2 Find Settings as the tenant's persisted people-scope override. The payload is
-    the Apollo people block (seniority/department facets) the modal produced; an empty object clears
-    nothing — call DELETE to revert to the AI scope."""
+class ScopeOverrideIn(BaseModel):
+    """Save a Find-Settings override for one (pipeline step, ICP). `params` is the step's Apollo
+    block — people: `{people_search_params}`; company: `{company_search_params, intent_filters}`.
+    An all-empty block is a revert (the endpoint drops the ICP's entry); DELETE also reverts."""
 
-    people_search_params: dict = Field(default_factory=dict)
+    params: dict = Field(default_factory=dict)
 
 
-class PeopleScopeOverrideOut(BaseModel):
-    """The persisted Step-2 override, or `null` params when none is saved (→ use the AI scope)."""
+class ScopeOverrideOut(BaseModel):
+    """The saved override block for one (step, ICP), or `null` when none is saved (→ AI scope)."""
 
-    people_search_params: dict | None = None
+    params: dict | None = None
 
 
 class CompanyLookalikeIn(BaseModel):
@@ -262,12 +259,9 @@ class ProspectOut(BaseModel):
     title: str = ""
     company_industry: str = ""
     company_size: str = ""
-    fit_score: int | None = None
-    fit_tier: str | None = None
     fit_reason: str = ""
-    reason_tags: list[str] = []
-    # Scoring v2 (people tier — the company label caps the person). Additive alongside v1 fit_*;
-    # null `label` until (re)scored.
+    # Scoring v2 (people tier — the company label caps the person; the v1 fit_* fields were retired
+    # in V2-4). Null `label` until (re)scored.
     label: str | None = None
     score_total: int | None = None
     reason: str = ""

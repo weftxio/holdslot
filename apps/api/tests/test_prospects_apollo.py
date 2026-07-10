@@ -9,6 +9,7 @@ link `company_id` from the per-org loop, and enrich writes the matched email and
 from __future__ import annotations
 
 import os
+import time
 import uuid
 
 import pytest
@@ -23,6 +24,28 @@ BUILD_PW = "tryholdslot1!"
 
 def _auth(token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {token}"}
+
+
+def _find_company(client, slug, token, body):
+    """Run a company find via the ASYNC endpoint (the sync twin was retired in V2-4): kick the job,
+    poll to a terminal state, and return the job's `result` dict augmented with `status`, `error`,
+    and a `companies` list (GET /companies). Rows land UNSCORED at find (v2 — the paid web-grounded
+    score is a separate pass). A worker validation error (e.g. the multi-ICP guard) surfaces as
+    `status='error'` + the message in `error`, NOT an HTTP 4xx — callers assert on that."""
+    r = client.post(f"/{slug}/companies/find-company-async", json=body, headers=_auth(token))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    job: dict = {"status": "queued"}
+    for _ in range(300):  # the worker runs on a local daemon thread; apollo/fit are mocked (fast)
+        job = client.get(f"/{slug}/scoring-jobs/{job_id}", headers=_auth(token)).json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.02)
+    out = dict(job.get("result") or {})
+    out["status"] = job["status"]
+    out["error"] = job.get("error")
+    out["companies"] = client.get(f"/{slug}/companies", headers=_auth(token)).json()
+    return out
 
 
 @pytest.fixture
@@ -88,11 +111,22 @@ def owner_member():
         db.close()
 
 
-_CANNED_FIT = {
-    "fit_score": 80,
-    "fit_tier": "Strong",
-    "fit_components": {"fit_reason": "good fit", "reason_tags": ["ICP match"]},
-    "fit_reason": "good fit",
+# v2 paid-signal stubs (the scorers return raw signals for labeling.assign_label / _person_label).
+_V2_COMPANY_SIGNALS = {
+    "liveness": {"status": "live", "note": ""},
+    "subscores": {"deal_fit": 5, "outbound_gap": 5, "trigger": 5, "reachability": 5},
+    "icp_match": {"icp": "A", "reason": "fits ICP A"},
+    "reason": "fits ICP A — good",
+    "trigger_line": "raised a round",
+    "flags": [],
+    "llm_call_id": None,
+    "model": "test",
+    "cost_usd": 0.0001,
+}
+_V2_PROSPECT_SIGNALS = {
+    "subscores": {"persona_fit": 5, "authority": 5, "trigger": 5, "reachability": 5},
+    "reason": "right buyer",
+    "flags": [],
     "llm_call_id": None,
     "model": "test",
     "cost_usd": 0.0001,
@@ -100,17 +134,18 @@ _CANNED_FIT = {
 
 
 def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
-    """Patches Apollo + the fit scorer and RETURNS a list that records every `targeting` dict the
-    scorer was called with — so a test can assert the ICP docs actually reached the scoring context.
+    """Patches Apollo + the v2 scorers and RETURNS a list that records every `targeting` dict the
+    company scorer was called with — so a test can assert the ICP docs reach the scoring context.
+    (Find lands rows UNSCORED in v2; the company scorer only runs on an explicit async rescore.)
     """
     from app.domains.prospects import fit
     from app.integrations.apollo import client as apollo
 
     seen_targeting: list[dict] = []
 
-    def _score(**k):
+    def _co_score(**k):
         seen_targeting.append(k.get("targeting") or {})
-        return dict(_CANNED_FIT)
+        return dict(_V2_COMPANY_SIGNALS)
 
     monkeypatch.setattr(apollo, "search_companies", lambda body, *, max_results=100: orgs)
     # D+ Stage 4 tech resolver — the find only calls this when an ICP carries `technologies` or a
@@ -140,15 +175,17 @@ def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
     monkeypatch.setattr(
         apollo, "match_person", lambda pid, **k: {**match, "id": pid} if match else {}
     )
-    monkeypatch.setattr(fit, "score", _score)
-    monkeypatch.setattr(fit, "score_company", _score)
-    # Find now runs the stage-0 business-model classifier up-front (before scoring); stub it so the
+    monkeypatch.setattr(fit, "company_score_v2", _co_score)
+    monkeypatch.setattr(fit, "prospect_score_v2", lambda **k: dict(_V2_PROSPECT_SIGNALS))
+    # Find runs the stage-0 business-model classifier up-front (before any scoring); stub it so the
     # flow doesn't reach the network. B2B keeps the row (no gate for a B2B/absent-market fixture).
     monkeypatch.setattr(
         fit,
         "classify_business_model",
         lambda **k: {
             "business_model": "B2B",
+            "hq_country": "",
+            "has_b2b_line": False,
             "llm_call_id": None,
             "model": "test",
             "cost_usd": 0.0,
@@ -173,30 +210,22 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
              "email": "sam@alpha.com", "email_status": "verified",
              "linkedin_url": "http://linkedin.com/in/sam", "departments": ["master_sales"],
              "organization": {"id": "org-A", "name": "Alpha"}}
-    seen_targeting = _patch_apollo_and_fit(monkeypatch, orgs=orgs, people=people, match=match)
+    _patch_apollo_and_fit(monkeypatch, orgs=orgs, people=people, match=match)
 
-    # Flow A — find companies (ICP-scoped, so the company is tagged with this ICP).
-    r = client.post(f"/{slug}/companies/find-company",
-                    json={"limit": 10, "icp_id": icp_id}, headers=_auth(token))
-    assert r.status_code == 200, r.text
-    body = r.json()
+    # Flow A — find companies (ICP-scoped, so the company is tagged with this ICP). Rows land
+    # UNSCORED at find in v2 (label NULL until the paid web-grounded pass); find just lands them.
+    body = _find_company(client, slug, token, {"limit": 10, "icp_id": icp_id})
+    assert body["status"] == "done", body["error"]
     assert body["found"] == 2 and len(body["companies"]) == 2
-    assert all(c["status"] == "discovered" and c["fit_score"] == 80 for c in body["companies"])
+    assert all(c["status"] == "discovered" for c in body["companies"])
     alpha = next(c for c in body["companies"] if c["domain"] == "alpha.com")
-
-    # GAP 0 — the ICP doc reached the scorer's targeting context (maturity/avoidTitles are graded
-    # off it; without this they score 0 by the rubric's Unknown policy).
-    assert seen_targeting, "company scorer was never called"
-    icps_ctx = seen_targeting[0].get("icps") or []
-    assert any(d.get("maturity") == "growth" for d in icps_ctx), seen_targeting[0]
 
     # D+ Stage 3 — a re-find of the SAME scope skips orgs already stored ($0 invariant) and returns
     # only NET-NEW rows. Our fake returns the same 2 orgs regardless of page, so both are
     # known-skipped: found=0, known_skipped=2, NO duplicates, no re-processing of the existing rows.
-    r2 = client.post(f"/{slug}/companies/find-company",
-                     json={"limit": 10, "icp_id": icp_id}, headers=_auth(token))
-    assert r2.json()["found"] == 0 and r2.json()["known_skipped"] == 2
-    assert len(client.get(f"/{slug}/companies", headers=_auth(token)).json()) == 2  # no dups
+    r2 = _find_company(client, slug, token, {"limit": 10, "icp_id": icp_id})
+    assert r2["found"] == 0 and r2["known_skipped"] == 2
+    assert len(r2["companies"]) == 2  # no dups
 
     # Stage Alpha into Step 2 (discovered → selected). Find-people is driven by explicit company_ids
     # (not this status), but staging is what surfaces the company in the Step-2 table.
@@ -218,13 +247,7 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     person = pres["prospects"][0]
     assert person["company_id"] == alpha["id"]  # linked from the loop, not the (obfuscated) row
     assert person["status"] == "found" and person["email"] == ""  # no email pre-enrich
-    assert person["fit_score"] is None  # unscored on find
-
-    # 'Get AI score' — re-score the found person on demand → the canned fit (80) lands.
-    r = client.post(f"/{slug}/prospects/rescore",
-                    json={"identity_keys": [person["identity_key"]]}, headers=_auth(token))
-    assert r.status_code == 200, r.text
-    assert r.json()[0]["fit_score"] == 80
+    assert person["label"] is None  # unscored on find (the paid people score is a separate pass)
 
     # Find-people with no company_ids → 400 (nothing to search).
     r = client.post(f"/{slug}/people/find-people", json={}, headers=_auth(token))
@@ -248,6 +271,81 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     )
     assert r.status_code == 200, r.text
     assert r.json()["credits_spent"] == 0  # already enriched → skipped, no double-charge
+
+
+def test_enrich_then_score_worker_reveals_before_scoring(owner_member, monkeypatch):
+    """The merged 'Reveal & score' worker (`KIND_ENRICH_SCORE_PROSPECTS`) reveals the verified email
+    FIRST, then scores on the revealed row — the fix for scoring a pre-reveal person (no contact →
+    `low_fit`/data_unusable). Proven two ways: (1) the enrichment dict handed to the people scorer
+    carries the just-revealed email, and (2) the same CFO that would land `low_fit` pre-reveal
+    (has_contact=False, see test_labeling) now scores `contact_now` because reveal ran first."""
+    from sqlalchemy import select
+
+    from app.core.db import get_session
+    from app.domains.prospects import fit
+    from app.domains.prospects.router import run_enrich_score_prospects
+    from app.integrations.apollo import client as apollo
+    from app.models import Company, Prospect, Tenant
+
+    _client, slug, _token, icp_id = owner_member
+    db = get_session()
+    tenant = db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one()
+
+    # A qualified parent account (contact_now) + a found-but-unrevealed CFO (no email pre-reveal).
+    company = Company(
+        tenant_id=tenant.id, icp_id=uuid.UUID(icp_id), domain="alpha.com", name="Alpha",
+        source="apollo", status="people_found", label="contact_now",
+    )
+    db.add(company)
+    db.flush()
+    person = Prospect(
+        tenant_id=tenant.id, icp_id=uuid.UUID(icp_id), company_id=company.id,
+        identity_key="apollo:ppl-99", apollo_person_id="ppl-99", source="apollo",
+        status="found", enrichment={"first_name": "Sam", "title": "CFO"},
+    )
+    db.add(person)
+    db.commit()
+
+    # Apollo reveal → a verified email; the people scorer records the enrichment it is handed so the
+    # test can prove reveal-happened-before-score.
+    monkeypatch.setattr(
+        apollo, "match_person",
+        lambda pid, **k: {
+            "id": pid, "first_name": "Sam", "last_name": "Reed", "name": "Sam Reed",
+            "title": "CFO", "email": "sam@alpha.com", "email_status": "verified",
+            "linkedin_url": "http://linkedin.com/in/sam", "departments": ["master_finance"],
+            "organization": {"id": "org-A", "name": "Alpha"},
+        },
+    )
+    seen_enrichment: list[dict] = []
+
+    def _pscore(**k):
+        seen_enrichment.append(k.get("enrichment") or {})
+        return {
+            "subscores": {"persona_fit": 5, "authority": 5, "trigger": 5, "reachability": 5},
+            "reason": "CFO — economic buyer", "flags": [], "cost_usd": 0.0,
+        }
+
+    monkeypatch.setattr(fit, "prospect_score_v2", _pscore)
+
+    res = run_enrich_score_prospects(
+        db, tenant.id, {"identity_keys": ["apollo:ppl-99"], "slug": slug}
+    )
+    assert res == {
+        "requested": 1, "enriched": 1, "credits_spent": 1, "enrich_failed": 0,
+        "scored": 1, "failed": 0, "cost_usd": 0.0,
+    }, res
+    # (1) Reveal ran BEFORE score — the scorer saw the revealed email, not the pre-reveal blank.
+    assert seen_enrichment, "people scorer was never called"
+    assert seen_enrichment[0]["email"] == "sam@alpha.com"
+    assert seen_enrichment[0]["email_present"] is True
+    # (2) The row is both enriched (email/status) AND scored contact_now — pre-reveal it would have
+    # gated to low_fit/data_unusable (has_contact=False); reveal-first unlocks the real score.
+    db.refresh(person)
+    assert person.status == "scored"
+    assert person.enrichment["email"] == "sam@alpha.com" and person.email_valid is True
+    assert person.label == "contact_now" and person.score_total == 20
+    db.close()
 
 
 def test_refind_advances_cursor_and_skips_known(owner_member, monkeypatch):
@@ -285,20 +383,19 @@ def test_refind_advances_cursor_and_skips_known(owner_member, monkeypatch):
     monkeypatch.setattr(fit, "classify_business_model", _classify)
 
     # Run 1 — fetches page 1 (org-1), classifies it once.
-    r1 = client.post(f"/{slug}/companies/find-company",
-                     json={"limit": 10, "icp_id": icp_id}, headers=_auth(token)).json()
+    r1 = _find_company(client, slug, token, {"limit": 10, "icp_id": icp_id})
+    assert r1["status"] == "done", r1["error"]
     assert pages == [1] and r1["found"] == 1
     assert len(classified) == 1  # org-1 classified
 
     # Run 2 — the cursor resumes at page 2 (page 1 never re-bought); org-1 re-surfaces but is
     # known-skipped ($0: NOT re-classified), only the NEW org-2 lands and is classified.
-    r2 = client.post(f"/{slug}/companies/find-company",
-                     json={"limit": 10, "icp_id": icp_id}, headers=_auth(token)).json()
+    r2 = _find_company(client, slug, token, {"limit": 10, "icp_id": icp_id})
     assert pages == [1, 2]  # resumed at page 2 — the cursor advanced
     assert r2["found"] == 1 and r2["known_skipped"] == 1  # only org-2 is new; org-1 skipped
     assert len(classified) == 2  # +1 (org-2 only) — org-1 was NOT re-classified (the $0 invariant)
     assert not r2["scope_exhausted"]  # page 2 of 5 — more to walk
-    domains = {c["domain"] for c in client.get(f"/{slug}/companies", headers=_auth(token)).json()}
+    domains = {c["domain"] for c in r2["companies"]}
     assert domains == {"one.com", "two.com"}  # both stored exactly once
 
 
@@ -433,32 +530,29 @@ def test_multi_icp_find_runs_icp_by_icp(owner_member_v4, monkeypatch):
         lambda **k: {"business_model": "B2B", "llm_call_id": None, "model": "t", "cost_usd": 0.0},
     )
 
-    # 1) A multi-ICP scope refuses an un-scoped find — never a silent merge.
-    r = client.post(f"/{slug}/companies/find-company", json={"limit": 5}, headers=_auth(token))
-    assert r.status_code == 400 and "pick an ICP" in r.text
+    # 1) A multi-ICP scope refuses an un-scoped find — never a silent merge. (The async find
+    #    surfaces the guard as the job's error, not an HTTP 4xx — the check is in the core fn.)
+    res = _find_company(client, slug, token, {"limit": 5})
+    assert res["status"] == "error"
+    assert "pick an ICP" in (res["error"] or "")
 
     # 2) Find for ICP-A runs block A's params only; rows land labeled icp_id=A.
-    r = client.post(f"/{slug}/companies/find-company",
-                    json={"limit": 5, "icp_id": icp_a}, headers=_auth(token))
-    assert r.status_code == 200, r.text
-    a_rows = r.json()["companies"]
+    body = _find_company(client, slug, token, {"limit": 5, "icp_id": icp_a})
+    assert body["status"] == "done", body["error"]
+    a_rows = [c for c in body["companies"] if c["icp_id"] == icp_a]
     assert company_bodies[-1]["q_organization_keyword_tags"] == ["insurance"]
     assert a_rows and all(c["icp_id"] == icp_a for c in a_rows)
 
     # 3) Find for ICP-B runs block B's params; rows labeled icp_id=B.
-    r = client.post(f"/{slug}/companies/find-company",
-                    json={"limit": 5, "icp_id": icp_b}, headers=_auth(token))
-    assert r.status_code == 200, r.text
-    b_rows = r.json()["companies"]
+    body = _find_company(client, slug, token, {"limit": 5, "icp_id": icp_b})
+    assert body["status"] == "done", body["error"]
+    b_rows = [c for c in body["companies"] if c["icp_id"] == icp_b]
     assert company_bodies[-1]["q_organization_keyword_tags"] == ["brokerage"]
     assert b_rows and all(c["icp_id"] == icp_b for c in b_rows)
 
-    # 4) An unknown ICP under a v4 spec is a named 400 (regenerate), not another ICP's block.
-    r = client.post(
-        f"/{slug}/companies/find-company",
-        json={"limit": 5, "icp_id": str(uuid.uuid4())}, headers=_auth(token),
-    )
-    assert r.status_code == 400 and "regenerate" in r.text
+    # 4) An unknown ICP under a v4 spec is a named error (regenerate), not another ICP's block.
+    res = _find_company(client, slug, token, {"limit": 5, "icp_id": str(uuid.uuid4())})
+    assert res["status"] == "error" and "regenerate" in (res["error"] or "")
 
     # 5) Find-people across BOTH companies in one call: each org is searched with its OWN ICP's
     #    personas (A → c_suite/sales; B → manager/operations) and each prospect inherits its

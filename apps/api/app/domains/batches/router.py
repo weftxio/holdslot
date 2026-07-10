@@ -201,7 +201,7 @@ def get_batch(
         .where(ProspectApproval.batch_id == batch.id)
         .order_by(
             Company.name.asc().nullslast(),
-            Prospect.fit_score.desc().nullslast(),
+            Prospect.score_total.desc().nullslast(),
             ProspectApproval.id.asc(),
         )
     ).all()
@@ -219,7 +219,6 @@ def get_batch(
                 industry=(company.industry if company else None) or e.get("company_industry", ""),
                 size=(company.size if company else None) or e.get("company_size", ""),
                 country=(company.country if company else "") or "",
-                fit_tier=company.fit_tier if company else None,
                 fit_reason=(company.fit_reason if company else "") or "",
             )
             groups[key] = group
@@ -230,7 +229,6 @@ def get_batch(
                 full_name=e.get("full_name", ""),
                 title=e.get("title", ""),
                 seniority=e.get("seniority", ""),
-                fit_tier=prospect.fit_tier,
                 fit_reason=prospect.fit_reason or comps.get("fit_reason", ""),
                 decision=approval.decision,
             )

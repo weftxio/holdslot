@@ -284,6 +284,12 @@ export type ResearchRunApi = {
     known_skipped?: number;
     body_hash?: string;
     cache_hit?: boolean;
+    // U2 people-find lineage (source apollo, filter_body = {per_org}): the merged stage→find threads
+    // its chunked calls under `group_id`; the counts summarize the run.
+    group_id?: string | null;
+    orgs_searched?: number | null;
+    people_found?: number | null;
+    dropped?: number | null;
   } | null;
   created_at: string | null;
 };
@@ -451,7 +457,7 @@ export async function saveScopingSystemPrompt(
 
 // --- Phase C (S2) — Prospects: Apollo find + enrich --------------------------
 
-// Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label verdict replaces the 0–100 AI Score.
+// Scoring v2 (docs/initial-build-plan.md §D+.2) — the 4-label verdict replaces the 0–100 AI Score.
 // `null` label = not yet (re)scored ("needs re-score"). Sort/UI priority: now → soon → low → excluded.
 export type ScoreLabel = "contact_now" | "contact_soon" | "low_fit" | "excluded_by_rules";
 export type Subscores = Record<string, number>; // axis → 1–5 (company: deal_fit/outbound_gap/…)
@@ -471,11 +477,8 @@ export type ProspectApi = {
   title: string;
   company_industry: string;
   company_size: string;
-  fit_score: number | null;
-  fit_tier: string | null;
   fit_reason: string;
-  reason_tags: string[];
-  // Scoring v2 (additive alongside v1 fit_* through the cutover).
+  // Scoring v2 — the 4-label verdict (the v1 fit_score/fit_tier fields were retired in V2-4).
   label: ScoreLabel | null;
   score_total: number | null;
   reason: string;
@@ -498,13 +501,10 @@ export type CompanyApi = {
   industry: string;
   size: string;
   country: string;
-  fit_score: number | null;
-  fit_tier: string | null;
   fit_reason: string;
-  business_model: string; // "B2B" | "B2C" | "Complex" | "Unknown" | "" (unscored / pre-label)
-  market_excluded: boolean; // B2B/B2C gate fired (opposite-market) → pinned to the bottom of Step 1
-  reason_tags: string[];
-  // Scoring v2 (additive alongside v1 fit_* through the cutover).
+  business_model: string; // "B2B" | "B2C" | "Complex" | "Unknown" | "" (unclassified)
+  // Scoring v2 — the 4-label verdict (the v1 fit_score/fit_tier/market_excluded fields were retired
+  // in V2-4; a market-gated company now carries label `excluded_by_rules`).
   label: ScoreLabel | null;
   score_total: number | null;
   reason: string;
@@ -555,31 +555,27 @@ export type SourcingDocList = {
 };
 
 // --- List feeds — cursor-paged (W5) ------------------------------------------
-// The server caps each response (≤ LIST_CEILING). The client auto-loads every page on mount with
-// no "load more" action, up to LIST_CEILING total. Past that we stop and flag `truncated` so the UI
-// can say "showing first N". FEED_PAGE divides LIST_CEILING so we fetch exactly the ceiling, never
-// overfetch a partial extra page.
-export const LIST_CEILING = 250;
-const FEED_PAGE = 100;
+// The server caps each response (≤ FEED_PAGE). The client auto-loads EVERY page on mount, with no
+// "load more" action and no ceiling — it follows the cursor until the server runs out of rows, so
+// the whole list is always in hand. FEED_PAGE is the server's per-request max (fewest round-trips).
+const FEED_PAGE = 250;
 
 type CursorPage<T> = { items: T[]; next_cursor: string | null };
-export type Feed<T> = { items: T[]; truncated: boolean };
+export type Feed<T> = { items: T[] };
 
 async function pageThrough<T>(path: string): Promise<Feed<T>> {
   const items: T[] = [];
   let cursor: string | null = null;
   do {
-    const limit = Math.min(FEED_PAGE, LIST_CEILING - items.length);
-    const qs = new URLSearchParams({ limit: String(limit) });
+    const qs = new URLSearchParams({ limit: String(FEED_PAGE) });
     if (cursor) qs.set("cursor", cursor);
     const r = await authFetch(`${path}?${qs.toString()}`);
     if (!r.ok) throw new Error(await detail(r));
     const page = (await r.json()) as CursorPage<T>;
     items.push(...page.items);
     cursor = page.next_cursor;
-  } while (cursor && items.length < LIST_CEILING);
-  // cursor still set ⇒ the server has more rows than we loaded (we stopped at the ceiling).
-  return { items, truncated: cursor != null };
+  } while (cursor); // follow the cursor to the end — load the whole list, no ceiling
+  return { items };
 }
 
 export async function listProspects(client: string): Promise<Feed<ProspectApi>> {
@@ -771,6 +767,8 @@ export async function findPeople(
     icp_id?: string | null;
     // Operator override of the saved AI scope (Step-2 Settings); omitted → spec is used as-is.
     people_search_params?: Record<string, unknown>;
+    // FE-minted uuid threading the chunked calls of one merged stage→find into one history entry.
+    group_id?: string;
   }
 ): Promise<FindResult> {
   const r = await authFetch(`/${client}/people/find-people`, {
@@ -805,35 +803,80 @@ export async function peopleFacets(
   return r.json();
 }
 
-// Persisted Step-2 Find Settings (people scope) — stored server-side per tenant so a saved tuning
-// follows the operator across browsers/devices. `null` → none saved (Workspace shows the AI scope).
-export async function getPeopleScopeOverride(
-  client: string
-): Promise<Record<string, unknown> | null> {
-  const r = await authFetch(`/${client}/people/scope-override`);
-  if (!r.ok) throw new Error(await detail(r));
-  const j = (await r.json()) as { people_search_params: Record<string, unknown> | null };
-  return j.people_search_params;
+// Persisted Find Settings (scope override) — stored server-side per (tenant, kind, ICP) so a saved
+// tuning follows the operator across browsers/devices, PER ICP (tuning one ICP never clobbers
+// another's). `kind` picks the pipeline step; `icpId` scopes the save to one ICP (omit for an
+// ICP-less/global entry). The persisted BLOCK is the step's Apollo shape — people:
+// `{people_search_params}`; company: `{company_search_params, intent_filters}`. `null` → none saved
+// (Workspace shows the AI scope).
+export type ScopeKind = "people" | "company";
+function scopeQuery(kind: ScopeKind, icpId?: string): string {
+  const p = new URLSearchParams({ kind });
+  if (icpId) p.set("icp_id", icpId);
+  return p.toString();
 }
-// Returns the persisted scope after the save: `null` when the server treated an empty payload as a
-// revert (no facets chosen → fall back to the AI scope), else the saved params. Callers reflect
-// this so the UI never disagrees with what the server stored.
-export async function putPeopleScopeOverride(
+export async function getScopeOverride(
   client: string,
-  peopleSearchParams: Record<string, unknown>
+  kind: ScopeKind,
+  icpId?: string
 ): Promise<Record<string, unknown> | null> {
-  const r = await authFetch(`/${client}/people/scope-override`, {
+  const r = await authFetch(`/${client}/scope-override?${scopeQuery(kind, icpId)}`);
+  if (!r.ok) throw new Error(await detail(r));
+  const j = (await r.json()) as { params: Record<string, unknown> | null };
+  return j.params;
+}
+// Returns the persisted block after the save: `null` when the server treated an empty payload as a
+// revert (no facets chosen → fall back to the AI scope), else the saved block. Callers reflect this
+// so the UI never disagrees with what the server stored.
+export async function putScopeOverride(
+  client: string,
+  kind: ScopeKind,
+  params: Record<string, unknown>,
+  icpId?: string
+): Promise<Record<string, unknown> | null> {
+  const r = await authFetch(`/${client}/scope-override?${scopeQuery(kind, icpId)}`, {
     method: "PUT",
     json: true,
-    body: JSON.stringify({ people_search_params: peopleSearchParams }),
+    body: JSON.stringify({ params }),
   });
   if (!r.ok) throw new Error(await detail(r));
-  const j = (await r.json()) as { people_search_params: Record<string, unknown> | null };
-  return j.people_search_params;
+  const j = (await r.json()) as { params: Record<string, unknown> | null };
+  return j.params;
 }
-export async function deletePeopleScopeOverride(client: string): Promise<void> {
-  const r = await authFetch(`/${client}/people/scope-override`, { method: "DELETE" });
+export async function deleteScopeOverride(
+  client: string,
+  kind: ScopeKind,
+  icpId?: string
+): Promise<void> {
+  const r = await authFetch(`/${client}/scope-override?${scopeQuery(kind, icpId)}`, {
+    method: "DELETE",
+  });
   if (!r.ok) throw new Error(await detail(r));
+}
+// Step-2 people-scope adapters (unwrap/wrap the block's `people_search_params`). `icpId` optional
+// so a save scopes to one ICP; U3's Personas switcher passes it, the current global save omits it.
+export async function getPeopleScopeOverride(
+  client: string,
+  icpId?: string
+): Promise<Record<string, unknown> | null> {
+  const block = await getScopeOverride(client, "people", icpId);
+  return (block?.people_search_params as Record<string, unknown> | undefined) ?? null;
+}
+export async function putPeopleScopeOverride(
+  client: string,
+  peopleSearchParams: Record<string, unknown>,
+  icpId?: string
+): Promise<Record<string, unknown> | null> {
+  const block = await putScopeOverride(
+    client,
+    "people",
+    { people_search_params: peopleSearchParams },
+    icpId
+  );
+  return (block?.people_search_params as Record<string, unknown> | undefined) ?? null;
+}
+export async function deletePeopleScopeOverride(client: string, icpId?: string): Promise<void> {
+  await deleteScopeOverride(client, "people", icpId);
 }
 // The 14 master Department & Job Function options (value + label) — server-owned (Apollo's taxonomy),
 // so the Find-Settings panel renders the master list before live counts load without hardcoding it.
@@ -850,6 +893,18 @@ export function rescoreProspectsAsync(
   identityKeys: string[]
 ): Promise<ScoringJobApi> {
   return kickScoringJob(client, "prospects/rescore-async", { identity_keys: identityKeys });
+}
+
+// Step-2 'Reveal & score' — reveal verified emails for the selected people (Apollo people/match, the
+// credit spend) THEN AI-score them on the revealed data, in ONE background job. Capped at
+// SCORE_BATCH_MAX rows. Replaces the separate reveal + score clicks: scoring pre-reveal gates on
+// missing contact (Apollo obfuscates seniority/dept/email until match), so reveal must come first.
+// The job.result carries {requested, enriched, credits_spent, enrich_failed, scored, failed, cost_usd}.
+export function enrichScoreProspectsAsync(
+  client: string,
+  identityKeys: string[]
+): Promise<ScoringJobApi> {
+  return kickScoringJob(client, "prospects/enrich-score-async", { identity_keys: identityKeys });
 }
 
 // The enrich gate — Apollo people/match on the confirmed rows (the only credit spend); returns the
@@ -891,7 +946,6 @@ type BatchProspectApi = {
   full_name: string;
   title: string;
   seniority: string;
-  fit_tier: string | null;
   fit_reason: string;
   decision: string; // pending | approved | removed
 };
@@ -901,7 +955,6 @@ type BatchCompanyGroupApi = {
   industry: string;
   size: string;
   country: string;
-  fit_tier: string | null;
   fit_reason: string;
   prospects: BatchProspectApi[];
 };
@@ -989,7 +1042,6 @@ type ApprovalProspectApi = {
   company_descriptor: string; // "SaaS · 200–500 · US" (not the exact company)
   title: string;
   seniority: string;
-  fit_tier: string | null;
   fit_reason: string;
   decision: string;
 };

@@ -43,6 +43,7 @@ JOB_PROSPECT_SCORING = "prospect_scoring"
 # Job kinds == scoring_job.kind. The router registers one handler per kind in SCORING_HANDLERS.
 KIND_RESCORE_COMPANIES = "rescore_companies"
 KIND_RESCORE_PROSPECTS = "rescore_prospects"
+KIND_ENRICH_SCORE_PROSPECTS = "enrich_score_prospects"
 KIND_FIND_COMPANY = "find_company"
 KIND_FIND_LOOKALIKES = "find_lookalikes"
 KIND_UPDATE_FIELDS = "update_fields"

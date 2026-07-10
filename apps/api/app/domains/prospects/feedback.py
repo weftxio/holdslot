@@ -12,18 +12,18 @@ industry, so the equivalent is built HoldSlot-side from outcome data.
     rows → resolved to UIDs by `tech_vocab` and emitted as the `not_using` tech filter (the Stage-4
     resolver clears what Stage 3 deferred: raw tech names are not UIDs). [Stage 4]
 
-No I/O — the caller supplies plain rows `{tier, market_excluded, country, keywords[], industry,
-technologies[]}` so every rule is unit-tested without a DB. A row is BAD (negative evidence) when it
-landed `Below` tier OR was market-gated out; GOOD when it scored `Strong`/`Good`; `Moderate` is
-neutral (in neither, but still counts toward a keyword's yield denominator).
+No I/O — the caller supplies plain rows `{label, country, keywords[], industry, technologies[]}` so
+every rule is unit-tested without a DB. A row is BAD (negative evidence) when its v2 `label` is
+`low_fit` or `excluded_by_rules`; GOOD when it is `contact_now` or `contact_soon`. (Unlabeled rows
+are filtered out upstream in `_feedback_rows`, so every row here is one or the other.)
 """
 
 from __future__ import annotations
 
 from collections import Counter
 
-_BAD_TIERS = frozenset({"Below"})
-_GOOD_TIERS = frozenset({"Strong", "Good"})
+_BAD_LABELS = frozenset({"low_fit", "excluded_by_rules"})
+_GOOD_LABELS = frozenset({"contact_now", "contact_soon"})
 
 # Stage 4 — negative technologies (same correlation shape as keywords, over tech names).
 NEG_TECH_MIN_BAD = 2
@@ -38,11 +38,11 @@ EXCL_MIN_SHARE = 0.6  # …and must account for ≥60% of all bad rows (a genuin
 
 
 def _is_bad(row: dict) -> bool:
-    return row.get("tier") in _BAD_TIERS or bool(row.get("market_excluded"))
+    return row.get("label") in _BAD_LABELS
 
 
 def _is_good(row: dict) -> bool:
-    return row.get("tier") in _GOOD_TIERS and not row.get("market_excluded")
+    return row.get("label") in _GOOD_LABELS
 
 
 def _row_keywords(row: dict) -> set[str]:

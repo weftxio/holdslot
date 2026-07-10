@@ -1,4 +1,4 @@
-"""Scoring v2 — the deterministic label engine (docs/holdslot-scoring-spec-v2.md).
+"""Scoring v2 — the deterministic label engine (docs/initial-build-plan.md §D+.2).
 
 Replaces the v1 0–100 `AI Score` with a 4-label verdict. This module is the **contract + gate
 ladder**: pure, LLM-free, and free of Apollo credits. Given a company's stage-0 classification +

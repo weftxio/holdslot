@@ -422,11 +422,12 @@ Follows the same conventions; all carry `tenant_id` (= `client_id`), scoped by t
 `prospect.fit_reason` (`0014`), and the `scoring_job` async ledger (`0015`).
 The two SCALE tables (`person` / `enrichment_request`) are the additive multi-tenant step, not built.**
 
-> **Hot-read indexes (`0014`, W1):** `prospect` and `company` each carry a composite
-> `(tenant_id, fit_score DESC NULLS LAST, created_at DESC)` index (`ix_prospect_tenant_fit` /
-> `ix_company_tenant_fit`) matching the exact `ORDER BY` of the `/{client}/prospects` + `/{client}/companies`
-> list feeds, so the hottest read returns rows pre-ordered (W5 cursor pagination adds an `id` tiebreaker). Four
-> now-redundant single-column indexes were dropped (`ix_company_domain`, `ix_prospect_identity_key`,
+> **Hot-read indexes:** `prospect` and `company` each carry a composite
+> `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` index (`ix_prospect_tenant_label` /
+> `ix_company_tenant_label`, scoring v2 `0024`) matching the `ORDER BY` of the `/{client}/prospects` +
+> `/{client}/companies` list feeds, so the hottest read returns rows pre-ordered (W5 cursor pagination adds an
+> `id` tiebreaker). The v1 `ix_*_tenant_fit` (`fit_score`) indexes were dropped in `0026` (V2-4). Four
+> now-redundant single-column indexes were dropped (`0014`) (`ix_company_domain`, `ix_prospect_identity_key`,
 > `ix_brief_tenant_id`, `ix_scope_override_tenant_id` — each covered by a UNIQUE constraint's index).
 
 ### Phase C end-to-end flow (Apollo, programmatic — two gates, no CSV)
@@ -466,10 +467,10 @@ apply DB-side on every search.
 | `linkedin_url` | varchar nullable | company LinkedIn |
 | `name` | varchar | |
 | `industry`, `size`, `country` | varchar nullable | firmographics from Apollo company search |
-| `fit_score` | int nullable | **v1** company-level fit (reuses `fit.py`, persona lines omitted) — kept alongside v2 through the cutover, dropped in `0026` |
-| `fit_tier` | varchar nullable | **v1** Strong/Good/Moderate/Below (→ `0026`) |
+| ~~`fit_score`~~ | — | **v1 — DROPPED in `0026` (V2-4)**; superseded by `score_total` |
+| ~~`fit_tier`~~ | — | **v1 — DROPPED in `0026` (V2-4)**; superseded by `label` |
 | `fit_reason` | text nullable | "why a fit" (client-facing); **scoring v2 reuses this column** for its `reason` enum-string |
-| `label` | varchar(32) nullable | **scoring v2** (`0024`, spec [`holdslot-scoring-spec-v2.md`](holdslot-scoring-spec-v2.md)) — the 4-label verdict `contact_now`/`contact_soon`/`low_fit`/`excluded_by_rules`; **NULL = "needs re-score"** (no backfill, decision ②). Index `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` |
+| `label` | varchar(32) nullable | **scoring v2** (`0024`, spec [initial-build-plan.md §D+.2](initial-build-plan.md)) — the 4-label verdict `contact_now`/`contact_soon`/`low_fit`/`excluded_by_rules`; **NULL = "needs re-score"** (no backfill, decision ②). Index `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` |
 | `score_total` | int nullable | **scoring v2** — sum of the 4 subscores, 4–20 (≥16 `contact_now` · ≥10 `contact_soon` · else `low_fit`) |
 | `fit_components` | JSONB (default `{}`) | rubric line-items + reason tags; the **`business_model`** label (`B2B`/`B2C`/`Complex`/`Unknown`) + **`market_excluded`** (bool — the B2B/B2C gate verdict), set by a **dedicated stage-0 classifier** (`company_model` purpose) at find/lookalike/manual-add time — BEFORE scoring; **scoring v2** additionally stores `subscores` (`deal_fit`/`outbound_gap`/`trigger`/`reachability`), `flags[]`, `trigger_line`, and the `liveness` verdict here. See Phase B/C + the D+ scoring-v2 addendum in [`initial-build-plan.md`](initial-build-plan.md) |
 | `evidence` | JSONB (default `{}`) | citations / extras (revenue, employee count, locality) |
@@ -491,16 +492,16 @@ apply DB-side on every search.
 | `identity_key` | varchar **idx** | normalized LinkedIn / `domain\|last\|first` / email — **dedupe + future `person` FK seam** |
 | `enrichment` | JSONB | raw Apollo search/match row; no S3 at MVP volume |
 | `email_valid` | bool | |
-| `fit_score` | int nullable | **v1** (→ `0026`) |
-| `fit_tier` | varchar | **v1** Strong/Good/Moderate/Below (→ `0026`) |
-| `fit_components` | JSONB | the 12 v1 rubric line-items + reason tags; **scoring v2** stores the persona `subscores` (`persona_fit`/`authority`/`trigger`/`reachability`) + `flags[]` here |
+| ~~`fit_score`~~ | — | **v1 — DROPPED in `0026` (V2-4)**; superseded by `score_total` |
+| ~~`fit_tier`~~ | — | **v1 — DROPPED in `0026` (V2-4)**; superseded by `label` |
+| `fit_components` | JSONB | **scoring v2** stores the persona `subscores` (`persona_fit`/`authority`/`trigger`/`reachability`) + `flags[]` + `reason` here |
 | `fit_reason` | text nullable | "why a fit" client-facing copy; **scoring v2 reuses this column** for its `reason` (`0014`, parity with `company.fit_reason`) — populated on next rescore, no backfill |
 | `label` | varchar(32) nullable | **scoring v2** (`0024`) — same 4-label verdict, **extrapolated** from the company label + the person's own persona axes (no per-person web call); the company label **caps** the person's. NULL = "needs re-score" |
 | `score_total` | int nullable | **scoring v2** — sum of the 4 persona axes, 4–20 |
 | `source` | varchar | `apollo` \| `manual` (origin, not transport) |
 | `source_lineage` | JSONB | run + rubric version |
-| `status` | varchar | `found`→`confirmed`(to enrich)→`scored`; `suppressed`/`score_error` (string, not enum) |
-| `outreach_outcome` | varchar nullable | null until Phase E writes it (closes the self-improve loop) |
+| `status` | varchar | `found`→`confirmed`(to enrich)→`scored`; `suppressed`/`score_error` (string, not enum); server default `found` (was `new`, changed in `0026`) |
+| ~~`outreach_outcome`~~ | — | **DROPPED in `0026` (V2-4)** — never written/read (Phase-C placeholder) |
 | `last_enriched_at` | timestamptz nullable | TTL-gates re-enrichment (~90d) + future `person` FK seam |
 | `created_at` | timestamptz | |
 | | | dedupe: re-import the same `identity_key` is idempotent |
@@ -634,7 +635,8 @@ clear-text identity/contact vector. Console surface = `domains/batches`; counts 
 The external (token-only, no-auth) view emits **exactly** these and nothing else (an allow-list, not a
 deny-list — a new field can never leak): first name + last initial (from `enrichment.full_name`),
 company *descriptor* (`company.industry`/`size`/`country`, **not** the exact name/domain),
-title·seniority, `prospect.fit_tier`+`fit_reason`, plus batch name/live count/client name/`expires_at`/
+title·seniority, `prospect.fit_reason` (the client-facing "why a fit"; the v1 `fit_tier` it also showed
+was dropped in `0026`/V2-4), plus batch name/live count/client name/`expires_at`/
 state (`valid`/`expired`/`used`) — and for an **expired/used** link, ONLY `state`+`expires_at` (no
 client/batch name, so a forwarded stale link can't reveal tenant existence). **Withheld:** email, phone,
 **LinkedIn URL**, full last name, exact company name+domain, `fit_components`, and any verified-presence
@@ -689,7 +691,7 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260708_0020..0023_brief_structure_v8..v11` ✅(dev) | D+ | data-only `briefing` prompt re-seeds: `v8` (Stage 2 person_titles), `v9` (Stage 3 avoid_keywords), `v10` (Stage 4 keyword_yield + customer_anchors + server-set tech UIDs), **`v11`**. Append-only where the tenant's latest prompt equals a shipped default; founder edits untouched |
 | `20260709_0024_scoring_v2_labels` ✅(dev) | D+ v2 | **scoring v2** — `label` varchar(32) + `score_total` int on **company AND prospect** + the `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` index on both. **No backfill** (labels start NULL). v1 `fit_*` untouched (dropped in `0026`) |
 | `20260709_0025_scoring_v2_rubrics` ✅(dev) | D+ v2 | data-only — seed the new `company_score` + `prospect_score` prompt stages (the v2 axis rubrics) per tenant from the shipped `docs/prompts/{company,prospect}-score-v1.md` |
-| *(next)* `0026_scoring_v2_contract` | D+ v2 | **after UAT** — drop v1 `fit_score`/`fit_tier` + their indexes, `reason_tags`, `outreach_outcome` (the contraction pass) |
+| `20260710_0026_scoring_v2_contraction` ✅(dev) | D+ v2 | **the contraction pass (V2-4)** — drop v1 `fit_score`/`fit_tier` on company+prospect + the `ix_*_tenant_fit` indexes; drop `prospect.outreach_outcome`; `prospect.status` default `new`→`found`. `reason_tags` stopped being emitted (code, not a column). Reversible (re-adds columns empty). |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
 **Live Aurora head: `0025`** (Lambda **v67**, deployed 2026-07-09 — D+ Stages 1-4 + scoring v2). `0024`/`0025`
