@@ -28,7 +28,8 @@ import uuid
 from datetime import UTC, datetime
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import ScoringJob
@@ -55,9 +56,15 @@ _ERR_MAX = 500  # cap the stored error message
 # timeout kills it mid-run WITHOUT raising, so run_scoring_job's except/finally never fires and the
 # job is left `running` forever (a zombie): the poll spins to its ceiling, AND enqueue_scoring
 # coalesces every retry onto it, wedging the surface. So on each read we reap any non-terminal job
-# older than a worker could possibly live → `error`, settling the poll and freeing the next. Keep
-# this comfortably ABOVE the Lambda timeout (infra/terraform/lambda.tf, currently 300s).
-MAX_JOB_AGE_SECONDS = 360
+# older than a worker could possibly live → `error`, settling the poll and freeing the next.
+#
+# The window must exceed the WORST-CASE worker lifetime, else it reaps a job still legitimately
+# scoring (R3): an async dispatch can sit up to `maximum_event_age_in_seconds` (120s, lambda.tf)
+# before the worker even starts, then run the full `timeout` (300s) — 420s worst case. 480s = 420 +
+# a 60s buffer. A false reap + a re-click would double-run a (billed) DeepSeek batch, which the
+# atomic claim in `run_scoring_job` now also guards. This constant is the single source of truth:
+# briefs/structuring imports it (was a drifting 360 copy — R27 dedupe).
+MAX_JOB_AGE_SECONDS = 480
 
 
 def _job_age_seconds(job: ScoringJob) -> float:
@@ -100,10 +107,9 @@ def job_by_id(db: Session, tenant_id, job_id) -> ScoringJob | None:
     return job
 
 
-def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJob:
-    """Create a queued job + dispatch the worker. A still-active job of this kind is returned
-    unchanged so a double-click coalesces onto the in-flight batch (never double-spends)."""
-    active = db.execute(
+def _active_job(db: Session, tenant_id, kind: str) -> ScoringJob | None:
+    """The newest queued/running job of this kind for the tenant (the coalesce target)."""
+    return db.execute(
         select(ScoringJob)
         .where(
             ScoringJob.tenant_id == tenant_id,
@@ -113,6 +119,12 @@ def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJ
         .order_by(ScoringJob.created_at.desc())
         .limit(1)
     ).scalar_one_or_none()
+
+
+def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJob:
+    """Create a queued job + dispatch the worker. A still-active job of this kind is returned
+    unchanged so a double-click coalesces onto the in-flight batch (never double-spends)."""
+    active = _active_job(db, tenant_id, kind)
     # Coalesce onto a genuinely in-flight job (prevents a double-click double-spend); but a stale
     # zombie must NOT wedge the surface — reap it and fall through to enqueue a fresh one.
     if active is not None and not _reap_if_stale(db, active):
@@ -120,7 +132,16 @@ def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJ
 
     job = ScoringJob(tenant_id=tenant_id, kind=kind, params=params, status="queued")
     db.add(job)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent POST won the (tenant, kind) partial-unique race (0027) between our check and
+        # our insert — coalesce onto its job rather than 500 (like the "already active" path).
+        db.rollback()
+        winner = _active_job(db, tenant_id, kind)
+        if winner is not None:
+            return winner
+        raise  # constraint fired but no active row visible — genuinely unexpected, surface it
     db.refresh(job)
     _dispatch(tenant_id, job.id)
     return job
@@ -163,6 +184,26 @@ def _fail(db: Session, job: ScoringJob, message: str) -> None:
     db.commit()
 
 
+def _finalize(db: Session, job_id, status: str, *, result: dict | None = None,
+              error: str | None = None) -> bool:
+    """Worker terminal write, guarded on the worker still OWNING the job (`status='running'`). If
+    the job was reaped mid-run (falsely, or claimed by a duplicate dispatch), it's no longer active,
+    so this no-ops instead of resurrecting a reaped `error` job to `done` (the R3 double-run tell).
+    Returns True iff it wrote."""
+    values: dict = {"status": status}
+    if result is not None:
+        values["result"] = result
+    if error is not None:
+        values["error"] = error[:_ERR_MAX]
+    wrote = db.execute(
+        update(ScoringJob)
+        .where(ScoringJob.id == job_id, ScoringJob.status == "running")
+        .values(**values)
+    ).rowcount
+    db.commit()
+    return bool(wrote)
+
+
 def run_scoring_job(tenant_id, job_id, session_factory=None) -> None:
     """The worker: run the kind's scoring handler, flipping the job terminal + recording counts.
 
@@ -182,37 +223,48 @@ def run_scoring_job(tenant_id, job_id, session_factory=None) -> None:
         if job is None:
             log.warning("scoring job vanished (job_id=%s)", job_id)
             return
-        job.status = "running"
+        # R3 — claim the job ATOMICALLY. If the row isn't `queued` (a duplicate dispatch already
+        # claimed it, it's terminal, or the reaper flipped it to `error`), another path owns it:
+        # abort with NO side effects so we never double-run the (billed) batch or clobber its state.
+        kind, params = job.kind, (job.params or {})
+        claimed = db.execute(
+            update(ScoringJob)
+            .where(ScoringJob.id == jid, ScoringJob.status == "queued")
+            .values(status="running")
+        ).rowcount
         db.commit()
+        if not claimed:
+            log.warning("scoring job %s not claimable (dup dispatch / terminal / reaped) — abort",
+                        job_id)
+            return
 
         # The per-kind handlers live in the router (they own the scoring helpers); import lazily so
         # this module never imports the router at load time (the router imports this one).
         from app.domains.prospects.router import SCORING_HANDLERS
 
-        handler = SCORING_HANDLERS.get(job.kind)
+        handler = SCORING_HANDLERS.get(kind)
         if handler is None:
-            _fail(db, job, f"unknown scoring kind: {job.kind}")
+            _finalize(db, jid, "error", error=f"unknown scoring kind: {kind}")
             return
 
         try:
-            result = handler(db, tid, job.params or {})
+            result = handler(db, tid, params)
         except HTTPException as e:
             # A handler validation/upstream error (e.g. no research scope, Apollo 502) — surface its
             # message as the job error rather than a generic "internal error" for the FE to show.
             db.rollback()
-            _fail(db, job, str(e.detail) if e.detail else "scoring failed")
+            _finalize(db, jid, "error", error=str(e.detail) if e.detail else "scoring failed")
             return
-        job.result = result or {}
-        job.status = "done"
-        db.commit()
-        log.info("scoring[%s] job=%s done %s", job.kind, job_id, job.result)
+        if _finalize(db, jid, "done", result=result or {}):
+            log.info("scoring[%s] job=%s done %s", kind, job_id, result or {})
+        else:
+            log.warning("scoring[%s] job=%s finished but no longer owned (reaped?) — not written",
+                        kind, job_id)
     except Exception:
         log.exception("scoring job failed (job_id=%s)", job_id)
         try:
             db.rollback()
-            job = db.get(ScoringJob, jid)
-            if job is not None and job.status not in ("done", "error"):
-                _fail(db, job, "internal error during scoring")
+            _finalize(db, jid, "error", error="internal error during scoring")
         except Exception:
             log.exception("could not record scoring failure (job_id=%s)", job_id)
     finally:

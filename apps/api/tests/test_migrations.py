@@ -37,7 +37,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0026_scoring_v2_contraction"]
+    assert _script_dir().get_heads() == ["0027_dplus_indexes_race"]
 
 
 def test_0011_columns_present_on_models():
@@ -134,3 +134,22 @@ def test_0024_v2_label_columns_present_on_models():
     assert "ix_company_tenant_label" in {i.name for i in Company.__table__.indexes}
     assert "ix_prospect_tenant_label" in {i.name for i in Prospect.__table__.indexes}
     assert "ix_company_tenant_fit" not in {i.name for i in Company.__table__.indexes}
+
+
+def test_0027_dplus_indexes_present_on_models():
+    """0027 (D+.5 F1) adds the score-sorted feed composites on company/prospect, the scoring_job
+    active-job partial unique index, and the research_run scan index; and drops the two
+    single-column tenant indexes. The ORM must reflect the same end state."""
+    c_idx = {i.name for i in Company.__table__.indexes}
+    p_idx = {i.name for i in Prospect.__table__.indexes}
+    assert "ix_company_tenant_score" in c_idx
+    assert "ix_prospect_tenant_score" in p_idx
+    # R29a — the composite prefix-covers these, so they were dropped.
+    assert "ix_company_tenant_id" not in c_idx
+    assert "ix_prospect_tenant_id" not in p_idx
+    # R9 — the active-job partial unique index (one queued/running job per tenant×kind).
+    sj_idx = {i.name: i for i in ScoringJob.__table__.indexes}
+    active = sj_idx.get("uq_scoring_job_active_tenant_kind")
+    assert active is not None and active.unique
+    # R22a — the research_run scan index.
+    assert "ix_research_run_tenant_created" in {i.name for i in ResearchRun.__table__.indexes}

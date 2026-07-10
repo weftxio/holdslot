@@ -134,13 +134,14 @@ def test_size_gate_too_large():
     assert v.label == "low_fit" and v.reason == "too large"
 
 
-def test_size_gate_suppressed_by_headcount_uncertain():
-    """A row whose sources disagree >2× (Bytesforce: 46/60/200–500) is not size-gated (spec §7)."""
+def test_size_gate_not_suppressed_by_removed_flag():
+    """R11 — the `headcount_uncertain` suppression was removed (only one headcount source exists, so
+    it was never producible). A too-large row is size-gated regardless of any legacy flag."""
     v = assign_label(
         business_model="B2B", hq_country="Singapore", industry="Insurtech",
         headcount=800, size_ceiling=500, extra_flags=["headcount_uncertain"], config=RULES,
     )
-    assert v.reason != "too large"
+    assert v.label == "low_fit" and v.reason == "too large"
 
 
 # --- liveness gate (spec §4) --------------------------------------------------

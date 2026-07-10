@@ -18,6 +18,7 @@ the company was already exclusion-checked in Flow A.
 
 from __future__ import annotations
 
+from app.domains.prospects.labeling import title_is_avoided
 from app.domains.prospects.suppression import Candidate, ExclusionSet
 
 
@@ -63,7 +64,6 @@ def filter_people(
     "sales ops" avoid. Applied here so an obvious mis-target never costs an LLM fit-score call.
     """
     seen = set(seen_person_ids or set())
-    avoid = [t.lower() for t in (avoid_titles or []) if t]
     survivors: list[dict] = []
     dropped: list[tuple[dict, str]] = []
     for row in parsed:
@@ -74,8 +74,9 @@ def filter_people(
         if pid in seen:
             dropped.append((row, "duplicate"))
             continue
-        title = (row.get("title") or "").lower()
-        if title and any(a in title for a in avoid):
+        # Shared normalize+match with labeling.assign_person_label — R27: one helper so the
+        # pre-score drop and the score-time gate can't drift on a whitespace/Unicode edge.
+        if title_is_avoided(row.get("title"), avoid_titles):
             dropped.append((row, "avoided_title"))
             continue
         seen.add(pid)

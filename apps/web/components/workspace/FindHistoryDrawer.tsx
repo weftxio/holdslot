@@ -2,6 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Modal } from "@/components/Modal";
 import { listResearchRuns, type ResearchRunApi } from "@/lib/api";
+import { parseUtc, whenLabel } from "@/lib/dates";
 
 /**
  * Find-history drawer v2 (U4) — a read-only, grouped view over `/research-runs`. Answers "what did we
@@ -139,31 +140,19 @@ function relaxStepLabel(step: string): string {
   return step;
 }
 
-// Full date + time so every row is self-describing (the day header groups them; this labels each).
-function whenLabel(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+// whenLabel (full date + time, UTC-pinned) is shared from lib/dates — R16: the Data API strips the
+// offset off our UTC timestamps, so parsing as browser-local pushed HK day-groups / times off by 8h.
 
 function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
 }
 function dayKey(iso: string | null): string {
-  if (!iso) return "undated";
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "undated" : String(startOfDay(d));
+  const d = parseUtc(iso);
+  return d ? String(startOfDay(d)) : "undated";
 }
 function dayLabel(iso: string | null, nowMs: number): string {
-  if (!iso) return "Undated";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "Undated";
+  const d = parseUtc(iso);
+  if (!d) return "Undated";
   const diff = Math.round((startOfDay(new Date(nowMs)) - startOfDay(d)) / 86_400_000);
   if (diff === 0) return "Today";
   if (diff === 1) return "Yesterday";

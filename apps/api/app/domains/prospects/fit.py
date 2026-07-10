@@ -7,8 +7,9 @@ market gate — all deleted). What remains:
 * **Business model** (stage 0, `classify_business_model`): a deliberately tiny call (its own split
   system + input prompt) that labels each company B2B / B2C / Complex / Unknown and reads two facts
   the v2 rule engine needs but Apollo gets wrong — `hq_country` (HQ from the description) and
-  `has_b2b_line` (the Luma guard). Runs up-front on EVERY find-company / find-lookalike / manual-add
-  row so the label + market gate are present BEFORE any (on-demand, paid) scoring.
+  `has_b2b_line` (classified + stored; the former B2C-with-a-B2B-line "Luma guard" carve-out was
+  removed 2026-07-10). Runs up-front on EVERY find-company / find-lookalike / manual-add row so the
+  label + market gate are present BEFORE any (on-demand, paid) scoring.
 * **Company score v2** (stage 1, `company_score_v2`): ONE web-grounded call — liveness + the four
   axes + icp_match + flags + trigger_line. Slow (~50–120s), async path only.
 * **Prospect score v2** (stage 2, `prospect_score_v2`): the no-web people-axis call; the company
@@ -38,7 +39,8 @@ log = logging.getLogger("holdslot.fit")
 MODEL_PURPOSE = "company_model"
 # v2 (2026-07): the classifier also reads the DESCRIPTION for two facts the v2 rule engine needs but
 # Apollo's fields get wrong — `hq_country` (spec §5: HQ from the description, not the field) and
-# `has_b2b_line` (the Luma guard: a B2C-tagged firm with a B2B line is `Both`, never gated).
+# `has_b2b_line` (still classified + stored; the "Luma guard" B2C-with-a-B2B-line → `Both` carve-out
+# was removed 2026-07-10, so a B2B line no longer rescues a primarily-B2C company).
 MODEL_PROMPT_VERSION = "company-model-v2"
 # Flash, not Pro (switched 2026-07-10 after a live A/B — see the build plan §Model selection).
 # Over all 239 dogfood companies Flash matched Pro's B2B/B2C on 90.8% and — the key metric —
@@ -173,51 +175,62 @@ _AXES_COMPANY = list(labeling.SUBSCORE_AXES)  # deal_fit / outbound_gap / trigge
 _AXES_PEOPLE = list(labeling.SUBSCORE_AXES_PEOPLE)  # persona_fit / authority / trigger / reach
 
 
-COMPANY_SCORE_V2_SCHEMA = {
-    "name": "CompanyScoreV2",
-    "strict": True,
-    "schema": {
-        "type": "object",
-        "additionalProperties": False,
-        "properties": {
-            "liveness": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["live", "defunct", "acquired", "dead_web", "stale"],
+def company_score_v2_schema(icp_letters: list[str]) -> dict:
+    """The strict company-score schema, with the `icp_match.icp` enum built from the tenant's ICP
+    letters (+ "none"). Dynamic because the enum was hard-coded to ["A","B","none"] (R19): a 3rd+
+    ICP couldn't be returned, so the model was structurally forced to "none" → the row landed
+    `low_fit "wrong vertical"` AFTER the paid call. `icp_letters` are positional (A, B, C, …), one
+    per ICP profile in targeting order."""
+    return {
+        "name": "CompanyScoreV2",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "liveness": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "status": {
+                            "type": "string",
+                            "enum": ["live", "defunct", "acquired", "dead_web", "stale"],
+                        },
+                        "note": {"type": "string"},
                     },
-                    "note": {"type": "string"},
+                    "required": ["status", "note"],
                 },
-                "required": ["status", "note"],
-            },
-            "deal_fit": {"type": "integer"},
-            "outbound_gap": {"type": "integer"},
-            "trigger": {"type": "integer"},
-            "reachability": {"type": "integer"},
-            "icp_match": {
-                "type": "object",
-                "additionalProperties": False,
-                "properties": {
-                    "icp": {"type": "string", "enum": ["A", "B", "none"]},
-                    "clause": {"type": "string"},
+                "deal_fit": {"type": "integer"},
+                "outbound_gap": {"type": "integer"},
+                "trigger": {"type": "integer"},
+                "reachability": {"type": "integer"},
+                "icp_match": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "icp": {"type": "string", "enum": [*icp_letters, "none"]},
+                        "clause": {"type": "string"},
+                    },
+                    "required": ["icp", "clause"],
                 },
-                "required": ["icp", "clause"],
+                "reason": {"type": "string"},
+                "trigger_line": {"type": "string"},
+                "flags": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": list(labeling.MODEL_FLAGS)},
+                },
             },
-            "reason": {"type": "string"},
-            "trigger_line": {"type": "string"},
-            "flags": {
-                "type": "array",
-                "items": {"type": "string", "enum": list(labeling.MODEL_FLAGS)},
-            },
+            "required": [
+                "liveness", "deal_fit", "outbound_gap", "trigger", "reachability",
+                "icp_match", "reason", "trigger_line", "flags",
+            ],
         },
-        "required": [
-            "liveness", "deal_fit", "outbound_gap", "trigger", "reachability",
-            "icp_match", "reason", "trigger_line", "flags",
-        ],
-    },
-}
+    }
+
+
+# Default/base shape (2 ICPs) — kept for callers/tests that want the static shape; the live call
+# builds the enum per tenant via `company_score_v2_schema` (R19).
+COMPANY_SCORE_V2_SCHEMA = company_score_v2_schema(["A", "B"])
 
 PROSPECT_SCORE_V2_SCHEMA = {
     "name": "ProspectScoreV2",
@@ -339,11 +352,14 @@ def company_score_v2(*, tenant_id, rubric_body: str, company: dict, targeting: d
     signals for `labeling.assign_label` (NOT a final label): `{liveness, subscores, icp_match,
     reason, trigger_line, flags, llm_call_id, model, cost_usd}`. Raises `LlmError` on a non-ok call.
     Runs on the async path only (SCORE_V2_TIMEOUT ≫ the 30s gateway)."""
+    # R19 — build the icp enum from THIS tenant's ICP set (positional A, B, C, … per targeting
+    # order), so a 3rd+ ICP can be returned instead of being forced to "none".
+    icp_letters = [chr(ord("A") + i) for i in range(len(targeting.get("icps") or []))]
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=COMPANY_SCORE_PURPOSE,
         messages=build_company_score_v2_messages(rubric_body, company, targeting),
-        schema=COMPANY_SCORE_V2_SCHEMA,
+        schema=company_score_v2_schema(icp_letters),
         prompt_version=SCORE_RUBRIC_VERSION,
         models=SCORE_MODELS,
         extra_body=COMPANY_SCORE_V2_EXTRA_BODY,
@@ -400,6 +416,7 @@ __all__ = [
     "prospect_score_v2",
     "BUSINESS_MODEL_SCHEMA",
     "COMPANY_SCORE_V2_SCHEMA",
+    "company_score_v2_schema",
     "PROSPECT_SCORE_V2_SCHEMA",
     "MODEL_PURPOSE",
     "COMPANY_SCORE_PURPOSE",

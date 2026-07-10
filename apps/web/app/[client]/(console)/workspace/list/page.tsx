@@ -52,6 +52,7 @@ import type {
   PeopleScopeOverride,
   ScopeForm,
   ScopeOverride,
+  ScoringSetter,
 } from "@/lib/workspace/types";
 import {
   BUCKET_HEAD,
@@ -59,7 +60,6 @@ import {
   COLLAPSED_LABELS,
   COMPANY_AXES,
   ENRICHED_STATUS,
-  NEEDS_ENRICH,
   PROSPECT_AXES,
   SENIORITY_OPTIONS,
   SOURCE_CLS,
@@ -99,13 +99,30 @@ const COLLAPSED_KEYS = new Set<string>(COLLAPSED_LABELS);
 // Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection;
 // a `low_fit` row can be selected but only behind an explicit confirm. Returns whether the toggle
 // may proceed. Deselecting is always allowed; only *adding* a gated row is challenged.
-function maySelect(label: ScoreLabel | null, currentlyChecked: boolean): boolean {
-  if (currentlyChecked) return true;
-  if (label === "excluded_by_rules") return false;
+function maySelect(
+  label: ScoreLabel | null,
+  currentlyChecked: boolean,
+  allowExcluded = false,
+): boolean {
+  if (currentlyChecked) return true; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
+  // Step 2 passes allowExcluded so a staged-then-excluded company can be TICKED for removal; the
+  // funnel-advancing actions (stage / find-people / reveal) still drop excluded rows (pruneExcluded).
+  if (label === "excluded_by_rules") return allowExcluded;
   if (label === "low_fit") {
     return window.confirm("This scored Low fit. Add it to the selection anyway?");
   }
   return true;
+}
+
+// Return `set` minus every id in `remove` — same reference when nothing changed (stable for React).
+function dropIds(set: Set<string>, remove: Set<string>): Set<string> {
+  let changed = false;
+  const next = new Set<string>();
+  for (const id of set) {
+    if (remove.has(id)) changed = true;
+    else next.add(id);
+  }
+  return changed ? next : set;
 }
 // The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
 const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
@@ -261,6 +278,17 @@ export default function ListPage() {
   // block the second click in the same tick (a paid-spend race).
   const rescoringCoRef = useRef(false);
   const rescoringPplRef = useRef(false);
+  // R12 — false once this page unmounts, so a job poll loop stops (no orphan polling + toasts after
+  // navigating away). Combined with the client check in the `alive` callbacks below.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  // The liveness gate every job poll checks: still mounted AND still on this client.
+  const pollAlive = () => mountedRef.current && clientRef.current === client;
   // Manual-add modals (same schema as imported rows; source=manual).
   const blankCo = {
     domain: "",
@@ -435,6 +463,25 @@ export default function ListPage() {
   }, [client, qc, toast]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  // R6 — after ANY companies/prospects reload or scoring wave, drop selected ids whose row is now
+  // `excluded_by_rules`, so an excluded company can never be staged into Step 2 (LOCKED invariant)
+  // and an excluded person is never revealed/batched. Non-excluded ticks are kept even when filtered
+  // out of view (the selection is deliberately over the WHOLE list; see coSel / selectedProspects).
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    const excluded = new Set(
+      companies.filter((c) => c.label === "excluded_by_rules").map((c) => c.id),
+    );
+    if (excluded.size) setCompanyChecked((s) => dropIds(s, excluded));
+  }, [companies]);
+  useEffect(() => {
+    const excluded = new Set(
+      prospects.filter((p) => p.label === "excluded_by_rules").map((p) => p.id),
+    );
+    if (excluded.size) setChecked((s) => dropIds(s, excluded));
+  }, [prospects]);
+  /* eslint-enable react-hooks/set-state-in-effect */
+
   // The Step-2 people-scope override is persisted server-side per (tenant, ICP) — re-fetch it on
   // (client, fIcp) change so the "Custom" badge + summary reflect the selected ICP's own tuning and
   // follow the operator across browsers. Re-running here also RETRIES a failed load automatically
@@ -523,7 +570,6 @@ export default function ListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [pursued, prospectsByCompany, fStatus]
   );
-  const selCount = visible.filter((p) => checked.has(p.id)).length;
   // Step-2 companies that are ticked — the unit of selection for Find People.
   const pplCoSel = pursued.filter((c) => companyChecked.has(c.id));
   // Step-2 dock: reveal-&-score before batch — find people → reveal & score → batch. Computed over
@@ -534,7 +580,10 @@ export default function ListPage() {
     [prospects, checked]
   );
   const toEnrich = useMemo(
-    () => selectedProspects.filter((p) => NEEDS_ENRICH.has(p.status)),
+    // R14 — spend estimate: a person needs a PAID reveal iff they have no email yet. Email present =
+    // already bought (no re-spend even if a later score failed); `enrich_failed` (no email) DOES
+    // count — a re-match can spend — which the old status set (found/confirmed/score_error) missed.
+    () => selectedProspects.filter((p) => !p.email),
     [selectedProspects]
   );
   const enrichedSel = useMemo(
@@ -571,19 +620,26 @@ export default function ListPage() {
     }
     let alive = true;
     (async () => {
-      let migrated = 0;
+      let reconciled = 0; // local keys cleared (gates the done-flag)
+      let restored = 0; // actually PUT to the server (drives the toast)
       for (const { key, icpId, override } of pending) {
         try {
-          await putScopeOverride(client, "company", override as Record<string, unknown>, icpId);
+          // R15 — don't let a stale pre-U1 browser clobber a NEWER server-side override: if the
+          // server already has this ICP's override, drop the local copy WITHOUT PUTting; else PUT.
+          const existing = await getScopeOverride(client, "company", icpId || undefined);
+          if (!existing) {
+            await putScopeOverride(client, "company", override as Record<string, unknown>, icpId);
+            restored += 1;
+          }
           clearMigratedScope(key);
-          migrated += 1;
+          reconciled += 1;
         } catch {
           /* leave the local key; the next load retries the remaining entries */
         }
       }
-      if (migrated === pending.length) markScopeMigrationDone(client);
+      if (reconciled === pending.length) markScopeMigrationDone(client);
       if (!alive || clientRef.current !== client) return;
-      if (migrated) {
+      if (restored) {
         try {
           const b = await getScopeOverride(client, "company", fIcp || undefined);
           if (clientRef.current === client) setScopeOverride(b ? (b as ScopeOverride) : null);
@@ -591,7 +647,7 @@ export default function ListPage() {
           /* the hydration effect below will resolve it */
         }
         toast(
-          `Restored your saved company search filters (${migrated} ICP${migrated === 1 ? "" : "s"}) ` +
+          `Restored your saved company search filters (${restored} ICP${restored === 1 ? "" : "s"}) ` +
             "to your account · finds now use them, not the AI scope"
         );
       }
@@ -697,8 +753,10 @@ export default function ListPage() {
     : icpOptions.length === 1
       ? icpOptions[0].label
       : null;
-  function toggleCo(c: CompanyApi) {
-    if (!maySelect(c.label, companyChecked.has(c.id))) return; // excluded locked out; low_fit confirms
+  function toggleCo(c: CompanyApi, allowExcluded = false) {
+    // excluded locked out of Step-1 selection; low_fit confirms; unticking always allowed. Step 2
+    // passes allowExcluded so a staged-then-excluded company can be ticked for removal (R6).
+    if (!maySelect(c.label, companyChecked.has(c.id), allowExcluded)) return;
     setCompanyChecked((s) => {
       const n = new Set(s);
       n.has(c.id) ? n.delete(c.id) : n.add(c.id);
@@ -743,7 +801,9 @@ export default function ListPage() {
             type="checkbox"
             className="tbl-check"
             checked={companyChecked.has(c.id)}
-            disabled={excluded}
+            // R6 — a checked row re-scored to excluded must stay untickable-off (only a NEW excluded
+            // selection is blocked); pruneExcluded also drops it from the selection on the next reload.
+            disabled={excluded && !companyChecked.has(c.id)}
             title={excluded ? "Excluded by rules — can't be selected" : undefined}
             onChange={() => toggleCo(c)}
           />
@@ -878,10 +938,17 @@ export default function ListPage() {
       if (clientRef.current === client) toast(`${failLabel} failed`, "warn");
       return null;
     }
-    const job = await awaitScoringJob(client, started.job_id, () => clientRef.current === client);
-    if (clientRef.current !== client) return null;
+    const job = await awaitScoringJob(client, started.job_id, pollAlive);
+    if (!pollAlive()) return null;
     if (job.status === "error") {
       toast(typeof job.error === "string" && job.error ? job.error : `${failLabel} failed`, "warn");
+      return null;
+    }
+    // R12 — a non-terminal return (ceiling hit while still running) must NOT read as success: don't
+    // reload as "done 0", just tell the operator it's still going. The finished rows land on the next
+    // reload/refresh (the worker survives the tab).
+    if (job.status !== "done") {
+      toast(`${failLabel} is still running — refresh in a moment`, "ok");
       return null;
     }
     return job;
@@ -1025,21 +1092,47 @@ export default function ListPage() {
 
   // Score a set of company rows on one async background job (W4). The rows show "Scoring…" until the
   // job settles; the worker owns the batch (survives a tab close), and we reload once on completion.
-  async function scoreCompaniesJob(ids: string[]) {
-    setScoringCoIds((prev) => new Set([...prev, ...ids]));
+  // R27 — the shared background-job runner for the three scoring surfaces (score companies / reveal
+  // & score people / score people). Each differs only in the "Scoring…" id set, the kick, the reload,
+  // and the success toast (`onDone`) — everything else (mark scoring → poll → reload → toast → clear)
+  // is identical, so it lives here once.
+  async function runJob(opts: {
+    ids: string[];
+    setScoring: ScoringSetter;
+    kick: () => Promise<ScoringJobApi>;
+    label: string;
+    reload: () => Promise<void>;
+    onDone: (result: Record<string, unknown>) => void;
+  }) {
+    const { ids, setScoring, kick, label, reload, onDone } = opts;
+    setScoring((prev) => new Set([...prev, ...ids]));
     try {
-      const job = await runScoringJob(() => rescoreCompaniesAsync(client, ids), "Scoring");
+      const job = await runScoringJob(kick, label);
       if (clientRef.current !== client) return;
       if (job) {
-        await reloadCompanies();
-        const scored = Number(job.result?.scored ?? 0);
-        toast(`Scored ${scored} ${scored === 1 ? "company" : "companies"}`);
+        await reload();
+        onDone(job.result || {});
       }
     } catch (e) {
-      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Scoring failed", "warn");
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : `${label} failed`, "warn");
     } finally {
-      if (clientRef.current === client) clearScoring(setScoringCoIds, ids);
+      if (clientRef.current === client) clearScoring(setScoring, ids);
     }
+  }
+
+  function scoreCompaniesJob(ids: string[]) {
+    return runJob({
+      ids,
+      setScoring: setScoringCoIds,
+      kick: () => rescoreCompaniesAsync(client, ids),
+      label: "Scoring",
+      reload: reloadCompanies,
+      onDone: (r) => {
+        const scored = Number(r.scored ?? 0);
+        toast(`Scored ${scored} ${scored === 1 ? "company" : "companies"}`);
+      },
+    });
   }
 
   // "Find Lookalike" — find the next batch of peers of the checked rows. The seeds are the search
@@ -1048,57 +1141,32 @@ export default function ListPage() {
   // and stay that way (AI Score shows "Pending") — the operator scores on demand via Update AI
   // Score. The toast tells the outcomes apart: new / all-listed / none.
   async function runLookalike() {
-    const ids = coSel.map((c) => c.id);
-    if (!ids.length) return toast("Select companies to find lookalikes", "warn");
-    setFindingLookalike(true);
-    try {
-      const job = await runScoringJob(
-        () => findLookalikesAsync(client, { company_ids: ids, icp_id: fIcp || null }),
-        "Lookalike search"
-      );
-      if (!job) return;
-      await reloadCompanies();
-      const found = Number(job.result?.found ?? 0);
-      const dropped = Number(job.result?.dropped ?? 0);
-      if (found) {
-        const tail = dropped ? ` · ${dropped} already in your list` : "";
-        toast(
-          `Found ${found} new lookalike ${found === 1 ? "company" : "companies"}${tail} · ` +
-            "select rows and click Update AI Score to score them"
-        );
-      } else if (dropped) {
-        toast(
-          `Apollo returned ${dropped} similar ${dropped === 1 ? "company" : "companies"}, ` +
-            `but ${dropped === 1 ? "it is" : "all are"} already in your list — nothing new to add.`,
-          "warn"
-        );
-      } else {
-        toast(
-          "No companies similar to the selection were found. The seeds may be too sparse — " +
-            "enrich them first (industry, size and revenue drive the match) or select more rows.",
-          "warn"
-        );
-      }
-    } catch (e) {
-      if (clientRef.current === client) {
-        toast(e instanceof Error ? e.message : "Lookalike search failed", "warn");
-      }
-    } finally {
-      if (clientRef.current === client) setFindingLookalike(false);
-    }
+    return runLookalikeJob("selection");
   }
 
   // D+ Stage 3 recovery — when the scope is exhausted, reuse the WINNERS: find lookalikes of every
   // Strong/Good row (positive-signal reuse), no manual selection needed. One click from the
   // scope-exhausted notice; hints if there are no strong rows to seed from yet.
   async function runLookalikeOfStrong() {
-    const ids = companies
-      .filter((c) => c.label === "contact_now" || c.label === "contact_soon")
-      .map((c) => c.id);
+    return runLookalikeJob("strong");
+  }
+
+  // R27 — the shared Lookalike runner. `"selection"` seeds from the checked rows; `"strong"` (the
+  // scope-exhausted recovery) seeds from every Contact-now/soon row and resets the exhausted flag.
+  // The kick/reload/catch/finally boilerplate is identical; only the seeds + the exact toast copy
+  // differ per mode (copy preserved verbatim).
+  async function runLookalikeJob(mode: "selection" | "strong") {
+    const ids = (
+      mode === "strong"
+        ? companies.filter((c) => c.label === "contact_now" || c.label === "contact_soon")
+        : coSel
+    ).map((c) => c.id);
     if (!ids.length) {
       return toast(
-        "No Contact-now or Contact-soon companies yet to seed lookalikes — score some rows " +
-          "first, or regenerate the scope from the Business brief.",
+        mode === "strong"
+          ? "No Contact-now or Contact-soon companies yet to seed lookalikes — score some rows " +
+              "first, or regenerate the scope from the Business brief."
+          : "Select companies to find lookalikes",
         "warn"
       );
     }
@@ -1111,16 +1179,34 @@ export default function ListPage() {
       if (!job) return;
       await reloadCompanies();
       const found = Number(job.result?.found ?? 0);
+      const dropped = Number(job.result?.dropped ?? 0);
       if (found) {
-        setScopeExhausted(false); // fresh peers to review — the scope is no longer a dead end
+        if (mode === "strong") {
+          setScopeExhausted(false); // fresh peers to review — the scope is no longer a dead end
+          toast(
+            `Found ${found} new lookalike ${found === 1 ? "company" : "companies"} of your ` +
+              "best rows · select them and click Update AI Score to score them"
+          );
+        } else {
+          const tail = dropped ? ` · ${dropped} already in your list` : "";
+          toast(
+            `Found ${found} new lookalike ${found === 1 ? "company" : "companies"}${tail} · ` +
+              "select rows and click Update AI Score to score them"
+          );
+        }
+      } else if (mode === "selection" && dropped) {
         toast(
-          `Found ${found} new lookalike ${found === 1 ? "company" : "companies"} of your ` +
-            "best rows · select them and click Update AI Score to score them"
+          `Apollo returned ${dropped} similar ${dropped === 1 ? "company" : "companies"}, ` +
+            `but ${dropped === 1 ? "it is" : "all are"} already in your list — nothing new to add.`,
+          "warn"
         );
       } else {
         toast(
-          "No new lookalikes of your Strong/Good rows — regenerate the scope from the " +
-            "Business brief to open up a fresh search.",
+          mode === "strong"
+            ? "No new lookalikes of your Strong/Good rows — regenerate the scope from the " +
+                "Business brief to open up a fresh search."
+            : "No companies similar to the selection were found. The seeds may be too sparse — " +
+                "enrich them first (industry, size and revenue drive the match) or select more rows.",
           "warn"
         );
       }
@@ -1265,16 +1351,22 @@ export default function ListPage() {
   async function findPeopleFor(ids: string[], groupId: string) {
     let found = 0;
     let dropped = 0;
-    for (let i = 0; i < ids.length; i += FIND_ORGS_CHUNK) {
-      const res = await findPeople(client, {
-        company_ids: ids.slice(i, i + FIND_ORGS_CHUNK),
-        icp_id: fIcp || null,
-        group_id: groupId,
-      });
-      found += res.found;
-      dropped += res.dropped;
+    try {
+      for (let i = 0; i < ids.length; i += FIND_ORGS_CHUNK) {
+        const res = await findPeople(client, {
+          company_ids: ids.slice(i, i + FIND_ORGS_CHUNK),
+          icp_id: fIcp || null,
+          group_id: groupId,
+        });
+        found += res.found;
+        dropped += res.dropped;
+      }
+    } finally {
+      // R29c — reload even if a chunk failed: earlier chunks may have landed people, so a partial
+      // run must still refresh the list instead of leaving it stale. The error (if any) re-propagates
+      // to the caller AFTER this runs.
+      await Promise.all([reloadProspects(), reloadCompanies()]);
     }
-    await Promise.all([reloadProspects(), reloadCompanies()]);
     return { found, dropped };
   }
   // Report the outcome of a people-find (shared by the merged stage→find and the manual re-run).
@@ -1302,7 +1394,9 @@ export default function ListPage() {
   // Manual re-run: find people at the ticked Step-2 companies. `runFindPeople` re-searches by
   // explicit id, so a row can be re-searched after loosening the personas.
   async function runFindPeople() {
-    const ids = pplCoSel.map((c) => c.id);
+    // R6 — a staged-then-excluded company may be ticked (to Remove it), but must never be sent to
+    // find-people: drop excluded from the funnel-advancing target.
+    const ids = pplCoSel.filter((c) => c.label !== "excluded_by_rules").map((c) => c.id);
     if (!ids.length) return toast("Select companies in the list to find people", "warn");
     setFindingPpl(true);
     setFindingPplIds(new Set(ids));
@@ -1353,28 +1447,18 @@ export default function ListPage() {
 
   // Reveal + score a set of people on one async background job (W4). Rows show "Scoring…" until it
   // settles; the worker owns the batch (survives a tab close), and we reload once on completion.
-  async function revealScoreJob(rows: { id: string; key: string }[]) {
-    const ids = rows.map((r) => r.id);
-    setScoringPersonIds((prev) => new Set([...prev, ...ids]));
-    try {
-      const job = await runScoringJob(
-        () => enrichScoreProspectsAsync(client, rows.map((r) => r.key)),
-        "Reveal & score"
-      );
-      if (clientRef.current !== client) return;
-      if (job) {
-        await reloadProspects();
-        const r = job.result as {
-          enriched?: number;
-          credits_spent?: number;
-          scored?: number;
-          failed?: number;
-          enrich_failed?: number;
-        };
-        const enriched = Number(r.enriched ?? 0);
-        const credits = Number(r.credits_spent ?? 0);
-        const scored = Number(r.scored ?? 0);
-        const failed = Number(r.failed ?? 0) + Number(r.enrich_failed ?? 0);
+  function revealScoreJob(rows: { id: string; key: string }[]) {
+    return runJob({
+      ids: rows.map((r) => r.id),
+      setScoring: setScoringPersonIds,
+      kick: () => enrichScoreProspectsAsync(client, rows.map((r) => r.key)),
+      label: "Reveal & score",
+      reload: reloadProspects,
+      onDone: (result) => {
+        const enriched = Number(result.enriched ?? 0);
+        const credits = Number(result.credits_spent ?? 0);
+        const scored = Number(result.scored ?? 0);
+        const failed = Number(result.failed ?? 0) + Number(result.enrich_failed ?? 0);
         const failTail = failed ? ` · ${failed} failed` : "";
         toast(
           enriched
@@ -1384,36 +1468,24 @@ export default function ListPage() {
             : `Scored ${scored}${failTail}`,
           failed ? "warn" : undefined
         );
-      }
-    } catch (e) {
-      if (clientRef.current === client)
-        toast(e instanceof Error ? e.message : "Reveal & score failed", "warn");
-    } finally {
-      if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
-    }
+      },
+    });
   }
 
   // Score a set of people on one async background job (W4). Rows show "Scoring…" until it settles;
   // the worker owns the batch (survives a tab close), and we reload once on completion.
-  async function scorePeopleJob(rows: { id: string; key: string }[]) {
-    const ids = rows.map((r) => r.id);
-    setScoringPersonIds((prev) => new Set([...prev, ...ids]));
-    try {
-      const job = await runScoringJob(
-        () => rescoreProspectsAsync(client, rows.map((r) => r.key)),
-        "Scoring"
-      );
-      if (clientRef.current !== client) return;
-      if (job) {
-        await reloadProspects();
-        const scored = Number(job.result?.scored ?? 0);
+  function scorePeopleJob(rows: { id: string; key: string }[]) {
+    return runJob({
+      ids: rows.map((r) => r.id),
+      setScoring: setScoringPersonIds,
+      kick: () => rescoreProspectsAsync(client, rows.map((r) => r.key)),
+      label: "Scoring",
+      reload: reloadProspects,
+      onDone: (r) => {
+        const scored = Number(r.scored ?? 0);
         toast(`Scored ${scored} ${scored === 1 ? "person" : "people"}`);
-      }
-    } catch (e) {
-      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Scoring failed", "warn");
-    } finally {
-      if (clientRef.current === client) clearScoring(setScoringPersonIds, ids);
-    }
+      },
+    });
   }
 
   // ---- Step-2 Settings (find-people scope) handlers ----
@@ -2015,7 +2087,9 @@ export default function ListPage() {
             </div>
             <div className="countrow">
               <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>&nbsp;people&nbsp;·&nbsp;
-              <b>{selCount}</b>&nbsp;selected
+              {/* R13 — the "selected" count reads the WHOLE selection (what Reveal & score acts on),
+                  mirroring Step 1's `coSelCount`, so the countrow and the dock never disagree. */}
+              <b>{selectedProspects.length}</b>&nbsp;selected
             </div>
             <div className="list-body">
               {pplBusy && (
@@ -2091,7 +2165,9 @@ export default function ListPage() {
                                 type="checkbox"
                                 className="tbl-check"
                                 checked={companyChecked.has(c.id)}
-                                onChange={() => toggleCo(c)}
+                                // R6 — allowExcluded: a staged company later re-scored excluded can
+                                // still be ticked here to Remove it (the funnel actions skip excluded).
+                                onChange={() => toggleCo(c, true)}
                                 onClick={(e) => e.stopPropagation()}
                                 title="Select this company to find people"
                               />
@@ -2102,6 +2178,13 @@ export default function ListPage() {
                             {c.icp_id && icpNameById.get(c.icp_id) ? (
                               <span className="badge badge-neutral">
                                 {icpNameById.get(c.icp_id)}
+                              </span>
+                            ) : null}
+                            {/* R26 — the V2-3 "trigger" call-sheet element: the email hook (a paid
+                                LLM output), rendered as one line under the company when present. */}
+                            {c.trigger_line ? (
+                              <span className="domain" title="Email hook · AI trigger">
+                                ↳ {c.trigger_line}
                               </span>
                             ) : null}
                           </div>

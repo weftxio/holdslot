@@ -65,7 +65,6 @@ function jsonFor(method: string, path: string): unknown {
           company_descriptor: "SaaS · 200-500 · US",
           title: "VP Marketing",
           seniority: "vp",
-          fit_tier: "Strong",
           fit_reason: "Right seniority and category.",
           decision: "pending",
         },
@@ -87,11 +86,13 @@ function jsonFor(method: string, path: string): unknown {
     case "/brief/structure/status":
       return { job_id: null, status: "idle", spec_version: null, error: null }; // ResearchJob
 
-    // List route
+    // List route — the client cursor-pages these, reading `.items` + `.next_cursor` (pageThrough in
+    // lib/api.ts). Returning a bare [] made `page.items` undefined → a swallowed TypeError, so e2e
+    // passed while the list rendered nothing (R17). One page, no next cursor.
     case "/prospects":
-      return [];
+      return { items: [], next_cursor: null };
     case "/companies":
-      return [];
+      return { items: [], next_cursor: null };
     case "/sourcing-docs":
       return { company_fit: null, prospect_fit: null }; // SourcingDocList
     case "/people/departments":

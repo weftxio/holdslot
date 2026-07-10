@@ -25,7 +25,7 @@ import threading
 import uuid
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,10 @@ from app.domains.briefs.research_spec import (
 )
 from app.domains.icps import icp_docs
 from app.domains.prospects.feedback import keyword_yield
+
+# R3/R27 — the zombie-reap window is defined once in prospects/scoring (see MAX_JOB_AGE_SECONDS use
+# below); importing it kills the drifting `= 360` copy that sat below the worst-case worker life.
+from app.domains.prospects.scoring import MAX_JOB_AGE_SECONDS
 from app.integrations.openrouter.client import LlmError, structured_completion
 from app.models import Brief, Company, Prompt, ResearchJob, ResearchRun, ResearchSpec
 
@@ -67,9 +71,11 @@ _ERR_MAX = 500  # cap the stored error message
 # except/finally never fires and the job is left `running` forever (a zombie): every page load
 # resumes the "Generating…" poll, AND enqueue_structuring coalesces each Regenerate click onto it —
 # the surface is wedged. So on each read we reap any non-terminal job older than a worker could
-# possibly live → `error` (mirrors prospects/scoring.py). Keep this comfortably ABOVE the Lambda
-# timeout (infra/terraform/lambda.tf, currently 300s).
-MAX_JOB_AGE_SECONDS = 360
+# possibly live → `error` (mirrors prospects/scoring.py).
+#
+# MAX_JOB_AGE_SECONDS (the zombie-reap window) is imported at the top from prospects/scoring — one
+# source of truth (480s = 120s async-queue max age + 300s Lambda run + 60s buffer). The old local
+# `= 360` copy sat below the real worst-case worker life and could false-reap a live job (R3/R27).
 
 
 def _job_age_seconds(job: ResearchJob) -> float:
@@ -177,6 +183,27 @@ def _fail(db: Session, job: ResearchJob, message: str) -> None:
     job.status = "error"
     job.error = message[:_ERR_MAX]
     db.commit()
+
+
+def _finalize(db: Session, job_id, status: str, *, error: str | None = None,
+              spec_version: int | None = None, llm_call_id=None) -> bool:
+    """Worker terminal write, guarded on the worker still OWNING the job (`status='running'`, R3). A
+    job reaped mid-run (or claimed by a duplicate dispatch) is no longer `running`, so this no-ops
+    instead of resurrecting a reaped `error` job to `done`. Returns True iff it wrote."""
+    values: dict = {"status": status}
+    if error is not None:
+        values["error"] = error[:_ERR_MAX]
+    if spec_version is not None:
+        values["spec_version"] = spec_version
+    if llm_call_id is not None:
+        values["llm_call_id"] = llm_call_id
+    wrote = db.execute(
+        update(ResearchJob)
+        .where(ResearchJob.id == job_id, ResearchJob.status == "running")
+        .values(**values)
+    ).rowcount
+    db.commit()
+    return bool(wrote)
 
 
 def _insert_spec(db: Session, tenant_id, spec, gaps, icp_suggestions, result) -> int | None:
@@ -336,12 +363,21 @@ def run_structuring_job(tenant_id, job_id, icp_ids=None, session_factory=None) -
         if job is None:
             log.warning("structuring job vanished (job_id=%s)", job_id)
             return
-        job.status = "running"
+        # R3 — claim atomically; abort with no side effects if another path (dup dispatch / reaper)
+        # already owns the row (mirrors prospects/scoring.run_scoring_job).
+        claimed = db.execute(
+            update(ResearchJob)
+            .where(ResearchJob.id == jid, ResearchJob.status == "queued")
+            .values(status="running")
+        ).rowcount
         db.commit()
+        if not claimed:
+            log.warning("structuring job %s not claimable (dup dispatch / terminal)", job_id)
+            return
 
         brief = db.execute(select(Brief).where(Brief.tenant_id == tid)).scalar_one_or_none()
         if brief is None or completeness(brief.data) == 0:
-            _fail(db, job, "fill in the brief before structuring")
+            _finalize(db, jid, "error", error="fill in the brief before structuring")
             return
 
         saved = latest_system_prompt(db, tid)
@@ -375,7 +411,7 @@ def run_structuring_job(tenant_id, job_id, icp_ids=None, session_factory=None) -
                     tid, brief.data, [doc], saved, kw, cust_anchors, session_factory
                 )
                 if err:
-                    _fail(db, job, err)
+                    _finalize(db, jid, "error", error=err)
                     return
                 for b in blocks:
                     b["generated_at"] = now_iso
@@ -394,12 +430,9 @@ def run_structuring_job(tenant_id, job_id, icp_ids=None, session_factory=None) -
             icp_suggestions = (prior.icp_suggestions if prior else None) or []
             version = _insert_spec(db, tid, spec, gaps, icp_suggestions, last_result)
             if version is None:
-                _fail(db, job, "could not allocate a spec version")
+                _finalize(db, jid, "error", error="could not allocate a spec version")
                 return
-            job.status = "done"
-            job.spec_version = version
-            job.llm_call_id = last_result.llm_call_id
-            db.commit()
+            _finalize(db, jid, "done", spec_version=version, llm_call_id=last_result.llm_call_id)
             return
 
         # FULL run — one call over every ICP (coherent cross-ICP validation + suggestions).
@@ -407,7 +440,7 @@ def run_structuring_job(tenant_id, job_id, icp_ids=None, session_factory=None) -
             tid, brief.data, sel_docs, saved, kw, cust_anchors, session_factory
         )
         if err:
-            _fail(db, job, err)
+            _finalize(db, jid, "error", error=err)
             return
         for b in blocks:
             b["generated_at"] = now_iso
@@ -415,20 +448,15 @@ def run_structuring_job(tenant_id, job_id, icp_ids=None, session_factory=None) -
         spec, gaps, icp_suggestions = assemble_spec(result.data)
         version = _insert_spec(db, tid, spec, gaps, icp_suggestions, result)
         if version is None:
-            _fail(db, job, "could not allocate a spec version")
+            _finalize(db, jid, "error", error="could not allocate a spec version")
             return
 
-        job.status = "done"
-        job.spec_version = version
-        job.llm_call_id = result.llm_call_id
-        db.commit()
+        _finalize(db, jid, "done", spec_version=version, llm_call_id=result.llm_call_id)
     except Exception:
         log.exception("structuring job failed (job_id=%s)", job_id)
         try:
             db.rollback()
-            job = db.get(ResearchJob, jid)
-            if job is not None and job.status not in ("done", "error"):
-                _fail(db, job, "internal error during structuring")
+            _finalize(db, jid, "error", error="internal error during structuring")
         except Exception:
             log.exception("could not record structuring failure (job_id=%s)", job_id)
     finally:

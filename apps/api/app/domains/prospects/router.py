@@ -6,8 +6,9 @@ pure modules; this layer is orchestration + persistence.
 
 The legacy seed/CSV-import/AI-sourcing loop was removed in the Apollo-only teardown. The two-stage
 company→people loop is live: find-company / find-people return rows UNSCORED, fit scoring is an
-explicit step (`/companies/rescore`, `/prospects/rescore`), and `confirm_enrich` spends the Apollo
-`people/match` credit to reveal verified emails (the only credit spend in this surface).
+explicit step (`/companies/rescore`, `/prospects/rescore`), and the async **Reveal & score** door
+(`/prospects/enrich-score-async`) spends the Apollo `people/match` credit to reveal verified emails
+(the only credit spend in this surface — the v1 sync `/prospects/enrich` twin was retired in D+.5).
 """
 
 from __future__ import annotations
@@ -56,8 +57,6 @@ from app.domains.prospects.schemas import (
     CompanyRescoreIn,
     CompanySelectIn,
     DepartmentFacet,
-    EnrichIn,
-    EnrichResult,
     FacetCount,
     FacetOption,
     FindResult,
@@ -126,11 +125,9 @@ MAX_COMPANIES_PER_FIND = 15  # LLM-scored companies per RESCORE/update request (
 # the async rescore path, so find is latency-bound (classify+enrich), NOT credit-bound (company
 # search + org enrich are FREE on this account). The find-company path is ASYNC (a background
 # scoring_job, not the 30s request), so the ceiling is the worker/Lambda budget — Stage 1b lifts it
-# to 100 to hit the ≥3× rows/find KPI. The sync `/find-company` route is clamped separately below.
+# to 100 to hit the ≥3× rows/find KPI. (The v1 sync `/find-company` twin + its separate clamp were
+# retired in V2-4 — the web app uses the async variant only.)
 FIND_COMPANY_LIMIT = int(os.environ.get("HOLDSLOT_FIND_COMPANY_LIMIT", "100"))
-# The synchronous `/find-company` route (tests / back-compat; the web app uses the async variant)
-# still runs classify+enrich inline behind the 30s API-Gateway cap, so it keeps the pre-1b ceiling.
-SYNC_FIND_COMPANY_LIMIT = int(os.environ.get("HOLDSLOT_SYNC_FIND_COMPANY_LIMIT", "25"))
 # D+ Stage 1b relax ladder. A company search returning fewer than FIND_RELAX_MIN matches auto-widens
 # one deterministic rung at a time (see `_company_relax_ladder`) so a find never dead-ends on an
 # over-narrow AI scope (KPI: <10% zero-result finds). FIND_OVER_BROAD flags a scope so loose the
@@ -138,9 +135,7 @@ SYNC_FIND_COMPANY_LIMIT = int(os.environ.get("HOLDSLOT_SYNC_FIND_COMPANY_LIMIT",
 FIND_RELAX_MIN = int(os.environ.get("HOLDSLOT_FIND_RELAX_MIN", "25"))
 FIND_OVER_BROAD = int(os.environ.get("HOLDSLOT_FIND_OVER_BROAD", "100000"))
 MAX_ORGS_PER_FIND = 8  # selected orgs searched per find-people request (1 Apollo call each)
-MAX_PEOPLE_PER_FIND = 15  # LLM-scored people per RESCORE request (30s sync cap; the spend)
 MAX_PEOPLE_PER_FIND_RUN = 250  # unscored people landed per find-people request (free, no LLM)
-MAX_ENRICH_PER_REQUEST = 15  # people/match (paid) per enrich request — bounds spend + the 30s cap
 
 
 def _parse_ids(raw: list[str]) -> list[uuid.UUID]:
@@ -453,7 +448,8 @@ def list_prospects(
 ) -> ProspectPage:
     # `Prospect.id` is the deterministic tiebreaker: a whole find-run batch shares one created_at
     # (Postgres now() is fixed per transaction), so without it offset paging could skip/duplicate
-    # rows at a page boundary. The composite index covers the first two keys; the id sort is cheap.
+    # rows at a page boundary. `ix_prospect_tenant_score` (0027) covers the leading
+    # (tenant_id, score_total DESC, created_at DESC) sort; the id sort is a cheap final tiebreak.
     offset = decode_cursor(cursor)
     rows = (
         db.execute(
@@ -648,10 +644,11 @@ def _apply_company_verdict(
 
 
 def _icp_letter(name: str | None) -> str | None:
-    """The A/B letter from an ICP profile's `name` ("ICP A" → "A"); None if it carries no single-
-    letter tag. Maps the scorer's `icp_match.icp` ("A"/"B") back to the ICP row it belongs to."""
+    """The letter from an ICP profile's `name` ("ICP A" → "A", "ICP C" → "C"); None if it carries no
+    single-letter tag. Maps the scorer's `icp_match.icp` back to the ICP row. Any single A–Z letter
+    is accepted (R19 — a tenant with a 3rd+ ICP must re-tag past B)."""
     tok = (name or "").strip().rsplit(" ", 1)[-1].upper()
-    return tok if tok in ("A", "B") else None
+    return tok if len(tok) == 1 and tok.isalpha() else None
 
 
 def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
@@ -736,14 +733,16 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
             run_id=_apollo_run_id(),
             spec_version=spec.version if spec else None,
             source="rescore",
-            rubric_version=fit.SCORE_RUBRIC_VERSION,
+            # R28 — stamp the rubric prompt version ACTUALLY loaded for this run (founder-editable),
+            # not the static code default, so the telemetry ties the run to the real prompt.
+            rubric_version=(f"v{rubric.version}" if rubric else fit.SCORE_RUBRIC_VERSION),
             rows_pushed=len(rows),
             cost_usd=round(cost, 6),
         )
     )
     db.commit()
-    for c in rows:
-        db.refresh(c)
+    # R20b — no per-row refresh: this worker returns only counts, so re-reading each row after the
+    # commit was one wasted round-trip per row for values nobody reads.
     web_failed = len(survivors) - web_scored
     return {
         "scored": len(rows) - web_failed,  # gated rows + web successes both carry a label
@@ -847,6 +846,12 @@ def _score_prospects_v2(db: Session, tenant_id, rows: list[Prospect]) -> dict:
     # Pass 1 — deterministic people gates.
     survivors: list[Prospect] = []
     for p in rows:
+        # R2 — a row client-excluded at the post-enrich DNC gate stays excluded; never re-score it
+        # into a contactable label (the enrich pass set label + this reason together).
+        if p.label == labeling.EXCLUDED and (p.fit_components or {}).get(
+            "reason"
+        ) == labeling.REASON_RULE_EXCLUSION:
+            continue
         v = _det(p)
         if v.label is not None:
             _apply_prospect_verdict(p, v)
@@ -895,14 +900,15 @@ def _score_prospects_v2(db: Session, tenant_id, rows: list[Prospect]) -> dict:
             run_id=_apollo_run_id(),
             spec_version=spec.version if spec else None,
             source="rescore",
-            rubric_version=fit.SCORE_RUBRIC_VERSION,
+            # R28 — stamp the rubric prompt version ACTUALLY loaded for this run (founder-editable),
+            # not the static code default, so the telemetry ties the run to the real prompt.
+            rubric_version=(f"v{rubric.version}" if rubric else fit.SCORE_RUBRIC_VERSION),
             rows_pushed=len(rows),
             cost_usd=round(cost, 6),
         )
     )
     db.commit()
-    for p in rows:
-        db.refresh(p)
+    # R20b — no per-row refresh (returns only counts; the re-read was waste, mirrors companies).
     web_failed = len(survivors) - web_scored
     return {"scored": len(rows) - web_failed, "failed": web_failed, "cost_usd": round(cost, 6)}
 
@@ -1129,29 +1135,32 @@ def _apply_enrichment(company: Company, e: dict) -> None:
         company.evidence = {**(company.evidence or {}), **e["evidence"]}
 
 
-def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
+def _upsert_company(
+    db: Session,
+    tenant_id,
+    parsed: dict,
+    by_org: dict[str, Company],
+    by_domain: dict[str, Company],
+) -> Company:
     """Find-or-create a company by `apollo_org_id` (else `domain`); update identity fields in place.
+
+    `by_org` / `by_domain` are the batch-preloaded existing rows (R20c — one `IN()` per key, not two
+    point SELECTs per row); a row created here is registered back into them so a later survivor in
+    the same batch reuses it (matching the old flush-then-reselect behaviour).
 
     Industry/size/country come from `organizations/enrich` (merged into `parsed` before this call
     for NEW rows only), so a non-null enrich value REFRESHES the stored one; a null never clobbers a
     real value. `apollo_org_id` is always (re)stamped and `evidence` is merged (new keys win).
     """
     org_id, domain = parsed.get("apollo_org_id"), parsed["domain"]
-    company = None
-    if org_id:
-        company = db.execute(
-            select(Company).where(
-                Company.tenant_id == tenant_id, Company.apollo_org_id == org_id
-            )
-        ).scalar_one_or_none()
-    if company is None:
-        company = db.execute(
-            select(Company).where(Company.tenant_id == tenant_id, Company.domain == domain)
-        ).scalar_one_or_none()
+    company = (by_org.get(org_id) if org_id else None) or by_domain.get(domain)
     if company is None:
         company = Company(tenant_id=tenant_id, domain=domain, source="apollo")
         db.add(company)
+        by_domain[domain] = company
     company.apollo_org_id = org_id or company.apollo_org_id
+    if company.apollo_org_id:
+        by_org[company.apollo_org_id] = company  # so a later same-org survivor reuses this row
     company.name = parsed.get("name") or company.name or ""
     company.website = parsed.get("website") or company.website
     company.linkedin_url = parsed.get("linkedin_url") or company.linkedin_url
@@ -1165,16 +1174,11 @@ def _upsert_company(db: Session, tenant_id, parsed: dict) -> Company:
     return company
 
 
-def _find_company_core(
-    db: Session, tenant_id, params: dict, *, ceiling: int | None = None
-) -> FindResult:
-    """Flow-A find from the latest spec (the sync endpoint's body — `limit`, `icp_id`, and the
-    optional `company_search_params` / `intent_filters` Settings overrides). Shared by the sync
-    `/companies/find-company` endpoint and the W4 async worker. Rows land UNSCORED.
-
-    `ceiling` caps the rows: the async worker passes the full `FIND_COMPANY_LIMIT` (bounded by the
-    Lambda timeout, not the 30s gateway); the sync route passes the smaller sync cap. Defaults to
-    `FIND_COMPANY_LIMIT` when unset.
+def _find_company_core(db: Session, tenant_id, params: dict) -> FindResult:
+    """Flow-A find from the latest spec (request body — `limit`, `icp_id`, and the optional
+    `company_search_params` / `intent_filters` Settings overrides). Driven by the W4 async worker
+    (`run_find_company`); the v1 sync twin was retired in V2-4. Rows land UNSCORED, capped at
+    `FIND_COMPANY_LIMIT` (bounded by the Lambda timeout, not the 30s gateway).
 
     Multi-ICP (spec v4): the find is ICP-scoped — `icp_id` picks which ICP's targeting block runs.
     A single-block spec resolves without one (and the row still gets labeled from the block); a
@@ -1204,7 +1208,7 @@ def _find_company_core(
             icp = uuid.UUID(str(block["icp_id"]))
         except ValueError:
             icp = None
-    ceiling = ceiling if ceiling is not None else FIND_COMPANY_LIMIT
+    ceiling = FIND_COMPANY_LIMIT
     credit = blob.get("credit_policy") or {}
     hard_cap = min(ceiling, credit.get("max_companies", 500))
     limit = max(1, min(params.get("limit") or ceiling, hard_cap))
@@ -1250,8 +1254,10 @@ def _find_company_core(
         filter_body = _merge_uids(
             filter_body, "currently_not_using_any_of_technology_uids", neg_tech
         )
-    # `custom` when a per-call OR saved override supplied the scope (Settings modal), else AI block.
-    scope_source = "custom" if has_override else "ai"
+    # `custom` only when the per-call OR saved override actually CONTRIBUTED a field (R28 — an empty
+    # override present but resolved to nothing is an "ai" scope). `has_override` still gates the
+    # feedback merge above (an override, even empty, is the source of truth there — untouched).
+    scope_source = "custom" if (o_csp or o_intent) else "ai"
     return _run_company_find(
         db,
         tenant_id,
@@ -1266,10 +1272,24 @@ def _find_company_core(
     )
 
 
+# Feedback-derived NEGATIVE filters that flip as rows get scored (Stage 3 country exclusion, Stage 4
+# negative tech). They must NOT key the page cursor: a re-run of the same scope would else churn the
+# hash every rescore and re-buy page 1 (R4). Stripped before hashing; they still ride in the run's
+# executed `filter_body` lineage.
+_VOLATILE_SCOPE_KEYS = (
+    "organization_not_locations",
+    "currently_not_using_any_of_technology_uids",
+)
+
+
 def _body_hash(filter_body: dict) -> str:
-    """Stable short hash of an executed Apollo body — the page-cursor key (D+ Stage 3): an identical
-    scope re-run resolves to the same hash so the find can resume at the next page."""
-    blob = json.dumps(filter_body, sort_keys=True, default=str)
+    """Stable short hash of the SCOPE — the page-cursor key (D+ Stage 3). Only the stable scope keys
+    are hashed: the volatile feedback negatives (`_VOLATILE_SCOPE_KEYS`) are dropped here, and the
+    caller passes the PRE-relax body so the live relax rung is excluded too. So an identical scope
+    re-run resolves to the same hash and resumes at the next page; a genuine scope change (incl. an
+    ICP-tech edit) changes the hash and resets to page 1."""
+    stable = {k: v for k, v in filter_body.items() if k not in _VOLATILE_SCOPE_KEYS}
+    blob = json.dumps(stable, sort_keys=True, default=str)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -1280,6 +1300,11 @@ def _body_hash(filter_body: dict) -> str:
 # changed scope has a different hash → no prior cursor → starts at page 1 (reset is inherent). When
 # the cursor reaches `total_pages` the scope is exhausted → the "regenerate" signal.
 _CURSOR_SCAN_LIMIT = 50  # tenant's recent runs scanned to find this scope's cursor (small N)
+# R22b — only company-find runs carry a page `body_hash`; scoping the scan to these sources keeps
+# the high-frequency rescore/enrich runs (one per scoring pass) from evicting a find cursor out of
+# the latest-N window. (`apollo` = company find, `lookalike` = lookalike find; the Python body_hash
+# match below still skips people-find `apollo` runs, which never carry a cursor.)
+_CURSOR_FIND_SOURCES = ("apollo", "lookalike")
 
 
 def _cursor_decision(prior_meta: dict | None) -> tuple[int, bool]:
@@ -1288,6 +1313,13 @@ def _cursor_decision(prior_meta: dict | None) -> tuple[int, bool]:
     short-circuits). A prior `page_cursor` → resume at the next page so page 1 is never re-bought.
     """
     if not prior_meta:
+        return 1, False
+    # R1: the cursor's page numbers are denominated in a page SIZE. If that size changed (the
+    # FIND_COMPANY_LIMIT knob widened past 100, so `_paginate` walks different-width pages) or is
+    # missing (a pre-R1 run), the stored page/exhaustion no longer map to rows — discard and restart
+    # at page 1. `_paginate` now always fetches `PER_PAGE_MAX`-wide pages, so this only trips on a
+    # legacy cursor, and only once.
+    if prior_meta.get("per_page") != apollo.PER_PAGE_MAX:
         return 1, False
     if prior_meta.get("scope_exhausted"):
         return 1, True
@@ -1304,7 +1336,10 @@ def _resume_page(db: Session, tenant_id, body_hash: str) -> tuple[int, bool]:
     recent = (
         db.execute(
             select(ResearchRun.result_meta)
-            .where(ResearchRun.tenant_id == tenant_id)
+            .where(
+                ResearchRun.tenant_id == tenant_id,
+                ResearchRun.source.in_(_CURSOR_FIND_SOURCES),  # R22b — skip rescore/enrich runs
+            )
             .order_by(ResearchRun.created_at.desc())
             .limit(_CURSOR_SCAN_LIMIT)
         )
@@ -1413,13 +1448,32 @@ _APAC_LOCATIONS = frozenset(
         "brunei", "mongolia", "macau", "macao", "nepal",
     }
 )
+# Major APAC CITIES — so a city-only scope ("Sydney", "Tokyo") that carries NO country segment is
+# still caught (R29d). Kept to unambiguous metros to avoid a same-name collision with a non-APAC
+# place; a "City, Country" scope already trips on its country token above.
+_APAC_CITIES = frozenset(
+    {
+        "sydney", "melbourne", "brisbane", "perth", "adelaide", "canberra",
+        "auckland", "wellington", "christchurch",
+        "tokyo", "osaka", "yokohama", "nagoya", "fukuoka",
+        "seoul", "busan", "taipei", "kaohsiung",
+        "shanghai", "beijing", "shenzhen", "guangzhou", "hangzhou", "chengdu",
+        "mumbai", "bengaluru", "bangalore", "hyderabad", "chennai", "pune", "kolkata",
+        "jakarta", "surabaya", "bandung", "manila", "cebu",
+        "bangkok", "hanoi", "ho chi minh city", "kuala lumpur",
+        "colombo", "dhaka", "karachi", "lahore", "islamabad", "kathmandu", "phnom penh", "yangon",
+    }
+)
 
 
 def _is_apac(locations) -> bool:
-    """True if any Apollo location names an APAC country (case-insensitive, comma-token match)."""
+    """True if any Apollo location names an APAC country OR a major APAC city (case-insensitive,
+    comma-token match). The city set catches a city-only scope like "Sydney" with no country segment
+    (R29d); a "City, Country" scope still trips on its country token."""
     for loc in locations or []:
         for token in str(loc).lower().split(","):
-            if token.strip() in _APAC_LOCATIONS:
+            t = token.strip()
+            if t in _APAC_LOCATIONS or t in _APAC_CITIES:
                 return True
     return False
 
@@ -1472,7 +1526,11 @@ def _run_company_find(
     # D+ Stage 3 — page cursor: an unchanged scope resumes at the page after the last one fetched,
     # so a repeat find advances instead of re-buying page 1. A scope already walked to exhaustion
     # short-circuits (no re-buy) and just re-flags "regenerate".
-    body_hash = _body_hash(resolved_body)
+    # R4 — key the cursor on the PRE-relax body (relax rung excluded), with feedback negatives
+    # stripped inside `_body_hash`; a repeat find of the same scope keeps the cursor instead of
+    # re-buying page 1 the moment feedback or the relax rung shifts. `resolved_body` (post-relax,
+    # feedback) is still stored as the executed lineage on the run.
+    body_hash = _body_hash(filter_body)
     resume_page, prior_exhausted = (
         _resume_page(db, tenant_id, body_hash) if use_cursor else (1, False)
     )
@@ -1526,8 +1584,26 @@ def _run_company_find(
     brief = _latest_brief(db, tenant_id)
     cost = 0.0
     companies: list[Company] = []
+    # R20c — batch-preload the survivors' existing rows (one IN() per key) instead of two point
+    # SELECTs per row inside the loop; `_upsert_company` reads/updates these maps in memory.
+    domains = {p["domain"] for p in survivors if p.get("domain")}
+    org_ids = {p["apollo_org_id"] for p in survivors if p.get("apollo_org_id")}
+    existing = (
+        db.execute(
+            select(Company).where(
+                Company.tenant_id == tenant_id,
+                or_(Company.domain.in_(domains), Company.apollo_org_id.in_(org_ids)),
+            )
+        )
+        .scalars()
+        .all()
+        if (domains or org_ids)
+        else []
+    )
+    by_domain = {c.domain: c for c in existing}
+    by_org = {c.apollo_org_id: c for c in existing if c.apollo_org_id}
     for p in survivors:
-        c = _upsert_company(db, tenant_id, p)
+        c = _upsert_company(db, tenant_id, p, by_org, by_domain)
         c.run_id, c.icp_id = run_id, icp or c.icp_id
         companies.append(c)
 
@@ -1581,6 +1657,7 @@ def _run_company_find(
         "body_hash": body_hash,  # the page-cursor key (Stage 3)
         "resume_page": resume_page,  # page this run started at (Stage 3)
         "page_cursor": end_page,  # last page reached → next run resumes at +1 (Stage 3)
+        "per_page": search_meta.get("per_page"),  # page SIZE the cursor is denominated in (R1)
         "total_pages": total_pages,
         "scope_exhausted": scope_exhausted,
         "known_skipped": known_skipped,
@@ -1793,9 +1870,12 @@ def _prospect_fit_prompt(db: Session, tenant_id, sample_id: str | None) -> FitPr
         m["role"]: m["content"]
         for m in fit.build_prospect_score_v2_messages(rubric_body, payload, targeting)
     }
-    sample = (prospect.enrichment or {}).get("full_name") or (
-        (prospect.enrichment or {}).get("company") if prospect else None
-    )
+    # R7 — the whole deref must be inside the guard: a fresh tenant with zero prospects hit
+    # `prospect.enrichment` here (only the second access was guarded) → 500 AttributeError.
+    sample = None
+    if prospect:
+        e = prospect.enrichment or {}
+        sample = e.get("full_name") or e.get("company")
     return FitPromptOut(
         system=by_role.get("system", ""),
         user=by_role.get("user", ""),
@@ -1876,13 +1956,15 @@ def run_enrich_score_prospects(db: Session, tenant_id, params: dict) -> dict:
     seniority/department/email until match, so scoring a pre-reveal row gates on missing contact and
     lands a degraded label. Idempotent on the enrich side (an already-revealed row never re-spends),
     so a re-run just re-scores. Bounded by `ASYNC_BATCH_MAX` (one wave). Returns the merged counts
-    `{requested, enriched, credits_spent, enrich_failed, scored, failed, cost_usd}`."""
+    `{requested, enriched, credits_spent, enrich_failed, skipped_excluded, scored, failed,
+    cost_usd}`."""
     keys = [str(k) for k in (params.get("identity_keys") or [])][:ASYNC_BATCH_MAX]
     zero = {
         "requested": 0,
         "enriched": 0,
         "credits_spent": 0,
         "enrich_failed": 0,
+        "skipped_excluded": 0,
         "scored": 0,
         "failed": 0,
         "cost_usd": 0.0,
@@ -1900,13 +1982,35 @@ def run_enrich_score_prospects(db: Session, tenant_id, params: dict) -> dict:
     )
     if not rows:
         return zero
-    enr = _enrich_prospects(db, rows, str(params.get("slug") or ""))
+    # R8 — never spend a credit revealing a person under an `excluded_by_rules` company: the free
+    # people gate already labels them "parent company excluded", so paying to reveal contact is pure
+    # waste. Skip those pre-enrich (no match call); `_score_prospects_v2` still labels ALL rows via
+    # the free deterministic gate, so the excluded ones land labeled without a spend.
+    company_ids = {p.company_id for p in rows if p.company_id}
+    excluded_parents = (
+        {
+            c.id
+            for c in db.execute(
+                select(Company.id).where(
+                    Company.tenant_id == tenant_id,
+                    Company.id.in_(company_ids),
+                    Company.label == labeling.EXCLUDED,
+                )
+            ).scalars()
+        }
+        if company_ids
+        else set()
+    )
+    enrichable = [p for p in rows if p.company_id not in excluded_parents]
+    skipped = len(rows) - len(enrichable)
+    enr = _enrich_prospects(db, enrichable, str(params.get("slug") or ""))
     sc = _score_prospects_v2(db, tenant_id, rows)  # reads the just-revealed enrichment (email/dept)
     return {
         "requested": len(rows),
         "enriched": enr["enriched"],
         "credits_spent": enr["credits_spent"],
         "enrich_failed": enr["failed"],
+        "skipped_excluded": skipped,
         "scored": sc["scored"],
         "failed": sc["failed"],
         "cost_usd": sc["cost_usd"],
@@ -2443,13 +2547,22 @@ def find_people(
         else _scope_override_row(db, ctx.tenant.id, SCOPE_KIND_PEOPLE)
     )
 
+    # R28 — did an override actually CONTRIBUTE a field this run? A saved override row (or per-call
+    # body) can exist yet resolve to an empty block, so `saved_row is not None` over-claims. Track
+    # the real contribution so scope_source is truthful.
+    used_override = False
+
     def _people_params_for(comp: Company) -> dict:
+        nonlocal used_override
         if body.people_search_params is not None:  # per-call pin → every org in the call
+            used_override = used_override or bool(body.people_search_params)
             return body.people_search_params
         icp = call_icp or comp.icp_id
         saved = _scope_override_block(saved_row, icp)
         if saved is not None:
-            return saved.get("people_search_params") or {}
+            params = saved.get("people_search_params") or {}
+            used_override = used_override or bool(params)
+            return params
         block = targeting_for_icp(spec_blob, icp)
         if block is None:
             # Unlabeled/unknown-ICP company under a multi-ICP scope: fall back to the FIRST
@@ -2518,16 +2631,28 @@ def find_people(
             new_rows.append((p, comp))
 
     prospects: list[Prospect] = []
+    # R20a — batch-preload the existing prospect rows for this batch (one IN()) instead of a point
+    # SELECT per person inside the loop; a row created below is registered so a duplicate reuses it.
+    keys = [f"apollo:{p['apollo_person_id']}" for p, _ in new_rows]
+    by_key = (
+        {
+            pr.identity_key: pr
+            for pr in db.execute(
+                select(Prospect).where(
+                    Prospect.tenant_id == ctx.tenant.id, Prospect.identity_key.in_(keys)
+                )
+            ).scalars()
+        }
+        if keys
+        else {}
+    )
     for p, comp in new_rows:
         key = f"apollo:{p['apollo_person_id']}"
-        prospect = db.execute(
-            select(Prospect).where(
-                Prospect.tenant_id == ctx.tenant.id, Prospect.identity_key == key
-            )
-        ).scalar_one_or_none()
+        prospect = by_key.get(key)
         if prospect is None:
             prospect = Prospect(tenant_id=ctx.tenant.id, identity_key=key, source="apollo")
             db.add(prospect)
+            by_key[key] = prospect
         enrichment = {
             "full_name": p.get("first_name", ""),
             "company": p.get("company") or comp.name,
@@ -2566,11 +2691,9 @@ def find_people(
             rows_pushed=len(prospects),
             cost_usd=0.0,
             filter_body={"per_org": per_org_meta},
-            scope_source=(
-                "custom"
-                if (body.people_search_params is not None or saved_row is not None)
-                else "ai"
-            ),
+            # R28 — "custom" only when an override actually contributed ≥1 field (an empty per-call
+            # body or a saved row that resolved to nothing is really an "ai" scope).
+            scope_source="custom" if used_override else "ai",
             result_meta={
                 "orgs_searched": len(selected),
                 "people_found": len(prospects),
@@ -2737,16 +2860,24 @@ def reset_scope_override(
 
 def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
     """Apollo `people/match` on `rows` — reveal a verified email (the only credit spend) and write
-    it back, moving the row to `scored`. Shared by the sync `/prospects/enrich` gate and the async
-    reveal-&-score worker; the caller owns loading + the per-request cap.
+    it back, moving the row to `scored`. The reveal step of the async reveal-&-score worker
+    (`run_enrich_score_prospects`); the caller owns loading + the per-request cap. (The sync
+    `/prospects/enrich` twin was retired in D+.5/R10 — the async door is the only reveal path now.)
 
     **Idempotent + concurrent (the credit-safety contract):** `last_enriched_at` gates a re-spend,
     so a row already matched (even one Apollo returned no email for) is confirmed without a second
     charge; a manual row (no `apollo_person_id`) is confirmed without a match call. The match calls
-    fan out on a thread pool (HTTP-only; ORM writes stay single-threaded), then results applied +
-    committed once. A per-row Apollo error counts in `failed` (row → `enrich_failed`); the spend
+    fan out on a thread pool (HTTP-only; ORM writes stay single-threaded), then results are applied
+    and **committed per row** (R10): the `last_enriched_at` stamp lands when a credit is spent,
+    so a concurrent door or a re-run skips that row — a crash mid-batch can't re-charge the rows
+    already revealed. A per-row Apollo error counts in `failed` (row → `enrich_failed`); the spend
     counts are always returned. Returns `{confirmed, enriched, credits_spent, failed}`.
     """
+    # R2 — post-enrich do-not-contact set (loaded once per batch). Apollo search obfuscates
+    # email/linkedin, so a client-excluded PERSON can only be caught here, after reveal (find.py's
+    # docstring promises this). Company-domain exclusion already ran at find time (Flow A).
+    exclusions = _exclusions(db, rows[0].tenant_id) if rows else None
+
     # Partition: rows that need a paid match call vs rows that confirm without spending (manual rows
     # with no apollo_person_id, or rows already enriched).
     to_match: list[Prospect] = []
@@ -2763,6 +2894,7 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
                 p.status = "confirmed"
             continue
         to_match.append(p)
+    db.commit()  # R10 — persist the no-spend confirmations (covers the all-manual/all-cached case)
 
     # Fan out the slow Apollo match calls concurrently (HTTP-bound, thread-safe); collect results
     # before touching the ORM so DB writes stay single-threaded.
@@ -2789,12 +2921,14 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
             log.warning("enrich[%s]: match errored person=%s: %s", slug, p.apollo_person_id, res)
             p.status = "enrich_failed"
             failed += 1
+            db.commit()  # R10 — per-row
             continue
         matched = apollo_map.parse_match(res)
         if not matched.get("apollo_person_id"):
             log.warning("enrich[%s]: no apollo match person=%s", slug, p.apollo_person_id)
             p.status = "enrich_failed"  # Apollo had no match; distinct so it won't sit as "pending"
             failed += 1
+            db.commit()  # R10 — per-row
             continue
         credits += 1  # one reveal_personal_emails credit
         e = dict(p.enrichment or {})
@@ -2809,7 +2943,24 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
         p.last_enriched_at = func.now()
         p.status = "scored"
         enriched += 1
-    db.commit()  # one commit; the cap bounds any crash-window re-spend to ≤ MAX_ENRICH_PER_REQUEST
+        # R2 — do-not-contact on the just-revealed contact. The credit was already counted (spent
+        # honestly), but a DNC hit is labeled `excluded_by_rules` and never becomes batchable. The
+        # score pass that follows (run_enrich_score_prospects) leaves this label intact — it skips
+        # rows already client-excluded here.
+        revealed_email = matched.get("email") or ""
+        if exclusions is not None and exclusions.blocks(
+            Candidate(
+                email=revealed_email,
+                linkedin_url=matched.get("linkedin_url") or "",
+                domain=revealed_email.split("@", 1)[1] if "@" in revealed_email else "",
+            )
+        ):
+            _apply_prospect_verdict(
+                p,
+                labeling.Verdict(label=labeling.EXCLUDED, reason=labeling.REASON_RULE_EXCLUSION),
+            )
+        db.commit()  # R10 — per-row: the last_enriched_at stamp lands NOW, so a concurrent door or
+        # a re-run skips this already-charged row (no double-spend); bounds a crash to one row.
     # Credit-spend audit trail (the only place HoldSlot spends an Apollo credit).
     log.info(
         "enrich[%s]: rows=%d to_match=%d enriched=%d credits=%d failed=%d",
@@ -2826,44 +2977,3 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
         "credits_spent": credits,
         "failed": failed,
     }
-
-
-@router.post("/{client}/prospects/enrich", response_model=EnrichResult)
-def confirm_enrich(
-    body: EnrichIn,
-    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
-    db: Session = Depends(get_db),
-) -> EnrichResult:
-    """The enrich gate (C5) — Apollo `people/match` on the confirmed rows. The only credit spend.
-
-    Human-gated and **idempotent**: each Apollo-sourced row that isn't already enriched spends 1
-    credit to reveal a verified email (phone off at MVP), is written back with email / last name /
-    linkedin / departments, and moves to `scored`. Rows already enriched (email on file) or with no
-    `apollo_person_id` (manual) are confirmed without a match call, so a re-submit never re-spends.
-
-    **Bounded + concurrent (the credit-safety contract):** at most `MAX_ENRICH_PER_REQUEST` keys per
-    request (rejected, not truncated), so a single call can never run away with the credit pool or
-    overrun the 30s cap. The paid `people/match` calls fan out on a thread pool (HTTP-only; ORM
-    writes stay single-threaded), then results are applied + committed once. A per-row Apollo error
-    is counted in `failed` and the row marked `enrich_failed` — the spend counts are always returned
-    (never lost to a mid-batch 502), so the caller can reconcile exactly what was charged.
-    """
-    if not body.identity_keys:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "no identity_keys")
-    if len(body.identity_keys) > MAX_ENRICH_PER_REQUEST:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"enrich at most {MAX_ENRICH_PER_REQUEST} people per request",
-        )
-    rows = (
-        db.execute(
-            select(Prospect).where(
-                Prospect.tenant_id == ctx.tenant.id,
-                Prospect.identity_key.in_(body.identity_keys),
-                Prospect.status.in_(("found", "scored", "confirmed", "enrich_failed")),
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return EnrichResult(**_enrich_prospects(db, rows, ctx.tenant.slug))

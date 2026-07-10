@@ -1,6 +1,5 @@
 export {
   SpecHead,
-  FitScore,
   LabelChip,
   SubscoreList,
   CompanyStudy,

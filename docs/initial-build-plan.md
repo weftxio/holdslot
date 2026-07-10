@@ -5,21 +5,26 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-10): A–D live on `dev`; D+ complete through V2-4 (review #5 signed off).** Aurora
-> **head `0026`** · backend deployed to `dev` (find-path Stages 1–4 + Scoring v2 + **V2-4 contraction** +
-> classifier→Flash) · web **Amplify `dev`**. The Apollo **find → score → select → enrich → batch → masked
+> **Status (2026-07-11): A–D live on `dev`; D+ complete through V2-4 (review #5 signed off).** Aurora
+> **head `0026` live · `0027` defined (pending deploy)** · backend deployed to `dev` (find-path Stages 1–4 +
+> Scoring v2 + **V2-4 contraction** + classifier→Flash) · web **Amplify `dev`**. The Apollo **find → score → select → enrich → batch → masked
 > client-approval** loop is live end-to-end. **Phase D+** (the pre-E hardening block — §below) folds three
 > workstreams into one: **scope alignment** (sourcing width, Stages 1–4), **Scoring v2** (the 0–100 AI Score
 > replaced by 4 labels `contact_now`/`contact_soon`/`low_fit`/`excluded_by_rules` + a liveness gate — this
 > doc now carries the whole spec, the standalone `holdslot-scoring-spec-v2.md` was folded in + deleted; **V2-4
 > retired the v1 `fit_score`/`fit_tier` path entirely** — 5 sync twin endpoints + the v1 fit module deleted,
 > columns dropped in `0026`), and the **Find-flow UX rebuild** (U1–U4 + the merged **Reveal & score** action).
-> **What's left before Phase E:** a paid re-score wave whenever a fresh web-grounded pass is wanted (rows read
-> `label`, NULL renders "needs re-score" — non-blocking). Then **Phase E (outreach + Smartlead)**, still gated
-> on warmed inboxes (warm-up running since 2026-06-17). S3 (batch round) is the only untouched A–D gate.
+> **What's left before Phase E:** the **§D+.5 code-review fix wave is DONE** (executed 2026-07-10 across
+> F1–F7; all 31 resolved bar R21/R27-queries/R30-tests) and the **final pre-production review (2026-07-11)
+> consolidated everything into [`final-fix-plan.md`](final-fix-plan.md)** — 56 new findings (3 P1 · 19 P2 ·
+> 34 P3), phases **G1–G7**; work that doc before the production commit/push. Then the **founder-gated deploy
+> of migration `0027` + the dev smoke**, plus a paid re-score wave whenever a fresh web-grounded pass is
+> wanted (rows read `label`, NULL renders "needs re-score" — non-blocking). Then **Phase E (outreach +
+> Smartlead)**, still gated on warmed inboxes (warm-up running since 2026-06-17). S3 (batch round) is the
+> only untouched A–D gate (S1/S2 folded into review #5 ✅).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, head `0026`). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, head `0027` defined · `0026` live on dev). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -62,11 +67,11 @@
 | Thing | State |
 |---|---|
 | Backend | Lambda alias `live`, `api.tryholdslot.com`, **~50 endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals`; D+ Stages 1–4 + Scoring v2 deployed to `dev` |
-| Database | Aurora Serverless v2 + Data API · **head `0026`** (D+ migrations `0019`→`0026` applied to `dev`) |
-| Web | Amplify `dev` (autoBuild on push); the V2-3 + UX frontend is **built but unpushed** — `git push` ships it. `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Database | Aurora Serverless v2 + Data API · **head `0026` live** (D+ migrations `0019`→`0026` applied to `dev`) · `0027` defined, pending deploy |
+| Web | Amplify `dev` (autoBuild on push); the V2-3 + UX frontend is **committed + pushed** (`2838d85`) — Amplify build rides it. `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
-| Gate left on A–D | S3 (founder batch round); S1/S2 fold into D+ review #5 — infra is live |
+| Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
 
 ---
 
@@ -97,19 +102,20 @@ the company tier, **before the only paid step (enrich)**:
 | Piece | What |
 |---|---|
 | Brief | new **`targetMarket`** field (B2B / B2C / Both; opaque `brief.data` JSONB → **no migration**); required, reaches the scorer via `_SCORING_BRIEF_FIELDS` |
-| Business-model classifier | The **`business_model`** label (B2B / B2C / **Complex** / Unknown — `Complex` = marketplace / B2B2C / platform serving both sides, e.g. Amazon) is set by a **dedicated stage-0 call** (`company_model` purpose · its own minimal split prompt — no rubric, no targeting, single-enum output, DeepSeek V4 Pro thinking-OFF) run at **find / lookalike / manual-add** time, so EVERY row is labelled BEFORE any (on-demand, paid) AI scoring — not just scored rows (2026-07-01 split out of `company_fit`). Judged from description/industries/keywords — Apollo's own recommended method (a post-search LLM *label*, not a filter). Token-minimal, so the extra call is cheap. Stored in `company.fit_components` + surfaced as the Step-1 model chip. `company_fit` no longer classifies — it just reads the stored label. |
-| Hard gate | `targetMarket` vs `business_model` mismatch (only when **both** are a clean B2B/B2C, e.g. B2B client × B2C company) → force `fit_score = 0` / tier **Below** + stamped reason, `market_excluded` stored for audit + surfaced on `CompanyOut`. Now fires at **find/classify time** (opposite-market rows are buried into Below·0 up-front, before scoring — never consuming a paid score); `company_fit` re-applies it from the stored label so a re-score can't un-exclude. `Complex` / `Unknown` / `Both` / absent **never gate**. Gated companies are never selected for people-search → **no contact sourced, no enrich spend**, and the Step-1 table **pins them to the bottom regardless of sort** (+ a Step-1 **Business-model filter** and a **Pending · unscored** fit filter). |
+| Business-model classifier | The **`business_model`** label (B2B / B2C / **Complex** / Unknown — `Complex` = marketplace / B2B2C / platform serving both sides, e.g. Amazon) is set by a **dedicated stage-0 call** (`company_model` purpose · its own minimal split prompt — no rubric, no targeting; output = the enum + two description-derived facts `hq_country`/`has_b2b_line` since V2-1; **DeepSeek V4 Flash**, A/B-switched 2026-07-10 — §D+.4) run at **find / lookalike / manual-add** time, so EVERY row is labelled BEFORE any (on-demand, paid) AI scoring — not just scored rows (2026-07-01 split out of `company_fit`). Judged from description/industries/keywords — Apollo's own recommended method (a post-search LLM *label*, not a filter). Token-minimal, so the extra call is cheap. Stored in `company.fit_components` + surfaced as the Step-1 model chip. The paid scorer (`company_score_v2` since V2-4) never re-classifies — it reads the stored label. |
+| Hard gate | `targetMarket` vs `business_model` mismatch (only when **both** are a clean B2B/B2C, e.g. B2B client × B2C company) → `label = excluded_by_rules` + stamped reason via `labeling.rules_gate` *(v2 — the v1 `fit_score = 0`/tier-Below/`market_excluded` columns were dropped in `0026`)*. Fires at **find/classify time** (opposite-market rows are labeled up-front, before scoring — never consuming a paid score); the rescore path re-applies it from the stored label so a re-score can't un-exclude. `Complex` / `Unknown` / `Both` / absent **never gate**. Gated companies are never selected for people-search → **no contact sourced, no enrich spend**; the Step-1 table collapses them into the `excluded_by_rules` bucket. |
 
 **Fit-scoring hardening shipped alongside (2026-07):**
-- **Thinking OFF on both stages** (`company_fit` + `prospect_fit`). Telemetry showed the reasoning trace was
-  ~98% of a `company_fit` call's output and drove ~50s (p95 137s) latency + the batch timeouts. A/B on the 15
-  live companies: **~12× faster, ~34× fewer tokens, ~34% cheaper**, quality sanity-passed (the B2C gate caught
-  all 8 insurers; DeepSeek's structured-output grid is *cleaner* without the trace). Knobs live in
-  `fit.COMPANY_FIT_EXTRA_BODY` / `PROSPECT_FIT_EXTRA_BODY`.
+- **Thinking OFF on both stages** *(historical — v1 `company_fit`/`prospect_fit`)*. Telemetry showed the
+  reasoning trace was ~98% of a `company_fit` call's output and drove ~50s (p95 137s) latency + the batch
+  timeouts. A/B on the 15 live companies: **~12× faster, ~34× fewer tokens, ~34% cheaper**, quality
+  sanity-passed. *Superseded by V2-4: the v1 stages + their `EXTRA_BODY` knobs are deleted; v2's knobs are
+  `fit.COMPANY_SCORE_V2_EXTRA_BODY` (reasoning ON + web plugin) / `PROSPECT_SCORE_V2_EXTRA_BODY` (reasoning
+  off — the A/B posture, kept).*
 - **Async-scoring zombie reaper.** A worker hard-killed by the Lambda timeout used to leave its `scoring_job`
   `running` forever — wedging the surface (enqueue coalesces onto it). Fixed three ways: (a) a **reaper**
-  (`scoring.MAX_JOB_AGE_SECONDS = 360`) flips any non-terminal job older than a worker could live → `error` on
-  every read/enqueue; (b) the selection batch is capped to **one concurrent wave** (`ASYNC_BATCH_MAX =
+  (`scoring.MAX_JOB_AGE_SECONDS = 480`, raised from 360 in D+.5/R3 — ≥ 120s async-queue age + 300s run +
+  buffer) flips any non-terminal job older than a worker could live → `error` on every read/enqueue; (b) the selection batch is capped to **one concurrent wave** (`ASYNC_BATCH_MAX =
   _SCORE_WORKERS = 15`, was 20 → 2 waves); (c) the Lambda **timeout is 300s** (`lambda.tf`, applied). No
   migration.
 
@@ -159,9 +165,9 @@ is repaired by name match, and a genuinely missed ICP fails the job **by name** 
 | Piece | What shipped |
 |---|---|
 | **ResearchSpec v4→v5** | `spec.icp_targeting[]` — **one Apollo block per ICP** (`icp_id`/`icp_name` echoed + company/people/intent params), emitted in ONE LLM call (Job 3 still runs once). `reconcile_icp_targeting` verifies coverage post-call. No schema migration — `spec` is JSONB, append-only versioned (same as v2→v3). **v5** (same day, founder feedback) then **removed the funding/jobs-posted date windows entirely** — they silently over-constrained every company search; intent = `q_organization_job_titles` (hiring signal) only. Prompt bumped **brief-structure-v6 → v7**; data-only migrations **`0017`/`0018`** re-seed the `briefing` prompt for tenants still on a shipped default (custom edits untouched — gotcha: Postgres `trim()` strips spaces only, so the match uses `btrim(body, ' \t\r\n')`). `map_company_filter` **never forwards the date fields** even when present, killing them from old specs + stale overrides too. |
-| **One spec reader** | `targeting_for_icp(spec, icp_id)` — find-company resolves the picked ICP's block (multi-ICP + no/unknown ICP → 400, never a silent merge; single-block resolves + labels automatically); find-people resolves **per company** from `company.icp_id` (a mixed selection searches ICP by ICP in one call); fit scoring slices the row's own block into the v3 shape the rubrics read (fewer tokens, sharper targeting). **v3 specs keep working** via the fallback until the next regenerate — backend deploys first with zero downtime. |
+| **One spec reader** | `targeting_for_icp(spec, icp_id)` — find-company resolves the picked ICP's block (multi-ICP + no/unknown ICP → **400**, never a silent merge; single-block resolves + labels automatically); find-people resolves **per company** from `company.icp_id` (a mixed selection searches ICP by ICP in one call) and, for an **unknown-ICP company, deliberately falls back to `icp_targeting[0]`** — NOT a 400 — since people search is FREE and a reviewable near-miss beats a hard fail (R29e; the 400 is a find-**company** rule only); fit scoring slices the row's own block into the v3 shape the rubrics read (fewer tokens, sharper targeting). **v3 specs keep working** via the fallback until the next regenerate — backend deploys first with zero downtime. |
 | **UI** | Prospect Scope panel: per-ICP **coverage chips** + an **ICP dropdown** next to View prompt (drives the rendered block AND the prompt preview's `?icp_id=` input); gaps carry their ICP tag; legacy/missing-scope callouts. Prospect list: **ICP dropdown** (both stages — filters the tables AND picks the Find Company target; single ICP auto-picked, multi without a pick = guard toast + warn flash mirroring the server 400), **ICP badge under the company name** in both tables, Find-Settings modal gets an **ICP switcher** seeding from that ICP's block (override saved per ICP in localStorage, legacy key read as fallback). |
-| **Job hygiene** | The `research_job` **zombie reaper** (`MAX_JOB_AGE_SECONDS=360`, same pattern as scoring) — a worker killed mid-run no longer wedges the brief page in "Generating…" forever; stale jobs flip to a named timeout error on read/enqueue. |
+| **Job hygiene** | The `research_job` **zombie reaper** (`MAX_JOB_AGE_SECONDS=480` — imported from `prospects/scoring` since D+.5/R3, one shared constant; same pattern as scoring) — a worker killed mid-run no longer wedges the brief page in "Generating…" forever; stale jobs flip to a named timeout error on read/enqueue. |
 
 Follow-ups then out of scope: **per-ICP *persisted* scope overrides** (`by_icp` keying) — since **built
 as D+ UX Stage U1** (§D+.3). Still deferred: per-ICP partial regenerate · auto-seeding a block when a
@@ -196,11 +202,13 @@ rows, and the majority low-fit.** Three interlocking workstreams, all on the `de
 | **Model A/B** | Stage-0 `classify_business_model` → **DeepSeek V4 Flash** (switched, live); paid `company_score_v2` → **KEEP Pro** | ✅ **decided + deployed** (dev) |
 | **UX U1** | Per-ICP scope overrides (server-side `ScopeOverride.params` keyed `by_icp` for people + new `kind="company"`; precedence = body → per-ICP → AI spec) | ✅ **built + checked** |
 | **UX U2–U4** | People-find lineage · toolbar rebuild (cost-gradient order) · Find-history drawer v2 | ✅ **built + checked** |
-| **UX (new)** | **Reveal & score merge** + Step-2 reason-line removal + frontend 250-row ceiling removed (2026-07-10, this session) | ✅ **built** (uncommitted working tree) |
+| **UX (new)** | **Reveal & score merge** + Step-2 reason-line removal + frontend 250-row ceiling removed (2026-07-10, this session) | ✅ **built + pushed** (`2838d85`) |
 
 **What's left before Phase E (the pending register):**
 - ✅ **Founder review #5** — signed off 2026-07-10 (v2 labels + the new toolbar in one sitting).
-- 🟡 **V2-4 contraction** built this session (`0026` + the dead-code sweep) — deploys with this push (code-before-migration for the column drop).
+- ✅ **V2-4 contraction** shipped — `0026` applied to dev, code committed + pushed (`2838d85`).
+- ✅ **Code-review fix wave** — the §D+.5 wrap-up register (7 P1 · 16 P2 · P3 cleanup, 2026-07-10). **Executed 2026-07-10 across F1–F7** (result log → `final-fix-plan.md` §0): all 31 resolved except R21 (deferred — MVP list < 1 page), the R27 cross-module query dups, and R30's two integration-test gaps (accepted, documented). Backend 228 passed/ruff clean · FE build+tsc+eslint clean. **Migration `0027` + dev deploy/smoke are founder-gated.**
+- ⏳ **Final fix wave (pre-production)** — the 2026-07-11 final review's [`final-fix-plan.md`](final-fix-plan.md): **G1–G7**, 56 findings (3 P1 — the R8 skip-set crash, the `stageForPeople` excluded-row leak, Aurora deletion protection). **§F decisions (Q1–Q8) answered by the founder 2026-07-11** — recorded in the doc (checkpoint commit made; G1–G4 → push #1 + deploy + smoke; G5–G6 follow-up → push #2). G7 = the push/deploy/smoke/re-score checklist.
 - **Paid re-score wave** — existing rows carry `label = NULL` where not yet re-scored; run via the UI ("Update AI Score", ≤15/batch) whenever a fresh web-grounded pass is wanted. Non-blocking (the list reads `label`, NULL renders as "Needs score").
 
 **KPI gate** ("more rows that score higher", measured in-app, baseline-relative targets are reference not a hard gate — no baseline round was captured): rows/find **≥3×** · `contact_now`+`contact_soon` share **≥2×** (or ≥30% absolute) · zero-result finds **<10%** (all auto-relaxed) · dupes on re-find **<5%** (≈100% today) · title match **≥7/10** · re-classification spend on known rows **$0**.
@@ -242,12 +250,12 @@ New FE surfaces: only the **Find-history drawer** (1b) + **scope-exhausted notic
 | `low_fit` | Our judgment says no — client may override | collapsed (counts) |
 | `excluded_by_rules` | A rule removed it | collapsed, shows the rule |
 
-**Processing order** — stop at first match, but **free deterministic gates run before the paid web call** (a deliberate re-order of the spec: rules/data/ICP cost $0 and need no search; only liveness+score needs the web — a row killed by a rule is never liveness-checked, so a defunct B2C company just reads `"rule: B2B only"`):
+**Processing order** — stop at first match, but **free deterministic gates run before the paid web call** (a deliberate re-order of the spec: rules/data/size cost $0 and need no search — the ICP verdict rides the paid call, step 4; only liveness+score needs the web — a row killed by a rule is never liveness-checked, so a defunct B2C company just reads `"rule: B2B only"`):
 
-1. **Rules** (deterministic, at find/classify time) → `excluded_by_rules`: `targetMarket` × stage-0 `business_model` (the live market gate) · **geography** — brief/ICP geographies vs **description-derived HQ, not Apollo's HQ field** (Apollo's field is wrong on Gateway Search/Knoldus/Psicología y Mente; disagreement → trust description + flag `hq_mismatch`) · client exclusions (`ExclusionSet`). **B2C-tag guard:** a B2C-tagged company with a B2B line (Luma Health sells group insurance to companies/NGOs/embassies) is `Complex`-equivalent — never market-gated; `Complex` in source data is B2B.
+1. **Rules** (deterministic, at find/classify time) → `excluded_by_rules`: `targetMarket` × stage-0 `business_model` (the live market gate; `Complex`→B2B) · **geography — either-country in-target:** a row is kept if EITHER its description-derived HQ OR Apollo's `field_country` is in the brief/ICP geographies (the search was geo-filtered, so Apollo's country is authoritative even when the description names a founding/parent country elsewhere); excluded only when ≥1 country is known and NONE is in-target; a description↔field disagreement still flags `hq_mismatch` · client exclusions (`ExclusionSet`). *(The former B2C-with-a-B2B-line "Luma guard" carve-out was **removed 2026-07-10** — a B2B line no longer rescues a primarily-B2C company.)*
 2. **Data check** (deterministic) → `low_fit "data_unusable"`: industry null/`—` · hq_country null · website is a wire service/aggregator. **Headcount is NOT a gate.**
-3. **ICP sanity** — re-confirmed from the **description**, not the `industries` field (Blackpanda is tagged "network security" but is a Lloyd's coverholder underwriting cyber insurance = ICP A). No match → `low_fit "wrong vertical"`.
-4. **Size** (deterministic, when the ICP band is filled) → `low_fit "too large"` above the client-wide max employee band; a `headcount_uncertain` flag (sources disagree >2×) suppresses the gate for that row. Never a hard exclusion — headcount data can't carry one.
+3. **Size** (deterministic, when the ICP band is filled, runs **before** the ICP check) → `low_fit "too large"` above the client-wide max employee band. Never a hard exclusion — headcount data can't carry one. *(The `headcount_uncertain` suppression was **removed in D+.5/R11** — only one headcount source exists in the data, Apollo `estimated_num_employees`, so the "sources disagree >2×" flag was never producible.)*
+4. **ICP match** — rides the **paid `icp_match` signal** from the score call (step 5), NOT a free deterministic check: the web-grounded scorer reads the **description**, not the `industries` field (Blackpanda is tagged "network security" but is a Lloyd's coverholder underwriting cyber insurance = ICP A), and assigns the ICP; no match → `low_fit "wrong vertical"`. So a row reaches this verdict only after the free gates AND the paid call — evaluated in the same `assign_label` pass, gate order `rules → data → size → icp`.
 5. **Liveness + score = ONE web-grounded LLM call** per surviving row (`company_score_v2`, DeepSeek V4 Pro **with web search**, ~50–120s, async `scoring_job` waves ≤ `ASYNC_BATCH_MAX`): searches `"{company} liquidation OR acquired OR shut down"` first → defunct/absorbed/dead-site → `excluded_by_rules` (`"company defunct"` / `"acquired — no longer independent"` / `"no active web presence"`); news >24mo → flag `stale_record` only. Then emits the 4 subscores + reason + flags + a **trigger line (the email hook)**; the server sums → label.
 
 **Score = 4 axes, 1–5, sum 4–20** → `label_from_score`: **≥16 `contact_now` · ≥10 `contact_soon` · else `low_fit`**. The LLM never picks its own label (same posture as the deterministic `collapse()` — server-computed).
@@ -260,9 +268,9 @@ New FE surfaces: only the **Find-history drawer** (1b) + **scope-exhausted notic
 
 **People tier (Step 2) — same labels, people-shaped axes, NO per-person web search** (liveness is a company property; people ≫ companies makes per-person search a cost explosion). `prospect_score_v2` judges enrichment only: `persona_fit` (title/role vs the ICP persona) · `authority` (seniority / decision power) · `trigger` (person-level: new-in-role, promotion, hiring for their function) · `reachability` (verified email · contact quality). Same 4–20 sum, same 16/10 thresholds. **The company label caps the person** (the meeting is with the company): a person at an `excluded_by_rules` company inherits `excluded_by_rules "parent company excluded"`; a person never ranks above its company. Deterministic gates first: `avoidTitles` (per-ICP) → `excluded_by_rules` · missing title/contact → `low_fit "data_unusable"`. **Net token WIN vs v1**: the old grid re-judged the company dims for *every* person (10× for a 10-person company) — v2 drops them and inherits the company result.
 
-**Reason strings** — always populated, short enum-ish: `"company defunct"` · `"acquired — no longer independent"` · `"rule: B2B only"` · `"rule: outside target geography"` · `"rule: client exclusion"` · `"data_unusable"` · `"wrong vertical"` · `"too large"` · `"partner-led distribution"` · `"building in-house sales"` · `"not a buyer (non-profit / gov)"` · `"fits ICP A/B — <one clause>"`.
+**Reason strings** — always populated. Gate verdicts use the canonical `labeling.py` constants: `"company defunct"` · `"acquired — no longer independent"` · `"no active web presence"` · `"rule: B2B only"`/`"rule: B2C only"` · `"rule: outside target geography"` · `"rule: client exclusion"` · `"data_unusable"` · `"wrong vertical"` · `"too large"` · `"parent company excluded"` (people). Scored rows carry a **model-authored one-sentence reason** (e.g. `"fits ICP A — <one clause>"`), not an enum.
 
-**Flags** — non-blocking, small warn marker + tooltip: `hq_mismatch` · `headcount_uncertain` (sources >2×) · `revenue_implausible` (>10× off description) · `founding_date_conflict` · `competitor_adjacent` · `partner_led` · `stale_record`.
+**Flags** — non-blocking, small warn marker + tooltip: `hq_mismatch` · `revenue_implausible` (>10× off description) · `founding_date_conflict` · `competitor_adjacent` · `partner_led` · `stale_record`. *(`headcount_uncertain` was removed in D+.5/R11 — never producible; see step 3.)*
 
 **The v2 contract vs v1** (what changed):
 
@@ -292,9 +300,16 @@ Founder toolbar review (2026-07-10): buttons weren't ordered by business logic, 
 
 **Founder decisions (2026-07-10):** ① Step-1 header select-all **removed** (rows ticked individually). ② paid scoring becomes a **bucket CTA** ("Score next 15" on the Needs-score header, both steps) + **auto-chain** with a live cost counter + Stop (one ≤15-row job/wave; the one-job-per-tenant×kind rule chains waves). ③ **stage→find merged** — the Step-1 "Find people for N →" stages AND runs find-people via FE chunking (`MAX_ORGS_PER_FIND=8`/call). ④ **both scope overrides go server-side, per-ICP** (U1). ⑤ filter rows shrink to **search + ICP (view-only) + More ▾** ("Any label"/"All Business" deleted, "All status" into More ▾). ⑥ **Find-history full redesign** (day groups · type chips · same-scope threading · summary strip · people-find lineage). ⑦ **"Find Companies ▾" split button** absorbs Lookalike + Manual add, target ICP moves onto the button face (the filter-row ICP becomes view-only); S1 "Enrichment" → "Refresh company data" (⋯ overflow); "Fit Rubric" → ⋯ "Edit scoring rubric". ⑧ **build now** — review #5 covers v2 labels AND the new toolbar in one sitting.
 
+**As-built (2026-07-10 — R18 reconciliation, review #5 signed off).** Several of the toolbar decisions above were **descoped during the build** and are recorded here as the real shipped behavior; each is **deferred — revisit only if operating pain shows up**, not a bug:
+- **Paid scoring** ships as a **manual "Score next 15 →"** on the Needs-score bucket header, **Step-1 only** — the operator clicks again for the next wave. The planned **auto-chain + live cost counter + Stop** (decision ②) and the **Step-2 bucket CTA / 4-bucket call sheet** were **not built**. (One ≤15-row job per click; the one-job-per-(tenant,kind) rule still prevents overlap.)
+- The filter row stays **search + status + ICP**; the **"More ▾" overflow** (decision ⑤) was **not built**.
+- Company actions stay as discrete buttons; the **"Find Companies ▾" split button + ⋯ overflow** (decision ⑦) were **not built** (Lookalike / Manual add / Refresh / Edit-rubric remain their own controls).
+
+What DID ship: ① individual row ticks · ③ stage→find merge · ④ per-ICP server-side overrides (U1) · ⑥ Find-history v2 (U4) · the **Reveal & score** merged paid action (below) · **checked-set invariants** (D+.5/R6+R13 hardened them).
+
 **Stages (backend-before-frontend):** **U1** per-ICP scope overrides — `ScopeOverride.params` keyed `by_icp` (people) + new `kind="company"` rows; GET/PUT/DELETE gain kind+icp params; find precedence = body override → per-ICP override → AI spec; FE write-through migration of the localStorage company override (no migration — `params` is JSONB). **U2** people-find lineage (`filter_body`/`scope_source`/`result_meta` on people runs; `group_id` threads the chunked stage→find). **U3** toolbar rebuild (Find ▾ split + ICP-on-button, selection bar at ≥1 tick, bucket CTA + auto-chain, filter shrink, **checked ⊆ visible** invariant — fixes the "Score 3 but ran 9" mismatch). **U4** Find-history drawer v2 (day groups · type chips · body_hash/`group_id` threading · spend summary).
 
-**Reveal & score — the merged Step-2 paid action (founder 2026-07-10, this session; supersedes decision ⑦'s separate "Reveal emails" dock button).** The Step-2 "Get AI score" + "Reveal emails" buttons are merged into **one** async job (`enrich_score_prospects`): it **reveals verified emails (Apollo `people/match` — the only credit spend) THEN scores on the revealed row, in one worker run.** Reveal-first is the fix — Apollo obfuscates seniority/department/email until match, so scoring a pre-reveal person gated on missing contact and landed a degraded label. The button label adapts: `Reveal & score N · N credits` when rows still need a reveal, plain `Score N` when the selection is already revealed (idempotent — a re-run just re-scores, no spend). Capped at 15/wave. `_enrich_prospects` was extracted so the sync `/prospects/enrich` gate and the new worker share one credit-safe, idempotent path. Also this session: the free-text fit-reason prose was **removed from the Step-2 people fit cell** (label chip + subscore breakdown only), and the frontend **250-row list ceiling was removed** (the UI now loads the whole list, so bucket counts match the DB).
+**Reveal & score — the merged Step-2 paid action (founder 2026-07-10, this session; supersedes decision ⑦'s separate "Reveal emails" dock button).** The Step-2 "Get AI score" + "Reveal emails" buttons are merged into **one** async job (`enrich_score_prospects`): it **reveals verified emails (Apollo `people/match` — the only credit spend) THEN scores on the revealed row, in one worker run.** Reveal-first is the fix — Apollo obfuscates seniority/department/email until match, so scoring a pre-reveal person gated on missing contact and landed a degraded label. The button label adapts: `Reveal & score N · N credits` when rows still need a reveal, plain `Score N` when the selection is already revealed (idempotent — a re-run just re-scores, no spend). Capped at 15/wave. `_enrich_prospects` is the shared credit-safe, idempotent reveal path — now committed **per row** (D+.5/R10) so a concurrent door or a re-run can't double-charge. *(The v1 sync `/prospects/enrich` twin was **retired in D+.5/R10** — the async Reveal & score door is the only reveal path now.)* Also this session: the free-text fit-reason prose was **removed from the Step-2 people fit cell** (label chip + subscore breakdown only), and the frontend **250-row list ceiling was removed** (the UI now loads the whole list, so bucket counts match the DB).
 
 **Deploy:** U1+U2 = one Lambda publish (no migration) → then the FE push (Amplify autoBuild). UAT folds into review #5. Unchanged invariants: `excluded_by_rules` locked out of selection, `low_fit` behind the confirm, enrich human-gated ≤15/call, scoring ≤15/job.
 
@@ -313,12 +328,91 @@ Both v2 LLM calls were A/B'd `deepseek-v4-pro` vs `deepseek-v4-flash` on the dog
 
 ---
 
+### D+.5 · Code-review wrap-up (2026-07-10) — findings register
+
+Full-pass D+ review (DB `0019`–`0026` · backend `prospects`/`briefs` domains · web list flow · cross-file
+contracts), investigation only. Every P1 was hand-verified against the code.
+**Execution plan was `docs/dplus-fix-plan.md`** — executed 2026-07-10, then folded into
+[`final-fix-plan.md`](final-fix-plan.md) **§0** by the 2026-07-11 final review (the dplus doc is deleted;
+final-fix-plan is now the single execution spec).
+
+> **✅ FIX WAVE EXECUTED (2026-07-10) — all 7 phases (F1–F7) complete; per-item result log now in
+> `final-fix-plan.md` §0.** All **31 findings resolved** except **three documented carve-outs**: **R21**
+> deferred (job result carries counts not rows → the row-merge needs a backend row-return; F1/R5's index
+> already removed the per-page cost it "compounds", and at `FEED_PAGE=250` the MVP list is one request —
+> revisit past 250 rows); the **R27** `_latest_spec`×2 / `_feedback_rows`↔`_scored_company_rows` cross-module
+> query dups left in place (no clean shared home without polluting the pure `feedback.py` or risking an
+> import cycle; ~10-line identical queries, zero behaviour benefit); and **R30**'s two residual integration
+> tests (research-runs endpoint · per-ICP people-precedence HTTP) recorded as **accepted gaps** — both are
+> Aurora-gated and overlap existing coverage (`test_multi_icp_find_runs_icp_by_icp` exercises the per-ICP
+> find; the R22b resume test + FindHistoryDrawer exercise `research_run` reads). **Backend: 228 passed / 18
+> skipped, ruff clean. Frontend: `pnpm build` + `tsc` + `eslint` clean.** Migration `0027` + the deploy-to-dev
+> smokes (after F3/F4) are **founder-gated** (not run from the fix session). The register rows below are
+> historical (pre-fix findings); `final-fix-plan.md` §0 is the authoritative result log.
+> **Final pre-production review (2026-07-11):** six parallel full-file reviewers re-swept Phase A→D+ (backend ·
+> frontend · infra/migrations/scripts · docs + a live dev-Aurora read-only check + an executed e2e run) →
+> **56 new findings (N1–N56: 3 P1 · 19 P2 · 34 P3)** incl. six regressions/incomplete spots from the fix wave
+> itself (N1 = the R8 skip-set crashes; N17 = the R17 e2e test fails as written). All consolidated with
+> pre-made decisions in **`final-fix-plan.md` G1–G7 — work that before the production commit.**
+**Verdict:** the pure cores (label engine, relax ladders, feedback/vocab, migrations) are clean and well-
+tested; the risk concentrates in **concurrency seams, pagination/cursor math, selection-gate edges, and one
+hot-read index regression** from the `0026` contraction. Fix **R1–R7 before Phase E** (R2/R8/R10 are
+money/compliance-adjacent); fold P2s into the same pass where cheap; P3s are the wrap-up sweep.
+
+**P1 — fix before E:**
+
+| # | Where | Finding | Fix |
+|---|---|---|---|
+| **R1** | `apollo/client.py:145` | `_paginate` varies `per_page` per page (`min(100, remaining)`) — any `limit > 100` (client-suppliable; `FIND_COMPANY_LIMIT` env) makes page 2 re-read rows 51–100 and never fetch 101–150; cursor `end_page` recorded in mixed page units. Latent only because default limit = 100. `test_apollo.py:180-194` pins the bug as expected. | Always request `per_page=100`, trim client-side; store `per_page` beside the cursor + invalidate on change; rewrite the test |
+| **R2** | `router.py:2793-2812` + `find.py:14-16` | **Post-enrich do-not-contact check never runs** — the revealed email/LinkedIn is written back with no `ExclusionSet.blocks()` pass (find.py's own docstring promises it happens post-enrich). A DNC person flows enrich→`scored`→batchable. | After `parse_match`, run `blocks(email/linkedin/domain)`; hit ⇒ `excluded_by_rules "rule: client exclusion"`, never batchable |
+| **R3** | `scoring.py:60,185,205` · `lambda.tf:43,82` | Reaper window (360s from `created_at`) < worst-case worker life (120s async-queue max age + 300s run = 420s), AND `run_scoring_job` never checks it was reaped: falsely-reaped job + re-click ⇒ **two workers on the same rows (double paid batch)**; first worker resurrects the `error` job to `done`. Same pattern in `briefs/structuring.py`. | `MAX_JOB_AGE_SECONDS ≥ 480`; worker aborts unless `status=="queued"`; terminal writes guarded `WHERE status='running'` |
+| **R4** | `router.py:1237-52,1470-77` | Stage-3 cursor key = hash of the **resolved** body — feedback-derived filters (negative tech/keywords flip on every rescore) + the live relax rung are inside the hash ⇒ cursor churns, repeat find restarts at page 1, all rows known-skipped ⇒ `found=0`. Defeats the "never re-buy page 1" invariant. | Hash the stable scope (AI/override block, pre-merge pre-relax); volatile parts → `result_meta` only; add a `_body_hash` stability test |
+| **R5** | `router.py:458-72,986-1001` · `0024`/`0026` | Both list feeds `ORDER BY score_total DESC NULLS LAST, created_at, id` — the surviving composite leads `(tenant_id, label, …)` so it can't serve the sort, and `0026` dropped the v1 index that did. Every page = full tenant sort; FE walks ALL pages on mount. Comment `:454-56` + `data-schema.md:425-29` claim coverage that no longer exists. | Add `(tenant_id, score_total DESC NULLS LAST, created_at DESC)` (or per-label feed queries per gotcha ⑨); fix both stale claims |
+| **R6** | `list/page.tsx:990-99,743-48,700-07,2090-97` | Selection-gate trap ×2: a checked row re-scored to `excluded_by_rules` stays selected (wave scoring/reloads never prune checked sets) with a disabled checkbox that can't be unticked — "Find people for N →" then **stages an excluded company into Step 2** (LOCKED invariant violated); twin: an excluded company already in Step 2 can never be removed (remove works off ticks; `maySelect` blocks the tick). | Prune checked sets of excluded ids on every reload; gate only funnel-advancing actions (allow tick-for-remove) |
+| **R7** | `router.py:1796-98` | `GET fit-prompt?stage=prospect_fit` 500s (AttributeError) for a tenant with zero prospects — `prospect.enrichment` deref'd outside the `if prospect` guard. | One-line guard fix |
+
+**P2 — fold into the same pass:**
+
+| # | Where | Finding | Fix |
+|---|---|---|---|
+| **R8** | `router.py:1903-04` | Reveal & score **spends before the free gate**: people under an `excluded_by_rules` company are enriched at 1 cr each, then instantly labeled `parent company excluded` (server never blocks selecting them — FE-only). | Drop parent-excluded rows pre-enrich in `run_enrich_score_prospects` + `confirm_enrich` |
+| **R9** | `scoring.py:106-26` | One-in-flight job rule is check-then-insert (no DB constraint) — concurrent posts both dispatch; two find workers then race `_upsert_company` (IntegrityError kills a whole batch). | Partial unique index `(tenant_id, kind) WHERE status IN ('queued','running')` |
+| **R10** | `router.py:2752-2812` | Enrich credit gate is read-then-write with one end-of-batch commit, across three doors serialized per-kind only (sync `/prospects/enrich` · reveal-worker · rescore) ⇒ concurrent doors double-spend ≤15 cr. The sync endpoint is FE-unused post-merge. | Per-row stamp/commit (or `FOR UPDATE`); delete or lock the unused sync door |
+| **R11** | `labeling.py:58-73,259` | `headcount_uncertain` suppression is **inert** — nothing sets the flag (`deterministic_flags` computes only `hq_mismatch`/`stale_record`; `MODEL_FLAGS` excludes it; only the unit test injects it). The §D+.2 suppression sentence is dead. | Compute it in `deterministic_flags` (sources disagree >2×) or delete suppression + spec claim |
+| **R12** | `api.ts:673-84` · `list/page.tsx:873-88` | Job-poll leak: `alive()` never flips on unmount ⇒ orphan loops (2s × 200) + full-list refetch + toasts after leaving the page; one transient poll 5xx abandons tracking (rows stuck "Pending"); poll-ceiling on a running job reads as success ("Scored 0"). | Unmount ref in `useEffect` cleanup; retry transient errors; non-terminal at ceiling = still running |
+| **R13** | `list/page.tsx:526,2251-62,656-59` | "checked ⊆ visible" not enforced: Step-2 countrow shows visible∩checked while the dock + Reveal & score run on ALL checked ("2 selected" vs "Reveal & score 5"; hidden rows acted on). | Prune checked sets on filter change, or one selection source everywhere |
+| **R14** | `list/page.tsx:536-39` · `constants.ts:63` | Credit estimate drifts at status edges: revealed-but-score-failed rows counted as spend; `enrich_failed` shows "no credits" though a re-match can spend. | Estimate spend by `!p.email`, include `enrich_failed` |
+| **R15** | `list/page.tsx:566-604` | U1.6 localStorage→server override migration PUTs without GET-first — a stale pre-U1 browser silently clobbers a newer server override (once). | GET first; skip PUT when a server row exists |
+| **R16** | `FindHistoryDrawer.tsx:143-71` | Naive ISO parsed as browser-local (Data API strips the offset; `spec.tsx` pins `+"Z"` for exactly this) — HK day-groups/summary window off by 8h. | Reuse spec.tsx's UTC-pinning helper (kills the dup too) |
+| **R17** | `e2e/_mock.ts:91-93,68` | `/prospects`/`/companies` mocks return `[]` but `pageThrough` expects `{items,next_cursor}` ⇒ TypeError swallowed as a warn toast — **e2e passes while the list renders nothing**; approve mock still emits retired `fit_tier`. | `{items:[],next_cursor:null}`; drop `fit_tier` |
+| **R18** | §D+.3 vs `list/page.tsx` | **Doc-vs-built gap:** auto-chain + live cost counter + Stop (decision ②), Step-2 4-bucket call sheet + bucket CTA ("both steps"), More ▾, "Find Companies ▾" split button, ⋯ overflow — none built ("Score next 15 →" is Step-1-only, "operator clicks again"). Review #5 signed off the as-built behavior. | Decide per item: build as a U5 pass or amend §D+.3 to as-built (recommended, given sign-off) |
+| **R19** | `fit.py:203` · `router.py:650-54` | Company-score schema hard-codes `icp` enum `["A","B","none"]` — a 3rd ICP is structurally forced to `"none"` → `low_fit "wrong vertical"` AFTER the paid call. | Derive the enum from the tenant's ICPs at prompt-build time |
+| **R20** | `router.py:2520-84,1517-31,292-305` | Data-API round-trip waste (per-statement HTTP): sync find-people does per-person single-row SELECT + per-row `refresh` (≈500 sequential RTs worst case on the 30s route) + 8 orgs × 4 rungs serial Apollo; `_upsert_company` 2 SELECTs/row; `_resolve_tech` re-parses the tech CSV every call; workers `refresh` rows nobody reads. | Batch `IN()` pre-loads, drop refresh loops, memoize `parse_vocab`, fan out per-org (or async the route like 1b) |
+| **R21** | `list/page.tsx:1028-43` · `api.ts:561-79` | Every ≤15-row wave triggers a full uncapped-list serial cursor-walk (⌈N/250⌉ requests/wave; compounds R5). | Merge `job.result` rows into state; full walk on mount only |
+| **R22** | `router.py:1282,1300-17` | `_resume_page` scans only the latest 50 runs across ALL sources (rescore/enrich/people runs evict find rows) ⇒ cursor silently lost ⇒ page-1 re-buy; no `(tenant_id, created_at)` index on `research_run` for the scan or the history endpoint. | Filter scan to company-find sources + add the composite index |
+| **R23** | `scripts/c_smoke_live.py:87-91` | Live smoke calls the deleted sync `find-company` + reads dropped `fit_score` — can never pass post-V2-4. | Re-point at `find-company-async` + job poll; read `label`/`score_total` |
+
+**P3 — wrap-up sweep (grouped):**
+
+| # | Theme | Contents |
+|---|---|---|
+| **R24** | Dead BE code | `SYNC_FIND_COMPANY_LIMIT` + `MAX_PEOPLE_PER_FIND` (zero readers) · `_find_company_core` unused `ceiling` param · ~8 stale docstrings citing deleted sync routes / the removed Luma guard / v1 gates (`router.py:9,1172-77,2144-45` · `schemas.py:97-98,202-06` · `models.py:371` · `fit.py:9-10`) |
+| **R25** | Dead FE code | `FitScore` + `FIT_CHIP` + the `.fit-*` CSS block (`workspace.css:2637-2910`) · `constants.ts` `loadScopeOverride`/`saveScopeOverride`/`UNSCORED_LABEL`/`dateRange`/`LabeledCompany`/`SubscoreMap` · fixtures `SCORE_TIERS`/`SAMPLE_INDUSTRIES`/`SAMPLE_CONNECTIONS`/`STAFF_ROLES` · `api.ts` `enrichProspects`+`EnrichResult` (all grep-verified zero refs) |
+| **R26** | Missing render | `trigger_line` typed (`api.ts:514`) but never rendered — the V2-3 "trigger" call-sheet element is absent; render it or drop the field |
+| **R27** | Duplication | `scoreCompaniesJob`/`revealScoreJob`/`scorePeopleJob` triplet · `runLookalike` vs `runLookalikeOfStrong` (~80%) · `whenLabel` ×2 (one is R16's bug) · avoid-title match `find.py:66` vs `labeling.py:398` (normalization drift) · `_feedback_rows` vs `_scored_company_rows` · `_latest_spec` ×2 · `MAX_JOB_AGE_SECONDS` ×2 |
+| **R28** | Telemetry | `research_run.rubric_version` stamps the static constant, not the founder-edited prompt version actually used (`router.py:739,898,…`) · `scope_source="custom"` over-claims when a saved override row exists but resolved to nothing (`:2569-73`) |
+| **R29** | Minor | `_is_apac` misses city-only APAC scopes (`:1408-24`) · find-people silently falls back to `icp_targeting[0]` for unknown-ICP companies vs the doc'd 400 (`:2453-58`, deliberate — align the doc) · FE chunk failure skips the final reload (`list/page.tsx:1265-79` → `finally`) · unused prefix-covered indexes `ix_company_tenant_id`/`ix_prospect_tenant_id` · retired `sourcing` prompt rows |
+| **R30** | Test gaps | No tests: `run_scoring_job` lifecycle · `_enrich_prospects` re-spend gate · enqueue race · 4 of 6 worker fns (registry-wired only) · research-runs endpoint · `_body_hash`/`_resume_page` · per-ICP people precedence (HTTP-level). `test_apollo.py:180-94` pins R1 as expected behavior |
+| **R31** | Doc drift | `data-schema.md`: head "`0025`" lines (L9/19/173/697-98) → `0026` · `ASYNC_BATCH_MAX = 20` (L562) → 15 · the label-index feed claim (L425-29, = R5) · `scoring_job` kind vocab (L568) · `market_excluded` description (L475) · `PHONE_ENABLED` documented as an env knob but hardcoded off · masking "fit tier+reason" (L583) · `prompt.stage` vocabulary missing `company_score`/`prospect_score` (L533/711-13). This doc: §D+.2 gate ladder drifted from the founder-amended code (geography = either-country in-target; Luma B2B-line guard removed 2026-07-10; ICP gate rides the paid `icp_match` signal, not a free check; size runs before ICP) — amend §D+.2 on the fix pass |
+
+---
+
 ## Locked context you MUST carry (non-obvious; carry into every phase)
 
 | Topic | Rule |
 |---|---|
-| **OpenRouter HK geo-block** | OpenAI / Anthropic / Google providers return **403 ToS** for this account (Hong Kong), account-wide. **Route every LLM call to non-US providers only** (DeepSeek / Qwen / Mistral; Llama dropped 2026-06-22). Scoping = `deepseek/deepseek-v4-pro` (thinking + web-search, ~55–76s) on the **async** path — exceeds the 30s API-GW sync cap. Fit scoring = `deepseek/deepseek-v4-pro` **thinking OFF** on both stages (`company_fit` + `prospect_fit`; A/B'd 2026-07 — the trace was ~98% of output and drove the timeouts) at `temperature=0`; still runs in the **background** via `scoring_job` (never on the find request). **Stage-0 `classify_business_model` = `deepseek/deepseek-v4-flash`** (switched 2026-07-10 after a live A/B — see §Model selection; the paid scorer stays on Pro). |
-| **Apollo credits** | **BOTH searches are FREE — 0 credits** (founder Apollo-dashboard confirm 2026-07-08; the public "charged per page" pricing doc does NOT apply to this Professional + master-key account). **`people/match` (enrich) = the ONLY spend: 1 cr/email** (8/phone, `PHONE_ENABLED=false`), human-gated at Gate 2. So find-width is **not** credit-bound — it's bound by **sync find-path latency** (stage-0 classify + company-enrich run synchronously at find, vs the 30s API-GW cap); widening past ~25 needs the find path to go async (D+ Stage 1b). Never `people/match` before Gate 2; suppression/exclusions are DB-side. |
+| **OpenRouter HK geo-block** | OpenAI / Anthropic / Google providers return **403 ToS** for this account (Hong Kong), account-wide. **Route every LLM call to non-US providers only** (DeepSeek / Qwen / Mistral; Llama dropped 2026-06-22). Scoping = `deepseek/deepseek-v4-pro` (thinking + web-search, ~55–76s) on the **async** path — exceeds the 30s API-GW sync cap. Fit scoring (v2) = `deepseek/deepseek-v4-pro` — `company_score_v2` **reasoning ON + web plugin** (~50–120s) · `prospect_score_v2` **reasoning OFF** (the v1 thinking-OFF A/B posture, kept; the trace was ~98% of output and drove the timeouts); both `temperature=0`, always **background** via `scoring_job` (never on the find request). **Stage-0 `classify_business_model` = `deepseek/deepseek-v4-flash`** (switched 2026-07-10 after a live A/B — see §Model selection; the paid scorer stays on Pro). |
+| **Apollo credits** | **BOTH searches are FREE — 0 credits** (founder Apollo-dashboard confirm 2026-07-08; the public "charged per page" pricing doc does NOT apply to this Professional + master-key account). **`people/match` (enrich) = the ONLY spend: 1 cr/email** (8/phone — phone reveal **hardcoded off**, no env knob), human-gated at Gate 2. So find-width is **not** credit-bound — since Stage 1b the company-find path is **async** (`find-company-async`, bounded by the worker's 300s Lambda timeout; `FIND_COMPANY_LIMIT` env, default 100). Never `people/match` before Gate 2; suppression/exclusions are DB-side. |
 | **Apollo API levers (verified vs OpenAPI spec 2026-07-08)** | **No exclusion params** except `organization_not_locations` + `currently_not_using_any_of_technology_uids` (no exclude-by-id/keyword/industry/title) → negative signal recycles pipeline-side (D+ Stage 3). `person_titles[]` is fuzzy by default — `include_similar_titles=false` = strict (D+ Stage 2). `person_department_or_subdepartments` is **not in the documented API** — live-verify (D+ Stage 1). Canonical tech vocabulary: `auth/supported_technologies_csv` (D+ Stage 4). Org-search responses carry `pagination.total_entries` + `breadcrumbs` — the probe loop's feedback signal (D+ Stage 1). |
 | **2nd data source** | **Skipped (2026-07-08)** until **AroundDeal offers monthly API pricing** (API today = Enterprise-only ~$10k; 11-provider vetting found no self-serve Apollo-like APAC search API). FullEnrich $69/mo = enrich-only door later. See §Phase B/C refinement (2). |
 | **Ops** | AWS uses `AWS_PROFILE=holdslot` (acct **138743894336**), never the default. `claude_code` IAM is **read-only** on `holdslot/prod/*` (founder writes all secrets). Deploy = `build-and-deploy.sh`. **git push needs the `weftxio` gh account** (`checkafy` lacks write). **Commit/push only when asked.** |
@@ -388,10 +482,10 @@ Work the live loop: meeting → pitch the live product (the product *is* the dem
 
 | Item | Ticks | Status |
 |---|---|---|
-| Founder Brief→Scope round (dev) | S1 | ⏳ operational — folds into D+ review #5 |
-| Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ⏳ operational — folds into D+ review #5 (+ Apollo credit-dashboard glance) |
+| Founder Brief→Scope round (dev) | S1 | ✅ folded into D+ review #5 (signed off 2026-07-10) |
+| Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ✅ folded into D+ review #5 (signed off 2026-07-10; Apollo credit-dashboard glance rides the next enrich round) |
 | Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live |
-| **D+ (sourcing + scoring + UX)** — §D+ above; backend deployed to `dev`, pending: `git push` → paid re-score wave → review #5 → V2-4 contraction | pre-E | 🟡 backend built + deployed · FE + acceptance pending |
+| **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅ · pushed `2838d85`); **§D+.5 fix wave executed 2026-07-10 (F1–F7)**; **final review 2026-07-11 → [`final-fix-plan.md`](final-fix-plan.md) (G1–G7, 3 P1)** precedes the production commit; then **founder-gated deploy of migration `0027` + dev smoke** + on-demand paid re-score wave | pre-E | ✅ built + shipped · ✅ fix wave done · ⏳ final fix wave (G1–G7) |
 | Warmed inboxes ready (~early Jul'26) | E0 | running since 06-17 |
 | **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation doesn't re-check `UserStatus` | — | tracked |
 | **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (**resolver BUILT in D+ Stage 4** — `tech_vocab` → `currently_using_any_of_technology_uids`) · `revenue_range` (no ICP form field) · funding-stage key **confirmed absent from the documented API** (2026-07-08) | — | post-MVP / D+ |
@@ -452,6 +546,6 @@ Auth = JWT Bearer; tenant scope via `require_membership()` on every `/{client}/�
 | `clients` | `GET /me·/clients` · `POST /clients` · `GET /{client}/context` |
 | `briefs` | brief GET/PUT · `POST /{client}/brief/structure` (async) + status/preview · `GET /research-spec` |
 | `icps` | CRUD `/{client}/icps` |
-| `prospects` | **(largest, ~30)** list `/prospects`·`/companies` (cursor-paged) · `find-company`·`find-lookalikes`·`select`·`rescore`·`update-fields` · `find-people`·`facets`·`scope-override` (per-ICP, kind people\|company) · **`enrich` (only credit spend)** · **`enrich-score-async`** (merged Reveal & score) · `…-async` scoring + poll (7 kinds) · `research-runs` · `sourcing-docs` (rubrics) |
+| `prospects` | **(largest, ~22)** list `/prospects`·`/companies` (cursor-paged) · `select`·`update-fields` · `find-people`·`facets`·`scope-override` (per-ICP, kind people\|company) · **`enrich-score-async`** (merged Reveal & score — **the only credit spend**) · `…-async` find/scoring + poll (6 job kinds) · `research-runs` · `sourcing-docs` (rubrics) |
 | `batches` (**D**) | `GET/POST /{client}/batches` · `GET /{id}` (company-grouped) · `POST /{id}/decide` (owner step-3) · `DELETE /{id}` (cascade) · `GET/PUT /approval-template` · `POST /{id}/send` (mint link + SES) |
 | `approvals` (**D**, public token-only) | `GET /approve/{token}` (masked) · `POST /approve/{token}/decide` |

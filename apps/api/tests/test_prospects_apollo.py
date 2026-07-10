@@ -48,6 +48,23 @@ def _find_company(client, slug, token, body):
     return out
 
 
+def _enrich_score(client, slug, token, keys):
+    """Run 'Reveal & score' via the ASYNC door (the sync `/prospects/enrich` twin was retired in
+    D+.5/R10): kick the job, poll to terminal, return the merged `result` dict."""
+    r = client.post(f"/{slug}/prospects/enrich-score-async",
+                    json={"identity_keys": keys}, headers=_auth(token))
+    assert r.status_code == 202, r.text
+    job_id = r.json()["job_id"]
+    job: dict = {"status": "queued"}
+    for _ in range(300):
+        job = client.get(f"/{slug}/scoring-jobs/{job_id}", headers=_auth(token)).json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.02)
+    assert job["status"] == "done", job.get("error")
+    return dict(job.get("result") or {})
+
+
 @pytest.fixture
 def owner_member():
     """An ephemeral tenant + OWNER user (find endpoints require owner); torn down after."""
@@ -253,24 +270,17 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     r = client.post(f"/{slug}/people/find-people", json={}, headers=_auth(token))
     assert r.status_code == 400
 
-    # Enrich the found person → 1 credit, email revealed, status scored.
-    r = client.post(
-        f"/{slug}/prospects/enrich",
-        json={"identity_keys": [person["identity_key"]]}, headers=_auth(token),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json() == {"confirmed": 1, "enriched": 1, "credits_spent": 1}
+    # Reveal & score the found person via the async door → 1 credit, email revealed, status scored.
+    res = _enrich_score(client, slug, token, [person["identity_key"]])
+    assert res["enriched"] == 1 and res["credits_spent"] == 1
     enriched = client.get(f"/{slug}/prospects", headers=_auth(token)).json()[0]
     assert enriched["email"] == "sam@alpha.com" and enriched["email_valid"] is True
     assert enriched["status"] == "scored"
 
-    # Re-enrich the SAME (now-scored) row is idempotent — no second credit spent.
-    r = client.post(
-        f"/{slug}/prospects/enrich",
-        json={"identity_keys": [person["identity_key"]]}, headers=_auth(token),
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["credits_spent"] == 0  # already enriched → skipped, no double-charge
+    # Re-run the SAME (now-revealed) row is idempotent on the enrich side — no second credit spent
+    # (R10 — the per-row commit stamps last_enriched_at, so the re-run skips it).
+    res2 = _enrich_score(client, slug, token, [person["identity_key"]])
+    assert res2["credits_spent"] == 0  # already enriched → skipped, no double-charge
 
 
 def test_enrich_then_score_worker_reveals_before_scoring(owner_member, monkeypatch):
@@ -333,7 +343,7 @@ def test_enrich_then_score_worker_reveals_before_scoring(owner_member, monkeypat
     )
     assert res == {
         "requested": 1, "enriched": 1, "credits_spent": 1, "enrich_failed": 0,
-        "scored": 1, "failed": 0, "cost_usd": 0.0,
+        "skipped_excluded": 0, "scored": 1, "failed": 0, "cost_usd": 0.0,
     }, res
     # (1) Reveal ran BEFORE score — the scorer saw the revealed email, not the pre-reveal blank.
     assert seen_enrichment, "people scorer was never called"
@@ -345,6 +355,88 @@ def test_enrich_then_score_worker_reveals_before_scoring(owner_member, monkeypat
     assert person.status == "scored"
     assert person.enrichment["email"] == "sam@alpha.com" and person.email_valid is True
     assert person.label == "contact_now" and person.score_total == 20
+    db.close()
+
+
+def test_enrich_score_skips_person_under_excluded_company(owner_member, monkeypatch):
+    """R8 — a person under an `excluded_by_rules` company is skipped pre-enrich (no Apollo match, no
+    credit spent) and still labeled `excluded_by_rules` by the free gate. If either the paid match
+    or the paid people-score is reached for this row, the stubs fail the test."""
+    from sqlalchemy import select
+
+    from app.core.db import get_session
+    from app.domains.prospects import fit
+    from app.domains.prospects.router import run_enrich_score_prospects
+    from app.integrations.apollo import client as apollo
+    from app.models import Company, Prospect, Tenant
+
+    _client, slug, _token, icp_id = owner_member
+    db = get_session()
+    tenant = db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one()
+
+    company = Company(
+        tenant_id=tenant.id, icp_id=uuid.UUID(icp_id), domain="dead.com", name="Dead",
+        source="apollo", status="people_found", label="excluded_by_rules",
+    )
+    db.add(company)
+    db.flush()
+    person = Prospect(
+        tenant_id=tenant.id, icp_id=uuid.UUID(icp_id), company_id=company.id,
+        identity_key="apollo:ppl-x", apollo_person_id="ppl-x", source="apollo",
+        status="found", enrichment={"first_name": "Nope", "title": "CFO"},
+    )
+    db.add(person)
+    db.commit()
+
+    monkeypatch.setattr(
+        apollo, "match_person",
+        lambda *a, **k: pytest.fail("match_person called for a row under an excluded company"),
+    )
+    monkeypatch.setattr(
+        fit, "prospect_score_v2",
+        lambda **k: pytest.fail("paid people-score reached a parent-excluded row"),
+    )
+
+    res = run_enrich_score_prospects(
+        db, tenant.id, {"identity_keys": ["apollo:ppl-x"], "slug": slug}
+    )
+    assert res["credits_spent"] == 0 and res["enriched"] == 0
+    assert res["skipped_excluded"] == 1
+    db.refresh(person)
+    assert person.label == "excluded_by_rules"  # labeled by the free gate, no spend
+    assert person.email_valid is False and not (person.enrichment or {}).get("email")
+    db.close()
+
+
+def test_resume_page_survives_interleaved_nonfind_runs(owner_member):
+    """R22b — 50 rescore/enrich runs after a company-find must NOT evict the find cursor: the scan
+    is scoped to company-find sources, so the cursor still resolves (page 3 → resume at 4)."""
+    from sqlalchemy import select
+
+    from app.core.db import get_session
+    from app.domains.prospects.router import _body_hash, _resume_page
+    from app.integrations.apollo import client as apollo
+    from app.models import ResearchRun, Tenant
+
+    _client, slug, _token, _icp = owner_member
+    db = get_session()
+    tenant = db.execute(select(Tenant).where(Tenant.slug == slug)).scalar_one()
+
+    bh = _body_hash({"q_organization_keyword_tags": ["fintech"]})
+    db.add(ResearchRun(
+        tenant_id=tenant.id, run_id=f"find-{uuid.uuid4().hex[:8]}", source="apollo",
+        result_meta={"body_hash": bh, "page_cursor": 3, "per_page": apollo.PER_PAGE_MAX},
+    ))
+    db.commit()
+    for i in range(50):  # would evict the find run from an all-source latest-50 window
+        db.add(ResearchRun(
+            tenant_id=tenant.id, run_id=f"rs-{i}-{uuid.uuid4().hex[:6]}",
+            source="rescore" if i % 2 else "enrich", result_meta={},
+        ))
+    db.commit()
+
+    resume, exhausted = _resume_page(db, tenant.id, bh)
+    assert resume == 4 and exhausted is False  # cursor survived the interleave
     db.close()
 
 
@@ -407,6 +499,15 @@ def test_find_company_requires_spec(owner_member, monkeypatch):
     r = client.post(f"/{slug}/people/find-people", json={}, headers=_auth(token))
     assert r.status_code == 400
     assert "select companies first" in r.text
+
+
+def test_prospect_fit_prompt_zero_prospects_ok(owner_member):
+    """R7 — the prospect-fit preview on a fresh tenant (zero prospects) must return 200. It used to
+    500 (AttributeError) because `prospect.enrichment` was dereferenced outside the None-guard."""
+    client, slug, token, _icp_id = owner_member  # this tenant has an ICP + spec but NO prospects
+    r = client.get(f"/{slug}/fit-prompt?stage=prospect_fit", headers=_auth(token))
+    assert r.status_code == 200, r.text
+    assert r.json()["company"] is None  # no sample prospect to preview
 
 
 # --------------------------------------------------------------------- multi-ICP (spec v4)

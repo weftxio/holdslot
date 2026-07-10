@@ -139,11 +139,16 @@ def _paginate(
         "total_pages": None,
         "start_page": start_page,
         "end_page": start_page - 1,  # nothing fetched yet
+        # The page SIZE the cursor's page numbers are denominated in. A resume is only valid at the
+        # same size, so it's stored beside `end_page` and re-checked (see `_resume_page`).
+        "per_page": PER_PAGE_MAX,
     }
     page = start_page
     while len(rows) < max_results and page <= PAGE_HARD_CAP:
-        per_page = min(PER_PAGE_MAX, max_results - len(rows))
-        resp = _post(path, {**filter_body, "page": page, "per_page": per_page})
+        # Always request full pages so page N always means the same rows (rows (N-1)*100 .. N*100).
+        # A per-page shrinking with the remaining budget would re-fetch the tail of the prior page
+        # and skip ahead — the R1 bug. Trim to `max_results` once, client-side, at return.
+        resp = _post(path, {**filter_body, "page": page, "per_page": PER_PAGE_MAX})
         batch = resp.get(key) or []
         rows.extend(batch)
         pagination = resp.get("pagination") or {}

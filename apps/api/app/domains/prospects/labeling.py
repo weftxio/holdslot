@@ -55,18 +55,20 @@ REASON_TOO_LARGE = "too large"
 
 # --- flags (spec §10) — non-blocking warning markers --------------------------
 FLAG_HQ_MISMATCH = "hq_mismatch"
-FLAG_HEADCOUNT_UNCERTAIN = "headcount_uncertain"
 FLAG_REVENUE_IMPLAUSIBLE = "revenue_implausible"
 FLAG_FOUNDING_DATE_CONFLICT = "founding_date_conflict"
 FLAG_COMPETITOR_ADJACENT = "competitor_adjacent"
 FLAG_PARTNER_LED = "partner_led"
 FLAG_STALE_RECORD = "stale_record"
+# `headcount_uncertain` (a size-gate suppression flag) was removed in D+.5/R11: only ONE headcount
+# source exists in the data (Apollo `estimated_num_employees`; the LLM score returns none), so the
+# "sources disagree >2×" flag was never producible — it and its suppression branch are gone.
 FLAGS: frozenset[str] = frozenset({
-    FLAG_HQ_MISMATCH, FLAG_HEADCOUNT_UNCERTAIN, FLAG_REVENUE_IMPLAUSIBLE,
+    FLAG_HQ_MISMATCH, FLAG_REVENUE_IMPLAUSIBLE,
     FLAG_FOUNDING_DATE_CONFLICT, FLAG_COMPETITOR_ADJACENT, FLAG_PARTNER_LED, FLAG_STALE_RECORD,
 })
-# The flags the LLM score call may emit (content/web-derived). `hq_mismatch` + `headcount_uncertain`
-# are computed deterministically (description-vs-field, source disagreement), never model-set.
+# The flags the LLM score call may emit (content/web-derived). `hq_mismatch` is computed
+# deterministically (description-vs-field), never model-set.
 MODEL_FLAGS: tuple[str, ...] = (
     FLAG_REVENUE_IMPLAUSIBLE, FLAG_FOUNDING_DATE_CONFLICT,
     FLAG_COMPETITOR_ADJACENT, FLAG_PARTNER_LED, FLAG_STALE_RECORD,
@@ -118,6 +120,18 @@ def collapse_subscores(
 # --- helpers ------------------------------------------------------------------
 def _norm(s: str | None) -> str:
     return (s or "").strip().casefold()
+
+
+def title_is_avoided(title: str | None, avoid_titles) -> bool:
+    """True if `title` matches any of `avoid_titles` (normalized substring, "sales ops" catches
+    "VP, Sales Ops"). The SINGLE source of truth for the avoid-title drop, shared by
+    `find.filter_people` (the pre-score drop) and `assign_person_label` (the gate) so the two never
+    disagree — they used to drift (`.lower()` vs `_norm`'s strip+casefold), which could drop
+    different rows on a whitespace/Unicode edge (R27)."""
+    tnorm = _norm(title)
+    if not tnorm:
+        return False
+    return any(_norm(t) in tnorm for t in (avoid_titles or []) if t)
 
 
 def _effective_market(business_model: str | None, has_b2b_line: bool) -> str:
@@ -210,8 +224,8 @@ def rules_gate(
     domain: str | None,
     config: RulesConfig,
 ) -> tuple[str, str] | None:
-    """Spec §5 — the client-defined rules: market (with the Luma B2B-line guard + Complex→B2B),
-    geography, and the client exclusion list.
+    """Spec §5 — the client-defined rules: market (Complex→B2B; the Luma B2B-line guard was removed
+    2026-07-10), geography, and the client exclusion list.
 
     Geography is checked against BOTH the description-derived `hq_country` AND Apollo's
     `field_country` HQ field: the company search was geo-filtered, so Apollo's country is
@@ -248,15 +262,12 @@ def data_gate(
     return None
 
 
-def size_gate(
-    *, headcount: int | None, size_ceiling: int | None, flags: list[str]
-) -> tuple[str, str] | None:
-    """Spec §7 + founder 2026-07-09 — size rule → low_fit `too large` when headcount exceeds the
-    ICP band's ceiling. Never a hard exclusion (headcount data can't carry one); a
-    `headcount_uncertain` flag (sources disagree >2×) suppresses the gate for that row."""
+def size_gate(*, headcount: int | None, size_ceiling: int | None) -> tuple[str, str] | None:
+    """Spec §7 + founder 2026-07-09 — size rule → low_fit `too large` when headcount exceeds the ICP
+    band's ceiling. Never a hard exclusion (headcount data can't carry one). The former
+    `headcount_uncertain` suppression was removed in D+.5/R11 — only one headcount source exists, so
+    the "sources disagree" flag was never producible."""
     if headcount is None or size_ceiling is None:
-        return None
-    if FLAG_HEADCOUNT_UNCERTAIN in (flags or ()):
         return None
     if headcount > size_ceiling:
         return LOW_FIT, REASON_TOO_LARGE
@@ -293,7 +304,7 @@ def deterministic_flags(
         found.add(FLAG_STALE_RECORD)
     # Return in the spec §10 declaration order for a stable UI marker order.
     return [f for f in (
-        FLAG_HQ_MISMATCH, FLAG_HEADCOUNT_UNCERTAIN, FLAG_REVENUE_IMPLAUSIBLE,
+        FLAG_HQ_MISMATCH, FLAG_REVENUE_IMPLAUSIBLE,
         FLAG_FOUNDING_DATE_CONFLICT, FLAG_COMPETITOR_ADJACENT, FLAG_PARTNER_LED, FLAG_STALE_RECORD,
     ) if f in found]
 
@@ -346,7 +357,7 @@ def assign_label(
             name=name, domain=domain, config=config,
         ),
         data_gate(industry=industry, hq_country=eff_country, website=website),
-        size_gate(headcount=headcount, size_ceiling=size_ceiling, flags=flags),
+        size_gate(headcount=headcount, size_ceiling=size_ceiling),
         icp_gate(icp_match),
     ):
         if hit is not None:
@@ -394,9 +405,8 @@ def assign_person_label(
     flags = [f for f in (flags or []) if f in FLAGS]
     if company_label == EXCLUDED:
         return Verdict(label=EXCLUDED, reason=REASON_PARENT_EXCLUDED, flags=flags)
-    # Substring match, like find.filter_people — "Sales Intern" is caught by an "intern" avoid.
-    tnorm = _norm(title)
-    if tnorm and any(_norm(t) in tnorm for t in avoid_titles if t):
+    # Shared normalize+match with find.filter_people — "Sales Intern" caught by an "intern" avoid.
+    if title_is_avoided(title, avoid_titles):
         return Verdict(label=EXCLUDED, reason=REASON_AVOIDED_TITLE, flags=flags)
     if not (title and title.strip()) or not has_contact:
         return Verdict(label=LOW_FIT, reason=REASON_DATA_UNUSABLE, flags=flags)
@@ -486,5 +496,5 @@ __all__ = [
     "SUBSCORE_AXES", "SUBSCORE_AXES_PEOPLE", "FLAGS", "MODEL_FLAGS", "RulesConfig", "Verdict",
     "label_from_score", "collapse_subscores", "assign_label", "assign_person_label",
     "build_rules_config", "size_ceiling_from_spec", "liveness_gate", "rules_gate", "data_gate",
-    "size_gate", "icp_gate", "deterministic_flags",
+    "size_gate", "icp_gate", "deterministic_flags", "title_is_avoided",
 ]

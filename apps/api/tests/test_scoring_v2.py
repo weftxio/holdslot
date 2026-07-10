@@ -36,7 +36,20 @@ def test_company_score_v2_schema_shape():
     assert s["properties"]["liveness"]["properties"]["status"]["enum"] == [
         "live", "defunct", "acquired", "dead_web", "stale",
     ]
+    # The default/base shape is 2-ICP.
     assert s["properties"]["icp_match"]["properties"]["icp"]["enum"] == ["A", "B", "none"]
+
+
+def test_company_score_v2_schema_icp_enum_is_dynamic():
+    """R19 — the icp enum is built from the tenant's ICP count (+ "none"), so a 3rd/4th ICP is a
+    valid answer instead of being structurally forced to "none"."""
+    three = fit.company_score_v2_schema(["A", "B", "C"])
+    assert three["schema"]["properties"]["icp_match"]["properties"]["icp"]["enum"] == [
+        "A", "B", "C", "none",
+    ]
+    # A no-ICP tenant → only "none" is valid.
+    zero = fit.company_score_v2_schema([])
+    assert zero["schema"]["properties"]["icp_match"]["properties"]["icp"]["enum"] == ["none"]
 
 
 def test_prospect_score_v2_schema_shape():

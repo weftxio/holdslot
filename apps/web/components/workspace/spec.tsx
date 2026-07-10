@@ -12,10 +12,10 @@ import {
   saveScopingSystemPrompt,
 } from "@/lib/api";
 import type { ScoreLabel, Subscores } from "@/lib/api";
+import { whenLabel } from "@/lib/dates";
 import type { Range } from "@/lib/workspace/types";
 import {
   AXIS_LABEL,
-  FIT_CHIP,
   LABEL_META,
   empBand,
   fmtGrowth,
@@ -30,23 +30,6 @@ import {
 // the AI left blank is a normal state, so it reads as a muted dash, not a placeholder box).
 function Dash() {
   return <span className="muted">—</span>;
-}
-// "Jul 9, 2:14 PM GMT+8" from an ISO instant, rendered in the VIEWER's own timezone; "" when unusable.
-function whenLabel(iso?: string | null): string {
-  if (!iso) return "";
-  // A timezone-naive ISO string (no trailing Z / ±HH:MM — the Data API strips the offset off our
-  // UTC timestamps) would otherwise be parsed as browser-LOCAL, showing the raw UTC digits. Pin it
-  // to UTC so toLocaleString then converts it into the viewer's own zone.
-  const hasTz = /[zZ]$/.test(iso) || /T.*[+-]\d{2}:?\d{2}$/.test(iso);
-  const d = new Date(hasTz ? iso : iso + "Z");
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-    timeZoneName: "short",
-  });
 }
 function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
   if (!items || !items.length) return <Dash />;
@@ -128,56 +111,6 @@ export function SubscoreList({
           </span>
         );
       })}
-    </span>
-  );
-}
-
-export function FitScore({
-  tier,
-  score,
-  reason,
-}: {
-  tier: string | null;
-  score?: number | null;
-  reason?: string;
-}) {
-  // The reason popup is fixed-positioned and portaled to <body>: the table body now scrolls
-  // (overflow:auto on .list-scroll), which would clip an in-flow absolute tooltip. We compute the
-  // anchor rect on hover/focus and place the popup centered above the icon, clamped to the viewport.
-  const [tip, setTip] = useState<{ x: number; y: number } | null>(null);
-  // Unscored row: scoring is on-demand (Update AI Score), so show a clear "Pending" rather than a dash.
-  if (!tier) return <span className="muted">Pending</span>;
-  const openTip = (e: { currentTarget: HTMLElement }) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const x = Math.min(Math.max(r.left + r.width / 2, 116), window.innerWidth - 116);
-    setTip({ x, y: r.top - 10 });
-  };
-  return (
-    <span className="fit-ai">
-      <span className={clsx("fit-chip", FIT_CHIP[tier] ?? "fit-chip--below")}>
-        {tier}
-        {score != null ? ` · ${score}` : ""}
-      </span>
-      {reason ? (
-        <span
-          className="fit-tip"
-          tabIndex={0}
-          onMouseEnter={openTip}
-          onFocus={openTip}
-          onMouseLeave={() => setTip(null)}
-          onBlur={() => setTip(null)}
-        >
-          <span className="fit-i">i</span>
-          {tip
-            ? createPortal(
-                <span className="fit-pop" role="tooltip" style={{ left: tip.x, top: tip.y }}>
-                  {reason}
-                </span>,
-                document.body,
-              )
-            : null}
-        </span>
-      ) : null}
     </span>
   );
 }

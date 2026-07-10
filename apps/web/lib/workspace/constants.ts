@@ -1,11 +1,9 @@
 import {
   type BatchApi,
   type BriefDoc,
-  type CompanyApi,
   type IcpApi,
   type ProspectApi,
   type ScoreLabel,
-  type Subscores,
   type ResearchSpecResult,
 } from "@/lib/api";
 import { type ExclRow, parseExclusionCsv } from "@/lib/csv";
@@ -59,8 +57,8 @@ export const SOURCE_LABEL: Record<string, string> = {
   apollo: "Apollo",
   manual: "Manual",
 };
-// People that still need enrichment (no verified email yet) vs. enriched-and-ready-to-batch.
-export const NEEDS_ENRICH = new Set(["found", "confirmed", "score_error"]);
+// Enriched-and-ready-to-batch. (The old NEEDS_ENRICH status set was dropped in D+.5/R14 — the spend
+// estimate now keys on `!email`, not status, so `enrich_failed` no-email rows count as re-spend.)
 export const ENRICHED_STATUS = "scored";
 export const BATCH_STATUS_CLS: Record<string, string> = {
   Approved: "badge-ok",
@@ -307,16 +305,6 @@ export function humanizeFacet(value: string): string {
   const text = value.startsWith("master_") ? value.slice("master_".length) : value;
   return text.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
-// A YYYY-MM-DD min/max window → "2025-12-22 → 2026-06-22" / "from …" / "until …" / null.
-export function dateRange(r?: { min?: string | null; max?: string | null }): string | null {
-  const lo = r?.min,
-    hi = r?.max;
-  if (lo && hi) return `${lo} → ${hi}`;
-  if (lo) return `from ${lo}`;
-  if (hi) return `until ${hi}`;
-  return null;
-}
-
 // Stage-1 business-model chip (B2B · B2C · Complex · Unknown) shown in the Step-1 company table.
 // A factual label from `company_fit` — `Complex` = marketplace / B2B2C / platform serving both
 // sides (e.g. Amazon). Colors are categorical, NOT a verdict (the fit chip carries the verdict; the
@@ -330,15 +318,6 @@ const BUSINESS_MODEL_CHIP: Record<string, { label: string; cls: string }> = {
 export function businessModelChip(value: string): { label: string; cls: string } {
   return BUSINESS_MODEL_CHIP[value] ?? { label: value, cls: "badge-neutral" };
 }
-
-// AI Score cell — a clean fit chip (4 tier colors) + a hover/focus info tooltip carrying the
-// "why a fit" reason. Reason is rendered as JSX text (never innerHTML).
-export const FIT_CHIP: Record<string, string> = {
-  Strong: "fit-chip--strong",
-  Good: "fit-chip--good",
-  Moderate: "fit-chip--moderate",
-  Below: "fit-chip--below",
-};
 
 // --- Scoring v2 (docs/initial-build-plan.md §D+.2) — the 4-label system ------
 // Chip text/color + sort rank per label. `rank` orders the list feed (spec §11): actions first,
@@ -405,9 +384,6 @@ export const BUCKET_HEAD: Record<ScoreLabel | "unscored", string> = {
   low_fit: "Low fit",
   excluded_by_rules: "Excluded by rules",
 };
-// The Step-1/Step-2 label-filter dropdown sentinel for the null ("not yet scored") bucket — a value
-// that can't collide with a real ScoreLabel, so the predicate can special-case it.
-export const UNSCORED_LABEL = "__unscored";
 
 // Group a set of rows by label (null → the "unscored" key), preserving per-bucket order.
 export function groupByLabel<T extends { label: ScoreLabel | null }>(
@@ -420,9 +396,6 @@ export function groupByLabel<T extends { label: ScoreLabel | null }>(
   }
   return out;
 }
-// Referenced so `CompanyApi`/`Subscores` imports are used even before the table wiring lands.
-export type LabeledCompany = Pick<CompanyApi, "label" | "score_total" | "subscores">;
-export type SubscoreMap = Subscores;
 
 // Compact currency / growth formatters for the Enrichment cell.
 export function fmtRevenue(n: number | null): string {
@@ -452,31 +425,9 @@ export const EXCL_TEXT_KEY: Record<
 export const MAX_CSV_BYTES = 1_000_000; // 1 MB
 export const MAX_CSV_ROWS = 5000;
 
-// The Step-1 manual scope override is stored per (client, ICP): each ICP's Find Settings tuning
-// shadows only that ICP's AI block. The un-suffixed key is the legacy/ICP-less entry — still read
-// as a fallback so a pre-multi-ICP saved override keeps working.
-const SCOPE_KEY = (client: string, icpId?: string) =>
-  icpId ? `holdslot_scope_${client}:${icpId}` : `holdslot_scope_${client}`;
-export function loadScopeOverride(client: string, icpId?: string): ScopeOverride | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const v = JSON.parse(localStorage.getItem(SCOPE_KEY(client, icpId)) || "null");
-    if (v && typeof v === "object") return v as ScopeOverride;
-    if (icpId) return loadScopeOverride(client); // legacy ICP-less override as fallback
-    return null;
-  } catch {
-    return null;
-  }
-}
-export function saveScopeOverride(client: string, v: ScopeOverride | null, icpId?: string) {
-  if (typeof window === "undefined") return;
-  try {
-    if (v) localStorage.setItem(SCOPE_KEY(client, icpId), JSON.stringify(v));
-    else localStorage.removeItem(SCOPE_KEY(client, icpId));
-  } catch {
-    /* ignore */
-  }
-}
+// The Step-1 manual scope override lives server-side now (per (tenant, ICP)); the old localStorage
+// `loadScopeOverride`/`saveScopeOverride` pair + its `SCOPE_KEY` were retired in D+.5/R25 — only the
+// one-time migration helpers below remain, to lift any leftover local entry to the server.
 // U1.6 — one-time migration of the Step-1 company scope from its old localStorage home (per
 // (client, ICP)) to the server, so a find reads the operator's tuning server-side instead of
 // silently falling back to the broad AI scope. `pendingLocalScopeMigrations` returns each stored

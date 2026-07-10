@@ -1,5 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
-import { CLIENT, setupApp } from "./_mock";
+import { test, expect, type Page, type Route } from "@playwright/test";
+import { API_BASE, CLIENT, setupApp } from "./_mock";
 
 // Route-smoke tests for the refactored Next.js app: prove the newly-split routes render, that the
 // index routes redirect to their default tab, that legacy hash links land on the right route, that
@@ -200,6 +200,32 @@ test.describe("workspace routes", () => {
       .poll(() => new URL(page.url()).searchParams.get("batch"))
       .toBe("Batch 3");
     await expect(page.getByText("Batch 3").first()).toBeVisible();
+    expectNoExternalRequests();
+  });
+
+  // R17 — pins the list-feed SHAPE: the client cursor-pages `/companies` reading `.items`, so a bare
+  // `[]` from the mock made `page.items` undefined → a swallowed TypeError, and the list rendered
+  // nothing while this suite passed. Seed one company via the `{items, next_cursor}` shape and assert
+  // it actually reaches the DOM as a row.
+  test("list route renders seeded companies as rows (pins {items,next_cursor})", async ({ page }) => {
+    const SEED_CO = {
+      id: "co-seed-1", icp_id: null, run_id: null, domain: "seededco.test", website: "",
+      linkedin_url: "", name: "SeededCo Test Inc", industry: "Software", size: "50", country: "US",
+      fit_reason: "Strong deal fit.", business_model: "B2B", label: "contact_now", score_total: 18,
+      reason: "fits ICP A", subscores: {}, flags: [], icp: "A", trigger_line: "raised a round",
+      enrichment: {}, source: "apollo", status: "discovered", created_at: "2026-07-10T00:00:00",
+    };
+    // A more-specific route registered after setupApp wins (Playwright tries handlers LIFO); it still
+    // fulfils on the dead local base, so the external-request guard stays clean.
+    await page.route(`${API_BASE}/${CLIENT}/companies*`, (route: Route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [SEED_CO], next_cursor: null }),
+      })
+    );
+    await page.goto(`/${CLIENT}/workspace/list`);
+    await expect(page.getByText("SeededCo Test Inc")).toBeVisible();
     expectNoExternalRequests();
   });
 });

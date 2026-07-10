@@ -529,12 +529,6 @@ export type CompanyEnrichment = {
   keywords: string[];
   hq: string;
 };
-export type EnrichResult = {
-  confirmed: number;
-  enriched: number;
-  credits_spent: number;
-  failed: number; // rows whose Apollo match errored / had no match (spend counts are still returned)
-};
 // Result of an Apollo find run (Flow A companies or Flow B people).
 export type FindResult = {
   run_id: string;
@@ -647,6 +641,7 @@ export const SCORE_BATCH_MAX = 15;
 
 const JOB_POLL_MS = 2000;
 const JOB_POLL_MAX = 200; // ~6.5-min ceiling; the Lambda-bounded worker terminates well before this
+const JOB_POLL_RETRIES = 3; // consecutive transient poll errors tolerated before we give up (R12)
 
 async function kickScoringJob(
   client: string,
@@ -670,17 +665,41 @@ async function getScoringJob(client: string, jobId: string): Promise<ScoringJobA
 
 // Poll a kicked-off job until done/error (or `alive()` turns false, or the ceiling is hit), then
 // return the latest job. Callers reload their list on a non-error terminal and surface job.error.
+//
+// R12: (a) `alive()` lets the caller cancel on unmount / client-switch so an orphan loop can't keep
+// polling + toasting after navigating away. (b) A transient poll error (5xx / network blip) is
+// retried up to JOB_POLL_RETRIES before we abandon, so one blip doesn't leave rows stuck "Pending".
+// (c) If the ceiling is hit (or alive() flips) while the job is still non-terminal, we return it with
+// status `running` — never a synthetic terminal — so the caller shows "still running", not a false
+// "0 scored" success.
 export async function awaitScoringJob(
   client: string,
   jobId: string,
   alive: () => boolean = () => true
 ): Promise<ScoringJobApi> {
+  let lastJob: ScoringJobApi | null = null;
+  let transient = 0;
   for (let i = 0; i < JOB_POLL_MAX && alive(); i++) {
-    const job = await getScoringJob(client, jobId);
-    if (job.status === "done" || job.status === "error") return job;
+    try {
+      const job = await getScoringJob(client, jobId);
+      transient = 0;
+      lastJob = job;
+      if (job.status === "done" || job.status === "error") return job;
+    } catch (e) {
+      if (++transient > JOB_POLL_RETRIES) throw e; // sustained failure → let the caller handle it
+    }
     await new Promise((res) => setTimeout(res, JOB_POLL_MS));
   }
-  return getScoringJob(client, jobId);
+  // Ceiling hit / cancelled with no terminal state → report "running" (a fresh read if we can get
+  // one, else the last-seen job, else a synthetic marker), so the FE never reads this as success.
+  try {
+    const job = await getScoringJob(client, jobId);
+    return job.status === "done" || job.status === "error" ? job : { ...job, status: "running" };
+  } catch {
+    return lastJob
+      ? { ...lastJob, status: "running" }
+      : { job_id: jobId, kind: null, status: "running", result: {}, error: null };
+  }
 }
 
 // Flow A — Apollo company search from the latest ResearchSpec (async; rows land UNSCORED).
@@ -905,21 +924,6 @@ export function enrichScoreProspectsAsync(
   identityKeys: string[]
 ): Promise<ScoringJobApi> {
   return kickScoringJob(client, "prospects/enrich-score-async", { identity_keys: identityKeys });
-}
-
-// The enrich gate — Apollo people/match on the confirmed rows (the only credit spend); returns the
-// confirmed/enriched counts + credits spent.
-export async function enrichProspects(
-  client: string,
-  identityKeys: string[]
-): Promise<EnrichResult> {
-  const r = await authFetch(`/${client}/prospects/enrich`, {
-    method: "POST",
-    json: true,
-    body: JSON.stringify({ identity_keys: identityKeys }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
-  return r.json();
 }
 
 // --- Phase D (S3) — Sendout batch + client approval --------------------------

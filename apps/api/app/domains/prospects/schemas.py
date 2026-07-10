@@ -94,8 +94,8 @@ class CompanyFindIn(BaseModel):
     when present they replace the spec's blocks for *this call only* — the spec stays the AI source
     of truth, the override is the manual tuning. Omitted → the saved spec is used unchanged.
 
-    `limit` defaults to the async ceiling (`FIND_COMPANY_LIMIT`); the web app omits it so an async
-    find targets the full width. The synchronous route re-clamps to `SYNC_FIND_COMPANY_LIMIT`.
+    `limit` defaults to the async ceiling (`FIND_COMPANY_LIMIT`); the web app omits it so a find
+    targets the full width. (The v1 sync route + its separate clamp were retired in V2-4.)
     """
 
     limit: int = 100
@@ -201,8 +201,9 @@ class CompanySelectIn(BaseModel):
 
 class CompanyRescoreIn(BaseModel):
     """Re-run company fit scoring for an explicit set of already-sourced companies (the Step-1
-    selection). Unlike find-company, this ignores the `fit_score is None` gate — it re-scores the
-    given rows against the current rubric + scoring prompt so an existing list reflects a change."""
+    selection). Unlike find-company, this ignores the `label is None` (unscored) gate — it re-scores
+    the given rows against the current rubric + scoring prompt so an existing list reflects an edit.
+    """
 
     ids: list[str] = Field(default_factory=list)
 
@@ -221,25 +222,6 @@ class ProspectRescoreIn(BaseModel):
     regardless of whether the row was scored, so the people list reflects a rubric change."""
 
     identity_keys: list[str] = Field(default_factory=list)
-
-
-class EnrichIn(BaseModel):
-    """Confirm which scored people to enrich (the enrich gate) by identity key."""
-
-    identity_keys: list[str] = Field(default_factory=list)
-
-
-class EnrichResult(BaseModel):
-    """Enrich-gate result — how many rows were enriched (Apollo people/match) + credits spent.
-
-    `failed` counts rows whose match call errored or had no Apollo match; the spend counts are
-    always returned (never lost to a mid-batch failure) so the caller can reconcile the charge.
-    """
-
-    confirmed: int
-    enriched: int = 0
-    credits_spent: int = 0
-    failed: int = 0
 
 
 class ProspectOut(BaseModel):

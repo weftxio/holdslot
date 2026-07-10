@@ -23,6 +23,7 @@ the live-dev smoke step confirms the real column layout before this ships.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
 from typing import NamedTuple
@@ -76,10 +77,28 @@ def _uid_col(header: list[str]) -> int | None:
     return None
 
 
+# R20d — the tech CSV is large and stable (the same body every find); parsing it on every call was
+# pure waste. Memoize on the content hash: a single slot keyed on sha256(csv_text) — a re-parse only
+# happens when the CSV body actually changes. Transparent (same input → same Vocab), so callers and
+# tests are unaffected.
+_vocab_cache: tuple[str, Vocab] | None = None
+
+
 def parse_vocab(csv_text: str) -> Vocab:
-    """Parse an `auth/supported_technologies_csv` body → a `Vocab`. Tolerant of a UID column (any
-    header containing "uid" is authoritative) or a name-only CSV (UID slugged from the name). Blank
-    lines and rows with no name are skipped; the first non-empty column is the display name."""
+    """Parse an `auth/supported_technologies_csv` body → a `Vocab`. Memoized on the CSV content hash
+    (R20d). Tolerant of a UID column (any header containing "uid" is authoritative) or a name-only
+    CSV (UID slugged from the name). Blank lines and rows with no name are skipped; the first
+    non-empty column is the display name."""
+    global _vocab_cache
+    key = hashlib.sha256((csv_text or "").encode()).hexdigest()
+    if _vocab_cache is not None and _vocab_cache[0] == key:
+        return _vocab_cache[1]
+    vocab = _parse_vocab(csv_text)
+    _vocab_cache = (key, vocab)
+    return vocab
+
+
+def _parse_vocab(csv_text: str) -> Vocab:
     reader = csv.reader(io.StringIO(csv_text or ""))
     rows = [r for r in reader if any((c or "").strip() for c in r)]
     if not rows:

@@ -177,8 +177,10 @@ def test_parse_enrich_promotes_firmographics_and_intent():
 # ----------------------------------------------------------------- client paginator (mocked)
 
 
-def test_paginate_caps_per_page_and_stops_at_max_results(monkeypatch):
-    """150 requested → page 1 asks per_page=100 (the Apollo cap), page 2 asks 50, then stops."""
+def test_paginate_requests_full_pages_and_trims_client_side(monkeypatch):
+    """R1: every page asks the CONSTANT per_page=100 (so page N always means the same rows), fetches
+    ⌈150/100⌉=2 pages, and trims the collected 200 down to 150 client-side. A per_page that shrank
+    with the remaining budget (the old bug) re-read the prior page's tail and skipped 101-150."""
     calls: list[dict] = []
 
     def fake_post(path, body, timeout=apollo.DEFAULT_TIMEOUT):
@@ -189,9 +191,12 @@ def test_paginate_caps_per_page_and_stops_at_max_results(monkeypatch):
 
     monkeypatch.setattr(apollo, "_post", fake_post)
     out = apollo.search_companies({"q": "x"}, max_results=150)
-    assert len(out) == 150
-    assert [c["page"] for c in calls] == [1, 2]  # stopped once 150 collected
-    assert calls[0]["per_page"] == 100 and calls[1]["per_page"] == 50
+    assert len(out) == 150  # trimmed to max_results
+    assert [c["page"] for c in calls] == [1, 2]  # stopped once ≥150 collected
+    assert calls[0]["per_page"] == 100 and calls[1]["per_page"] == 100  # CONSTANT page size
+    # No row is dropped or duplicated across the page boundary: rows 1..150 are page-1 items 0..99
+    # then page-2 items 0..49, in order.
+    assert out[100]["id"] == "p2-0" and out[149]["id"] == "p2-49"
 
 
 def test_paginate_stops_when_data_runs_out(monkeypatch):
@@ -232,13 +237,62 @@ def test_cursor_decision_resume_reset_and_exhaustion():
     """D+ Stage 3 — the pure resume decision from the latest same-scope run's result_meta."""
     from app.domains.prospects import router
 
+    pp = apollo.PER_PAGE_MAX  # the cursor is only valid at the page size it was recorded under (R1)
     assert router._cursor_decision(None) == (1, False)  # no prior run → page 1
-    assert router._cursor_decision({}) == (1, False)  # prior run, no cursor yet → page 1
-    assert router._cursor_decision({"page_cursor": 3}) == (4, False)  # resume past the last page
+    assert router._cursor_decision({"per_page": pp}) == (1, False)  # prior run, no cursor → page 1
+    assert router._cursor_decision({"per_page": pp, "page_cursor": 3}) == (4, False)  # resume past
     # A prior run that exhausted the scope → short-circuit signal (caller re-flags "regenerate").
-    assert router._cursor_decision({"scope_exhausted": True, "page_cursor": 9}) == (1, True)
+    assert router._cursor_decision({"per_page": pp, "scope_exhausted": True, "page_cursor": 9}) == (
+        1,
+        True,
+    )
     # A malformed cursor never crashes the find — falls back to page 1.
-    assert router._cursor_decision({"page_cursor": "oops"}) == (1, False)
+    assert router._cursor_decision({"per_page": pp, "page_cursor": "oops"}) == (1, False)
+    # R1: a cursor recorded under a DIFFERENT page size (or a pre-R1 run with no per_page) is
+    # discarded — its page numbers don't map to the current page width. Start fresh at page 1.
+    assert router._cursor_decision({"page_cursor": 3}) == (1, False)  # missing per_page (legacy)
+    assert router._cursor_decision({"per_page": pp - 1, "page_cursor": 3}) == (1, False)  # changed
+    assert router._cursor_decision({"per_page": pp - 1, "scope_exhausted": True}) == (1, False)
+
+
+def test_is_apac_country_city_and_negative():
+    """R29d — APAC detection matches a country token ("Singapore", "Sydney, Australia") AND a
+    city-only scope with no country segment ("Sydney", "Tokyo"); a non-APAC scope is False."""
+    from app.domains.prospects import router
+
+    assert router._is_apac(["Singapore"]) is True
+    assert router._is_apac(["Hong Kong"]) is True
+    assert router._is_apac(["Sydney, Australia"]) is True
+    assert router._is_apac(["Kowloon, Hong Kong"]) is True
+    assert router._is_apac(["Sydney"]) is True  # city-only, no country — the R29d fix
+    assert router._is_apac(["Tokyo"]) is True
+    assert router._is_apac(["United States", "Toronto, Canada"]) is False
+    assert router._is_apac([]) is False
+
+
+def test_body_hash_stable_across_feedback_negatives():
+    """R4 — the page-cursor key hashes only the STABLE scope: adding/altering feedback-derived
+    negatives (`organization_not_locations`, `currently_not_using_any_of_technology_uids`) must NOT
+    change the hash (else a re-run of the same scope churns the cursor and re-buys page 1), but a
+    genuine scope change must."""
+    from app.domains.prospects import router
+
+    scope = {
+        "organization_locations": ["United States"],
+        "q_organization_keyword_tags": ["fintech"],
+        "currently_using_any_of_technology_uids": ["999"],  # positive tech (ICP-derived) is stable
+    }
+    base = router._body_hash(scope)
+    # Different feedback negatives → SAME hash (stripped before hashing).
+    assert base == router._body_hash({**scope, "organization_not_locations": ["Canada"]})
+    assert base == router._body_hash({
+        **scope,
+        "organization_not_locations": ["Mexico", "Brazil"],
+        "currently_not_using_any_of_technology_uids": ["123", "456"],
+    })
+    # A real scope change → DIFFERENT hash (resets the cursor to page 1).
+    assert base != router._body_hash({**scope, "organization_locations": ["United Kingdom"]})
+    assert base != router._body_hash({**scope, "currently_using_any_of_technology_uids": ["111"]})
 
 
 def test_search_companies_meta_captures_first_page_signal(monkeypatch):

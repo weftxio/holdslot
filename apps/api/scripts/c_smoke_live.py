@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 import uuid
@@ -28,6 +29,18 @@ def call(method: str, path: str, token: str | None = None, body: dict | None = N
             return r.status, json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         return e.code, e.read().decode()[:300]
+
+
+def poll_job(slug: str, token: str, job_id: str):
+    """Poll a kicked-off async scoring job until it's terminal (the sync find/enrich twins were
+    retired in V2-4 / D+.5 — the async door + job poll is the only path now)."""
+    for _ in range(180):  # ~6 min ceiling; the Lambda-bounded worker settles well before this
+        s, r = call("GET", f"/{slug}/scoring-jobs/{job_id}", token)
+        assert s == 200, f"job poll {s}: {r}"
+        if r.get("status") in ("done", "error"):
+            return r
+        time.sleep(2)
+    return r
 
 
 def main() -> None:
@@ -84,11 +97,22 @@ def main() -> None:
         token = r["access_token"]
         print("[1/5] login OK")
 
-        s, r = call("POST", f"/{slug}/companies/find-company", token, {"limit": 8})
-        print(f"[2/5] find-company -> {s} found={r.get('found') if isinstance(r, dict) else r}")
-        assert s == 200 and r["found"] >= 1, r
-        comp_ids = [c["id"] for c in r["companies"]]
-        print("        sample:", [(c["domain"], c["fit_score"]) for c in r["companies"][:3]])
+        s, r = call("POST", f"/{slug}/companies/find-company-async", token, {"limit": 8})
+        assert s == 202, f"find-company-async {s}: {r}"
+        job = poll_job(slug, token, r["job_id"])
+        assert job["status"] == "done", f"find-company job: {job}"
+        found = (job.get("result") or {}).get("found", 0)
+        print(f"[2/5] find-company-async -> done found={found}")
+        s, r = call("GET", f"/{slug}/companies", token)
+        assert s == 200, r
+        cos = r["items"]  # the feed is cursor-paged: {items, next_cursor}
+        assert cos, "no companies after find"
+        comp_ids = [c["id"] for c in cos]
+        # v2 contract: rows land UNSCORED at find (label/score_total NULL until a rescore); the free
+        # deterministic gate may already have labeled some. Read the NEW fields (the v1 fit_score is
+        # gone), proving the contract rather than the retired column.
+        sample = [(c["domain"], c.get("label"), c.get("score_total")) for c in cos[:2]]
+        print("        sample:", sample)
 
         s, r = call(
             "PATCH", f"/{slug}/companies/select", token, {"ids": comp_ids, "selected": True}
@@ -106,12 +130,18 @@ def main() -> None:
         key = people[0]["identity_key"]
         print("        sample:", [(p["full_name"], p["title"], p["company"]) for p in people[:3]])
 
-        s, r = call("POST", f"/{slug}/prospects/enrich", token, {"identity_keys": [key]})
-        print(f"[5/5] enrich -> {s} {r}")
-        assert s == 200, r
+        # Reveal & score via the async door (the sync /prospects/enrich twin was retired in D+.5):
+        # reveal the verified email (the credit spend) THEN score, in one job.
+        s, r = call(
+            "POST", f"/{slug}/prospects/enrich-score-async", token, {"identity_keys": [key]}
+        )
+        assert s == 202, f"enrich-score-async {s}: {r}"
+        job = poll_job(slug, token, r["job_id"])
+        print(f"[5/5] enrich-score -> {job['status']} {job.get('result')}")
+        assert job["status"] == "done", job
         s, r = call("GET", f"/{slug}/prospects", token)
-        enriched = next((p for p in r if p["identity_key"] == key), None)
-        fields = ("full_name", "email", "email_valid", "status")
+        enriched = next((p for p in r["items"] if p["identity_key"] == key), None)
+        fields = ("full_name", "email", "email_valid", "status", "label", "score_total")
         print("        enriched row:", {k: enriched.get(k) for k in fields} if enriched else None)
         print("✅ live end-to-end smoke complete")
     finally:

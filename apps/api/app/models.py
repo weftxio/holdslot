@@ -334,7 +334,19 @@ class ScoringJob(Base):
     """
 
     __tablename__ = "scoring_job"
-    __table_args__ = (Index("ix_scoring_job_tenant_kind", "tenant_id", "kind"),)
+    __table_args__ = (
+        Index("ix_scoring_job_tenant_kind", "tenant_id", "kind"),
+        # D+.5 (0027, R9) — one in-flight job per (tenant, kind), enforced in the DB so a
+        # concurrent double-POST can't both dispatch. `enqueue_scoring` catches the IntegrityError
+        # and coalesces onto the winner. Partial: terminal (done/error) rows don't participate.
+        Index(
+            "uq_scoring_job_active_tenant_kind",
+            "tenant_id",
+            "kind",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
@@ -368,20 +380,28 @@ class Company(Base):
     `discovered`; the user selects (`selected`); **people search** then sources people *from the
     selected set* and links each `prospect.company_id` back by domain. Upsert of the same `domain`
     for a tenant is idempotent (the unique constraint), mirroring `prospect`'s `identity_key`
-    dedupe. `fit_*` reuses the one scoring door (`fit.py`), persona lines omitted (company rubric).
+    dedupe. Scoring reuses the one door (`fit.py`) → the `label`/`score_total` verdict, persona
+    lines omitted (company rubric). (The v1 `fit_score`/`fit_tier` cols were retired in 0026.)
     """
 
     __tablename__ = "company"
     __table_args__ = (
         UniqueConstraint("tenant_id", "domain", name="uq_company_tenant_domain"),
         UniqueConstraint("tenant_id", "apollo_org_id", name="uq_company_tenant_apollo_org"),
-        Index("ix_company_tenant_id", "tenant_id"),
         # Scoring v2 (0024) — label-bucketed feed: filter/group by label, best score first. The v1
         # `ix_company_tenant_fit` (fit_score) was dropped in V2-4 (migration 0026).
         Index(
             "ix_company_tenant_label",
             "tenant_id",
             "label",
+            text("score_total DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
+        # D+.5 (0027) — the label-agnostic list feed sort (score best-first). The single-column
+        # `ix_company_tenant_id` was dropped here — this composite prefix-covers it.
+        Index(
+            "ix_company_tenant_score",
+            "tenant_id",
             text("score_total DESC NULLS LAST"),
             text("created_at DESC"),
         ),
@@ -436,7 +456,6 @@ class Prospect(Base):
     __tablename__ = "prospect"
     __table_args__ = (
         UniqueConstraint("tenant_id", "identity_key", name="uq_prospect_tenant_identity"),
-        Index("ix_prospect_tenant_id", "tenant_id"),
         Index("ix_prospect_apollo_person_id", "tenant_id", "apollo_person_id"),
         # Scoring v2 (0024) — label-bucketed feed, mirrors company. The v1 `ix_prospect_tenant_fit`
         # (fit_score) was dropped in V2-4 (migration 0026).
@@ -444,6 +463,14 @@ class Prospect(Base):
             "ix_prospect_tenant_label",
             "tenant_id",
             "label",
+            text("score_total DESC NULLS LAST"),
+            text("created_at DESC"),
+        ),
+        # D+.5 (0027) — the label-agnostic list feed sort (mirrors company). The single-column
+        # `ix_prospect_tenant_id` was dropped here — this composite prefix-covers it.
+        Index(
+            "ix_prospect_tenant_score",
+            "tenant_id",
             text("score_total DESC NULLS LAST"),
             text("created_at DESC"),
         ),
@@ -505,6 +532,9 @@ class ResearchRun(Base):
     __table_args__ = (
         UniqueConstraint("run_id", name="uq_research_run_run_id"),
         Index("ix_research_run_tenant_id", "tenant_id"),
+        # D+.5 (0027, R22a) — the Stage-3 `_resume_page` scan + find-history endpoint sort by
+        # (tenant, created_at DESC); without this they table-scan.
+        Index("ix_research_run_tenant_created", "tenant_id", text("created_at DESC")),
     )
 
     id: Mapped[uuid.UUID] = _uuid_pk()

@@ -1,39 +1,7 @@
 import type { LedgerRow, Recap, Reply } from "./types";
 
-// Per-prospect enrichment shown in the expanded Approval Batches table (mock — wired in Phase C/E).
-// Mirrors the columns an external sourcing tool surfaces: a fit score (grade · intent heat),
-// the prospect's industry, and which of the client's people they're connected to.
-export const SCORE_TIERS = [
-  { grade: "A", heat: "Burning", cls: "badge-ok" },
-  { grade: "B", heat: "Warm", cls: "badge-warn" },
-  { grade: "C", heat: "Cool", cls: "badge-neutral" },
-] as const;
-export const SAMPLE_INDUSTRIES = [
-  "Artificial Intelligence",
-  "Software",
-  "Fintech",
-  "Logistics",
-  "Healthtech",
-  "Retail",
-  "Manufacturing",
-  "Media",
-];
-export const SAMPLE_CONNECTIONS = [
-  "Sam Blond",
-  "Malay Desai",
-  "Shek Viswanathan",
-  "Tommy Hung",
-  "Stan Rapp",
-];
-export const STAFF_ROLES = [
-  "VP Sales",
-  "Head of Ops",
-  "RevOps Lead",
-  "COO",
-  "Marketing Dir.",
-  "CTO",
-  "Procurement",
-];
+// (The v1 mock enrichment fixtures SCORE_TIERS / SAMPLE_INDUSTRIES / SAMPLE_CONNECTIONS / STAFF_ROLES
+// were removed in D+.5/R25 — the Approval Batches table reads live enrichment now.)
 
 export const LEDGER: LedgerRow[] = [
   {

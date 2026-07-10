@@ -2634,37 +2634,8 @@
   border-radius: 9px;
 }
 
-/* AI Score cell — a clean fit chip + an info-i tooltip carrying the "why a fit" reason. */
-.fit-ai {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-.fit-chip {
-  display: inline-flex;
-  align-items: center;
-  font-size: 12px;
-  font-weight: 600;
-  padding: 3px 10px;
-  border-radius: 999px;
-  white-space: nowrap;
-}
-.fit-chip--strong {
-  color: #1f8a54;
-  background: #e7f6ee;
-}
-.fit-chip--good {
-  color: #2563eb;
-  background: #eaf1ff;
-}
-.fit-chip--moderate {
-  color: #b7791f;
-  background: #fdf3e2;
-}
-.fit-chip--below {
-  color: #6b7280;
-  background: #f1f3f6;
-}
+/* (The v1 `.fit-ai`/`.fit-chip*` fit-score chip styles were removed in D+.5/R25 with the FitScore
+   component — the live verdict is the `.label-chip` below.) */
 /* Scoring v2 (docs/holdslot-scoring-spec-v2.md) — the 4-label chip, the 4-segment subscore bar, and
    the non-blocking flag marker. Class selectors only (globals leak across routes otherwise). */
 .label-chip {
@@ -2859,54 +2830,8 @@
   height: 12px;
   border-width: 2px;
 }
-.fit-tip {
-  position: relative;
-  display: inline-flex;
-  cursor: help;
-  outline: none;
-}
-.fit-i {
-  width: 15px;
-  height: 15px;
-  border-radius: 50%;
-  border: 1px solid var(--m-sel-edge);
-  color: var(--m-faint);
-  font-size: 10px;
-  font-weight: 700;
-  font-style: italic;
-  font-family: Georgia, "Times New Roman", serif;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-/* Fixed + portaled to <body> so the scrolling table body (overflow:auto) can't clip it. The
-   inline left/top is the anchor icon's top-center; translate(-50%,-100%) lifts the box fully
-   above that point and centers it horizontally. pointer-events:none keeps it from stealing hover. */
-.fit-pop {
-  position: fixed;
-  z-index: 1000;
-  width: 220px;
-  transform: translate(-50%, -100%);
-  /* Literal colors, not var(--m-tip): the popup is portaled to <body>, outside the .list-pane
-     scope where the --m-* tokens are defined, so a var() here would resolve to transparent. */
-  background: #14171c;
-  color: #fff;
-  font-size: 11.5px;
-  line-height: 1.45;
-  padding: 9px 11px;
-  border-radius: 8px;
-  pointer-events: none;
-  box-shadow: 0 6px 24px rgba(16, 24, 40, 0.18);
-}
-.fit-pop::after {
-  content: "";
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: #14171c;
-}
+/* (The v1 `.fit-tip`/`.fit-i`/`.fit-pop` reason-tooltip styles were removed in D+.5/R25 with the
+   FitScore component; the live reason renders inline under the row.) */
 
 /* Website link + LinkedIn glyph cells. */
 .weblink {
