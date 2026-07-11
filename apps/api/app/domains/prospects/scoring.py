@@ -98,19 +98,6 @@ def _reap_if_stale(db: Session, job: ScoringJob) -> bool:
     return True
 
 
-def latest_job(db: Session, tenant_id, kind: str) -> ScoringJob | None:
-    """The most recent job of this kind for the tenant (what the status poll reads)."""
-    job = db.execute(
-        select(ScoringJob)
-        .where(ScoringJob.tenant_id == tenant_id, ScoringJob.kind == kind)
-        .order_by(ScoringJob.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
-    if job is not None:
-        _reap_if_stale(db, job)
-    return job
-
-
 def job_by_id(db: Session, tenant_id, job_id) -> ScoringJob | None:
     """A specific job, tenant-scoped (the poll fetches by id once kicked off)."""
     job = db.execute(

@@ -49,7 +49,6 @@ DEFAULT_TIMEOUT = 25  # seconds; under the 30s Lambda timeout
 # non-US provider — the gemini/gpt defaults are geo-blocked (403 ToS) for this account; see the
 # module docstring. ⚠️ Pro reasons slowly (~55-76s) — safe only off the 30s API Gateway sync path
 # (async or a local backend); callers behind the gateway must keep using a faster model.
-DEFAULT_MODEL = "deepseek/deepseek-v4-pro"
 FALLBACK_MODELS = ["deepseek/deepseek-v4-pro"]
 
 

@@ -2313,10 +2313,13 @@ def list_research_runs(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> list[ResearchRunOut]:
+    # §6 perf — bound the scoreboard/drawer feed to the latest 50 runs instead of selecting every
+    # research_run the tenant recorded (one per find/rescore/enrich, so it grows without limit).
     rows = db.execute(
         select(ResearchRun)
         .where(ResearchRun.tenant_id == ctx.tenant.id)
         .order_by(ResearchRun.created_at.desc())
+        .limit(50)
     ).scalars()
     out = []
     for r in rows:
