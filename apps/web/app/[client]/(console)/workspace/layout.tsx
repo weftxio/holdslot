@@ -22,7 +22,8 @@ function WorkspaceTabBar() {
   const tabSlot = useContext(TopbarSlotCtx);
   const { batches, campaigns, replies } = useWorkspace();
   const active = pathname.split("/")[3] || "brief";
-  const remaining = replies.filter((r) => !r.done).length;
+  // The reply pip = unhandled replies (handled_at IS NULL) — mirrors the server's `state=open` pip.
+  const remaining = replies.filter((r) => !r.handled_at).length;
 
   const tabBar = (
     <div className="tabs ws-tabs" role="tablist">

@@ -17,6 +17,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     DateTime,
     Enum,
     ForeignKey,
@@ -741,5 +742,182 @@ class ApprovalTemplate(Base):
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
     data: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+# ============================================================ Phase E (S4/S5) — campaign & outreach
+# (migration 0028). Statuses/stages are plain strings (never DB enums); counts/metrics are DERIVED
+# from `outreach_event`, never stored (the Phase-D rule). `campaign_lead.stage` is the funnel's
+# single source of truth; Smartlead webhook events are inputs to it. Behavior spec →
+# docs/initial-build-plan.md § Phase E; schema → docs/data-schema.md § Phase E.
+
+
+class Campaign(Base):
+    """One outreach campaign per approved batch — the Smartlead campaign HoldSlot owns the state of.
+
+    `status` walks `draft` → `launching` → `sending` ⇄ `paused` → `completed` | `error` (plain
+    string). **`launching` doubles as the async-launch job state** — a stale `launching` older than
+    `MAX_JOB_AGE_SECONDS` flips `error` on read (the `scoring_job` reaper semantics, no separate job
+    table). `batch_id` is unique + RESTRICT, so a campaign-bearing batch is undeletable (the D
+    `DELETE /batches/{id}` cascade stops here — the billable-evidence chain can't be orphaned).
+    """
+
+    __tablename__ = "campaign"
+    __table_args__ = (
+        UniqueConstraint("batch_id", name="uq_campaign_batch"),
+        UniqueConstraint(
+            "tenant_id", "smartlead_campaign_id", name="uq_campaign_tenant_smartlead"
+        ),
+        Index("ix_campaign_tenant_created", "tenant_id", text("created_at DESC")),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    batch_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("batch.id", ondelete="RESTRICT"), nullable=False
+    )
+    icp_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("icp.id", ondelete="SET NULL"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    smartlead_campaign_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="draft")
+    settings: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class MessageVariant(Base):
+    """A/B/C outreach copy per campaign. Open/reply rates are DERIVED from `outreach_event`, never
+    stored (same rule as batch counts). `is_winner` is a manual HoldSlot-side toggle (E6) — the
+    Smartlead sequences lock while ACTIVE, so it never writes back."""
+
+    __tablename__ = "message_variant"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "key", name="uq_message_variant_campaign_key"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign.id", ondelete="CASCADE"), nullable=False
+    )
+    key: Mapped[str] = mapped_column(String(8), nullable=False)  # A / B / C
+    subject: Mapped[str] = mapped_column(String(255), nullable=False, server_default="")
+    body: Mapped[str] = mapped_column(String, nullable=False, server_default="")
+    is_winner: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class CampaignLead(Base):
+    """The funnel's single source of truth — one row per (campaign × prospect).
+
+    Rows are inserted by the launch worker **only as each Smartlead lead-add succeeds** (stage
+    `contacted`), so the funnel never shows a lead that wasn't actually pushed; re-launch resumes
+    idempotently on the missing rows. `stage` moves only through the server allowed-moves map
+    (mirror of the FE `MOVES` table; illegal = 409) and every move also writes a `stage_moved`
+    event. `approval_id` is the billable-evidence hop `prospect_approval → campaign_lead → meeting`;
+    RESTRICT keeps the approval row undeletable while referenced.
+    """
+
+    __tablename__ = "campaign_lead"
+    __table_args__ = (
+        UniqueConstraint("campaign_id", "prospect_id", name="uq_campaign_lead_campaign_prospect"),
+        Index("ix_campaign_lead_tenant_id", "tenant_id"),
+        Index("ix_campaign_lead_campaign_stage", "campaign_id", "stage"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign.id", ondelete="CASCADE"), nullable=False
+    )
+    prospect_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("prospect.id", ondelete="CASCADE"), nullable=False
+    )
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("prospect_approval.id", ondelete="RESTRICT"), nullable=True
+    )
+    smartlead_lead_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stage: Mapped[str] = mapped_column(String(16), nullable=False, server_default="contacted")
+    stage_changed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    variant_key: Mapped[str | None] = mapped_column(String(8), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class OutreachEvent(Base):
+    """Append-only outreach ledger + the reply-queue workflow — the single source for the per-lead
+    timeline, the variant scoreboard, and the Reply queue.
+
+    Webhook ingest is `INSERT … ON CONFLICT (smartlead_event_id) DO NOTHING` — the dedupe **is** the
+    partial-unique index (created in 0028; `WHERE smartlead_event_id IS NOT NULL`). The key is the
+    provider event id if the E0 probe found one, else a derived hash (see `service.dedupe_key`).
+    """
+
+    __tablename__ = "outreach_event"
+    __table_args__ = (
+        Index(
+            "ix_outreach_event_tenant_type_created",
+            "tenant_id",
+            "event_type",
+            text("created_at DESC"),
+        ),
+        Index("ix_outreach_event_campaign", "campaign_id"),
+        Index("ix_outreach_event_lead", "campaign_lead_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    campaign_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign.id", ondelete="CASCADE"), nullable=False
+    )
+    campaign_lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign_lead.id", ondelete="SET NULL"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    smartlead_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    triage: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    response_body: Mapped[str | None] = mapped_column(String, nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = _created_at()
+
+
+class SendingAccount(Base):
+    """A warmed Smartlead sending inbox owned by one tenant — the per-tenant replacement for the
+    secret's global `sending_account_ids`. The launch worker attaches this tenant's `active` inboxes
+    to its Smartlead campaign (`add_email_accounts`).
+
+    Lives in the DB, NOT Secrets Manager: an inbox id is a reference, not a credential (the shared
+    Smartlead `api_key` is the one secret), and the tenant→inbox mapping is tenant-scoped config
+    that grows per client — a row per onboarding, not a global-secret edit + cache-bust + redeploy.
+    An inbox should back exactly one tenant's pool (`UNIQUE(tenant_id, smartlead_account_id)` is
+    per-tenant; a soft cross-tenant guard can come with multi-client). `status`:
+    warming|active|paused — only `active` inboxes send.
+    """
+
+    __tablename__ = "sending_account"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "smartlead_account_id", name="uq_sending_account_tenant_smartlead"
+        ),
+        Index("ix_sending_account_tenant", "tenant_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    smartlead_account_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    from_email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    from_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()

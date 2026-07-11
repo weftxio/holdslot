@@ -22,6 +22,8 @@ from app.domains.approvals.router import router as approvals_router
 from app.domains.auth.router import router as auth_router
 from app.domains.batches.router import router as batches_router
 from app.domains.briefs.router import router as briefs_router
+from app.domains.campaigns.router import router as campaigns_router
+from app.domains.campaigns.webhooks import router as smartlead_webhooks_router
 from app.domains.clients.router import router as clients_router
 from app.domains.icps.router import router as icps_router
 from app.domains.prospects.router import router as prospects_router
@@ -162,6 +164,8 @@ app.include_router(icps_router)
 app.include_router(prospects_router)
 app.include_router(batches_router)
 app.include_router(approvals_router)
+app.include_router(campaigns_router)
+app.include_router(smartlead_webhooks_router)
 
 # AWS Lambda entrypoint. Two event shapes reach this one function:
 #   * API Gateway (HTTP API) requests → Mangum → FastAPI.
@@ -178,6 +182,8 @@ def handler(event, context):
         # the W4 scoring jobs), each running OFF the 30s gateway path.
         kind = event.get(JOB_EVENT_KEY)
         from app.domains.briefs.structuring import handle_job_event as handle_structuring
+        from app.domains.campaigns.launch import JOB_CAMPAIGN_LAUNCH
+        from app.domains.campaigns.launch import handle_job_event as handle_launch
         from app.domains.prospects.scoring import (
             JOB_PROSPECT_SCORING,
         )
@@ -187,5 +193,7 @@ def handler(event, context):
 
         if kind == JOB_PROSPECT_SCORING:
             return handle_scoring(event)
+        if kind == JOB_CAMPAIGN_LAUNCH:
+            return handle_launch(event)
         return handle_structuring(event)
     return _asgi_handler(event, context)

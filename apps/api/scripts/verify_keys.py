@@ -259,11 +259,17 @@ def check_smartlead(sec: dict) -> None:
         record("smartlead", "sending_account_ids resolve", not missing,
                "all resolve" if not missing else f"missing: {', '.join(missing)}")
 
-    # webhook signing secret verifies inbound Smartlead webhooks - added at Phase E.
-    if sec.get("webhook_signing_secret"):
-        record("smartlead", "webhook_signing_secret present", True)
+    # Smartlead publishes NO webhook HMAC (verified 2026-07-11) — inbound webhooks are authed by a
+    # high-entropy PATH token, not a signature. The secret carries `webhook_path_token`; it's the
+    # {token} segment of POST /webhooks/smartlead/{token}. Provisioned at Phase E (E0).
+    tok = sec.get("webhook_path_token")
+    if tok and len(str(tok)) >= 24:
+        record("smartlead", "webhook_path_token present + strong", True, f"len {len(str(tok))}")
+    elif tok:
+        record("smartlead", "webhook_path_token present + strong", False,
+               f"too short (len {len(str(tok))}); use a 32-byte token_urlsafe")
     else:
-        pending("smartlead", "webhook_signing_secret present", "added at Phase E")
+        pending("smartlead", "webhook_path_token present", "high-entropy path token, added at E0")
 
 
 # ---- google ------------------------------------------------------------------

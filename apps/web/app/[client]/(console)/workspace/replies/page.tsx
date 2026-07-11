@@ -1,34 +1,86 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { MOCK_TODAY, daysAgoLabel, fmtShortDate } from "@/lib/workspace/constants";
-import { NUDGE_COPY, REPLY_COPY } from "@/lib/workspace/fixtures";
+import { useClient } from "@/lib/nav";
+import { nameInitials } from "@/lib/initials";
+import { respondReply, triageReply, type ReplyApi } from "@/lib/api";
+
+// Cross-campaign reply-triage inbox (Phase E — LIVE). Each row is a `lead_replied` event ⋈ its lead
+// + campaign. The operator classifies it (human triage — no LLM at MVP: positive → the lead advances
+// to `replied`, negative → `drop`, the rest just clear the pip) and optionally sends an operator-
+// authored threaded reply via Smartlead. The tab pip = unhandled count (handled_at IS NULL).
+
+// Triage class → its badge + label (mirrors the mock's classification vocabulary).
+const TRIAGE_META: { value: string; label: string; badge: string }[] = [
+  { value: "positive", label: "Positive, wants a call", badge: "badge-ok" },
+  { value: "objection-timing", label: "Objection: timing", badge: "badge-warn" },
+  { value: "referral", label: "Referral: wrong person", badge: "badge-info" },
+  { value: "nudge", label: "Nudge", badge: "badge-info" },
+  { value: "negative", label: "Not interested", badge: "badge-danger" },
+];
+const triageMeta = (t: string | null) => TRIAGE_META.find((m) => m.value === t);
+
+function fmtDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
 
 export default function RepliesPage() {
   const toast = useToast();
-  const { replies, setReplies, campaigns } = useWorkspace();
+  const client = useClient();
+  const { replies, reloadReplies, campaigns } = useWorkspace();
   const [replyCamp, setReplyCamp] = useState("");
-  const remaining = replies.filter((r) => !r.done).length; // global total, for the tab pip
-  const inViewReplies = replies.filter((r) => !replyCamp || r.campaign === replyCamp);
-  const remainingInView = inViewReplies.filter((r) => !r.done).length;
-  function finishReply(i: number, label: string) {
-    setReplies((s) => s.map((r, idx) => (idx === i && !r.done ? { ...r, done: label } : r)));
-  }
-  function toggleEdit(i: number) {
-    const wasEditing = replies[i]?.editing;
-    setReplies((s) => s.map((r, idx) => (idx === i ? { ...r, editing: !r.editing } : r)));
-    if (wasEditing) toast("Draft updated");
-  }
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+
+  const remaining = replies.filter((r) => !r.handled_at).length; // global total (matches the tab pip)
+  const inView = replies.filter((r) => !replyCamp || r.campaign_name === replyCamp);
+  const remainingInView = inView.filter((r) => !r.handled_at).length;
+
+  const setDraft = (id: string, v: string) => setDrafts((s) => ({ ...s, [id]: v }));
+  const withBusy = async (id: string, fn: () => Promise<unknown>) => {
+    if (busy.has(id)) return;
+    setBusy((s) => new Set(s).add(id));
+    try {
+      await fn();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Action failed", "warn");
+    } finally {
+      setBusy((s) => {
+        const n = new Set(s);
+        n.delete(id);
+        return n;
+      });
+    }
+  };
+
+  const doTriage = (r: ReplyApi, value: string) =>
+    withBusy(r.id, async () => {
+      await triageReply(client, r.id, value);
+      await reloadReplies();
+      toast(`Classified · ${triageMeta(value)?.label ?? value}`);
+    });
+
+  const doRespond = (r: ReplyApi) =>
+    withBusy(r.id, async () => {
+      const text = (drafts[r.id] ?? "").trim();
+      if (!text) {
+        toast("Write a reply first", "warn");
+        return;
+      }
+      await respondReply(client, r.id, text);
+      await reloadReplies();
+      setDraft(r.id, "");
+      toast("Reply sent");
+    });
 
   return (
     <section className="tabpane active">
-      <div
-        className="row"
-        style={{ marginBottom: 18, justifyContent: "flex-end", flexWrap: "wrap", gap: 12 }}
-      >
+      <div className="row" style={{ marginBottom: 18, justifyContent: "flex-end", flexWrap: "wrap", gap: 12 }}>
         {remaining > 0 ? (
           <span className="badge badge-warn">
             <span className="bdot" />
@@ -48,95 +100,107 @@ export default function RepliesPage() {
         >
           <option value="">All campaigns</option>
           {campaigns.map((c) => (
-            <option key={c.name}>{c.name}</option>
+            <option key={c.id}>{c.name}</option>
           ))}
         </select>
       </div>
-      <div>
-        {replies.map((r, i) => {
-          // One source of truth for the two reply modes (inbound reply vs follow-up nudge).
-          const c = r.nudge ? NUDGE_COPY : { ...REPLY_COPY, body: r.quote };
-          return (
-            <div
-              key={i}
-              className={clsx("reply", r.done && "done")}
-              style={{ display: !replyCamp || r.campaign === replyCamp ? undefined : "none" }}
-            >
-              <div className="reply-head">
-                <div className="av-sm">R{i + 1}</div>
-                <div className="meta">
-                  <div className="nm">{r.n}</div>
-                  <div className="ro">{r.role}</div>
-                  <div className="tagline">
-                    <span className="ttag">{r.campaign}</span>
-                    <span className="ttag">{r.batch}</span>
-                    {r.nudge && <span className="ttag nudge">Follow-up nudge</span>}
+
+      {replies.length === 0 ? (
+        <div className="sum-empty">No replies yet. Inbound replies appear here as Smartlead reports them.</div>
+      ) : (
+        <div>
+          {inView.map((r) => {
+            const handled = !!r.handled_at;
+            const sent = !!r.response_body;
+            const meta = triageMeta(r.triage);
+            const rowBusy = busy.has(r.id);
+            const draft = drafts[r.id] ?? "";
+            return (
+              <div key={r.id} className={clsx("reply", handled && "done")}>
+                <div className="reply-head">
+                  <div className="av-sm">{nameInitials(r.prospect_name)}</div>
+                  <div className="meta">
+                    <div className="nm">{r.prospect_name || "Unnamed prospect"}</div>
+                    <div className="ro">{r.prospect_role}</div>
+                    <div className="tagline">
+                      <span className="ttag">{r.campaign_name}</span>
+                      {r.stage && <span className="ttag">{r.stage}</span>}
+                    </div>
                   </div>
-                </div>
-                <span className={clsx("badge", r.badge)}>
-                  <span className="bdot" />
-                  {r.cls}
-                </span>
-              </div>
-              <div className="reply-quote">
-                <div className="reply-qhead">
-                  <span className="ql">{c.qhead}</span>
-                  <span className="reply-date">
-                    {c.datePrefix}
-                    {fmtShortDate(r.repliedAt)} · {daysAgoLabel(r.repliedAt, MOCK_TODAY)}
+                  <span className={clsx("badge", meta?.badge ?? "badge-neutral")}>
+                    <span className="bdot" />
+                    {meta?.label ?? "Needs triage"}
                   </span>
                 </div>
-                {c.body}
-              </div>
-              <div className="reply-draft">
-                <div className="dl">
-                  {c.draftLabel} <Sample>auto-draft</Sample>
+
+                <div className="reply-quote">
+                  <div className="reply-qhead">
+                    <span className="ql">Prospect replied</span>
+                    <span className="reply-date">{fmtDate(r.occurred_at)}</span>
+                  </div>
+                  {r.subject && <div style={{ fontWeight: 600, marginBottom: 4 }}>{r.subject}</div>}
+                  {r.reply_body || <span style={{ opacity: 0.6 }}>(no reply body captured)</span>}
                 </div>
-                <textarea
-                  readOnly={!r.editing}
-                  value={r.text}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    setReplies((s) => s.map((x, idx) => (idx === i ? { ...x, text: v } : x)));
-                  }}
-                />
-                <div className="reply-actions">
-                  <button className="btn btn-ghost btn-sm" onClick={() => toggleEdit(i)}>
-                    {r.editing ? "Done editing" : "Edit draft"}
-                  </button>
-                  <button
-                    className="btn btn-accent btn-sm"
-                    onClick={() => {
-                      finishReply(i, c.done);
-                      toast(c.done);
-                    }}
-                  >
-                    {c.cta}
-                  </button>
+
+                {/* Triage — the human classification step (no auto-draft at MVP) */}
+                {!r.triage && (
+                  <div className="reply-triage" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                    <span className="dl" style={{ marginRight: 4 }}>
+                      Classify:
+                    </span>
+                    {TRIAGE_META.map((m) => (
+                      <button
+                        key={m.value}
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        disabled={rowBusy}
+                        onClick={() => doTriage(r, m.value)}
+                      >
+                        {m.label}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Operator-authored threaded reply (→ Smartlead reply_to_thread) */}
+                <div className="reply-draft">
+                  <div className="dl">Your reply</div>
+                  <textarea
+                    value={sent ? r.response_body ?? "" : draft}
+                    readOnly={sent}
+                    placeholder="Write a threaded reply to send via Smartlead…"
+                    onChange={(e) => setDraft(r.id, e.target.value)}
+                  />
+                  <div className="reply-actions">
+                    <button
+                      className="btn btn-accent btn-sm"
+                      disabled={rowBusy || sent}
+                      onClick={() => doRespond(r)}
+                    >
+                      {sent ? "Reply sent" : "Send Reply"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="reply-sent-banner">
+                  <span>✓</span>
+                  <span>{sent ? "Reply sent" : meta ? `Classified · ${meta.label}` : "Handled"}</span>
                 </div>
               </div>
-              <div className="reply-sent-banner">
-                <span>✓</span>
-                <span>{r.done}</span>
-              </div>
-            </div>
-          );
-        })}
-        {replyCamp && inViewReplies.length === 0 && (
-          <div className="sum-empty">No replies for {replyCamp} yet.</div>
-        )}
-      </div>
-      <div
-        className={clsx(
-          "queue-empty",
-          inViewReplies.length > 0 && remainingInView === 0 && "show"
-        )}
-      >
+            );
+          })}
+
+          {replyCamp && inView.length === 0 && (
+            <div className="sum-empty">No replies for {replyCamp} yet.</div>
+          )}
+        </div>
+      )}
+
+      <div className={clsx("queue-empty", inView.length > 0 && remainingInView === 0 && "show")}>
         <div className="ee">✓</div>
         <h3 style={{ fontSize: 20, color: "var(--ink)", marginBottom: 6 }}>Queue clear</h3>
         <p style={{ fontSize: 14 }}>
-          Every classified reply has been handled. New replies will appear here as they&apos;re
-          sorted.
+          Every reply in view has been handled. New replies will appear here as they&apos;re reported.
         </p>
       </div>
     </section>

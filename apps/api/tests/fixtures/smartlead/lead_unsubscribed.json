@@ -1,0 +1,28 @@
+{
+  "campaign_status": "COMPLETED",
+  "client_id": null,
+  "event_timestamp": "2026-07-11T14:46:19.940Z",
+  "lead_email": "jason.tse@getholdslot.com",
+  "to_email": "jason.tse@getholdslot.com",
+  "from_email": "",
+  "lead_name": "Jason Tse",
+  "to_name": "Jason Tse",
+  "campaign_name": "Phase E Test Batch",
+  "sent_message": {
+    "message_id": null,
+    "text": ""
+  },
+  "campaign_id": 3623750,
+  "unsubscribed_client_id_map": {},
+  "secret_key": "b0601488-d4fa-4a7e-a9de-667159dd9293",
+  "app_url": "https://app.smartlead.ai/app/master-inbox?leadMap=",
+  "ui_master_inbox_link": "https://app.smartlead.ai/app/master-inbox?leadMap=",
+  "description": "Lead - jason.tse@getholdslot.com unsubscribed from the campaign - Phase E Test Batch",
+  "metadata": {
+    "webhook_created_at": "2026-07-11T11:50:11.530Z"
+  },
+  "webhook_url": "https://webhook.site/6bd0b849-272b-447c-ab61-5d769c896bf1",
+  "webhook_id": 671685,
+  "webhook_name": "holdslot-e0-probe",
+  "event_type": "LEAD_UNSUBSCRIBED"
+}

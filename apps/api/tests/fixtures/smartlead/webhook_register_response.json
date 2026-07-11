@@ -1,0 +1,25 @@
+{
+  "id": 671685,
+  "name": "holdslot-e0-probe",
+  "created_at": "2026-07-11T11:50:11.530Z",
+  "updated_at": "2026-07-11T11:50:11.530Z",
+  "webhook_url": "https://webhook.site/6bd0b849-272b-447c-ab61-5d769c896bf1",
+  "email_campaign_id": 3623750,
+  "event_types": [
+    "EMAIL_OPEN",
+    "EMAIL_SENT",
+    "EMAIL_REPLY",
+    "EMAIL_BOUNCE",
+    "EMAIL_LINK_CLICK",
+    "LEAD_UNSUBSCRIBED"
+  ],
+  "categories": [
+    "Interested",
+    "Meeting Request",
+    "Not Interested",
+    "Do Not Contact",
+    "Information Request",
+    "Out Of Office",
+    "Wrong Person"
+  ]
+}

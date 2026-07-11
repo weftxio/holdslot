@@ -31,6 +31,9 @@ class Settings:
     approval_ttl_seconds: int = 7 * 24 * 60 * 60  # 7 days — client approval-link lifetime (Phase D)
     email_sender: str = "no-reply@tryholdslot.com"
     web_base_url: str = "https://tryholdslot.com"  # base for links in emails (e.g. reset)
+    api_base_url: str = (
+        "https://api.tryholdslot.com"  # this API's own public base (Smartlead webhook)
+    )
 
 
 def _get_secret_json(name: str, region: str) -> dict:
@@ -54,6 +57,9 @@ def get_settings() -> Settings:
         jwt_signing_key=app_secret["jwt_signing_key"],
         jwt_refresh_key=app_secret["jwt_refresh_key"],
         web_base_url=os.environ.get("HOLDSLOT_WEB_BASE_URL", "https://tryholdslot.com").rstrip("/"),
+        api_base_url=os.environ.get("HOLDSLOT_API_BASE_URL", "https://api.tryholdslot.com").rstrip(
+            "/"
+        ),
     )
 
 

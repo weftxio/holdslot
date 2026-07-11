@@ -1,0 +1,51 @@
+{
+  "campaign_status": "ACTIVE",
+  "stats_id": "fca6664d-1575-4048-82af-e93b1c9cca02",
+  "reply_source": "CAMPAIGN",
+  "sl_email_lead_id": "4156397120",
+  "sl_email_lead_map_id": 3375876577,
+  "sl_lead_email": "jason.tse@getholdslot.com",
+  "from_email": "jason.wong@getholdslot.com",
+  "cc_emails": [],
+  "subject": "A quick idea for HoldSlot",
+  "sent_message_body": "Variant A body",
+  "sent_message": {
+    "message_id": "<fca6664d-1575-4048-82af-e93b1c9cca02@getholdslot.com>",
+    "html": "Variant A body",
+    "text": "Variant A body",
+    "time": "2026-07-11T12:51:48.2+00:00"
+  },
+  "to_email": "jason.tse@getholdslot.com",
+  "to_name": "Jason Tse",
+  "time_replied": "2026-07-11T13:53:30+00:00",
+  "event_timestamp": "2026-07-11T13:53:30+00:00",
+  "reply_message": {
+    "message_id": "<CALXqPHiYRTfNE2ajpFbbDH=V1qoQDEi3+OgLTMbotbh_3=uZsQ@mail.gmail.com>",
+    "html": "<div dir=\"ltr\">testing</div><br><div class=\"gmail_quote gmail_quote_container\"><div dir=\"ltr\" class=\"gmail_attr\">On Sat, Jul 11, 2026 at 9:51\u202fPM Jason Wong &lt;<a href=\"mailto:jason.wong@getholdslot.com\">jason.wong@getholdslot.com</a>&gt; wrote:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><u></u>\r\n  \r\n  \r\n    \r\n    \r\n     \r\n      \r\n    \r\n  \r\n  \r\n  <div>\r\n  Variant A body\r\n  </div>\r\n  \r\n  \r\n</blockquote></div>\r\n",
+    "text": "testing\n",
+    "time": "2026-07-11T13:53:30+00:00"
+  },
+  "reply_body": "<div dir=\"ltr\">testing</div><br><div class=\"gmail_quote gmail_quote_container\"><div dir=\"ltr\" class=\"gmail_attr\">On Sat, Jul 11, 2026 at 9:51\u202fPM Jason Wong &lt;<a href=\"mailto:jason.wong@getholdslot.com\">jason.wong@getholdslot.com</a>&gt; wrote:<br></div><blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;border-left:1px solid rgb(204,204,204);padding-left:1ex\"><u></u>\r\n  \r\n  \r\n    \r\n    \r\n     \r\n      \r\n    \r\n  \r\n  \r\n  <div>\r\n  Variant A body\r\n  </div>\r\n  \r\n  \r\n</blockquote></div>\r\n",
+  "message_id": "<CALXqPHiYRTfNE2ajpFbbDH=V1qoQDEi3+OgLTMbotbh_3=uZsQ@mail.gmail.com>",
+  "preview_text": "testing\n",
+  "campaign_name": "Phase E Test Batch",
+  "campaign_id": 3623750,
+  "client_id": null,
+  "sequence_number": 1,
+  "secret_key": "b0601488-d4fa-4a7e-a9de-667159dd9293",
+  "app_url": "https://app.smartlead.ai/app/master-inbox?leadMap=3375876577",
+  "ui_master_inbox_link": "https://app.smartlead.ai/app/master-inbox?leadMap=3375876577",
+  "description": "jason.tse@getholdslot.com replied to Email 1 for campaign - Phase E Test Batch ",
+  "metadata": {
+    "webhook_created_at": "2026-07-11T11:50:11.530Z"
+  },
+  "leadCorrespondence": {
+    "targetLeadEmail": "jason.tse@getholdslot.com",
+    "replyReceivedFrom": "jason.tse@getholdslot.com",
+    "repliedCompanyDomain": "SameCompany"
+  },
+  "webhook_url": "https://webhook.site/6bd0b849-272b-447c-ab61-5d769c896bf1",
+  "webhook_id": 671685,
+  "webhook_name": "holdslot-e0-probe",
+  "event_type": "EMAIL_REPLY"
+}

@@ -32,11 +32,12 @@
 > (`currently_using`/`currently_not_using_any_of_technology_uids`), resolved server-side by
 > `prospects/tech_vocab` from `auth/supported_technologies_csv` (never model-emitted).
 >
-> **Phase E/F planned schema locked (2026-07-11, the MVP plan-finalization pass).** The S4/S5 outreach
-> tables (`campaign` · `message_variant` · `campaign_lead` · `outreach_event`, planned migration **`0028`**)
-> and the S6 booking/meeting tables (`booking_link` · `meeting` · `feedback_link`, planned **`0029`**) are
-> now **specified below** (⬜ PLANNED sections) so the E/F build starts schema-first from this doc. Built
-> head stays **`0027` · 20 tables**; behavior spec → [`initial-build-plan.md`](initial-build-plan.md)
+> **Phase E built + live (2026-07-11).** The S4/S5 outreach tables (`campaign` · `message_variant` ·
+> `campaign_lead` · `outreach_event`, **`0028`**) plus the per-tenant `sending_account` pool (**`0029`** —
+> Smartlead inbox ids moved out of Secrets Manager into the DB) are **applied to dev Aurora**; backend
+> deployed (v83). The S6 booking/meeting tables (`booking_link` · `meeting` · `feedback_link`, planned
+> **`0030`**) are **specified below** (⬜ PLANNED) so the F build starts schema-first from this doc. Built
+> head is now **`0029` · 25 tables**; behavior spec → [`initial-build-plan.md`](initial-build-plan.md)
 > → Phase E / Phase F.
 >
 > **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
@@ -187,8 +188,10 @@ Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→en
 async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
 batch/approval (`batch`, `prospect_approval`, `approval_link`, `approval_template`). The ORM
 ([`apps/api/app/models.py`](../apps/api/app/models.py)) matches the migrations — **no drift**.
-**Planned (specified, not yet migrated):** Phase E campaign/outreach — 4 tables, `0028` — and Phase F
-booking/meeting/feedback — 3 tables, `0029` — §below (the diagram shows built tables only).
+**Live:** Phase E campaign/outreach — 4 tables (`0028`) + `sending_account` (`0029`, per-tenant Smartlead
+inbox pool) — **applied to dev Aurora 2026-07-11** (backend deployed v83). **Planned (specified, not yet
+migrated):** Phase F booking/meeting/feedback — 3 tables, `0030` — §below (the diagram shows pre-E built
+tables only).
 
 ```mermaid
 erDiagram
@@ -668,7 +671,7 @@ client/batch name, so a forwarded stale link can't reveal tenant existence). **W
 badge. `mask_name` also defends in depth — an "@"-bearing value (an email mistaken for a name) is
 reduced to its local-part name tokens, never echoed whole. (Post-booking reveal = Phase F.)
 
-## Phase E (S4/S5) — Campaign & outreach ⬜ PLANNED (`0028` — spec locked 2026-07-11, not migrated)
+## Phase E (S4/S5) — Campaign & outreach 🟢 LIVE (`0028` + `0029` applied to dev Aurora 2026-07-11; backend deployed v83)
 One expand migration (migrate-first). Design rules carried forward from A–D: statuses are **plain strings,
 never DB enums**; counts/metrics are **derived from the event ledger, never stored** (the Phase-D
 derived-counts rule); **`campaign_lead.stage` is the funnel's single source of truth** — Smartlead webhook
@@ -686,7 +689,7 @@ events are inputs to it, never the record; and the **billable-evidence chain sta
 | `name` | varchar(255) | defaults from the batch name |
 | `smartlead_campaign_id` | varchar(64) nullable | set by the launch worker; **unique(`tenant_id`,`smartlead_campaign_id`)** |
 | `status` | varchar(32) (default `draft`) | `draft` → `launching` → `sending` ⇄ `paused` → `completed` \| `error`. **`launching` doubles as the async-launch job state** — stale `launching` older than 480s (`MAX_JOB_AGE_SECONDS`) flips `error` on read: the `scoring_job` reaper semantics with **no separate job table** |
-| `settings` | JSONB (default `{}`) | schedule / timezone / daily cap / `sending_account_ids` — opaque to the DB (the Brief JSONB rule) |
+| `settings` | JSONB (default `{}`) | schedule / timezone / daily cap / `sl_setup_done` flag — opaque to the DB (the Brief JSONB rule). **Sending-inbox ids are NOT here** — they moved out of the secret to the tenant-scoped `sending_account` table (`0029`) |
 | `created_at`, `updated_at` | timestamptz | |
 
 ### `message_variant` ⬜ (`0028`) — A/B/C copy per campaign
@@ -727,8 +730,8 @@ ingest is `INSERT … ON CONFLICT (smartlead_event_id) DO NOTHING` — the dedup
 | `tenant_id` | uuid FK (CASCADE) | idx `ix_outreach_event_tenant_type_created` (`tenant_id`,`event_type`,`created_at DESC`) — queue + scoreboard scans |
 | `campaign_id` | uuid FK → `campaign` (CASCADE) | |
 | `campaign_lead_id` | uuid FK → `campaign_lead` (SET NULL) nullable | an event can arrive for an unknown/removed lead — stored anyway, never 5xx'd back at Smartlead |
-| `event_type` | varchar(32) | webhook kinds `lead_replied` · `lead_opened` · `lead_clicked` · `lead_bounced` · `lead_unsubscribed` + internal `campaign_started` · `campaign_paused` · `stage_moved` · `reply_sent` (string, grows without migration) |
-| `smartlead_event_id` | varchar(128) nullable | **partial UNIQUE `WHERE smartlead_event_id IS NOT NULL` — the webhook idempotency key**; NULL on internal events |
+| `event_type` | varchar(32) | webhook kinds `email_sent` · `lead_replied` · `lead_opened` · `lead_clicked` · `lead_bounced` · `lead_unsubscribed` + internal `campaign_started` · `campaign_paused` · `stage_moved` · `reply_sent` (string, grows without migration). **Internal normalized names** — Smartlead's provider strings (`EMAIL_SENT`/`EMAIL_REPLY`/`EMAIL_BOUNCE`/…, naming drifts across their own docs) map in via E4's `_normalize_event()`; the raw provider name stays in `payload` |
+| `smartlead_event_id` | varchar(128) nullable | **partial UNIQUE `WHERE smartlead_event_id IS NOT NULL` — the webhook idempotency key**; NULL on internal events. **Smartlead documents no unique event id (verified 2026-07-11)** — the key is the provider event id if the E0 probe finds one in real payloads, else a derived hash `sha256(campaign_id · to_email · event_type · sequence_number · provider_ts)` computed at ingest |
 | `payload` | JSONB (default `{}`) | the raw webhook / internal detail; `lead_replied` keeps **`reply_message_id`** here (the reply-to-thread handle, risk R4) |
 | `triage` | varchar(32) nullable | reply-queue class on `lead_replied` rows (mock vocabulary as strings: positive / objection-timing / referral / nudge / …) |
 | `handled_at` | timestamptz nullable | queue done-state; **pip = `lead_replied AND handled_at IS NULL`** |
@@ -736,7 +739,24 @@ ingest is `INSERT … ON CONFLICT (smartlead_event_id) DO NOTHING` — the dedup
 | `occurred_at` | timestamptz | provider timestamp (fallback `now()`); **parsed UTC-pinned** (the R16 lesson) |
 | `created_at` | timestamptz | |
 
-## Phase F (S6) — Booking, meeting & feedback ⬜ PLANNED (`0029` — spec locked 2026-07-11, not migrated)
+### `sending_account` 🟢 (`0029`) — per-tenant Smartlead sending-inbox pool
+Moved out of the shared `holdslot/prod/smartlead` secret into the DB (founder decision 2026-07-11, "even
+for MVP"). **An inbox id is a reference, not a credential** — the shared `api_key` stays the one secret;
+the tenant→inbox mapping is config that grows per client, so a new client's inboxes are one INSERT, not a
+global-secret edit + Lambda cache-bust + redeploy. The launch worker reads this tenant's `active` rows
+(`active_sending_account_ids`) and attaches them via `add_email_accounts` — replacing the old
+`sl.sending_account_ids()` secret read. Seeded for tenant #0 (`holdslot`: `20084486`, `20084475`) by `0029`.
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx `ix_sending_account_tenant` |
+| `smartlead_account_id` | bigint | the numeric id from Smartlead `GET /email-accounts`; **unique(`tenant_id`,`smartlead_account_id`)** (an inbox backs one tenant's pool) |
+| `from_email` | varchar(320) nullable | display / audit |
+| `from_name` | varchar(255) nullable | display / audit |
+| `status` | varchar(16) (default `active`) | `warming` · `active` · `paused` — **only `active` inboxes are attached to a campaign** |
+| `created_at`, `updated_at` | timestamptz | |
+
+## Phase F (S6) — Booking, meeting & feedback ⬜ PLANNED (`0030` — spec locked 2026-07-11, not migrated)
 `booking_link` / `feedback_link` mirror `approval_link`/`password_reset` exactly: SHA-256 **`token_hash`**
 only (raw token lives only in the sent URL) · validity checked **on read**, no scheduler · **atomic
 single-use claim** (`UPDATE … SET used_at WHERE used_at IS NULL`). Feedback answers live **on `meeting`**
@@ -745,7 +765,7 @@ single-use claim** (`UPDATE … SET used_at WHERE used_at IS NULL`). Feedback an
 backend-development-plan §7; Stripe charges it at G). Behavior spec →
 [`initial-build-plan.md`](initial-build-plan.md) → Phase F.
 
-### `booking_link` ⬜ (`0029`) — tokenized booking link, per replied lead
+### `booking_link` ⬜ (`0030`) — tokenized booking link, per replied lead
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
@@ -757,7 +777,7 @@ backend-development-plan §7; Stripe charges it at G). Behavior spec →
 | `created_at` | timestamptz | |
 | | | resend mirrors the approval ladder: revoke prior live links, mint fresh |
 
-### `meeting` ⬜ (`0029`) — the one row feeding funnel · ledger · recaps
+### `meeting` ⬜ (`0030`) — the one row feeding funnel · ledger · recaps
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
@@ -783,7 +803,7 @@ backend-development-plan §7; Stripe charges it at G). Behavior spec →
 | `summary` | JSONB nullable | the deferred LLM `meeting_summary` lands here later ([SKIP→later]); recap detail renders pending until then |
 | `created_at`, `updated_at` | timestamptz | |
 
-### `feedback_link` ⬜ (`0029`) — tokenized feedback link (post-meeting)
+### `feedback_link` ⬜ (`0030`) — tokenized feedback link (post-meeting)
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
@@ -846,14 +866,16 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260709_0025_scoring_v2_rubrics` ✅(dev) | D+ v2 | data-only — seed the new `company_score` + `prospect_score` prompt stages (the v2 axis rubrics) per tenant from the shipped `docs/prompts/{company,prospect}-score-v1.md` |
 | `20260710_0026_scoring_v2_contraction` ✅(dev) | D+ v2 | **the contraction pass (V2-4)** — drop v1 `fit_score`/`fit_tier` on company+prospect + the `ix_*_tenant_fit` indexes; drop `prospect.outreach_outcome`; `prospect.status` default `new`→`found`. `reason_tags` stopped being emitted (code, not a column). Reversible (re-adds columns empty). |
 | `20260710_0027_dplus_indexes_race` ✅(dev) | D+.5 F1 + final | index/constraint foundation for the fix wave — add score-sorted feed composites `ix_{company,prospect}_tenant_score` (R5); partial UNIQUE `uq_scoring_job_active_tenant_kind` `WHERE status IN ('queued','running')` (R9); partial UNIQUE `uq_research_job_active_tenant` on (`tenant_id`) same predicate (**N8** — research_job had the same race, no `kind` column); `ix_research_run_tenant_created` (R22a); drop composite-covered `ix_{company,prospect}_tenant_id` (R29a) **and prefix-covered `ix_research_run_tenant_id`** (**N49**); terminal-ize any pre-existing duplicate active job rows on both job tables before the CREATE UNIQUEs (**N48**); `DELETE FROM prompt WHERE stage='sourcing'` (R29b). **Applied to dev at push #1 (2026-07-11).** Reversible (index-only; the prompt delete + dup terminal-ization are not restored). |
-| *(planned)* `0028_phase_e_campaign` | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe) — spec locked 2026-07-11, §Phase E above |
-| *(planned)* `0029_phase_f_meeting` | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — spec locked 2026-07-11, §Phase F above |
+| `20260711_0028_phase_e_campaign` 🟢(applied) | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe — raw-SQL `WHERE smartlead_event_id IS NOT NULL`). **Applied to dev Aurora 2026-07-11** (4 tables + partial-unique index verified via rds-data); DB integration green. Reversible (drops the four tables in FK order). |
+| `20260711_0029_sending_account` 🟢(applied) | E | `sending_account` (per-tenant Smartlead sending-inbox pool — moves inbox ids OUT of the `holdslot/prod/smartlead` secret into the DB; an id is a reference not a credential, and the tenant→inbox map is config that grows per client). `bigint smartlead_account_id`, `status` warming/active/paused, unique(`tenant_id`,`smartlead_account_id`). Launch worker reads `active` rows (`active_sending_account_ids`) instead of `sl.sending_account_ids()`. **Seeds tenant #0 (`holdslot`) with `20084486`,`20084475`** (idempotent, tenant-scoped). **Applied to dev Aurora 2026-07-11**; integration green; backend v83. Reversible. |
+| *(planned)* `0030_phase_f_meeting` | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — spec locked 2026-07-11, §Phase F above |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0027`** (dev — applied at push #1, 2026-07-11; the D+.5/final-fix index+constraint
-foundation). `0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
-`0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation. All
-migrations `0001`→`0027` applied to dev Aurora. Earlier: `0017`/
+**Live Aurora head: `0029`** (dev — 2026-07-11; `0028` Phase-E outreach + `0029` `sending_account`).
+`0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
+`0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation,
+`0028` the Phase-E outreach tables, `0029` the per-tenant sending-inbox pool. All
+migrations `0001`→`0029` applied to dev Aurora. Earlier: `0017`/
 `0018` are data-only prompt re-seeds; table count verified 2026-07-01 at head `0016`: 20 application
 tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
 retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01

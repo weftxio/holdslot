@@ -1,0 +1,37 @@
+{
+  "sl_email_lead_id": "4155843310",
+  "sl_email_lead_map_id": 3375350255,
+  "campaign_status": "ACTIVE",
+  "client_id": null,
+  "stats_id": "b339b380-fdab-4fc1-aeaf-c8f7898ab8c8",
+  "from_email": "jason.tse@getholdslot.com",
+  "to_email": "jason@getholdslot.com",
+  "to_name": "Jason Tse",
+  "time_sent": "2026-07-11T12:01:58.023+00:00",
+  "event_timestamp": "2026-07-11T12:01:58.023+00:00",
+  "campaign_name": "Phase E Test Batch",
+  "campaign_id": 3623750,
+  "sequence_number": 1,
+  "custom_subject": "A quick idea for HoldSlot",
+  "custom_email_message": "Variant A body",
+  "sent_message_body": "Variant A body",
+  "sent_message": {
+    "message_id": "<b339b380-fdab-4fc1-aeaf-c8f7898ab8c8@getholdslot.com>",
+    "html": "Variant A body",
+    "text": "Variant A body",
+    "time": "2026-07-11T12:01:58.023+00:00"
+  },
+  "subject": "A quick idea for HoldSlot",
+  "message_id": "<b339b380-fdab-4fc1-aeaf-c8f7898ab8c8@getholdslot.com>",
+  "secret_key": "b0601488-d4fa-4a7e-a9de-667159dd9293",
+  "app_url": "https://app.smartlead.ai/app/master-inbox?leadMap=3375350255",
+  "ui_master_inbox_link": "https://app.smartlead.ai/app/master-inbox?leadMap=3375350255",
+  "description": "Email 1 sent to jason@getholdslot.com for campaign - Phase E Test Batch",
+  "metadata": {
+    "webhook_created_at": "2026-07-11T11:50:11.530Z"
+  },
+  "webhook_url": "https://webhook.site/6bd0b849-272b-447c-ab61-5d769c896bf1",
+  "webhook_id": 671685,
+  "webhook_name": "holdslot-e0-probe",
+  "event_type": "EMAIL_SENT"
+}

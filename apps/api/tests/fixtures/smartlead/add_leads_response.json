@@ -1,0 +1,14 @@
+{
+  "ok": true,
+  "upload_count": 1,
+  "total_leads": 1,
+  "block_count": 0,
+  "duplicate_count": 0,
+  "invalid_email_count": 0,
+  "invalid_emails": [],
+  "already_added_to_campaign": 0,
+  "unsubscribed_leads": [],
+  "is_lead_limit_exhausted": false,
+  "lead_import_stopped_count": 0,
+  "bounce_count": 0
+}

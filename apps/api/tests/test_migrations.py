@@ -17,7 +17,11 @@ from app.models import (
     ApprovalTemplate,
     Batch,
     Brief,
+    Campaign,
+    CampaignLead,
     Company,
+    MessageVariant,
+    OutreachEvent,
     Prospect,
     ProspectApproval,
     ResearchJob,
@@ -38,7 +42,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0027_dplus_indexes_race"]
+    assert _script_dir().get_heads() == ["0029_sending_account"]
 
 
 def test_0011_columns_present_on_models():
@@ -105,6 +109,64 @@ def test_0016_phase_d_models_match_migration():
     assert "uq_approval_template_tenant" in {
         c.name for c in ApprovalTemplate.__table__.constraints
     }
+
+
+def test_0028_phase_e_models_match_migration():
+    """0028 creates the four Phase E tables — the ORM models must match the columns + keys the
+    migration builds (the funnel SoT + webhook dedupe depend on this exact shape)."""
+    assert set(Campaign.__table__.columns.keys()) == {
+        "id", "tenant_id", "batch_id", "icp_id", "name", "smartlead_campaign_id", "status",
+        "settings", "created_at", "updated_at"
+    }
+    c_cons = {c.name for c in Campaign.__table__.constraints}
+    assert "uq_campaign_batch" in c_cons  # 1:1 with an approved batch
+    assert "uq_campaign_tenant_smartlead" in c_cons
+
+    assert set(MessageVariant.__table__.columns.keys()) == {
+        "id", "tenant_id", "campaign_id", "key", "subject", "body", "is_winner",
+        "created_at", "updated_at"
+    }
+    assert "uq_message_variant_campaign_key" in {
+        c.name for c in MessageVariant.__table__.constraints
+    }
+
+    assert set(CampaignLead.__table__.columns.keys()) == {
+        "id", "tenant_id", "campaign_id", "prospect_id", "approval_id", "smartlead_lead_id",
+        "stage", "stage_changed_at", "variant_key", "created_at"
+    }
+    assert "uq_campaign_lead_campaign_prospect" in {
+        c.name for c in CampaignLead.__table__.constraints
+    }
+    # approval_id is the billable-evidence hop — RESTRICT (undeletable while referenced).
+    approval_fk = next(
+        fk
+        for fk in CampaignLead.__table__.foreign_keys
+        if fk.column.table.name == "prospect_approval"
+    )
+    assert approval_fk.ondelete == "RESTRICT"
+
+    assert set(OutreachEvent.__table__.columns.keys()) == {
+        "id", "tenant_id", "campaign_id", "campaign_lead_id", "event_type", "smartlead_event_id",
+        "payload", "triage", "handled_at", "response_body", "occurred_at", "created_at"
+    }
+    assert "ix_outreach_event_tenant_type_created" in {
+        i.name for i in OutreachEvent.__table__.indexes
+    }
+
+
+def test_0029_sending_account_model_matches_migration():
+    """0029 moves the Smartlead sending-inbox pool out of the secret into `sending_account` — the
+    ORM must match the columns + the per-tenant unique the launch worker's account read needs."""
+    from app.models import SendingAccount
+
+    assert set(SendingAccount.__table__.columns.keys()) == {
+        "id", "tenant_id", "smartlead_account_id", "from_email", "from_name", "status",
+        "created_at", "updated_at"
+    }
+    assert "uq_sending_account_tenant_smartlead" in {
+        c.name for c in SendingAccount.__table__.constraints
+    }
+    assert "ix_sending_account_tenant" in {i.name for i in SendingAccount.__table__.indexes}
 
 
 def test_0019_scope_lineage_columns_present_on_models():

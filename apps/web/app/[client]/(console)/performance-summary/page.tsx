@@ -1,9 +1,10 @@
 "use client";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useClient } from "@/lib/nav";
 import { Sample } from "@/components/Sample";
+import { getPerformanceSummary, type PerformanceSummaryApi } from "@/lib/api";
 import "./performance-summary.css";
 
 // Lazy-load the calendar (react-big-calendar ~70kB) so it streams in after the
@@ -13,31 +14,51 @@ const MeetingCalendar = dynamic(() => import("./MeetingCalendar"), {
   loading: () => <div className="cal-wrap" style={{ height: 580 }} />,
 });
 
-// Bar width is derived from n (count ÷ top-of-funnel count), so the chart can't
-// drift out of sync the way storing both a width and a count would.
-const FUNNEL: { label: string; color: string; n: number }[] = [
-  { label: "Sourced", color: "#C9D7E8", n: 1000 },
-  { label: "Approved", color: "#AEC4DD", n: 820 },
-  { label: "Contacted", color: "var(--cerulean)", n: 780 },
-  { label: "Replied", color: "#7C9CC0", n: 440 },
-  { label: "Positive", color: "var(--cerulean-deep)", n: 260 },
-  { label: "Meeting booked", color: "var(--ink)", n: 150 },
-];
-const FUNNEL_TOP = FUNNEL[0].n;
+// Bar width is derived from n (count ÷ top-of-funnel count) so the chart can't drift out of sync.
+// Colors are keyed by the stage label the API returns (Sourced → Meeting booked), so the live
+// funnel keeps the design's cost-gradient palette. Meeting booked reads 0 until Phase F.
+const FUNNEL_COLOR: Record<string, string> = {
+  Sourced: "#C9D7E8",
+  Approved: "#AEC4DD",
+  Contacted: "var(--cerulean)",
+  Replied: "#7C9CC0",
+  Positive: "var(--cerulean-deep)",
+  "Meeting booked": "var(--ink)",
+};
 
 export default function PerformanceSummary() {
   const client = useClient();
+  const [summary, setSummary] = useState<PerformanceSummaryApi | null>(null);
 
   useEffect(() => {
+    let alive = true;
+    getPerformanceSummary(client)
+      .then((s) => alive && setSummary(s))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+
+  const funnel = summary?.funnel ?? [];
+  const funnelTop = funnel[0]?.n || 0;
+
+  // Animate the bars in once the funnel data is present (mirrors the design's reveal). Keyed on
+  // `summary` (set once) rather than the per-render `funnel` array.
+  useEffect(() => {
+    if (!summary?.funnel.length) return;
     const t = setTimeout(() => {
       document.querySelectorAll<HTMLElement>("#funnel .fn2-bar").forEach((bar) => {
         bar.style.width = (bar.getAttribute("data-w") || "0") + "%";
       });
     }, 200);
     return () => clearTimeout(t);
-  }, []);
+  }, [summary]);
 
   const status = (anchor: string) => `/${client}/client-status/${anchor}`;
+  const approvalsPending = summary?.approvals_pending ?? 0;
+  const awaitingReview = summary?.replies_awaiting_review ?? 0;
+  const positiveReplies = summary?.new_positive_replies ?? 0;
 
   return (
     <>
@@ -92,8 +113,11 @@ export default function PerformanceSummary() {
             <div className="na-body">
               <div className="t">Client list approval pending</div>
               <div className="d">
-                <b>Batch 3 · 48 prospects</b> sent to the client <b>2 days ago</b>, not yet
-                approved. Nothing ships until they sign off.
+                <b>
+                  {approvalsPending} {approvalsPending === 1 ? "batch" : "batches"}
+                </b>{" "}
+                sent to the client, {approvalsPending > 0 ? "not yet approved" : "all decided"}.
+                Nothing ships until they sign off.
               </div>
             </div>
             <div className="na-act">
@@ -153,7 +177,7 @@ export default function PerformanceSummary() {
                 New positive replies
               </span>
               <span className="tnum" style={{ fontWeight: 700 }}>
-                <Sample>n</Sample>
+                {positiveReplies}
               </span>
             </div>
             <hr className="hr" />
@@ -165,7 +189,7 @@ export default function PerformanceSummary() {
                 href={`/${client}/workspace/replies`}
                 style={{ color: "var(--danger)", fontWeight: 700, fontSize: 13.5 }}
               >
-                3
+                {awaitingReview}
               </Link>
             </div>
             <hr className="hr" />
@@ -191,15 +215,16 @@ export default function PerformanceSummary() {
           </div>
           <div className="panel-pad">
             <div className="funnel2" id="funnel">
-              {FUNNEL.map((f, i) => {
-                const w = Math.round((f.n / FUNNEL_TOP) * 100);
-                const prev = i === 0 ? f.n : FUNNEL[i - 1].n;
-                const conv = Math.round((f.n / prev) * 100);
+              {funnel.map((f, i) => {
+                const w = funnelTop ? Math.round((f.n / funnelTop) * 100) : 0;
+                const prev = i === 0 ? f.n : funnel[i - 1].n;
+                const conv = prev ? Math.round((f.n / prev) * 100) : 0;
+                const color = FUNNEL_COLOR[f.label] || "var(--cerulean)";
                 return (
                   <div className="fn2-stage" key={f.label}>
                     <div className="fn2-head">
                       <span className="fn2-label">
-                        <span className="fn2-dot" style={{ background: f.color }} />
+                        <span className="fn2-dot" style={{ background: color }} />
                         {f.label}
                       </span>
                       <span className="fn2-meta">
@@ -210,13 +235,14 @@ export default function PerformanceSummary() {
                       </span>
                     </div>
                     <div className="fn2-track">
-                      <div className="fn2-bar" data-w={w} style={{ background: f.color }}>
+                      <div className="fn2-bar" data-w={w} style={{ background: color }}>
                         <span className="fn2-pct">{w}%</span>
                       </div>
                     </div>
                   </div>
                 );
               })}
+              {!funnel.length && <div className="muted">Loading funnel…</div>}
             </div>
           </div>
         </div>

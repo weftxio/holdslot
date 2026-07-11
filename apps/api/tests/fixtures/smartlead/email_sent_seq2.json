@@ -1,0 +1,16 @@
+{
+  "event_type": "EMAIL_SENT",
+  "sl_event_id": null,
+  "campaign_id": 900001,
+  "campaign_name": "Phase E Test Batch",
+  "client_id": null,
+  "lead_id": 5500001,
+  "sl_lead_email": "jason@getholdslot.com",
+  "to_email": "jason@getholdslot.com",
+  "to_name": "Jason Tse",
+  "from_email": "outreach@getholdslot.com",
+  "sequence_number": 2,
+  "stats_id": "6a9f2b7c-0000-4a10-8b21-seq2sent0002",
+  "time_sent": "2026-07-13T09:04:30.000Z",
+  "event_timestamp": "2026-07-13T09:04:30.000Z"
+}

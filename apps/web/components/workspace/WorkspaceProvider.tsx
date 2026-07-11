@@ -8,30 +8,40 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { listBatches } from "@/lib/api";
+import {
+  listBatches,
+  listCampaigns,
+  listReplies,
+  type CampaignApi,
+  type ReplyApi,
+} from "@/lib/api";
 import { useClient } from "@/lib/nav";
 import { batchFromApi } from "@/lib/workspace/constants";
-import { INITIAL_REPLIES, RECAPS } from "@/lib/workspace/fixtures";
-import type { Batch, Campaign, Recap, Reply } from "@/lib/workspace/types";
+import { RECAPS } from "@/lib/workspace/fixtures";
+import type { Batch, Recap } from "@/lib/workspace/types";
 
 // The cross-tab state that must survive sub-route navigation. The workspace tabs are real nested
 // routes, so each route page unmounts on navigation — anything shared between tabs (the batches a
-// campaign links to; the campaigns a reply/recap filter reads; the reply queue itself) lives here
-// in a provider mounted by the workspace layout, above all the sub-routes.
+// campaign links to; the campaigns a reply/summary filter reads; the reply queue itself, whose
+// unhandled count drives the tab pip) lives here in a provider mounted by the workspace layout,
+// above all the sub-routes.
 //
-// Phase D: `batches` is now LIVE — loaded from the API on mount and refreshable via `reloadBatches`
-// (create/send call it). `campaigns`/`replies` stay mock until Phase E.
+// Phase E: `campaigns` and `replies` are now LIVE — loaded from the API on mount and refreshable
+// (create/launch/triage/respond call the matching reload). Only `recaps` (meeting summaries) stays
+// mock until Phase F writes the `meeting` moves.
 type WorkspaceCtx = {
-  // batches are read-only to consumers — mutated only via the live `reloadBatches` (create/send
-  // refresh through it), so there's no `setBatches` escape hatch.
+  // batches / campaigns are read-only to consumers — mutated only via their live reload (the
+  // create/send/launch flows refresh through it), so there's no setter escape hatch.
   batches: Batch[];
   reloadBatches: () => Promise<void>;
-  campaigns: Campaign[];
-  setCampaigns: React.Dispatch<React.SetStateAction<Campaign[]>>;
-  replies: Reply[];
-  setReplies: React.Dispatch<React.SetStateAction<Reply[]>>;
-  // Recaps are stateful (not a static import) so a campaign rename can remap their `campaign` tag
-  // and they don't orphan out of the summaries filter (N47). Mock until Phase E, like replies.
+  campaigns: CampaignApi[];
+  reloadCampaigns: () => Promise<void>;
+  // Replies keep a setter for optimistic triage/respond updates; reloadReplies re-syncs from server.
+  replies: ReplyApi[];
+  reloadReplies: () => Promise<void>;
+  setReplies: React.Dispatch<React.SetStateAction<ReplyApi[]>>;
+  // Recaps are stateful (not a static import) so they don't orphan out of the summaries filter.
+  // Mock until Phase F.
   recaps: Recap[];
   setRecaps: React.Dispatch<React.SetStateAction<Recap[]>>;
 };
@@ -41,11 +51,8 @@ const Ctx = createContext<WorkspaceCtx | null>(null);
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const client = useClient();
   const [batches, setBatches] = useState<Batch[]>([]);
-  const [campaigns, setCampaigns] = useState<Campaign[]>([
-    { name: "Campaign 1", batch: "Batch 1", locked: true },
-    { name: "Campaign 2", batch: "Batch 2", locked: true },
-  ]);
-  const [replies, setReplies] = useState<Reply[]>(INITIAL_REPLIES);
+  const [campaigns, setCampaigns] = useState<CampaignApi[]>([]);
+  const [replies, setReplies] = useState<ReplyApi[]>([]);
   const [recaps, setRecaps] = useState<Recap[]>(RECAPS);
   // Always holds the latest client so an in-flight reload can detect a switch and drop its result.
   // Updated in the mount/client-change effect below (not during render — refs must not be written
@@ -55,8 +62,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const reloadBatches = useCallback(async () => {
     try {
       const rows = await listBatches(client);
-      // N14 — a switch during the fetch would otherwise overwrite the NEW client's batches with the
-      // old client's rows (a cross-client leak). Bail if the active client moved on.
+      // N14 — a switch during the fetch would otherwise overwrite the NEW client's rows with the old
+      // client's (a cross-client leak). Bail if the active client moved on.
       if (clientRef.current !== client) return;
       setBatches(rows.map(batchFromApi));
     } catch {
@@ -67,14 +74,38 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [client]);
 
+  const reloadCampaigns = useCallback(async () => {
+    try {
+      const rows = await listCampaigns(client);
+      if (clientRef.current !== client) return;
+      setCampaigns(rows);
+    } catch {
+      if (clientRef.current !== client) return;
+      setCampaigns([]);
+    }
+  }, [client]);
+
+  const reloadReplies = useCallback(async () => {
+    try {
+      const rows = await listReplies(client);
+      if (clientRef.current !== client) return;
+      setReplies(rows);
+    } catch {
+      if (clientRef.current !== client) return;
+      setReplies([]);
+    }
+  }, [client]);
+
   useEffect(() => {
-    // Load batches on mount / client change — a data-sync effect (external → React), not derived
-    // state; the setState lands after the awaited fetch inside reloadBatches. Stamp the current
-    // client BEFORE the fetch so a stale in-flight reload (from a prior client) bails on resolve.
+    // Load the cross-tab data on mount / client change — data-sync effects (external → React), not
+    // derived state; each setState lands after its awaited fetch. Stamp the current client BEFORE the
+    // fetches so a stale in-flight reload (from a prior client) bails on resolve.
     clientRef.current = client;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void reloadBatches();
-  }, [reloadBatches, client]);
+    void reloadCampaigns();
+    void reloadReplies();
+  }, [client, reloadBatches, reloadCampaigns, reloadReplies]);
 
   return (
     <Ctx.Provider
@@ -82,8 +113,9 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         batches,
         reloadBatches,
         campaigns,
-        setCampaigns,
+        reloadCampaigns,
         replies,
+        reloadReplies,
         setReplies,
         recaps,
         setRecaps,

@@ -26,13 +26,18 @@
 > `prod-cutover-checklist.md` were folded in here + deleted). The **Q7 re-score candidate list is empty**
 > (confirmed 2026-07-11 against dev Aurora — 0 geo-excluded rows; the one divergence-prone tenant has 0
 > companies; no data remediation needed). Only the **prod-cutover register** (deferred infra hardening —
-> §After A–G) remains. Next front = **Phase E (outreach + Smartlead)** — §Phase E below is the finalized
-> build plan (2026-07-11 refinement pass); the inbox warm-up (running since 2026-06-17, ~3-week ramp) has
-> **elapsed** — E0 confirms warm-up health in the Smartlead dashboard rather than waiting on the clock. S3
-> (batch round) is the only untouched A–D gate (S1/S2 folded into review #5 ✅).
+> §After A–G) remains. **Phase E is BUILT + its E0 live-contract probe is CLOSED (2026-07-12)** — backend +
+> both FE tabs live on dev; `0028`+`0029` applied; all 5 Smartlead webhook payloads captured live + all 3
+> contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email unsubscribe link
+> enforced; only the founder-gated **ship** (commit + deploy + `git push`) and the acceptance run remain.
+> **Next front = Phase F (book + meeting + feedback)** — §Phase F below is the finalized build plan
+> (**EF-Q9** places the last three mock console surfaces — performance-summary v1 rides E7, its meeting half +
+> the client-status Booking/Feedback tabs land in F5/F6). The inbox warm-up (running since 2026-06-17) has
+> **elapsed** — E0 confirmed warm-up health in-dashboard. S3 (batch round) is the only untouched A–D gate
+> (S1/S2 folded into review #5 ✅).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, head `0027` applied; **incl. the planned Phase E/F tables, `0028`/`0029`**). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0029` applied** — Phase E `0028` outreach + `0029` `sending_account`; **Phase F tables planned as `0030`**). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -60,7 +65,7 @@
 | **C** | S2 Prospects+Apollo | ✅ **live** | Apollo find → fit-score → select → enrich loop, in-app, no CSV (C0–C10) | B · Apollo | ⏳ **S2**: founder live Apollo round |
 | **D** | S3 Batch+Approval | ✅ **live** | Batch → masked tokenized approval link → record decision; delete / re-send-reopen / attendee dropdown | C | ⏳ **S3**: founder live batch round (create→send→approve) |
 | **D+** | Sourcing + Scoring + UX | ✅ **shipped (dev + prod FE)** · re-score wave on demand | Scope alignment (Stages 1–4) + **Scoring v2** (4-label + liveness gate, v1 retired in V2-4) + **UX rebuild** (U1–U4 + Reveal & score) — migrations `0019`→`0027` | C · Apollo | KPI gate (≥3× rows/find · ≥2× `contact_now`+`contact_soon` share · <5% dupes) — review #5 ✅ |
-| **E** | S4/S5 Outreach | ⬜ **next — plan finalized 2026-07-11** | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
+| **E** | S4/S5 Outreach | 🟢 **built + deployed · E0 live-probe CLOSED (2026-07-12)** · backend + both FE tabs live on dev; `0028`+`0029` applied; DB integration green; all 5 webhook payloads real + 3 verdicts confirmed + unsub link enforced · only the founder-gated **ship** (commit + deploy + `git push`) + acceptance run remain | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
 | **F** | S6 Book+Meeting | ⬜ **planned — finalized 2026-07-11** | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
 | **G** | Run & close | ⬜ **human** | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
 
@@ -509,12 +514,117 @@ code. Anything discovered from here belongs to a **new** register opened by the 
 
 ## Phase E — Outreach + Smartlead (S4/S5) — the current front · **plan finalized 2026-07-11**
 
+> **Build status (2026-07-12): E0–E7 COMPLETE + E0 LIVE-PROBE CLOSED — backend + BOTH interactive FE
+> tabs live on the shared dev backend. `0028` + `0029` applied to dev Aurora; DB integration green
+> against Aurora. All 5 Smartlead webhook payloads captured LIVE + all 3 contract verdicts CONFIRMED;
+> the per-email unsubscribe link is now enforced. Only the founder-gated ship (commit + push + deploy)
+> and the acceptance run remain (below).**
+>
+> **Backend (E0–E7, built + tested + DEPLOYED):** `app/integrations/smartlead/` (the 11-method adapter —
+> sliding-window throttle + 429 backoff + `api_key` redaction), `app/domains/campaigns/` (`service.py`
+> funnel state-machine + normalize/dedupe/launch/inbox/statistics + `describe_event` pure core ·
+> `launch.py` async worker riding the `scoring_job` reaper pattern, no new job table · `router.py`
+> console create/list/detail (incl. **per-lead cards `leads[]`** + **manual `…/leads/{id}/move`**) +
+> launch/variants + **E5** reply queue (list/triage/respond, R4-b handle recovery) + **E6** winner/
+> pause/resume/sync + **E7** `GET /performance-summary` · `webhooks.py` public token-authed ingest),
+> migration **`0028`** (four tables, matches `data-schema.md`) — **applied to dev Aurora 2026-07-11**,
+> `scripts/e_smoke_live.py` (E0 live probe), `tests/fixtures/smartlead/` (**all 5 webhook payloads now
+> real** + real API responses + `_VERDICTS.md`). Wired into `app/main.py` (router + public webhook route +
+> `campaign_launch` job). **Deployed to `holdslot-dev-api` (live alias, v85) — the shared dev backend both
+> FEs use; the post-v85 unsubscribe-link change (below) ships with the founder-gated deploy.**
+>
+> **⭐ Launch bug found + fixed during Aurora integration (2026-07-11):** the launch worker's tenant
+> guard compared `campaign.tenant_id != tid` where the fresh worker session loads the UUID column as a
+> **`str`** (RDS Data API) and `tid` is a `UUID` object → the guard was ALWAYS true, so **every launch
+> would have silently self-aborted** ("campaign vanished") and been reaped to `error`. Fixed to a
+> string-coerced compare (`str(...) != str(...)`); the previously-never-run `test_campaigns_db.py`
+> launch→webhook→triage→respond→controls integration now passes against dev Aurora (2×, self-cleaning).
+>
+> **⭐ Sending inboxes moved to the DB (2026-07-11, founder decision "even for MVP"):** the Smartlead
+> sending-account ids left the `holdslot/prod/smartlead` secret for a tenant-scoped **`sending_account`**
+> table (migration **`0029`**, applied to dev; seeds tenant #0 `holdslot` = `20084486`,`20084475`). The
+> launch worker now reads `active_sending_account_ids(db, tenant_id)` instead of `sl.sending_account_ids()`
+> — **per-client isolation, a new client's inboxes are one INSERT** (no global-secret edit + Lambda
+> cache-bust + redeploy). An inbox id is a reference, not a credential — the shared `api_key` stays the
+> one secret. Model `SendingAccount` + N1 unit + integration seed added; backend redeployed **v83**.
+>
+> **⭐ E0 live-contract probe RUN (2026-07-11) — three more launch-blocking bugs found + fixed.** Ran
+> `e_smoke_live.py` against a scratch campaign (id 3623750) on the founder's inbox via a throwaway
+> request-bin. `create`/`schedule`/`settings`/`save_sequences` (A/B/C — **variant shape verdict 3
+> CONFIRMED**)/`add_email_accounts` all passed live, then the probe caught: **(1)** `add_leads` rejects
+> a top-level `return_lead_ids` (`400 "not allowed"`) → removed; **(2)** the `add_leads` response is
+> **counts-only, no lead ids** — the worker read ids from it (`parse_add_leads`) so it would have
+> inserted **zero `campaign_lead` rows** while Smartlead queued the leads (silent broken funnel) → new
+> `fetch_campaign_leads` + `parse_campaign_leads` resolve `email→lead.id` from `GET /campaigns/{id}/leads`;
+> **(3)** `register_webhook` requires a **non-empty `categories`** (`400`) → default to the seven standard
+> lead categories. Then the **real `EMAIL_SENT` webhook payload was captured** (widened the scratch
+> schedule → the send fired; caught off the request-bin) and it exposed **two more ingest bugs**:
+> **(4)** the webhook lead-id field is **`sl_email_lead_id`** (== our stored `smartlead_lead_id`), not
+> `lead_id`/`sl_lead_id` — `_resolve_lead` would have fallen back to slow email-matching every event;
+> **(5)** `message_id` was a dedupe `_EVENT_ID_FIELDS` key, but it's the email's RFC Message-ID (shared
+> across sent/open/click) → an OPEN/CLICK would be silently `ON CONFLICT`-dropped as a dup of the SENT
+> row. Both fixed; verified live (200 / integration green), backend redeployed **v85**.
+>
+> **⭐ E0 CLOSED (2026-07-12) — all 5 webhook payloads real + all 3 verdicts CONFIRMED.** The deliverable
+> round: the first send bounced off `jason@getholdslot.com` (a **non-existent** address → a real
+> `EMAIL_BOUNCE` captured for free — `normalize→lead_bounced`, `is_bounced`, `bounce_reply_*`); the probe
+> was reset (bin cleared, scratch senders narrowed to `jason.wong@` so it isn't a self-send, deliverable
+> lead `jason.tse@` added), the founder opened + replied → the **real `EMAIL_REPLY` carries BOTH `stats_id`
+> and `message_id` → verdict 2 CONFIRMED** (`reply_to_thread` path-a works directly; master-inbox R4-b is
+> the fallback), then master-inbox-unsubscribed → the **real `LEAD_UNSUBSCRIBED`**, which pinned two more
+> shape facts: it carries **no `sl_email_lead_id`** (resolve by email) and a **`Z`-suffixed timestamp**
+> (`parse_occurred_at` still lands UTC). Identity pinned: sending inboxes `20084486 = jason.wong@`,
+> `20084475 = jason.tse@`. Real fixtures + regression tests (`test_real_bounce_fixture_ingest_fields`,
+> `…_reply_confirms_verdict2`, `…_unsub_fixture_ingest_fields`); `_VERDICTS.md`/`_README.md` finalized.
+> **Total 5 contract/ingest bugs the probe caught + fixed — the adapter was built from docs; ALWAYS run
+> the live probe before trusting a provider adapter.**
+>
+> **⭐ Unsubscribe link enforced on every email (2026-07-12, founder request).** `launch._smartlead_settings`
+> now sets Smartlead's campaign-level **`unsubscribe_text`** (a top-level settings field, verified live:
+> `update_settings` accepted it and `GET` echoed it back) to `DEFAULT_UNSUBSCRIBE_TEXT` unless an operator
+> overrides the wording — Smartlead auto-appends it as the clickable opt-out link on **every** sequence
+> step/variant, so no launch can ship an email without a working unsubscribe (CAN-SPAM / SG-PDPA floor).
+> A recipient click → `LEAD_UNSUBSCRIBED` → `doNotContact` write-back (the loop the fixtures now prove
+> end-to-end). Unit tests + the `e_smoke_live.py` probe both assert it. **Not yet deployed** (post-v85) —
+> ships with the founder-gated commit + deploy.
+>
+> **Frontend (E7 — LIVE):** full Phase-E API client (`apps/web/lib/api.ts`); the **Campaign** tab
+> (`CampaignTab.tsx`) rewired to live detail — funnel counts / A-B-C variants (edit on draft · winner
+> toggle) / per-company cards from `leads[]` with the derived event log / create · launch · pause ·
+> resume · sync · per-lead **Move stage** (server allowed-moves guard, 409 on illegal); the **Reply
+> queue** (`workspace/replies`) rewired to live `listReplies` + human triage + threaded `respond`; the
+> `WorkspaceProvider` seam loads `campaigns`/`replies` live (tab pips derive from them). **`performance-
+> summary` v1 LIVE** (Leads funnel + reply stats + needs-attention ① — meeting cells stay `.ph` until
+> F5/F6 per EF-Q9). FE `MOVES` reconciled to add **`contacted → replied`**. FE **build + tsc + eslint
+> clean.**
+>
+> **Tests: pytest 300 passed / 18 skipped locally, ruff clean; the Aurora-gated integration tests
+> pass against dev Aurora (2×, self-cleaning)** — `test_smartlead.py` (adapter URL/body pins + R1 redaction + backoff),
+> `test_campaigns.py` (pure funnel / normalize / dedupe / launch / inbox / statistics / `describe_event`
+> — the N1 money-path units), `test_campaigns_db.py` (create→launch→webhook→triage→respond→controls,
+> Smartlead fully mocked). Web build green. (Pre-existing `test_openrouter`/`test_prospects_apollo`
+> live-API tests flake only under the concurrent full-suite run — real Apollo/OpenRouter rate limits +
+> founder-only secrets — and pass in isolation; unrelated to E.)
+>
+> **Founder-gated (the only remainders):** the **ship** — `git commit` the Phase-E backend + real
+> fixtures + the unsubscribe-link change (nothing committed yet), `build-and-deploy.sh` to publish the
+> post-v85 Lambda (so `_smartlead_settings` is live), and **`git push origin dev`** to ship the FE via
+> Amplify autoBuild (needs the `weftxio` gh account) — then the **acceptance run** (one real campaign from
+> a real approved batch → replies triaged in-app) ticks **S4/S5**. The `{prefix}/smartlead` secret is
+> **complete** (`api_key` + `webhook_path_token`, set 2026-07-11; sending-inbox ids in `sending_account`
+> `0029`). The E0 live probe is **CLOSED** — every webhook payload + verdict is captured; the disposable
+> scratch campaign `3623750` can be deleted (`e_smoke_live.py --delete-id 3623750`).
+
 Turns an **approved batch** into a live Smartlead cold-email campaign and makes the **Campaign** +
 **Reply queue** tabs real: the 7-stage funnel with **A/B/C variants** + live open/reply metrics, and a
 **cross-campaign reply-triage inbox**. E lights the funnel's top half (contacted→replied→drop) + KPI
-plumbing; **F lights the meeting half** (meeting/noshow/billable). Table-level schema for E is **specified
-in [`data-schema.md`](data-schema.md) → Phase E (planned, `0028`)** — schema changes are recorded there
-first, per the source-of-truth split.
+plumbing; **F lights the meeting half** (meeting/noshow/billable). That same split places the console's
+three remaining mock surfaces (**EF-Q9**): **`performance-summary`** wires in two passes — the Leads
+funnel + reply stats (v1) ride E7, the meeting half completes at F5/F6 — while the **client-status
+Booking + Feedback tabs** are wholly Phase-F workload (every element derives from `0030` rows). All three
+are derived reads — no tables beyond E's `0028`/`0029` + F's `0030`. Table-level schema for E is
+**specified in [`data-schema.md`](data-schema.md) → Phase E (`0028` + `0029`, applied)** — schema changes
+are recorded there first, per the source-of-truth split.
 
 **EF founder decisions (2026-07-11) — binding** (the §F Q-table pattern; each is carried into the task
 rows below — follow these, not older defaults):
@@ -522,13 +632,14 @@ rows below — follow these, not older defaults):
 | # | Decision |
 |---|---|
 | **EF-Q1** | **E deploys in two pushes** — push #1 after E4 (migration `0028` + adapter + launch + webhook; deploy + scratch-campaign dev smoke), push #2 after E7 (reply queue + scoreboard + FE tabs). e2e + pytest gate both pushes (Q8 rule). |
-| **EF-Q2** | **First live campaign = the FULL approved batch** — no pilot-size rule; exposure is bounded by the daily cap, not list size. (The batch itself still comes from the pending S3 founder round, which ticks the last A–D gate.) |
+| **EF-Q2** | **First live campaign = the FULL approved batch** — no pilot-size rule; exposure is bounded by the daily cap, not list size. The batch comes from the pending S3 founder round (the last A–D gate) — **schedule the S3 round before E7** (2026-07-11), so the acceptance campaign has a real approved batch to consume; it can run in parallel with E0–E6. |
 | **EF-Q3** | **Daily cap = the 40/inbox warm-up ceiling from day 1** — premised on the E0 dashboard health check reading excellent; a weak read **degrades the cap, never skips the check**. |
 | **EF-Q4** | **Send window = prospect-local business hours** (per-campaign Smartlead schedule, carried in `campaign.settings`). |
 | **EF-Q5** | **Booking availability = per-tenant weekly windows ∩ host-calendar free/busy** at slot render (Phase F). |
 | **EF-Q6** | **Booking-link TTL = 7 days** — one shared external-token TTL family with `approval_link`; **no automated reminders at MVP** (no scheduler) — the operator re-send from the reply thread IS the reminder. |
 | **EF-Q7** | **F0 gates run in parallel with the E build** (no-code founder work: Meet REST conference-records proof on the pooled seats + the availability-windows doc) so F1 starts unblocked the day S4/S5 ticks. |
 | **EF-Q8** | **Prod cutover stays at G DoD** — shared dev-tier backend through E/F, per the §After A–G register. |
+| **EF-Q9** | **The three remaining mock console surfaces are placed by data dependency (2026-07-11):** `performance-summary` wires in **two passes** — v1 (Leads funnel + reply stats + needs-attention ①) rides **E7 / push #2**; the meeting half (headline band · Meetings held · Billable · calendar · attention ②③) completes at **F5/F6**. The client-status **Booking** + **Feedback** tabs are **wholly Phase-F workload** (F5 read seams + F6 wiring — their data is `0029`-shaped). **G adds no page build** — the completed summary page is the weekly ops read + the live demo surface. All three are pure derived reads; `0028`/`0029` stand unchanged (zero new tables/columns). |
 
 **Posture (locked):**
 - **Smartlead = the dumb sender; the HoldSlot DB owns funnel state.** `campaign_lead.stage` is the single
@@ -552,45 +663,114 @@ rows below — follow these, not older defaults):
 (Follow-up) → `replied` (Positive reply) → `meeting` → `noshow` → `billable` → `drop` (Drop/DNC).
 Transitions run through a **server-side allowed-moves map** mirroring the FE `MOVES` table (an illegal move
 = 409); **every move writes an `outreach_event` (`stage_moved`)** so the per-lead log timeline derives from
-the ledger, and counts/metrics are **always derived, never stored** (the Phase-D rule). Stage derivation —
-there is **no `EMAIL_SENT` webhook** (risk R3), so:
+the ledger, and counts/metrics are **always derived, never stored** (the Phase-D rule). Cross-campaign
+**ever-reached** counts (the performance-summary funnel) also derive from the `stage_moved` ledger, never
+from current `stage` — a lead now at `meeting` still counts under Replied/Positive. Stage derivation —
+Smartlead **does publish `EMAIL_SENT`** (doc-verified 2026-07-11, §API contract below — the old "no
+EMAIL_SENT webhook" premise behind risk R3 was wrong); it is used as a *signal*, never as the money-path
+record (`contacted` stays worker-set):
 
 | Stage | Derived from |
 |---|---|
 | `contacted` | set by the launch worker as each lead-add + campaign-start succeeds (a `campaign_lead` row is **inserted only on successful push** — the funnel never shows a lead that wasn't actually sent to Smartlead; relaunch-resume = approved prospects minus existing rows) |
-| `followup` | first Smartlead event carrying `sequence_number ≥ 2` (E0 verifies the payload field) · fallback = the E6 campaign-statistics poll |
-| `replied` | `LEAD_REPLIED` lands in the Reply queue → **operator triages positive** → `replied`. Negative / OOO / not-interested → `drop`, triage class recorded |
-| `drop` | auto on `LEAD_UNSUBSCRIBED`/`LEAD_BOUNCED` · manual on negative triage. **Unsub write-back ⭐:** the address is appended to the brief's `doNotContact` list (the one `ExclusionSet` source), so every future find/enrich/batch excludes it — the SG-PDPA ≤5-day unsub honor rides this (compliance, not a nicety) |
+| `followup` | the `EMAIL_SENT` webhook with **`sequence_number ≥ 2`** (the field is documented on every sent/open/click/reply event; the E0 fixture pins it) · fallback = the E6 campaign-statistics poll |
+| `replied` | `EMAIL_REPLY` (normalized → internal `lead_replied`, §E4) lands in the Reply queue → **operator triages positive** → `replied`. Negative / OOO / not-interested → `drop`, triage class recorded |
+| `drop` | auto on `LEAD_UNSUBSCRIBED` / `EMAIL_BOUNCE` (normalized → `lead_unsubscribed`/`lead_bounced`) · manual on negative triage. **Unsub write-back ⭐:** the address is appended to the brief's `doNotContact` list (the one `ExclusionSet` source), so every future find/enrich/batch excludes it — the SG-PDPA ≤5-day unsub honor rides this (compliance, not a nicety) |
 | `meeting`/`noshow`/`billable` | Phase-F writers, riding the same allowed-moves map |
+
+### Smartlead API contract — doc-verified 2026-07-11 (fills in E2; ⚠ = the E0 probe pins it)
+
+Base **`https://server.smartlead.ai/api/v1`** · auth = **`?api_key=` query-param only** (no header option —
+R1 redaction is mandatory) · rate limit **~10 req / 2 s** → client-side throttle + exponential backoff on
+429, bounded retry (the apollo transport posture). The adapter wraps **exactly these 11 methods, nothing
+more**:
+
+| Adapter fn | Smartlead endpoint | Verified detail |
+|---|---|---|
+| `create_campaign` | `POST /campaigns/create` | `{name, client_id?}` → `{ok, id}`; a fresh campaign can't send until sequences + accounts + leads exist |
+| `update_schedule` | `POST /campaigns/{id}/schedule` | `timezone` · `days_of_the_week[]` · `start_hour`/`end_hour` · `min_time_btw_emails` · **`max_new_leads_per_day` = the EF-Q3 cap (40)**; the EF-Q4 prospect-local window lands here |
+| `update_settings` | `POST /campaigns/{id}/settings` | tracking / stop-on-reply / unsubscribe text |
+| `save_sequences` | `POST /campaigns/{id}/sequences` | `sequences[]`: `{id: null, seq_number, subject, email_body, seq_delay_details: {delay_in_days}}`; **blank `subject` on a follow-up = same-thread "Re:"** (how step 2+ threads); **sequences are locked while the campaign is ACTIVE**; the A/B/C variant sub-structure is under-documented ⚠ (probe pins the `seq_variants`/distribution fields) |
+| `add_email_accounts` | `POST /campaigns/{id}/email-accounts` | `{email_account_ids: [...]}` — the tenant's `active` numeric ids from the **`sending_account` table** (`0029`; originally looked up via `GET /email-accounts`), read by `active_sending_account_ids(db, tenant_id)` |
+| `add_leads` | `POST /campaigns/{id}/leads` | `lead_list` ≤ **400/req** (`email` required · `first_name`/`last_name`/`company_name`/`custom_fields`…) + `settings` flags — **every `ignore_*` flag stays `false`** (Smartlead's global block + unsubscribe lists are a compliance floor, never bypassed) · `return_lead_ids: true` → store `campaign_lead.smartlead_lead_id`; response count field-names vary across doc pages ⚠ (parse tolerantly) |
+| `set_status` | `POST /campaigns/{id}/status` | start / pause / resume (exact enum casing ⚠) |
+| `register_webhook` | `POST /campaigns/{id}/webhooks` | `{id: null, name, webhook_url, event_types[], categories[]}`; **event-type strings are inconsistent across Smartlead's own docs** (`EMAIL_REPLY` vs `LEAD_REPLIED` vs `EMAIL_REPLIED`…) ⚠ — the probe records the accepted enum; ingest normalizes via one map (R3) |
+| `reply_to_thread` | `POST /campaigns/{id}/reply-email-thread` | `{lead_id, email_body, reply_message_id, email_stats_id, reply_email_time, cc?/bcc?}` — the E5 respond door + the F3 booking-link carrier |
+| `fetch_analytics` / `fetch_statistics` | `GET /campaigns/{id}/analytics` · `GET /campaigns/{id}/statistics` | top-level + per-lead rows — the E6 on-read poll (followup fallback + webhook-drift check) |
+| `fetch_inbox_replies` | `POST /master-inbox/inbox-replies` | body `offset`/`limit ≤ 20` + `?fetch_message_history=true` → per-message ids + `message_history[]` with direction — **the recovery path for a missing thread handle (R4-b)** |
+
+**Webhook facts (doc-verified):** `EMAIL_SENT` **exists** (+ a `FIRST_EMAIL_SENT` variant) and — like
+open/click/reply — carries **`sequence_number`**; the documented `EMAIL_REPLY` payload is `{event_type,
+from_email, subject, to_email, to_name, time_replied, reply_body, preview_text, campaign_name, campaign_id,
+client_id, sequence_number}` — **no `stats_id`/`message_id` in the documented shape** ⚠ (R4) and **no unique
+event id on any event** → the dedupe key is derived (below). **No HMAC/signature exists** (R2 confirmed —
+the high-entropy path token IS the auth). **Retries: ≤ 5 attempts, 300 s apart, on any non-2xx** — why
+"always 2xx once stored" is load-bearing. Bounce = `EMAIL_BOUNCE` (payload undocumented ⚠ — fixture it).
+
+**Dedupe key (E1/E4):** `smartlead_event_id` = the provider's event id **if the E0 probe finds one in real
+payloads**, else a **derived hash** `sha256(campaign_id · to_email · event_type · sequence_number ·
+provider timestamp)` computed at ingest — same column, same partial-unique, `0028` unchanged (noted in
+`data-schema.md`).
+
+**Reply-handle plan (R4, two paths) — ✅ path (a) CONFIRMED LIVE (2026-07-12):** the real `EMAIL_REPLY`
+payload carries **both `stats_id` and `message_id`** (verdict 2), so (a) store them on the event row, done.
+(b) absent → recover per reply via `fetch_inbox_replies(fetch_message_history=true)` matched on campaign +
+lead email, cache the ids onto the event row — retained as the fallback. Either way **E5 reads the handle
+off the stored event row** — the respond door is source-agnostic.
+
+**Simplifications locked by this research:** internal `outreach_event.event_type` keeps OUR lowercase
+vocabulary (`lead_replied`/`lead_bounced`/…) with one `_normalize_event()` map absorbing provider-name
+drift · `contacted` stays launch-worker-set (the money path never depends on a webhook) · one probe script
+(`e_smoke_live.py`) doubles as the post-deploy live smoke · the E0 fixtures are the single test-data source
+for E2/E3/E4/E6 units.
 
 | Task | What | Flag |
 |---|---|---|
-| **E0** | Gates (no code): **warm-up health check** — the ~3-week ramp (started 06-17) has **elapsed**; confirm inbox reputation in the Smartlead dashboard, not the calendar — **this check is the hard gate for the EF-Q3 40/inbox cap** (a weak read degrades the cap, never skips the check) · Smartlead secret `{prefix}/smartlead` (`api_key` + **`webhook_path_token`** high-entropy + `sending_account_ids`) · A/B/C copy + sequence authored (unsub link + sender identity + suppression honored in-copy) · **live-contract probe** ⭐: a `verify_keys`-style script exercises create-campaign / add-lead / sequence / webhook-register on a scratch campaign and **captures real webhook payloads as fixtures** (confirms `sequence_number`, `reply_message_id`, the event-id field for dedupe — the whole stage-derivation table above hangs on these) | ⭐ contract risk |
-| **E1** | Schema `0028` (expand → migrate-first): `campaign` (1:1 approved batch; **`batch_id` unique + FK RESTRICT** — a campaign-bearing batch becomes undeletable, closing the cascade hole) · `message_variant` (A/B/C copy; `is_winner`; metrics derived) · `campaign_lead` (**`stage` = funnel SoT**; unique(campaign, prospect); carries **`approval_id`** so the billable-evidence chain `prospect_approval → campaign_lead → meeting` stays explicit at every hop) · `outreach_event` (append-only ledger; **partial-unique `smartlead_event_id`** = webhook dedupe; reply-triage columns). Column detail → `data-schema.md` | |
-| **E2** | Smartlead adapter ⭐ `integrations/smartlead` (lazy `{prefix}/smartlead`, SnapStart-safe, bounded retry): create campaign · add leads · A/B/C sequence · schedule + daily cap · start/pause/resume · **reply-to-thread** (needs `reply_message_id`) · register webhook. **Auth is `?api_key=` query-param — redact the URL in every log/telemetry line** (R1) | ⭐ |
-| **E3** | Launch ⭐: `POST /{client}/campaigns` (owner; **409 unless `batch.status = approved`** — the mock's "Approved batches only" rule, server-enforced; **idempotent on `batch_id`** — re-POST returns the existing campaign) creates the draft + variants; `POST /campaigns/{id}/launch` flips `status=launching` and fires the **async worker** (self-invoke; stale `launching` >480s flips `error` on read — reaper semantics, no job table): create Smartlead campaign → add the `decision=approved`, verified-email leads — **the FULL approved batch (EF-Q2, no pilot rule)** — (each success inserts its `campaign_lead` @ `contacted`) → push sequence → start with `settings` per **EF-Q3/Q4** (40/inbox/day ceiling · prospect-local business-hours schedule) → `sending`. Partial failure = `error` + per-lead results in the event ledger; **re-launch resumes idempotently** (only missing leads are pushed) | ⭐ |
-| **E4** | Webhook ingest ⭐ `POST /webhooks/smartlead/{token}` (public; constant-time token compare; **always answers 2xx once the raw event is stored** — a 5xx would trigger Smartlead retry storms): `INSERT outreach_event … ON CONFLICT (smartlead_event_id) DO NOTHING` → the duplicate does nothing downstream; then the stage move through the allowed-moves map. Unknown campaign/lead → stored + logged, never an error. `LEAD_OPENED`→variant tally (derived) · `LEAD_REPLIED`→queue + capture `reply_message_id` · `UNSUBSCRIBED`/`BOUNCED`→`drop` + **unsub write-back** | ⭐ |
-| **E5** | Reply Queue ⭐ — cross-campaign triage inbox: `GET /{client}/replies` (reads `outreach_event(lead_replied)` ⋈ `campaign_lead`; filters campaign/state; **pip = unhandled count** `handled_at IS NULL`, mirroring the mock) · `POST /replies/{id}/triage` (class + its stage effect: positive→`replied`, negative→`drop`; classes seed from the mock vocabulary — positive / objection-timing / referral / nudge — as strings, never enums) · `POST /replies/{id}/respond` (operator-authored text → Smartlead reply-to-thread → stored `response_body` + a `reply_sent` event; **this is also the F3 booking-link carrier**) | ⭐ |
-| **E6** | Variant scoreboard + controls: per-variant open/reply **derived from the event ledger** (no stored counters — same rule as batch counts) · `is_winner` manual toggle · pause/resume · a campaign-statistics poll **on console read** (the `followup` fallback + a webhook-drift check) | |
-| **E7** | Wire the Campaign + Reply queue tabs (swap `SAMPLE_FUNNEL` / `INITIAL_REPLIES` / `NUDGE_COPY` mocks behind the existing `WorkspaceProvider` seam) · e2e additions (campaign create→launch→funnel render · reply triage flow) · founder acceptance = **one real campaign from a real approved batch, replies triaged in-app** → tick **S4/S5** | |
+| **E0** | ✅ **RAN + CLOSED 2026-07-12** — all 5 webhook payloads captured live, 3 verdicts CONFIRMED, 5 adapter bugs fixed, unsub link enforced (full digest → the build-status callout above). Original gate spec: Gates (no code): **warm-up health check** — the ~3-week ramp (started 06-17) has **elapsed**; confirm inbox reputation in the Smartlead dashboard, not the calendar — **this check is the hard gate for the EF-Q3 40/inbox cap** (a weak read degrades the cap, never skips the check) · Smartlead secret `{prefix}/smartlead` (`api_key` + **`webhook_path_token`** high-entropy — both set 2026-07-11) + the tenant's **warmed sending inboxes seeded into the `sending_account` table** (`0029`, not the secret; tenant #0 = `20084486`,`20084475`) · A/B/C copy + sequence authored (unsub link + sender identity + suppression honored in-copy; **follow-up steps leave `subject` blank** = same-thread "Re:") · **live-contract probe** ⭐: **`scripts/e_smoke_live.py`** (the `verify_keys`/`c_smoke_live` pattern, idempotent, deletes its scratch campaign) drives the §API-contract table end-to-end on a **scratch campaign against the founder's own inbox**: create → schedule (cap 40 · window) → settings → sequences (2 steps × A/B variants — pins the variant sub-structure ⚠) → add accounts → add 1 lead (founder-owned address) → register webhook → start → reply from the founder's inbox; **capture URL = a throwaway request-bin** (✅ **founder-approved 2026-07-11** — internal testing usage, no risk: the scratch campaign carries only the founder's own identity — "Phase E Test Batch" · HoldSlot · `getholdslot.com` · Jason Tse, Founder — never prospect rows; the real E4 route doesn't exist yet). **Deliverables committed to `tests/fixtures/smartlead/`:** `email_sent_seq1.json` · `email_sent_seq2.json` · `email_reply.json` · `email_bounce.json` (send to a known-bad address) · `lead_unsubscribed.json` · `add_leads_response.json` · `webhook_register_response.json` — plus three recorded verdicts: the **accepted event-type enum** (R3) · the **R4 handle verdict** (does the real reply payload carry `stats_id`/`message_id`?) · the **variant sub-structure** | ⭐ contract risk |
+| **E1** | Schema `0028` (expand → migrate-first): `campaign` (1:1 approved batch; **`batch_id` unique + FK RESTRICT** — a campaign-bearing batch becomes undeletable, closing the cascade hole) · `message_variant` (A/B/C copy; `is_winner`; metrics derived) · `campaign_lead` (**`stage` = funnel SoT**; unique(campaign, prospect); carries **`approval_id`** so the billable-evidence chain `prospect_approval → campaign_lead → meeting` stays explicit at every hop) · `outreach_event` (append-only ledger; **partial-unique `smartlead_event_id`** = webhook dedupe — the provider event id if the E0 probe found one, else the §contract derived hash; reply-triage columns). Column detail → `data-schema.md` | |
+| **E2** | Smartlead adapter ⭐ `integrations/smartlead` (lazy `{prefix}/smartlead`, SnapStart-safe, bounded retry): **exactly the 11 §API-contract methods, nothing more** · client-side throttle ≤ 10 req/2 s + exponential backoff on 429 · request bodies pinned to the E0 fixtures. **Auth is `?api_key=` query-param — redact the URL in every log/telemetry line** (R1, assert-tested) | ⭐ |
+| **E3** | Launch ⭐: `POST /{client}/campaigns` (owner; **409 unless `batch.status = approved`** — the mock's "Approved batches only" rule, server-enforced; **idempotent on `batch_id`** — re-POST returns the existing campaign) creates the draft + variants; `POST /campaigns/{id}/launch` flips `status=launching` and fires the **async worker** (self-invoke; stale `launching` >480s flips `error` on read — reaper semantics, no job table): create Smartlead campaign → add the `decision=approved`, verified-email leads — **the FULL approved batch (EF-Q2, no pilot rule)**, chunked ≤ 400/req (one call at MVP sizes) — **NO `return_lead_ids`** (the live API rejects it; the response is counts-only), so `smartlead_lead_id` is resolved `email→lead.id` from `GET /campaigns/{id}/leads` (E0 bug #2), **every `ignore_*` flag false** — (each success inserts its `campaign_lead` @ `contacted`) → push sequence → set campaign settings incl. **`unsubscribe_text`** (`_smartlead_settings` — the per-email opt-out link Smartlead auto-appends to every step/variant; compliance floor, operator-overridable wording only) → schedule per **EF-Q3/Q4** (`max_new_leads_per_day = 40` · prospect-local `days_of_the_week`/`start_hour`/`end_hour`) → set status start → `sending`. Partial failure = `error` + per-lead results in the event ledger; **re-launch resumes idempotently** (only missing leads are pushed) | ⭐ |
+| **E4** | Webhook ingest ⭐ `POST /webhooks/smartlead/{token}` (public; constant-time token compare; **always answers 2xx once the raw event is stored** — a 5xx would trigger Smartlead retry storms): store raw first, then `INSERT outreach_event … ON CONFLICT (smartlead_event_id) DO NOTHING` (key = provider id or the §contract derived hash) → the duplicate does nothing downstream; **`_normalize_event()`** — one map from the probe's accepted provider enum to our internal `event_type` vocabulary (absorbs R3 naming drift) — then the stage move through the allowed-moves map. Unknown campaign/lead → stored + logged, never an error. `EMAIL_OPEN`→variant tally (derived) · `EMAIL_SENT` seq ≥ 2→`followup` · `EMAIL_REPLY`→queue + store the thread handle per the R4 plan · `LEAD_UNSUBSCRIBED`/`EMAIL_BOUNCE`→`drop` + **unsub write-back** | ⭐ |
+| **E5** | Reply Queue ⭐ — cross-campaign triage inbox: `GET /{client}/replies` (reads `outreach_event(lead_replied)` ⋈ `campaign_lead`; filters campaign/state; **pip = unhandled count** `handled_at IS NULL`, mirroring the mock) · `POST /replies/{id}/triage` (class + its stage effect: positive→`replied`, negative→`drop`; classes seed from the mock vocabulary — positive / objection-timing / referral / nudge — as strings, never enums) · `POST /replies/{id}/respond` (operator-authored text → `reply_to_thread` with `lead_id` + `email_stats_id` + `reply_message_id` **read off the stored event row** — source-agnostic per the R4 plan → stored `response_body` + a `reply_sent` event; **this is also the F3 booking-link carrier**) | ⭐ |
+| **E6** | Variant scoreboard + controls: per-variant open/reply **derived from the event ledger** (no stored counters — same rule as batch counts) · `is_winner` manual toggle (**HoldSlot-side metadata only** — sequences are locked while ACTIVE, no Smartlead write) · pause/resume via `set_status` · a `fetch_statistics`/`fetch_analytics` poll **on console read** (the `followup` fallback + a webhook-drift check) | |
+| **E7** | Wire the Campaign + Reply queue tabs (swap `SAMPLE_FUNNEL` / `INITIAL_REPLIES` / `NUDGE_COPY` mocks behind the existing `WorkspaceProvider` seam) · **performance-summary v1 (EF-Q9)** — new derived-on-read **`GET /{client}/performance-summary`** (no stored counters, the Phase-D rule): the **Leads-funnel** block goes fully live (Sourced = `prospect` rows · Approved = approved `prospect_approval` decisions · Contacted = `campaign_lead` rows · Replied = distinct leads with a `lead_replied` event · Positive = ever-reached `replied` via the `stage_moved` ledger · Meeting booked reads **0 until F** writes `meeting` moves) + Weekly-stats **New positive replies** + **Replies awaiting review** (= the E5 pip) + needs-attention **①** client-approval pending (batch sent, undecided — D data, live today); the meeting-dependent cells (headline band · Meetings held · Billable this cycle · Meeting Calendar · attention ②③) **keep their `.ph` placeholders until F5/F6** · e2e additions (campaign create→launch→funnel render · reply triage flow · summary funnel renders live counts) · founder acceptance = **one real campaign from a real approved batch, replies triaged in-app** → tick **S4/S5** | |
 
-**Integration risks (E0 verifies each):** **R1** query-param auth → redact URLs in logs/telemetry. **R2** no
-documented webhook HMAC → high-entropy path token + re-fetch-before-mutate on anything money-adjacent.
-**R3** no `EMAIL_SENT` event → stages derived server-side (table above). **R4** reply-to-thread needs the
-captured `reply_message_id` — fixture it at E0. **R5** A/B variants are sequence-step-scoped, not
-stage-scoped (booking/drop replies are manual threaded sends, HoldSlot-tracked). **R6** only Email is
-Smartlead-fed (LinkedIn = [SKIP] — the mock's LinkedIn log channel stays empty at MVP; Calendar = F; Stripe
-= G). **R7** daily caps vs the warm-up ramp — campaign `settings` surface the schedule; never imply instant
-send. **R8 (new)** webhook payload shape is version-fragile → the E0 probe captures live fixtures; ingest is
-tolerant (store raw first, derive defensively, ignore unknown fields).
+**Integration risks (doc-researched 2026-07-11; E0 confirms the ⚠ residue):** **R1** query-param auth
+(**confirmed — no header option**) → redact URLs in logs/telemetry, assert-tested. **R2** no webhook HMAC
+(**confirmed — none exists**) → high-entropy path token + re-fetch-before-mutate on anything
+money-adjacent; retries are ≤ 5 × 300 s on any non-2xx, which makes the always-2xx-once-stored rule
+load-bearing. **R3 (re-scoped)** ~~no `EMAIL_SENT` event~~ — it **exists**, with `sequence_number`; the
+residual risk is **event-name drift across Smartlead's own docs** (`EMAIL_REPLY`/`LEAD_REPLIED`/
+`EMAIL_REPLIED`…) → one `_normalize_event()` map seeded from the probe's accepted enum; `contacted` stays
+worker-set regardless. **R4 (RESOLVED 2026-07-12)** — the real `EMAIL_REPLY` payload carries **both
+`stats_id` and `message_id`** (verdict 2 CONFIRMED live), so path (a) is the primary: store them on the
+event row; `master-inbox/inbox-replies` recovery stays as the fallback. E5 always reads the handle off the
+stored event row. **R5** A/B variants are
+sequence-step-scoped, not stage-scoped (booking/drop replies are manual threaded sends, HoldSlot-tracked);
+the variant sub-structure is the one under-documented request shape ⚠. **R6** only Email is Smartlead-fed
+(LinkedIn = [SKIP] — the mock's LinkedIn log channel stays empty at MVP; Calendar = F; Stripe = G). **R7**
+daily caps vs the warm-up ramp — `max_new_leads_per_day` + the schedule live in campaign `settings`; never
+imply instant send. **R8** webhook payload shape is version-fragile + **no unique event id documented** →
+store raw first, dedupe on the derived hash, derive defensively, ignore unknown fields.
 
-**Tests (DoD — the N1 rule, money-path off fixtures, no Aurora):** the allowed-moves map (every legal +
-illegal pair) · webhook dedupe (same `smartlead_event_id` twice = one row, one stage move) · launch
-idempotency (re-POST create; re-launch after a partial add pushes only the gap) · unsub write-back appends
-to `doNotContact` · queue pip counts. Aurora-gated integration: campaign-from-decided-batch; e2e: the two
-new tab flows.
+### Step-gate test & confirmation matrix (E0→E7) — every step exits through its gate before the next starts
 
-**Path:** E0 → E1 → E2 → E3 → E4 → **push #1 (deploy + scratch-campaign smoke)** → {E5·E6} → E7 →
+Money-path branches get a non-Aurora unit test (the N1 rule); all units run off the **E0 fixtures** —
+one test-data source for the whole phase. One Aurora-gated integration (skips locally, the D pattern):
+campaign-from-decided-batch end-to-end.
+
+| Step | Build-time tests (fixtures, no Aurora) | Confirmation gate (observe, then proceed) |
+|---|---|---|
+| **E0** | — (no code; the probe is idempotent + deletes its scratch campaign) | ✅ **PASSED 2026-07-12** — secret complete on `{prefix}/smartlead` · **all 5 webhook fixtures + 3 API-response fixtures real** + the 3 verdicts recorded (event enum ✅ · R4 handle ✅ path-a · variant shape ✅) + 5 adapter bugs fixed · unsub link enforced. (Warm-up health confirmed in-dashboard.) |
+| **E1** | model round-trip units · migration up/down (the `test_migrations.py` pattern) · **dedupe pin**: same `smartlead_event_id` twice → 1 row (partial-unique) · FK pin: deleting a campaign-bearing batch → RESTRICT error | migration `0028` written + reviewed against `data-schema.md`; **the dev-Aurora apply rides push #1** (expand → migrate-first) |
+| **E2** | `test_smartlead.py` (the `test_apollo.py` pattern): every method's URL + body pinned to fixtures · **redaction asserts** — no `api_key` in any log/telemetry/exception string (R1) · 429 → backoff → bounded-retry · tolerant parse of the add-leads response variants | `e_smoke_live.py` re-run **through the adapter** against a scratch campaign — all 11 §contract calls succeed |
+| **E3** | launch worker off fixtures: **409 unless `batch.status = approved`** · idempotent re-POST (same campaign returned) · **partial-failure resume** — add fails at lead k → re-launch pushes only the gap [money] · `campaign_lead` inserted **only on successful add** [money] · schedule body carries cap 40 + prospect-local window (EF-Q3/Q4) · chunking ≤ 400 · reaper: stale `launching` > 480 s → `error` | pytest + ruff green (no live send yet — E4's smoke is the live proof) |
+| **E4** | ingest units off fixtures: constant-time token compare (bad token → 404, no body echo) · **always-2xx once stored** (unknown campaign/lead → 2xx + logged row) · dedupe end-to-end (same event twice = 1 row, 1 stage move) · `_normalize_event()` covers the probe enum + unknown names → stored-not-moved · **the allowed-moves map: every legal AND illegal pair** · `EMAIL_SENT` seq 2 → `followup` · `LEAD_UNSUBSCRIBED`/`EMAIL_BOUNCE` → `drop` + **unsub write-back appends to `doNotContact`** [money/compliance] | **PUSH #1** (migrate `0028` → deploy Lambda → pytest/e2e re-green) then the **live scratch smoke**: re-point the scratch campaign's webhook at the real route → founder's inbox receives seq-1 → sent/open rows land in `outreach_event` → founder replies → `EMAIL_REPLY` row lands **with a usable thread handle** → lead still `contacted` (replied requires triage) |
+| **E5** | queue units: pip = `lead_replied AND handled_at IS NULL` count · triage positive → `replied` / negative → `drop` through the moves map · respond stores `response_body` + `reply_sent` event · respond calls `reply_to_thread` with the stored handle [money-adjacent] | triage the scratch reply via dev Swagger → the threaded response **arrives in the founder's inbox, in-thread** |
+| **E6** | scoreboard derivation off ledger fixtures (per-variant open/reply, no stored counters) · drift-check unit: a statistics fixture with a webhook-missed `followup` → the poll writes the move | pause → resume the scratch campaign through the console API; the scoreboard renders the scratch events |
+| **E7** | summary **ever-reached** unit (a lead at `meeting`/`drop` counts in every stage it passed; a bounced-out lead never reached `replied`) · FE `pnpm build` + tsc + eslint · e2e additions: campaign create→launch→funnel render · reply-triage flow · summary funnel live counts — **baseline 18 + new, all green** | **PUSH #2** → founder acceptance: **one real campaign from the S3-round approved batch, replies triaged in-app** → tick **S4/S5**; delete the scratch campaign |
+
+**Path:** E0 → E1 → E2 → E3 → E4 → **push #1 (migrate + deploy + scratch-campaign smoke)** → {E5·E6} → E7 →
 **push #2** (EF-Q1). F0's no-code gates run in parallel throughout (EF-Q7). **E3/E4 = highest-leverage
 code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **$32/mo**; $0 LLM in E.
 
@@ -598,11 +778,29 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 
 ## Phase F — Book + meeting + feedback (S6 min) · **plan finalized 2026-07-11**
 
+> **Kickoff readiness (2026-07-12): NEXT FRONT — plan finalized, unblocked bar the E ship.**
+> - ✅ **Google creds ready** — `holdslot/prod/google` verified (SA + domain-wide delegation + Calendar +
+>   Meet REST v2 all 200, 2026-06-10). F2's adapter has its secret; no new AWS resources (on-read poll).
+> - ✅ **Schema pre-specified** — `data-schema.md` → Phase F carries the `0030` tables (`booking_link` ·
+>   `meeting` · `feedback_link`); F1 is expand→migrate-first, same pattern as `0028`/`0029`.
+> - ✅ **All EF decisions locked** — billing rule (approval + ≥10 min + 48h dispute), booking-link TTL
+>   (7 days, no reminders — EF-Q6), availability source (per-tenant weekly windows ∩ Calendar free/busy —
+>   EF-Q5), qualified-meeting definition. Derived-on-read throughout (no stored counters/`billable`).
+> - ⏳ **Gate before F1 (E ship + F0 no-code):** ship E first — commit + deploy the post-v85 Lambda +
+>   `git push` (FE), then the S4/S5 acceptance run. In parallel, the **F0 founder gates** (EF-Q7): one real
+>   Meet → read its `conference-records` on the pooled seats + author the per-tenant availability-windows doc.
+> - **Step 1 = F1** (`0030` migration) → F2 (Google adapter) → F3 (booking flow). **Cost:** +$0 (Google
+>   Workspace already in the floor; Stripe deferred to G).
+
 Lights the funnel's bottom half: booking + the meeting become real (Calendar event + Meet link + invites;
 held + duration via **Meet REST v2**), the two terminal stages feed the *Billing ledger* + *Meeting recaps*
 tabs, and the **feedback loop** (missing from the earlier F cut — the ledger's Feedback column and the
-external `feedback/[token]` page both need it) closes qualification context. Table-level schema →
-[`data-schema.md`](data-schema.md) → Phase F (planned, `0029`).
+external `feedback/[token]` page both need it) closes qualification context. F also owns the console's
+remaining client-facing reads (**EF-Q9**): the **client-status Booking + Feedback tabs** (today the
+`B_LOG`/`F_LOG` mocks) and the **performance-summary completion** (headline band · Meetings held ·
+Billable this cycle · Meeting Calendar · needs-attention ②③ — the meeting half the E7 v1 left as `.ph`).
+All are derived reads off `0028`/`0029` rows — **zero new tables/columns**. Table-level schema →
+[`data-schema.md`](data-schema.md) → Phase F (planned, `0030`).
 
 **Locked billing rule (the hinge):** a meeting's outcome derives once from Meet metadata — **client
 approval (the E1 `campaign_lead.approval_id` chain) AND held ≥ 10 min → `qualified`, stage `billable`,
@@ -631,15 +829,16 @@ otherwise.
 | Task | What | Flag |
 |---|---|---|
 | **F0** | Gates (no code — **runs in parallel with the E build, EF-Q7**): Meet REST `conference-records` scope proven on the pooled seats (one real meeting → read its record) · booking-link lifetime = **7 days, no automated reminders** (✅ decided EF-Q6 — operator re-send is the reminder) · availability source = **per-tenant weekly windows (an `approval_template`-style doc) ∩ Calendar free/busy at slot render** (✅ decided EF-Q5), feeding the mock's day-tabs × slots grid with `taken` masking · qualified-meeting definition reconfirmed (approval + ≥10 min + 48h window) | |
-| **F1** | Schema `0029` (expand → migrate-first): `booking_link` (per replied `campaign_lead`) · `meeting` (`google_event_id` · `meet_link` · `scheduled_at` · `conference_record_id` · **`held` NULL = not-yet-ingested (the poll's claim guard)** · `duration_min` · `outcome` · `amount` · `dispute_window_ends_at` · `disputed` · feedback cols · `won` · **`approval_id` snapshot** — billing evidence stays explicit end-to-end) · `feedback_link` | |
+| **F1** | Schema `0030` (expand → migrate-first): `booking_link` (per replied `campaign_lead`) · `meeting` (`google_event_id` · `meet_link` · `scheduled_at` · `conference_record_id` · **`held` NULL = not-yet-ingested (the poll's claim guard)** · `duration_min` · `outcome` · `amount` · `dispute_window_ends_at` · `disputed` · feedback cols · `won` · **`approval_id` snapshot** — billing evidence stays explicit end-to-end) · `feedback_link` | |
 | **F2** | Google adapter ⭐ `integrations/google`: Calendar `events.insert` (`conferenceDataVersion=1`, `hangoutsMeet`, `sendUpdates=all` — invites buyer + client) · free/busy read (F0 slots) · Meet REST v2 conference-records read (held / duration / participants) | ⭐ |
 | **F3** | Booking flow: mint + send the booking link on a `replied` lead (threaded through E5's respond door — one carrier) → public `GET /book/{token}` (slots from the F0 source; valid/expired states) + `POST /book/{token}` (**atomic single-use claim** → Calendar event → `meeting` row → stage `meeting`). **The same hook fires on a manual `replied→meeting` funnel move** — one code path | ⭐ |
 | **F4** | Ingest + qualify ⭐ — **the one billing rule, unit-tested off Meet fixtures (the N1 rule)**: the on-read poll fills `held`/`duration_min`/`conference_record_id`, then derives outcome/stage/`amount`/`dispute_window_ends_at` exactly once (**idempotent — guarded `WHERE held IS NULL`**, the same claim shape as the token pattern); a later correction is an explicit owner action, not a re-derive | ⭐ |
-| **F5** | Ledger + Recaps + feedback seams: `GET /{client}/meetings?when=upcoming\|past` (**Upcoming** = `held IS NULL AND scheduled_at ≥ now` with the Meet join link · **Past** = ingested) · ledger rows **derived** from `meeting` ⋈ `campaign_lead` ⋈ `campaign`/`batch` (Date · Meeting with · Campaign/Batch · Outcome · Feedback · Status · Amount — the mock's columns; feedback state = Received / Pending (live link) / None) · post-meeting: mint `feedback_link` → public `GET/POST /feedback/{token}` (stars + chips + comment onto the meeting row; single-use). **LLM `meeting_summary` = [SKIP→later]** — recap detail fields render as pending until it lands | |
-| **F6** | Wire Meeting recaps + Billing ledger tabs (swap `RECAPS`/`LEDGER` mocks) + the external **book**/**feedback** pages (their first real backend — today they are pure client-side mocks) + client-status Booking/Feedback tabs · e2e (book valid→success→expired · feedback submit · ledger render) · founder acceptance: **self-book a real Meet, hold it 10 min, watch it qualify + land on the ledger** → tick **S6** (+ read-only **S7** ledger) | |
+| **F5** | Ledger + Recaps + feedback seams: `GET /{client}/meetings?when=upcoming\|past` (**Upcoming** = `held IS NULL AND scheduled_at ≥ now` with the Meet join link · **Past** = ingested) · ledger rows **derived** from `meeting` ⋈ `campaign_lead` ⋈ `campaign`/`batch` (Date · Meeting with · Campaign/Batch · Outcome · Feedback · Status · Amount — the mock's columns; feedback state = Received / Pending (live link) / None) · post-meeting: mint `feedback_link` → public `GET/POST /feedback/{token}` (stars + chips + comment onto the meeting row; single-use). **LLM `meeting_summary` = [SKIP→later]** — recap detail fields render as pending until it lands. **Status/summary read seams (EF-Q9):** `GET /{client}/bookings` (`booking_link` ⋈ `meeting` ⋈ `campaign_lead` — chips Invites sent / Meetings accepted / Expired unused; per-row status **derived on read**: Confirmed = meeting row exists · Awaiting confirm = live unused link · Expired = past-TTL unused, the expiry-on-read posture; the invitation preview renders the stored `response_body` of the `reply_sent` event that carried the link — one carrier) · the feedback feed derives off `meeting` feedback cols + `feedback_link` (Forms sent / Responses / Average rating · Awaiting vs Received · **overdue = pending > 5 days, computed on read** — no scheduler) · the E7 summary endpoint **grows its meeting fields**: headline (**Qualified meetings booked** last-30d + delta vs prior-30d · **show-up rate** = held ÷ ingested · **awaiting this week** = `held IS NULL AND scheduled_at` in-week) · **Meetings held** (week) · **Billable this cycle** (sum of derived-`billable` amounts) · needs-attention **②** open/expired booking links **③** feedback pending · the calendar month feed off `meeting.scheduled_at` (UTC-pinned, the R16/N18 lesson) | |
+| **F6** | Wire Meeting recaps + Billing ledger tabs (swap `RECAPS`/`LEDGER` mocks) + the external **book**/**feedback** pages (their first real backend — today they are pure client-side mocks) + **client-status Booking tab** (swap `B_LOG`: the F5 feed drives the chips + status-log cards + invitation preview; **Propose new time** on an Expired row = revoke-prior + re-mint through F3's one carrier, threaded on the stored `reply_message_id`) + **client-status Feedback tab** (swap `F_LOG`: chips + history table; **Send Follow-Up** re-sends the live feedback link · **Inform client** = a low-rating SES note to the Brief's attendee email — both reuse the D send door, operator-manual, no scheduler) + **performance-summary completion** (swap the `FUNNEL` const + placeholder cells + the `MEETINGS` calendar mock; needs-attention ②③ live; **copy reconciliation:** ②'s "one reminder is scheduled" + ③'s "feedback gates billing" mock lines are amended — no scheduler exists (EF-Q6) and billing is gated by the held-≥10-min + 48h-window rule, feedback is context) · e2e (book valid→success→expired · feedback submit · ledger render · booking/feedback status tabs + completed summary render) · founder acceptance: **self-book a real Meet, hold it 10 min, watch it qualify + land on the ledger AND the performance summary** → tick **S6** (+ read-only **S7** ledger) | |
 
-**One `meeting` row feeds three surfaces:** Campaign funnel (stage) · Billing ledger (outcome/amount/billing
-chip; Stripe later) · Meeting recaps (upcoming/past · feedback · `won`; LLM summary later). **Path:**
+**One `meeting` row feeds every read surface:** Campaign funnel (stage) · Billing ledger (outcome/amount/billing
+chip; Stripe later) · Meeting recaps (upcoming/past · feedback · `won`; LLM summary later) · the EF-Q9 reads
+(booking-tab status · feedback history · summary headline/calendar). **Path:**
 F0→F1→F2→F3→F4→F5→F6. **F4 + the booking-token claim are the only [money] branches — both unit-tested
 without Aurora.** **Cost:** Google Workspace ~**$15/mo** (already in the floor); $0 Stripe until G.
 
@@ -648,7 +847,8 @@ without Aurora.** **Cost:** Google Workspace ~**$15/mo** (already in the floor);
 ## Phase G — Run & close (human) · **refined 2026-07-11**
 
 Work the live loop: meeting → pitch the live product (**the product IS the demo** — the prospect on the call
-is looking at the same console that sourced them) → close → onboard. **DoD: 6 signups over H1 (Oct'26 →
+is looking at the same console that sourced them, with the **performance-summary page fully live since F as
+the proof surface**; per EF-Q9, G adds no page build) → close → onboard. **DoD: 6 signups over H1 (Oct'26 →
 Mar'27).** No new build; everything G touches is already live:
 
 - **Onboard = one wired flow:** switcher "Create client" → `POST /clients` (real since G5/N45·Q5) → fill
@@ -658,8 +858,9 @@ Mar'27).** No new build; everything G touches is already live:
 - **Billing stays manual at G:** the F ledger computes amounts (Billed/Held chips); **Stripe** (activation
   $400 + subscription + $500 metered + $3 overage — backend-development-plan §7) lands when the first signup
   needs a real invoice, not before.
-- **Ops cadence (the founder's week):** Reply queue daily · funnel + ledger weekly · monthly KPI vs the §11
-  growth model (signups / meetings / adopter-vs-churn mix). Signals: booked-rate per 100 contacted below
+- **Ops cadence (the founder's week):** Reply queue daily · **the performance-summary page IS the weekly
+  read** (funnel · calendar · billable + the needs-attention queue), alongside the ledger · monthly KPI vs
+  the §11 growth model (signups / meetings / adopter-vs-churn mix). Signals: booked-rate per 100 contacted below
   model → revisit copy/ICP before touching code; unsub/bounce spikes → pause + list hygiene (the E4
   write-back is the floor, not the ceiling).
 
@@ -671,7 +872,7 @@ Mar'27).** No new build; everything G touches is already live:
 |---|---|---|
 | Founder Brief→Scope round (dev) | S1 | ✅ folded into D+ review #5 (signed off 2026-07-10) |
 | Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ✅ folded into D+ review #5 (signed off 2026-07-10; Apollo credit-dashboard glance rides the next enrich round) |
-| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live |
+| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live; **schedule before E7** (EF-Q2 — the E acceptance campaign consumes this approved batch; runs in parallel with E0–E6) |
 | **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅); **§D+.5 fix wave (F1–F7) ✅** + **final fix wave G1–G7 (56 findings) ✅** (two pushes → Lambda v78 + migration `0027`), then the **close-out push shipped dev + PROD** (Lambda **v79** · Amplify dev 53 / prod 20; §D+.6); Q7 re-score list confirmed empty; **review cycle CLOSED** | pre-E | ✅ shipped (dev + prod) · ✅ review closed |
 | Warmed inboxes ready | E0 | ramp **elapsed** (started 06-17, ~3 weeks) — E0 confirms reputation/health in the Smartlead dashboard, not the calendar |
 | **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation now re-checks `UserStatus` + is single-use guarded (N9/N33 ✅) | — | tracked |
@@ -738,7 +939,7 @@ add) with the **deploy-first** order for exactly that reason; push #2 (G5–G6) 
 | `holdslot/prod/app` | ✅ | JWT signing+refresh, ≥32 chars, distinct |
 | `holdslot/prod/openrouter` | ✅ | key valid; $50 cap; **non-US models only** (each call site pins its own list) |
 | `holdslot/prod/apollo` | ✅ | **Professional + master key**; all 3 endpoints 200 |
-| `holdslot/prod/smartlead` | ◑ | `api_key` valid; `webhook_signing_secret` + `sending_account_ids` → **E** |
+| `holdslot/prod/smartlead` | ● | `api_key` + `webhook_path_token` (set 2026-07-11). Sending-inbox ids do NOT live here — moved to the `sending_account` table (`0029`) |
 | `holdslot/prod/google` | ✅ | SA + domain-wide delegation + Calendar + Meet REST all 200 |
 
 **Sending infra (the long pole, gates E):** Smartlead-native warm-up + Google Workspace mailboxes on a
