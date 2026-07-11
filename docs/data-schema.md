@@ -32,6 +32,13 @@
 > (`currently_using`/`currently_not_using_any_of_technology_uids`), resolved server-side by
 > `prospects/tech_vocab` from `auth/supported_technologies_csv` (never model-emitted).
 >
+> **Phase E/F planned schema locked (2026-07-11, the MVP plan-finalization pass).** The S4/S5 outreach
+> tables (`campaign` · `message_variant` · `campaign_lead` · `outreach_event`, planned migration **`0028`**)
+> and the S6 booking/meeting tables (`booking_link` · `meeting` · `feedback_link`, planned **`0029`**) are
+> now **specified below** (⬜ PLANNED sections) so the E/F build starts schema-first from this doc. Built
+> head stays **`0027` · 20 tables**; behavior spec → [`initial-build-plan.md`](initial-build-plan.md)
+> → Phase E / Phase F.
+>
 > **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
 > `research_run` gains **`filter_body`** JSONB (the exact executed Apollo body; find-people stores
 > `{"per_org": {domain: {body, relax}}}`, ≤8 orgs/run) · **`scope_source`** varchar(16) (`ai` · `custom` ·
@@ -180,6 +187,8 @@ Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→en
 async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
 batch/approval (`batch`, `prospect_approval`, `approval_link`, `approval_template`). The ORM
 ([`apps/api/app/models.py`](../apps/api/app/models.py)) matches the migrations — **no drift**.
+**Planned (specified, not yet migrated):** Phase E campaign/outreach — 4 tables, `0028` — and Phase F
+booking/meeting/feedback — 3 tables, `0029` — §below (the diagram shows built tables only).
 
 ```mermaid
 erDiagram
@@ -659,6 +668,132 @@ client/batch name, so a forwarded stale link can't reveal tenant existence). **W
 badge. `mask_name` also defends in depth — an "@"-bearing value (an email mistaken for a name) is
 reduced to its local-part name tokens, never echoed whole. (Post-booking reveal = Phase F.)
 
+## Phase E (S4/S5) — Campaign & outreach ⬜ PLANNED (`0028` — spec locked 2026-07-11, not migrated)
+One expand migration (migrate-first). Design rules carried forward from A–D: statuses are **plain strings,
+never DB enums**; counts/metrics are **derived from the event ledger, never stored** (the Phase-D
+derived-counts rule); **`campaign_lead.stage` is the funnel's single source of truth** — Smartlead webhook
+events are inputs to it, never the record; and the **billable-evidence chain stays explicit at every hop**:
+`prospect_approval` (D) → `campaign_lead.approval_id` (E) → `meeting.approval_id` (F). Full behavior spec →
+[`initial-build-plan.md`](initial-build-plan.md) → Phase E.
+
+### `campaign` ⬜ (`0028`) — one per approved batch
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx |
+| `batch_id` | uuid FK → `batch` (**RESTRICT**) | **unique** — 1:1 with an *approved* batch (create 409s otherwise, idempotent on re-POST). RESTRICT makes a campaign-bearing batch **undeletable** (the D `DELETE /batches/{id}` cascade stops here) |
+| `icp_id` | uuid FK → `icp` (SET NULL) nullable | copied from the batch |
+| `name` | varchar(255) | defaults from the batch name |
+| `smartlead_campaign_id` | varchar(64) nullable | set by the launch worker; **unique(`tenant_id`,`smartlead_campaign_id`)** |
+| `status` | varchar(32) (default `draft`) | `draft` → `launching` → `sending` ⇄ `paused` → `completed` \| `error`. **`launching` doubles as the async-launch job state** — stale `launching` older than 480s (`MAX_JOB_AGE_SECONDS`) flips `error` on read: the `scoring_job` reaper semantics with **no separate job table** |
+| `settings` | JSONB (default `{}`) | schedule / timezone / daily cap / `sending_account_ids` — opaque to the DB (the Brief JSONB rule) |
+| `created_at`, `updated_at` | timestamptz | |
+
+### `message_variant` ⬜ (`0028`) — A/B/C copy per campaign
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | |
+| `campaign_id` | uuid FK → `campaign` (CASCADE) | |
+| `key` | varchar(8) | `A` / `B` / `C` — **unique(`campaign_id`,`key`)** |
+| `subject`, `body` | varchar(255) / text | the sequence copy pushed to Smartlead |
+| `is_winner` | bool (default false) | manual toggle (E6) |
+| `created_at`, `updated_at` | timestamptz | |
+| | | open/reply rates are **DERIVED** from `outreach_event`, never stored |
+
+### `campaign_lead` ⬜ (`0028`) — the funnel SoT, one per (campaign × prospect)
+Rows are **inserted by the launch worker only as each Smartlead lead-add succeeds** (stage `contacted`) —
+the funnel never shows a lead that wasn't actually pushed, and re-launch resumes idempotently on the
+missing rows (approved prospects minus existing `campaign_lead`s).
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx |
+| `campaign_id` | uuid FK → `campaign` (CASCADE) | **unique(`campaign_id`,`prospect_id`)** |
+| `prospect_id` | uuid FK → `prospect` (CASCADE) | |
+| `approval_id` | uuid FK → `prospect_approval` (**no cascade**) | ⭐ the billable-evidence hop — the approval row that authorized contacting this person; undeletable while referenced (and its batch is RESTRICTed by `campaign` anyway) |
+| `smartlead_lead_id` | varchar(64) nullable | Smartlead's handle (reply-to-thread + stats correlation) |
+| `stage` | varchar(16) (default `contacted`) | **the funnel SoT** — vocabulary locked to the FE mock's `SAMPLE_FUNNEL` ids: `contacted` · `followup` · `replied` · `meeting` · `noshow` · `billable` · `drop`. Moves only through the server allowed-moves map (mirror of the FE `MOVES` table; illegal = 409); every move also writes a `stage_moved` event. E writes the first four; F writes `meeting`/`noshow`/`billable` |
+| `stage_changed_at` | timestamptz | |
+| `variant_key` | varchar(8) nullable | per-lead variant if Smartlead reports it (E0 verifies); else NULL and variant metrics stay event-derived |
+| `created_at` | timestamptz | |
+
+### `outreach_event` ⬜ (`0028`) — append-only outreach ledger (+ reply-queue workflow)
+The single source for the per-lead log timeline, the variant scoreboard, and the Reply queue. Webhook
+ingest is `INSERT … ON CONFLICT (smartlead_event_id) DO NOTHING` — the dedupe **is** the partial unique.
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx `ix_outreach_event_tenant_type_created` (`tenant_id`,`event_type`,`created_at DESC`) — queue + scoreboard scans |
+| `campaign_id` | uuid FK → `campaign` (CASCADE) | |
+| `campaign_lead_id` | uuid FK → `campaign_lead` (SET NULL) nullable | an event can arrive for an unknown/removed lead — stored anyway, never 5xx'd back at Smartlead |
+| `event_type` | varchar(32) | webhook kinds `lead_replied` · `lead_opened` · `lead_clicked` · `lead_bounced` · `lead_unsubscribed` + internal `campaign_started` · `campaign_paused` · `stage_moved` · `reply_sent` (string, grows without migration) |
+| `smartlead_event_id` | varchar(128) nullable | **partial UNIQUE `WHERE smartlead_event_id IS NOT NULL` — the webhook idempotency key**; NULL on internal events |
+| `payload` | JSONB (default `{}`) | the raw webhook / internal detail; `lead_replied` keeps **`reply_message_id`** here (the reply-to-thread handle, risk R4) |
+| `triage` | varchar(32) nullable | reply-queue class on `lead_replied` rows (mock vocabulary as strings: positive / objection-timing / referral / nudge / …) |
+| `handled_at` | timestamptz nullable | queue done-state; **pip = `lead_replied AND handled_at IS NULL`** |
+| `response_body` | text nullable | the operator's threaded reply as actually sent (paired with a `reply_sent` event) |
+| `occurred_at` | timestamptz | provider timestamp (fallback `now()`); **parsed UTC-pinned** (the R16 lesson) |
+| `created_at` | timestamptz | |
+
+## Phase F (S6) — Booking, meeting & feedback ⬜ PLANNED (`0029` — spec locked 2026-07-11, not migrated)
+`booking_link` / `feedback_link` mirror `approval_link`/`password_reset` exactly: SHA-256 **`token_hash`**
+only (raw token lives only in the sent URL) · validity checked **on read**, no scheduler · **atomic
+single-use claim** (`UPDATE … SET used_at WHERE used_at IS NULL`). Feedback answers live **on `meeting`**
+(1:1 — no separate feedback table). **`billable` is never stored** — derived on read as
+`outcome = 'qualified' AND dispute_window_ends_at < now() AND NOT disputed` (the 48-h window of
+backend-development-plan §7; Stripe charges it at G). Behavior spec →
+[`initial-build-plan.md`](initial-build-plan.md) → Phase F.
+
+### `booking_link` ⬜ (`0029`) — tokenized booking link, per replied lead
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | |
+| `campaign_lead_id` | uuid FK → `campaign_lead` (CASCADE) | idx — the resend ladder finds a lead's links |
+| `token_hash` | varchar(64) **unique** | |
+| `expires_at` | timestamptz | read-time validity; **7-day lifetime** (EF-Q6 — same TTL family as `approval_link`; no automated reminders, operator re-send is the reminder) |
+| `used_at` | timestamptz nullable | single-use — claimed atomically at `POST /book/{token}` |
+| `created_at` | timestamptz | |
+| | | resend mirrors the approval ladder: revoke prior live links, mint fresh |
+
+### `meeting` ⬜ (`0029`) — the one row feeding funnel · ledger · recaps
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | idx |
+| `campaign_lead_id` | uuid FK → `campaign_lead` (SET NULL) nullable | nullable — a manual (non-funnel) meeting is allowed |
+| `prospect_id` | uuid FK → `prospect` (SET NULL) nullable | |
+| `approval_id` | uuid FK → `prospect_approval` (**no cascade**) nullable | ⭐ the billing-evidence **snapshot at booking time** — the qualify rule reads this, not a join-time lookup |
+| `google_event_id` | varchar(128) nullable | Calendar event handle |
+| `meet_link` | varchar(255) nullable | the join URL (Upcoming pane) |
+| `scheduled_at` | timestamptz | stored UTC; rendered in viewer TZ |
+| `conference_record_id` | varchar(128) nullable | Meet REST v2 handle (also the recap Recording link seed) |
+| `held` | bool nullable | **NULL = not yet ingested** — the on-read poll's claim guard (`WHERE held IS NULL`, idempotent) |
+| `duration_min` | int nullable | from Meet participants/records |
+| `outcome` | varchar(16) nullable | `qualified` · `short_call` · `noshow` — the mock ledger's exact vocabulary (Qualified / Short call / No-show); derived ONCE at ingest; later change = explicit owner correction |
+| `amount` | numeric(10,2) nullable | stamped **$500** on qualify (`PER_MEETING_USD`) — a computed amount, not a charge, until Stripe (G) |
+| `dispute_window_ends_at` | timestamptz nullable | = meeting end + 48h, stamped at ingest; ledger chip **Held** inside the window, **Billed** (computed) past it |
+| `disputed` | bool (default false) | a client dispute inside the window parks the row for operator review |
+| `feedback_rating` | int nullable | 1–5 (the external feedback page's star scale) |
+| `feedback_chips` | JSONB (default `[]`) | the chip strings as sent |
+| `feedback_comment` | text nullable | |
+| `feedback_at` | timestamptz nullable | ledger Feedback state: set = Received · live link = Pending · else None |
+| `won` | bool nullable | the recap "Final conversion" (Deal won / No deal) — G, manual |
+| `summary` | JSONB nullable | the deferred LLM `meeting_summary` lands here later ([SKIP→later]); recap detail renders pending until then |
+| `created_at`, `updated_at` | timestamptz | |
+
+### `feedback_link` ⬜ (`0029`) — tokenized feedback link (post-meeting)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) | |
+| `meeting_id` | uuid FK → `meeting` (CASCADE) | idx |
+| `token_hash` | varchar(64) **unique** | |
+| `expires_at` | timestamptz | read-time validity |
+| `used_at` | timestamptz nullable | single-use claim on submit |
+| `created_at` | timestamptz | |
+
 ### `person` ⬜ SCALE — tenant-AGNOSTIC enrichment cache (the enrich-once seam)
 Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched once (one Apollo
 `people/match`, paid once) and referenced by N `prospect` rows.
@@ -711,6 +846,8 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260709_0025_scoring_v2_rubrics` ✅(dev) | D+ v2 | data-only — seed the new `company_score` + `prospect_score` prompt stages (the v2 axis rubrics) per tenant from the shipped `docs/prompts/{company,prospect}-score-v1.md` |
 | `20260710_0026_scoring_v2_contraction` ✅(dev) | D+ v2 | **the contraction pass (V2-4)** — drop v1 `fit_score`/`fit_tier` on company+prospect + the `ix_*_tenant_fit` indexes; drop `prospect.outreach_outcome`; `prospect.status` default `new`→`found`. `reason_tags` stopped being emitted (code, not a column). Reversible (re-adds columns empty). |
 | `20260710_0027_dplus_indexes_race` ✅(dev) | D+.5 F1 + final | index/constraint foundation for the fix wave — add score-sorted feed composites `ix_{company,prospect}_tenant_score` (R5); partial UNIQUE `uq_scoring_job_active_tenant_kind` `WHERE status IN ('queued','running')` (R9); partial UNIQUE `uq_research_job_active_tenant` on (`tenant_id`) same predicate (**N8** — research_job had the same race, no `kind` column); `ix_research_run_tenant_created` (R22a); drop composite-covered `ix_{company,prospect}_tenant_id` (R29a) **and prefix-covered `ix_research_run_tenant_id`** (**N49**); terminal-ize any pre-existing duplicate active job rows on both job tables before the CREATE UNIQUEs (**N48**); `DELETE FROM prompt WHERE stage='sourcing'` (R29b). **Applied to dev at push #1 (2026-07-11).** Reversible (index-only; the prompt delete + dup terminal-ization are not restored). |
+| *(planned)* `0028_phase_e_campaign` | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe) — spec locked 2026-07-11, §Phase E above |
+| *(planned)* `0029_phase_f_meeting` | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — spec locked 2026-07-11, §Phase F above |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
 **Live Aurora head: `0027`** (dev — applied at push #1, 2026-07-11; the D+.5/final-fix index+constraint

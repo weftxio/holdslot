@@ -15,19 +15,26 @@
 
 ## 0. Status & how to use this doc (read first)
 
-**This document is the backend spec and build order. S0 (Phase A), S1 (Phase B) and S2 (Phase C — Apollo)
-are BUILT & live on the `dev` environment; the current front is S3 (Phase D — batch + client approval).
-See `initial-build-plan.md` for the consolidated as-built record and the step-by-step task lists.**
+**This document is the backend spec and build order. S0–S3 (Phases A–D) + the D+ hardening block are
+BUILT, reviewed, and SHIPPED to dev + prod (2026-07-11 — first public prod-FE release; prod rides the
+shared dev-tier backend until cutover). The current front is S4/S5 (Phase E — Smartlead outreach), whose
+finalized task list + funnel contract live in `initial-build-plan.md` → Phase E, with the planned `0028`/
+`0029` schema in `data-schema.md`. See `initial-build-plan.md` for the consolidated as-built record —
+where this doc's per-stage detail disagrees with it, the newer doc wins.**
 
-**What is already built and live (Phase 1):**
-- The full mock UI in `apps/web` (Next.js 15, App Router) — all 8 pages, ported pixel-faithfully
-  from `design/`, backed by **co-located mock fixtures** (no backend). See root `CLAUDE.md`.
+**What is already built and live:**
+- The full UI in `apps/web` (Next.js 16, App Router) — A–D+ screens on the live API; Campaign / Reply
+  queue / Recaps / Billing tabs still ride co-located mock fixtures (the E/F cutover seam). See root `CLAUDE.md`.
+- `apps/api` (FastAPI on Lambda+SnapStart) + `infra/` (Terraform + Alembic, Aurora head `0027`) — live
+  behind `api.tryholdslot.com`, one shared backend serving both Amplify sites.
 - Hosted on **AWS Amplify** in account **138743894336**, CI/CD on push:
-  - prod (`main`): https://main.d2w95n49ooprjf.amplifyapp.com
+  - prod (`main`): https://tryholdslot.com
   - dev (`dev`):  https://dev.d2w95n49ooprjf.amplifyapp.com
-- Ship flow (proven): push `dev` → review on dev URL → fast-forward `main` → prod.
+- Ship flow (proven): backend deploy (`build-and-deploy.sh`) → push `dev` → review on dev URL →
+  fast-forward `main` → prod.
 
-**What is NOT built:** everything in `apps/api` and `infra/` (both are placeholder READMEs).
+**What is NOT built:** S4–S7 (campaigns/replies/booking/meeting/billing) — planned in
+`initial-build-plan.md` Phases E–G.
 
 **How the backend lands behind the existing UI:** the mock data is co-located in each page as
 clearly-named consts (the data/view seam). When the API exists, replace those consts with an
@@ -547,11 +554,14 @@ infra/
 
 ## 10. Next action (start of next session)
 
-**S0 (Phase A) + S1 (Phase B) + S2 (Phase C — Apollo) are built & live on `dev`** — auth + clients +
-console, the Brief/ICP → `ResearchSpec` v3 targeting loop, and the **Apollo find → score → select → enrich
-loop** (backend on Lambda **v44**, Workspace web on Amplify `dev`; DB at migration `0013`). The consolidated
-as-built record (Phase B + Phase C C0–C10) and the **Phase D information block** live in
-`initial-build-plan.md`. **Current front = S3 / Phase D (Sendout batch + client approval).**
+**S0–S3 (Phases A–D) + D+ are built, reviewed (both fix waves closed 2026-07-11) & SHIPPED to dev + prod**
+— auth + clients + console, the Brief/ICP → `ResearchSpec` targeting loop (now **v6**, per-ICP), the Apollo
+find → **4-label score** → select → enrich loop (Scoring v2), and the batch → masked approval loop (DB at
+head **`0027`**). The consolidated as-built record lives in `initial-build-plan.md`. **Current front =
+S4/S5 / Phase E (Smartlead outreach)** — its finalized build plan (E0–E7, funnel contract, risks, tests)
+is `initial-build-plan.md` → Phase E; start at **E0** (warm-up health check + the Smartlead live-contract
+probe). *(The historical per-stage prose below this point predates the D+/E finalization — trust
+`initial-build-plan.md` + `data-schema.md` on any conflict.)*
 
 1. **Founder acceptance rounds (no code):** S1 — fill Brief+ICP → Generate Scope → spec grid + gaps render
    and survive reload. S2 — a live Apollo round (Find Companies → score → select → Find People → score →
