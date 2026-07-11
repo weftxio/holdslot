@@ -18,11 +18,14 @@ mkdir -p build/pkg
 # surface as an ImportError AFTER update-function-code + the alias shift, i.e. in production. `uv pip
 # compile` pins the full tree for the Lambda target (Linux/3.12) — reproducible, and uv-native so it
 # needs no particular system `python3`. boto3/botocore land here transitively but are stripped below.
-# --no-build so the resolver only considers WHEELS (matching the --only-binary install below): the
-# latest argon2-cffi-bindings ships no manylinux2014 wheel, so without this uv would pin it and the
-# install would then fail; --no-build makes it backtrack to a version that has a 2014 wheel.
+# --only-binary=:all: at COMPILE time mirrors the --only-binary=:all: install below exactly: the
+# resolver may only pin versions that have a usable wheel for the target platform. (Plain --no-build
+# is weaker — it just forbids *building* sdists, so it can still pin a wheel-less version whose
+# metadata came from an sdist, which the install then rejects.) Concretely: the latest
+# argon2-cffi-bindings ships no manylinux2014 wheel, so this backtracks it to a version that does —
+# and compile/install now share one constraint, so they can never diverge on any future dep.
 uv pip compile pyproject.toml --quiet \
-  --python-platform x86_64-manylinux2014 --python-version 3.12 --no-build \
+  --python-platform x86_64-manylinux2014 --python-version 3.12 --only-binary=:all: \
   -o build/requirements.txt
 uv pip install --python-platform x86_64-manylinux2014 --python-version 3.12 \
   --target build/pkg --only-binary=:all: \
