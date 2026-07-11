@@ -1,5 +1,13 @@
 "use client";
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { listBatches } from "@/lib/api";
 import { useClient } from "@/lib/nav";
 import { batchFromApi } from "@/lib/workspace/constants";
@@ -34,24 +42,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     { name: "Campaign 2", batch: "Batch 2", locked: true },
   ]);
   const [replies, setReplies] = useState<Reply[]>(INITIAL_REPLIES);
+  // Always holds the latest client so an in-flight reload can detect a switch and drop its result.
+  // Updated in the mount/client-change effect below (not during render — refs must not be written
+  // in the render body).
+  const clientRef = useRef(client);
 
   const reloadBatches = useCallback(async () => {
     try {
       const rows = await listBatches(client);
+      // N14 — a switch during the fetch would otherwise overwrite the NEW client's batches with the
+      // old client's rows (a cross-client leak). Bail if the active client moved on.
+      if (clientRef.current !== client) return;
       setBatches(rows.map(batchFromApi));
     } catch {
       // Auth/cold-start failures surface via the console SessionGuard; an empty list is the safe
       // default here so the tab still renders.
+      if (clientRef.current !== client) return;
       setBatches([]);
     }
   }, [client]);
 
   useEffect(() => {
     // Load batches on mount / client change — a data-sync effect (external → React), not derived
-    // state; the setState lands after the awaited fetch inside reloadBatches.
+    // state; the setState lands after the awaited fetch inside reloadBatches. Stamp the current
+    // client BEFORE the fetch so a stale in-flight reload (from a prior client) bails on resolve.
+    clientRef.current = client;
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void reloadBatches();
-  }, [reloadBatches]);
+  }, [reloadBatches, client]);
 
   return (
     <Ctx.Provider

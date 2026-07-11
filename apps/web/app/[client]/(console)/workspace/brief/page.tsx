@@ -244,7 +244,11 @@ export default function BriefPage() {
     if (duplicates) parts.push(`${duplicates} duplicate${duplicates > 1 ? "s" : ""} skipped`);
     if (errors.length) parts.push(`${errors.length} invalid skipped`);
     toast(parts.join(" · "));
-    void persist(next); // save to DB immediately (state updates are async — pass the snapshot)
+    // N16 — surface a save failure instead of swallowing it: the imported DNC list is otherwise
+    // unsaved (an unhandled rejection), so the founder believes it persisted when it did not.
+    persist(next).catch((e) =>
+      toast(e instanceof Error ? e.message : "Couldn’t save the imported list", "warn"),
+    ); // save to DB immediately (state updates are async — pass the snapshot)
   };
   const setB = <K extends keyof Brief>(key: K, val: Brief[K]) =>
     setBrief((s) => ({ ...s, [key]: val }));
@@ -377,13 +381,17 @@ export default function BriefPage() {
       const saved = await putBrief(client, briefSnapshot as unknown as Record<string, unknown>);
       // Keep the nav cache in sync so a tab-return after saving shows the saved brief, not a stale one.
       qc.setQueryData(["brief", client], saved);
-      for (const icp of icps) {
+      for (let i = 0; i < icps.length; i++) {
+        const icp = icps[i];
         if (icp.id) {
           await apiUpdateIcp(client, icp.id, icpToApi(icp));
         } else {
           const created = await apiCreateIcp(client, icpToApi(icp));
-          // Record the new id immediately (reference-matched) so it survives a later failure.
-          setIcps((s) => s.map((x) => (x === icp ? { ...x, id: created.id } : x)));
+          // N15 — record the new id by INDEX, not object reference. An edit to this ICP during the
+          // await replaces the object (immutable state), so `x === icp` would miss and the id would
+          // be lost → a duplicate ICP created on the next save. The position is stable across edits;
+          // the `!x.id` guard avoids clobbering a row that a concurrent create already stamped.
+          setIcps((s) => s.map((x, idx) => (idx === i && !x.id ? { ...x, id: created.id } : x)));
         }
       }
       for (const id of deletedIcpIds) await apiDeleteIcp(client, id);

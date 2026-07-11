@@ -203,7 +203,9 @@ export function FindHistoryDrawer({
     let findsThisWeek = 0;
     for (const t of threads) {
       if ((t.type === "find" || t.type === "lookalike") && t.latestAt) {
-        const ms = new Date(t.latestAt).getTime();
+        // N18 — parse as UTC (the API stamps naive-UTC created_at); a bare `new Date` reads it as
+        // local time and drifts the this-week window by the viewer's offset (8h in HK).
+        const ms = parseUtc(t.latestAt)?.getTime() ?? NaN;
         if (!Number.isNaN(ms) && ms >= weekAgo) findsThisWeek += 1;
       }
     }

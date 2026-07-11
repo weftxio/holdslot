@@ -93,6 +93,33 @@ function jsonFor(method: string, path: string): unknown {
       return { items: [], next_cursor: null };
     case "/companies":
       return { items: [], next_cursor: null };
+
+    // Approval batches (BatchApi[]). The workspace LAYOUT mounts WorkspaceProvider, which calls
+    // listBatches on every workspace route — returning the catch-all `{}` made `batches.map`/`.reduce`
+    // throw and every workspace + client-status route hit its error boundary (the stale-mock bug the
+    // whole suite tripped on). Seed three named batches so the batches tab + status log have rows.
+    case "/batches":
+      return [1, 2, 3].map((n) => ({
+        id: `batch-${n}`,
+        name: `Batch ${n}`,
+        icp: "ICP A",
+        status: n === 1 ? "sent" : "draft",
+        total: 5,
+        approved: n === 1 ? 2 : 0,
+        removed: 0,
+        pending: n === 1 ? 3 : 5,
+        created_at: "2026-07-10T00:00:00",
+        sent_at: n === 1 ? "2026-07-10T01:00:00" : null,
+        decided_at: null,
+      }));
+    case "/approval-template":
+      // ApprovalTemplateApi — the client-status approval page does `tmpl.body.split("\n\n")` on
+      // load, so the catch-all `{}` (no `body`) crashed it. Return a valid template.
+      return {
+        subject: "Prospects for your review",
+        body: "Hi there,\n\nHere are this week's prospects.\n\nApprove or request changes.",
+        cta: "Review prospects",
+      };
     case "/sourcing-docs":
       return { company_fit: null, prospect_fit: null }; // SourcingDocList
     case "/people/departments":

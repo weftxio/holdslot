@@ -172,7 +172,10 @@
 .nowrap {
   white-space: nowrap;
 }
-.sub {
+/* N19 — scope to the home wrapper: home.css is a GLOBAL stylesheet, so an unscoped `.sub` leaked
+   the hero-subtitle styling onto every console page that uses className="sub" (billing, list,
+   batches, feedback). `.home` is the page.tsx wrapper. */
+.home .sub {
   font-size: 18.5px;
   color: var(--ink-soft);
   max-width: 500px;

@@ -349,7 +349,9 @@ export default function ListPage() {
       const { items: ps } = await listProspects(client);
       if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
       setProspects(ps);
-      setChecked(new Set());
+      // N11 — do NOT wipe the people selection on every reload (a Reveal & score reload blew away
+      // the operator's ticks). The prune effect drops only now-excluded ids; ghost ids for removed
+      // rows are harmless (selectedProspects filters against the live list). Mirrors reloadCompanies.
       qc.setQueryData(["prospects", client], { items: ps }); // keep the nav cache fresh
     } catch (e) {
       if (clientRef.current === client) {
@@ -397,6 +399,16 @@ export default function ListPage() {
     setScoringPersonIds(new Set());
     rescoringCoRef.current = false;
     rescoringPplRef.current = false;
+    // N13 — clear every mutation busy-flag too: each is set by a handler whose `finally` is gated on
+    // the OLD client, so a switch mid-Find/Update/Lookalike/stage/remove would otherwise wedge the
+    // button ("Fetching…") forever on the new client.
+    setFindingCo(false);
+    setUpdatingFields(false);
+    setFindingLookalike(false);
+    setFindingPpl(false);
+    setFindingPplIds(new Set());
+    setStaging(false);
+    setRemoving(false);
     setSearch("");
     setCoSearch("");
     setFIcp("");
@@ -1333,9 +1345,19 @@ export default function ListPage() {
     try {
       await selectCompanies(client, ids, false);
       await reloadCompanies();
+      const removed = new Set(ids);
       setCompanyChecked((s) => {
         const n = new Set(s);
         ids.forEach((id) => n.delete(id));
+        return n;
+      });
+      // N12 — also drop any ticked PEOPLE under the removed companies. They leave Step 2 with their
+      // parent, so leaving them in `checked` keeps invisible selected rows that a later reveal spends.
+      setChecked((s) => {
+        const n = new Set(s);
+        prospects.forEach((p) => {
+          if (p.company_id && removed.has(p.company_id)) n.delete(p.id);
+        });
         return n;
       });
       toast(`Removed ${ids.length} ${ids.length === 1 ? "company" : "companies"} from Step 2`);

@@ -213,7 +213,14 @@ test.describe("workspace routes", () => {
       linkedin_url: "", name: "SeededCo Test Inc", industry: "Software", size: "50", country: "US",
       fit_reason: "Strong deal fit.", business_model: "B2B", label: "contact_now", score_total: 18,
       reason: "fits ICP A", subscores: {}, flags: [], icp: "A", trigger_line: "raised a round",
-      enrichment: {}, source: "apollo", status: "discovered", created_at: "2026-07-10T00:00:00",
+      // Full CompanyEnrichment shape — CompanyStudy reads industries/technologies/keywords as arrays
+      // (`.length`), so a bare `{}` crashed the study on render (the type guarantees these fields).
+      enrichment: {
+        short_description: "A seeded test company.", industries: ["Software"], annual_revenue: null,
+        founded_year: 2019, headcount_growth_12mo: null, technologies: ["React"],
+        keywords: ["b2b"], hq: "US",
+      },
+      source: "apollo", status: "discovered", created_at: "2026-07-10T00:00:00",
     };
     // A more-specific route registered after setupApp wins (Playwright tries handlers LIFO); it still
     // fulfils on the dead local base, so the external-request guard stays clean.
@@ -225,6 +232,9 @@ test.describe("workspace routes", () => {
       })
     );
     await page.goto(`/${CLIENT}/workspace/list`);
+    // Buckets default COLLAPSED to a one-line count (call-sheet UX); expand "Contact now" (the
+    // seeded company's label bucket) to reveal its row before asserting it reached the DOM.
+    await page.locator(".bucket-head", { hasText: "Contact now" }).click();
     await expect(page.getByText("SeededCo Test Inc")).toBeVisible();
     expectNoExternalRequests();
   });
