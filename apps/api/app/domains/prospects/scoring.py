@@ -29,12 +29,26 @@ from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import Session
 
 from app.models import ScoringJob
 
 log = logging.getLogger("holdslot.scoring")
+
+
+def is_unique_violation(exc: BaseException) -> bool:
+    """True if `exc` is a Postgres unique-violation (SQLSTATE 23505), HOWEVER the driver surfaced it
+    (N29). Over psycopg SQLAlchemy raises `IntegrityError`, but the RDS Data API driver
+    (aurora-data-api) can wrap it as a generic `DBAPIError`/`DatabaseError` — so match the SQLSTATE
+    or the message text too, or the enqueue race would 500 on the live driver, not coalesce."""
+    if isinstance(exc, IntegrityError):
+        return True
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "sqlstate", None) == "23505" or getattr(orig, "pgcode", None) == "23505":
+        return True
+    text = str(orig if orig is not None else exc).lower()
+    return "23505" in text or "duplicate key" in text or "unique constraint" in text
 
 # Background-job event contract — same key as structuring; the VALUE selects the worker (see
 # app.main.handler, which routes scoring vs. structuring events).
@@ -134,16 +148,26 @@ def enqueue_scoring(db: Session, tenant_id, kind: str, params: dict) -> ScoringJ
     db.add(job)
     try:
         db.commit()
-    except IntegrityError:
+    except DBAPIError as exc:
         # A concurrent POST won the (tenant, kind) partial-unique race (0027) between our check and
-        # our insert — coalesce onto its job rather than 500 (like the "already active" path).
+        # our insert — coalesce onto its job rather than 500 (like the "already active" path). N29 —
+        # match the unique violation across driver shapes, not just SQLAlchemy's IntegrityError.
+        if not is_unique_violation(exc):
+            raise
         db.rollback()
         winner = _active_job(db, tenant_id, kind)
         if winner is not None:
             return winner
         raise  # constraint fired but no active row visible — genuinely unexpected, surface it
     db.refresh(job)
-    _dispatch(tenant_id, job.id)
+    # N30 — the job is committed `queued`; if the dispatch invoke fails, mark it `error` here so it
+    # doesn't sit queued forever (the reaper would only flip it after MAX_JOB_AGE_SECONDS), and
+    # surface the failure to the caller.
+    try:
+        _dispatch(tenant_id, job.id)
+    except Exception as exc:
+        _fail(db, job, f"dispatch failed: {exc!r}")
+        raise HTTPException(status_code=503, detail="could not start the job") from exc
     return job
 
 

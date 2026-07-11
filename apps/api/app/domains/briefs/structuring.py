@@ -25,8 +25,9 @@ import threading
 import uuid
 from datetime import UTC, datetime
 
+from fastapi import HTTPException
 from sqlalchemy import func, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.domains.briefs import anchors
@@ -49,7 +50,7 @@ from app.domains.prospects.feedback import keyword_yield
 
 # R3/R27 — the zombie-reap window is defined once in prospects/scoring (see MAX_JOB_AGE_SECONDS use
 # below); importing it kills the drifting `= 360` copy that sat below the worst-case worker life.
-from app.domains.prospects.scoring import MAX_JOB_AGE_SECONDS
+from app.domains.prospects.scoring import MAX_JOB_AGE_SECONDS, is_unique_violation
 from app.integrations.openrouter.client import LlmError, structured_completion
 from app.models import Brief, Company, Prompt, ResearchJob, ResearchRun, ResearchSpec
 
@@ -145,17 +146,26 @@ def enqueue_structuring(db: Session, tenant_id, icp_ids: list[str] | None = None
     db.add(job)
     try:
         db.commit()
-    except IntegrityError:
+    except DBAPIError as exc:
         # N8 — a concurrent Regenerate won the per-tenant partial-unique race (0027,
         # `uq_research_job_active_tenant`) between our check and our insert. Coalesce onto its job
         # rather than 500 — a double-click must never double-spend the DeepSeek Pro scoping call.
+        # N29 — match the unique violation across driver shapes, not just SQLAlchemy IntegrityError.
+        if not is_unique_violation(exc):
+            raise
         db.rollback()
         winner = _active_job(db, tenant_id)
         if winner is not None:
             return winner
         raise  # constraint fired but no active row visible — genuinely unexpected, surface it
     db.refresh(job)
-    _dispatch(tenant_id, job.id, icp_ids)
+    # N30 — the job is committed `queued`; if the dispatch invoke fails, mark it `error` here rather
+    # than leave it queued until the reaper, and surface the failure to the caller.
+    try:
+        _dispatch(tenant_id, job.id, icp_ids)
+    except Exception as exc:
+        _fail(db, job, f"dispatch failed: {exc!r}")
+        raise HTTPException(status_code=503, detail="could not start structuring") from exc
     return job
 
 
@@ -245,7 +255,12 @@ def _insert_spec(db: Session, tenant_id, spec, gaps, icp_suggestions, result) ->
         db.add(row)
         try:
             db.commit()
-        except IntegrityError:
+        except DBAPIError as exc:
+            # N29 — a concurrent worker took this `next_version` first; retry with a higher one.
+            # Match the unique violation across driver shapes (not just IntegrityError) so it fires
+            # on the live RDS Data API path too.
+            if not is_unique_violation(exc):
+                raise
             db.rollback()
             continue
         return next_version

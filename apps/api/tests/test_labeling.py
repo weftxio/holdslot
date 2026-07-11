@@ -309,6 +309,21 @@ def test_person_missing_contact_or_title_is_data_unusable():
     assert no_title.reason == "data_unusable"
 
 
+def test_person_low_fit_parent_free_gated_without_paid_score():
+    # N27 (Q4) — a scoreable person (valid title+contact, not excluded) under a low_fit parent is
+    # free-gated to low_fit "parent company low fit" in the deterministic pass (subscores=None), NOT
+    # returned as a survivor (label=None) — the low_fit cap makes the paid people-score pointless.
+    v = L.assign_person_label(company_label="low_fit", title="CFO", has_contact=True)
+    assert v.label == "low_fit" and v.reason == "parent company low fit"
+    # Excluded/avoided/data checks still take precedence over the low_fit-parent free-gate.
+    excl = L.assign_person_label(
+        company_label="low_fit", title="Intern", has_contact=True, avoid_titles=("intern",)
+    )
+    assert excl.label == "excluded_by_rules"
+    no_contact = L.assign_person_label(company_label="low_fit", title="CFO", has_contact=False)
+    assert no_contact.reason == "data_unusable"
+
+
 def test_person_capped_by_company_band():
     strong = {"persona_fit": 5, "authority": 5, "trigger": 5, "reachability": 5}  # → contact_now
     # A contact_now person at a contact_soon company can't outrank the account.

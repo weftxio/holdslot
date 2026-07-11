@@ -119,47 +119,44 @@ export default function BriefPage() {
   });
   const [icpSel, setIcpSel] = useState(0);
   function newIcp() {
-    // Functional append so two rapid clicks can't collide on the same letter/length;
-    // capture the new index from the same snapshot so the selection can't go stale either.
-    let added = 0;
-    setIcps((s) => {
-      added = s.length;
-      return [
-        ...s,
-        {
-          short: "ICP " + String.fromCharCode(65 + s.length),
-          tag: "",
-          persona: "",
-          fields: blankFields(),
-        },
-      ];
-    });
-    setIcpSel(added);
+    // N41 — compute the new array + index from the current `icps` (render closure) rather than via a
+    // side-effect assignment inside the state updater (an impure updater double-runs under Strict
+    // Mode, and reading `added` after the setState relied on the updater running synchronously).
+    const idx = icps.length;
+    setIcps([
+      ...icps,
+      {
+        short: "ICP " + String.fromCharCode(65 + idx),
+        tag: "",
+        persona: "",
+        fields: blankFields(),
+      },
+    ]);
+    setIcpSel(idx);
     toast("ICP profile created");
   }
   // Accept an LLM ICP suggestion (derived from the customer list) → a new, prefilled ICP the
   // founder reviews and saves. Jumps to the ICP section so it's edited in context.
   function acceptIcpSuggestion(sug: IcpSuggestion) {
-    let added = 0;
-    setIcps((s) => {
-      added = s.length;
-      return [
-        ...s,
-        {
-          short: sug.name || "ICP " + String.fromCharCode(65 + s.length),
-          tag: "from customers",
-          persona: "",
-          fields: {
-            ...blankFields(),
-            industries: sug.company_search_params?.q_organization_keyword_tags ?? [],
-            // Personas are facets now (Management Level × Department), not free-text titles — the
-            // operator fills the ICP's target titles; the facets drive Apollo directly.
-            jobTitles: [],
-          },
+    // N41 — compute the new array + index from the render closure, not via a side-effect in the
+    // updater (impure; double-runs under Strict Mode). See newIcp.
+    const idx = icps.length;
+    setIcps([
+      ...icps,
+      {
+        short: sug.name || "ICP " + String.fromCharCode(65 + idx),
+        tag: "from customers",
+        persona: "",
+        fields: {
+          ...blankFields(),
+          industries: sug.company_search_params?.q_organization_keyword_tags ?? [],
+          // Personas are facets now (Management Level × Department), not free-text titles — the
+          // operator fills the ICP's target titles; the facets drive Apollo directly.
+          jobTitles: [],
         },
-      ];
-    });
-    setIcpSel(added);
+      },
+    ]);
+    setIcpSel(idx);
     setOpenSec(2);
     toast("ICP added from suggestion · review & save");
   }
@@ -353,9 +350,16 @@ export default function BriefPage() {
       const job = await getStructureStatus(client).catch(() => null);
       if (alive && job && (job.status === "queued" || job.status === "running")) {
         setStructuring(true);
-        pollStructuring(job, client).finally(() => {
-          if (alive) setStructuring(false);
-        });
+        pollStructuring(job, client)
+          // N40 — the on-load resume poll can reject (network/cold-start); surface it as a warn
+          // toast instead of an unhandled promise rejection.
+          .catch((e) => {
+            if (alive)
+              toast(e instanceof Error ? e.message : "Couldn’t check the structuring job", "warn");
+          })
+          .finally(() => {
+            if (alive) setStructuring(false);
+          });
       }
     })();
     return () => {

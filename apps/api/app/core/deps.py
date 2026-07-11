@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import ensure_awake, get_session
 from app.core.security import decode_token
-from app.models import AppUser, Membership, MembershipRole, Tenant, UserStatus
+from app.models import AppUser, Membership, MembershipRole, Tenant, TenantStatus, UserStatus
 
 _bearer = HTTPBearer(auto_error=False)
 log = logging.getLogger("holdslot.auth")
@@ -85,10 +85,16 @@ def require_membership(min_role: MembershipRole | None = None):
         slug = request.path_params.get("client")
         if not slug:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "missing client slug")
+        # N32 — a SUSPENDED tenant is treated as non-existent: its members lose access (same 404 as
+        # a non-member) so `TenantStatus.suspended` is actually enforced somewhere, not just stored.
         row = db.execute(
             select(Membership, Tenant)
             .join(Tenant, Tenant.id == Membership.tenant_id)
-            .where(Tenant.slug == slug, Membership.user_id == user.id)
+            .where(
+                Tenant.slug == slug,
+                Membership.user_id == user.id,
+                Tenant.status == TenantStatus.active,
+            )
         ).first()
         if row is None:
             log.warning("authz: membership denied user=%s slug=%s", user.id, slug)

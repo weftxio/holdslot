@@ -507,7 +507,12 @@ export default function ListPage() {
         if (alive) setPeopleScopeOverride(b ? { people_search_params: b } : null);
       })
       .catch(() => {
-        if (alive) toast("Couldn’t load saved person filters · try again", "warn");
+        if (alive) {
+          // N39 — drop the previous ICP's override on a failed load, so the "Custom" badge + scope
+          // summary never keep reflecting a DIFFERENT ICP's tuning after switching ICPs.
+          setPeopleScopeOverride(null);
+          toast("Couldn’t load saved person filters · try again", "warn");
+        }
       });
     return () => {
       alive = false;
@@ -727,6 +732,10 @@ export default function ListPage() {
     [companies, companyChecked]
   );
   const coSelCount = coSel.length;
+  // N42 — ANY company-mutating action in flight (Find / Find Lookalike / Update fields). One shared
+  // disjunction gates all three buttons, so a second mutation can't launch over a running one (Find
+  // previously only checked `findingCo`, so it could fire while Lookalike/Update were mid-flight).
+  const coMutating = findingCo || findingLookalike || updatingFields;
   // A background AI-scoring pass (Find / Find Lookalike / Update AI Score) is running for ≥1 row.
   const scoringActive = scoringCoIds.size > 0;
   const scoringPeopleActive = scoringPersonIds.size > 0;
@@ -1762,7 +1771,7 @@ export default function ListPage() {
                 <button
                   className="btn btn-primary btn-sm"
                   onClick={runFindCompanies}
-                  disabled={findingCo}
+                  disabled={coMutating}
                   title="Search Apollo for the target ICP's scope · free · enriches only new companies"
                 >
                   {findingCo
@@ -1796,7 +1805,7 @@ export default function ListPage() {
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={runLookalike}
-                    disabled={findingLookalike || findingCo}
+                    disabled={coMutating}
                     title="Find the next batch of companies similar to the selected rows"
                   >
                     {findingLookalike ? "Finding…" : `Find lookalikes ${coSelCount}`}
@@ -1804,7 +1813,7 @@ export default function ListPage() {
                   <button
                     className="btn btn-ghost btn-sm"
                     onClick={runUpdateFields}
-                    disabled={updatingFields || findingCo}
+                    disabled={coMutating}
                     title="Re-enrich Apollo firmographics for the selected companies · spends credits"
                   >
                     {updatingFields ? "Updating…" : `Refresh company data ${coSelCount}`}
@@ -1830,7 +1839,7 @@ export default function ListPage() {
                   <button
                     className="btn btn-accent btn-sm"
                     onClick={runLookalikeOfStrong}
-                    disabled={findingLookalike || findingCo}
+                    disabled={coMutating}
                     title="Find the next batch of companies similar to your Strong/Good rows"
                   >
                     {findingLookalike ? "Finding…" : "Find lookalikes of your best rows"}

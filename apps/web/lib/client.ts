@@ -29,7 +29,16 @@ export function loadClients(): Client[] {
   if (typeof window === "undefined") return DEFAULT_CLIENTS;
   try {
     const list = JSON.parse(localStorage.getItem(KEY) || "null");
-    if (Array.isArray(list) && list.length) return list;
+    if (Array.isArray(list)) {
+      // N44 — keep only well-formed {name, slug} entries. A malformed stored value (hand-edited, or
+      // an older/other shape) must not reach render, where a `.slug`/`.name` access would throw and
+      // white-screen the whole console. Fall back to the defaults when nothing survives.
+      const clean = list.filter(
+        (c): c is Client =>
+          !!c && typeof c.name === "string" && typeof c.slug === "string" && c.slug.length > 0,
+      );
+      if (clean.length) return clean;
+    }
   } catch {
     /* ignore */
   }

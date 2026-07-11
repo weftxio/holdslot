@@ -5,7 +5,7 @@ import { CampaignTab } from "../CampaignTab";
 
 export default function CampaignPage() {
   const toast = useToast();
-  const { batches, campaigns, setCampaigns } = useWorkspace();
+  const { batches, campaigns, setCampaigns, setReplies, setRecaps } = useWorkspace();
   // Campaigns can only be linked to client-approved batches — pending/rejected
   // batches are never selectable, so a linked campaign is always safe to send.
   const approvedBatches = batches.filter((b) => b.status === "Approved");
@@ -38,9 +38,17 @@ export default function CampaignPage() {
           setCampaigns((s) => s.map((c) => (c.name === name ? { ...c, locked: true } : c)));
           toast("Batch locked · " + name + " confirmed");
         }}
-        onRename={(oldName, newName) =>
-          setCampaigns((s) => s.map((c) => (c.name === oldName ? { ...c, name: newName } : c)))
-        }
+        onRename={(oldName, newName) => {
+          setCampaigns((s) => s.map((c) => (c.name === oldName ? { ...c, name: newName } : c)));
+          // N47 — retag the rows that reference this campaign by name, so a rename doesn't orphan
+          // its replies (reply queue) or recaps (meeting summaries) under the vanished old name.
+          setReplies((s) =>
+            s.map((r) => (r.campaign === oldName ? { ...r, campaign: newName } : r)),
+          );
+          setRecaps((s) =>
+            s.map((rc) => (rc.campaign === oldName ? { ...rc, campaign: newName } : rc)),
+          );
+        }}
       />
     </section>
   );

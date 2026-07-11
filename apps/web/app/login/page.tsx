@@ -341,24 +341,10 @@ export default function Login() {
               <h1>Set a new password</h1>
               <p className="lead">Choose a new password for your HoldSlot account.</p>
 
-              {!resetToken && (
-                <div className="field">
-                  <label htmlFor="resetToken">Reset token</label>
-                  <input
-                    className="input"
-                    type="text"
-                    id="resetToken"
-                    placeholder="Paste the token from your email"
-                    autoComplete="off"
-                    value={resetToken}
-                    onChange={(e) => {
-                      setResetToken(e.target.value);
-                      setNewPwErr("");
-                    }}
-                  />
-                </div>
-              )}
-
+              {/* N43 — the reset view is only reached via a `?reset=<token>` link (see the mount
+                  effect), so resetToken is always set. The old "paste your token" input rendered only
+                  when `!resetToken` (never) AND unmounted itself on the first keystroke — dead code,
+                  removed. */}
               <div className="field">
                 <label htmlFor="newPw">New password</label>
                 <div className="pw-wrap">

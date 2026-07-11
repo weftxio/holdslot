@@ -2,12 +2,13 @@
 import { useState } from "react";
 import clsx from "clsx";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { RECAPS } from "@/lib/workspace/fixtures";
 
 export default function SummariesPage() {
-  const { campaigns } = useWorkspace();
+  // N47 — recaps come from the shared provider (not a static import) so a campaign rename remaps
+  // their tag and they stay in this filter instead of orphaning under the old name.
+  const { campaigns, recaps } = useWorkspace();
   const [sumCamp, setSumCamp] = useState("");
-  const recapsInView = RECAPS.filter((rc) => !sumCamp || rc.campaign === sumCamp);
+  const recapsInView = recaps.filter((rc) => !sumCamp || rc.campaign === sumCamp);
 
   return (
     <section className="tabpane active">

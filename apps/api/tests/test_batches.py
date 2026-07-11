@@ -19,6 +19,15 @@ import pytest
 from app.domains.approvals.router import _masked, _state
 from app.domains.batches import service as svc
 
+
+@pytest.fixture(autouse=True)
+def _stub_email(monkeypatch):
+    # N31 — send_approval now refuses to mark a batch `sent` when SES fails. These tests exercise
+    # the batch/link/status logic, NOT delivery, and SES sandbox rejects an unverified recipient
+    # like `client@example.com` — so stub the send to succeed and keep them deterministic.
+    monkeypatch.setattr("app.domains.batches.router.send_email", lambda *a, **k: True)
+
+
 # --------------------------------------------------------------------------- pure: masking
 
 

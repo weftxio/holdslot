@@ -2,28 +2,27 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import clsx from "clsx";
-import {
-  addClient,
-  DEFAULT_CLIENTS,
-  DEFAULT_CLIENT_PAGE,
-  loadClients,
-  saveClients,
-  slugify,
-  type Client,
-} from "@/lib/client";
+import { useToast } from "@/components/Toast";
+import { useMe } from "@/components/console/MeContext";
+import { createClient } from "@/lib/api";
+import { DEFAULT_CLIENTS, DEFAULT_CLIENT_PAGE, slugify, type Client } from "@/lib/client";
 
 export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
   const router = useRouter();
+  const toast = useToast();
+  const { me, refetch } = useMe();
   const wrapRef = useRef<HTMLDivElement>(null);
-  const [list, setList] = useState<Client[]>(DEFAULT_CLIENTS);
   const [open, setOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
+  const [creating, setCreating] = useState(false);
 
-  // Hydrate the list from localStorage after mount; reading it during render would mismatch the
-  // SSR'd default list (DEFAULT_CLIENTS).
-  // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => setList(loadClients()), []);
+  // N45 — the client list is the caller's real memberships from /me (the single source of truth),
+  // not a localStorage cache. Before /me resolves, show the current slug so the switcher never blanks.
+  const list: Client[] =
+    me?.clients.map((c) => ({ name: c.name, slug: c.slug })) ??
+    (currentSlug ? [{ name: currentSlug, slug: currentSlug }] : DEFAULT_CLIENTS);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
@@ -46,15 +45,24 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
     setOpen(false);
     router.push(`/${slug}/${DEFAULT_CLIENT_PAGE}`);
   }
-  function create() {
-    if (!newName.trim()) return;
-    const c = addClient(list, newName);
-    const next = [...list, c];
-    setList(next);
-    saveClients(next);
-    setNewName("");
-    setCreateOpen(false);
-    select(c.slug);
+  async function create() {
+    const name = newName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    try {
+      // N45 — create a REAL tenant (POST /clients enrolls the caller as owner) and navigate to the
+      // server-assigned slug. Refetch /me first so the new client is in the list the target route
+      // authorizes against — the old local-only create navigated to a slug with no membership → 404.
+      const created = await createClient(name);
+      await refetch();
+      setNewName("");
+      setCreateOpen(false);
+      select(created.slug);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Couldn’t create the client", "warn");
+    } finally {
+      setCreating(false);
+    }
   }
 
   return (
@@ -103,8 +111,8 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
           <div className="cc-slug">
             URL slug: holdslot.com/<b className="cc-slugval">{slugify(newName) || "client"}</b>
           </div>
-          <button className="cc-go" type="button" onClick={create}>
-            Create client
+          <button className="cc-go" type="button" onClick={create} disabled={creating}>
+            {creating ? "Creating…" : "Create client"}
           </button>
         </div>
       </div>

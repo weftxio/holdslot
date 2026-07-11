@@ -258,8 +258,12 @@ export default function ApprovalPage() {
                   onChange={(e) => setApprovalBatch(e.target.value)}
                 >
                   <option value="">All batches</option>
+                  {/* N46 — value = the batch id, not its (non-unique) name, so filtering picks the
+                      one batch selected instead of every batch that happens to share a name. */}
                   {log.map((r) => (
-                    <option key={r.id}>{r.name}</option>
+                    <option key={r.id} value={r.id}>
+                      {r.name}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -285,7 +289,7 @@ export default function ApprovalPage() {
                     </tr>
                   )}
                   {log
-                    .filter((r) => !approvalBatch || r.name === approvalBatch)
+                    .filter((r) => !approvalBatch || r.id === approvalBatch)
                     .map((r) => (
                       <tr key={r.id}>
                         <td>

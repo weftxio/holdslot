@@ -1,5 +1,7 @@
-// Live API client (A5 cutover). Base URL comes from NEXT_PUBLIC_API_BASE_URL; defaults to
-// the local API for `pnpm dev`. Tokens are kept in localStorage for this phase.
+// Live API client (A5 cutover). Base URL comes from NEXT_PUBLIC_API_BASE_URL; the localhost fallback
+// is a `pnpm dev` convenience ONLY — deployed builds must set it, and amplify.yml's preBuild fails
+// the build if it is unset (N53) so a misconfigured deploy can't silently ship this default. Tokens
+// are kept in localStorage for this phase.
 
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") || "http://127.0.0.1:8000";
@@ -7,7 +9,7 @@ const API_BASE =
 const ACCESS_KEY = "holdslot_access";
 const REFRESH_KEY = "holdslot_refresh";
 
-type ApiClient = { slug: string; name: string; role: string };
+export type ApiClient = { slug: string; name: string; role: string };
 export type Me = { id: string; email: string; full_name: string | null; clients: ApiClient[] };
 export type LoginResult = {
   access_token: string;
@@ -172,6 +174,18 @@ export async function getMe(): Promise<Me> {
   return r.json();
 }
 
+// N45 — create a real tenant (POST /clients also enrolls the caller as owner) and return it, incl.
+// the server-assigned slug (which may be suffixed on a name collision). The caller refetches /me.
+export async function createClient(name: string): Promise<ApiClient> {
+  const r = await authFetch(`/clients`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
 // --- Phase B (S1) — Brief, ICP, ResearchSpec --------------------------------
 
 // Every authenticated request goes through here. On a 401 it makes ONE silent refresh attempt
@@ -263,7 +277,6 @@ export type ResearchRunApi = {
   rows_pushed: number;
   rows_accepted: number;
   cost_usd: number | null;
-  cost_per_accepted: number | null;
   icp_id: string | null;
   scope_source: string | null; // ai · custom · lookalike · null (non-Apollo run)
   filter_body: Record<string, unknown> | null;

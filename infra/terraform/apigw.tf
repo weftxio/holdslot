@@ -24,6 +24,11 @@ resource "aws_apigatewayv2_stage" "default" {
   name        = "$default"
   auto_deploy = true
 
+  # N54 (PROD CUTOVER — not set now): the stage has no throttling, so a burst (or a runaway client)
+  # can drive unbounded Lambda concurrency + spend. At cutover add:
+  #   default_route_settings { throttling_burst_limit = <burst>, throttling_rate_limit = <rps> }
+  # sized to expected load, so the gateway sheds excess instead of amplifying it downstream.
+
   access_log_settings {
     destination_arn = aws_cloudwatch_log_group.apigw.arn
     format = jsonencode({

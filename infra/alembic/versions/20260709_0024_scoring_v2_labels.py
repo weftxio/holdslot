@@ -26,7 +26,7 @@ cutover); 0026 drops them.
 **No backfill** — `label`/`score_total` land NULL for every existing row (founder decision
 2026-07-09: force a clean re-score rather than tier-map v1 scores, which would mislabel e.g. a
 company in liquidation as `contact_soon`). Fully reversible: downgrade drops the two indexes and the
-five columns.
+four columns (label + score_total on both company and prospect; `verified` was cut 2026-07-09).
 """
 
 from __future__ import annotations

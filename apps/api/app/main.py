@@ -122,7 +122,10 @@ _origins = os.environ.get(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[o.strip() for o in _origins if o.strip()],
-    allow_credentials=True,
+    # N37 — auth is a pure Bearer token in the Authorization header, never a cookie, so credentialed
+    # CORS is unnecessary. Dropping it also keeps the wildcard-origin + credentials combo (which
+    # browsers reject and which would broaden exposure) structurally impossible.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )

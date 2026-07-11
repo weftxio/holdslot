@@ -11,8 +11,8 @@ import {
 import { listBatches } from "@/lib/api";
 import { useClient } from "@/lib/nav";
 import { batchFromApi } from "@/lib/workspace/constants";
-import { INITIAL_REPLIES } from "@/lib/workspace/fixtures";
-import type { Batch, Campaign, Reply } from "@/lib/workspace/types";
+import { INITIAL_REPLIES, RECAPS } from "@/lib/workspace/fixtures";
+import type { Batch, Campaign, Recap, Reply } from "@/lib/workspace/types";
 
 // The cross-tab state that must survive sub-route navigation. The workspace tabs are real nested
 // routes, so each route page unmounts on navigation — anything shared between tabs (the batches a
@@ -30,6 +30,10 @@ type WorkspaceCtx = {
   setCampaigns: React.Dispatch<React.SetStateAction<Campaign[]>>;
   replies: Reply[];
   setReplies: React.Dispatch<React.SetStateAction<Reply[]>>;
+  // Recaps are stateful (not a static import) so a campaign rename can remap their `campaign` tag
+  // and they don't orphan out of the summaries filter (N47). Mock until Phase E, like replies.
+  recaps: Recap[];
+  setRecaps: React.Dispatch<React.SetStateAction<Recap[]>>;
 };
 
 const Ctx = createContext<WorkspaceCtx | null>(null);
@@ -42,6 +46,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     { name: "Campaign 2", batch: "Batch 2", locked: true },
   ]);
   const [replies, setReplies] = useState<Reply[]>(INITIAL_REPLIES);
+  const [recaps, setRecaps] = useState<Recap[]>(RECAPS);
   // Always holds the latest client so an in-flight reload can detect a switch and drop its result.
   // Updated in the mount/client-change effect below (not during render — refs must not be written
   // in the render body).
@@ -80,6 +85,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         setCampaigns,
         replies,
         setReplies,
+        recaps,
+        setRecaps,
       }}
     >
       {children}

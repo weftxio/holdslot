@@ -55,6 +55,9 @@ export AWS_PROFILE=holdslot AWS_REGION=us-east-1 HOLDSLOT_DB_NAME=holdslot
 export HOLDSLOT_DB_CLUSTER_ARN=arn:aws:rds:us-east-1:138743894336:cluster:holdslot-dev-aurora
 export HOLDSLOT_DB_SECRET_ARN=$(aws rds describe-db-clusters \
   --query 'DBClusters[0].MasterUserSecret.SecretArn' --output text)
+# N50 — a FROM-SCRATCH upgrade also needs the seed admin's password: migration 0002 hard-fails
+# without it. Only required when bootstrapping a fresh DB (an existing DB is already past 0002).
+export HOLDSLOT_SEED_PASSWORD='<the seed owner password>'   # bootstrap only
 
 # 1. migrate (Aurora is scale-to-zero — the first call may say "Resuming"; just retry)
 apps/api/.venv/bin/alembic -c infra/alembic/alembic.ini current   # check

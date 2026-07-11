@@ -12,6 +12,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
@@ -42,6 +43,7 @@ from app.domains.briefs.structuring import (
     latest_system_prompt,
 )
 from app.domains.icps import icp_docs
+from app.domains.prospects.scoring import is_unique_violation
 from app.models import Brief, Prompt, ResearchJob, ResearchSpec
 
 router = APIRouter(tags=["briefs"])
@@ -157,13 +159,27 @@ def save_system_prompt(
     default. `is_custom` reflects whether the saved text diverges from that default."""
     text_in = body.system.strip()
     effective = DEFAULT_SYSTEM_PROMPT if not text_in else body.system
-    prev = latest_system_prompt(db, ctx.tenant.id)
-    next_version = (prev.version + 1) if prev else 1
-    doc = Prompt(
-        tenant_id=ctx.tenant.id, stage=STAGE_BRIEFING, version=next_version, body=effective
-    )
-    db.add(doc)
-    db.commit()
+    # N35 — read-then-insert races on the (tenant, stage, version) unique key: two concurrent saves
+    # compute the same next_version and the loser 500s. Retry against the latest version (like
+    # _insert_spec) so a concurrent save appends a fresh version instead of erroring.
+    next_version = 1
+    for _ in range(5):
+        prev = latest_system_prompt(db, ctx.tenant.id)
+        next_version = (prev.version + 1) if prev else 1
+        db.add(
+            Prompt(
+                tenant_id=ctx.tenant.id, stage=STAGE_BRIEFING, version=next_version, body=effective
+            )
+        )
+        try:
+            db.commit()
+            break
+        except DBAPIError as exc:
+            if not is_unique_violation(exc):
+                raise
+            db.rollback()
+    else:
+        raise HTTPException(status.HTTP_409_CONFLICT, "could not save the prompt — please retry")
     is_custom = effective.strip() != DEFAULT_SYSTEM_PROMPT.strip()
     return SystemPromptOut(system=effective, version=next_version, is_custom=is_custom)
 

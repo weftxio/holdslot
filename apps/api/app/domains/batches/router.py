@@ -355,14 +355,30 @@ def send_approval(
         svc.get_template(db, ctx.tenant.id), client_name=ctx.tenant.name, count=count
     )
 
+    # N31 — send the email BEFORE persisting the "sent" state. If SES fails we must NOT mark the
+    # batch sent: link validity + the client-status view gate on `batch.status == sent`, so a silent
+    # send failure would show the operator "sent" for a mail that never went out. Send first, then
+    # persist (mint the link, revoke old, flip status) only once delivery is accepted.
+    token = new_opaque_token()
+    link = f"{s.web_base_url}/{ctx.tenant.slug}/approve/{token}"
+    email_sent = send_email(
+        email,
+        rendered["subject"],
+        f"{rendered['body']}\n\n{rendered['cta']}:\n{link}\n\n"
+        "This link is valid for 7 days. Nothing is contacted until you approve.\n",
+    )
+    if not email_sent:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "the approval email could not be sent — please retry"
+        )
+
     now = datetime.now(UTC)
-    # Revoke any still-live earlier link before minting the new one (expire = revoke).
+    # Revoke any still-live earlier link before persisting the new one (expire = revoke).
     db.execute(
         update(ApprovalLink)
         .where(ApprovalLink.batch_id == batch.id, ApprovalLink.used_at.is_(None))
         .values(expires_at=now)
     )
-    token = new_opaque_token()
     db.add(
         ApprovalLink(
             tenant_id=ctx.tenant.id,
@@ -378,14 +394,6 @@ def send_approval(
     # Reopened for a fresh decision: a re-sent rejected batch is no longer "decided". (For a first
     # send / Follow-Up this is already None — a no-op.)
     batch.decided_at = None
-
-    link = f"{s.web_base_url}/{ctx.tenant.slug}/approve/{token}"
-    send_email(
-        email,
-        rendered["subject"],
-        f"{rendered['body']}\n\n{rendered['cta']}:\n{link}\n\n"
-        "This link is valid for 7 days. Nothing is contacted until you approve.\n",
-    )
     db.commit()
     db.refresh(batch)
     names = _icp_name_map(db, ctx.tenant.id, [batch.icp_id])

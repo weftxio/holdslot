@@ -636,6 +636,11 @@ def _apply_company_verdict(
     if signals is not None:
         comps["trigger_line"] = signals.get("trigger_line", "")
         comps["liveness"] = signals.get("liveness", {})
+    else:
+        # N23 — this row was caught by the FREE gate (no paid call), so any trigger_line/liveness
+        # from a PRIOR paid score is stale residue that no longer matches the new verdict. Drop it.
+        comps.pop("trigger_line", None)
+        comps.pop("liveness", None)
     c.label = verdict.label
     c.score_total = verdict.score_total
     if verdict.reason:
@@ -2173,6 +2178,17 @@ def enrich_score_prospects_async(
     return _scoring_job_out(job)
 
 
+def _validate_icp_id(raw: str | None) -> None:
+    """N24 — reject a malformed icp_id at the async ENQUEUE door, so the worker (which does
+    `uuid.UUID(params['icp_id'])`) never crashes on a bad value AFTER the job is already queued —
+    which would strand the job in `error` with an opaque traceback instead of a clean 400."""
+    if raw:
+        try:
+            uuid.UUID(raw)
+        except ValueError:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid icp_id") from None
+
+
 @router.post(
     "/{client}/companies/find-company-async",
     response_model=ScoringJobOut,
@@ -2185,6 +2201,7 @@ def find_company_async(
 ) -> ScoringJobOut:
     """Kick off an Apollo Flow-A company find **asynchronously** (W4). Rows land UNSCORED; the
     worker surfaces deeper errors (e.g. no research scope) as the job's `error`."""
+    _validate_icp_id(body.icp_id)
     job = scoring.enqueue_scoring(
         db, ctx.tenant.id, scoring.KIND_FIND_COMPANY, body.model_dump()
     )
@@ -2204,6 +2221,7 @@ def find_lookalikes_async(
     """Kick off an Apollo lookalike find **asynchronously** (W4). Rows land UNSCORED."""
     if not body.company_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
+    _validate_icp_id(body.icp_id)
     job = scoring.enqueue_scoring(
         db, ctx.tenant.id, scoring.KIND_FIND_LOOKALIKES, body.model_dump()
     )
@@ -2303,7 +2321,6 @@ def list_research_runs(
     out = []
     for r in rows:
         cost = float(r.cost_usd) if r.cost_usd is not None else None
-        per = round(cost / r.rows_accepted, 6) if cost and r.rows_accepted else None
         out.append(
             ResearchRunOut(
                 run_id=r.run_id,
@@ -2313,7 +2330,6 @@ def list_research_runs(
                 rows_pushed=r.rows_pushed,
                 rows_accepted=r.rows_accepted,
                 cost_usd=cost,
-                cost_per_accepted=per,
                 icp_id=str(r.icp_id) if r.icp_id else None,
                 scope_source=r.scope_source,
                 filter_body=r.filter_body,
@@ -2696,7 +2712,12 @@ def find_people(
             run_id=run_id,
             spec_version=spec.version,
             icp_id=icp,
-            source="apollo",
+            # N25 — people-finds get their OWN source tag so they don't dilute the company-find
+            # cursor scan (`_CURSOR_FIND_SOURCES` = apollo/lookalike): a burst of people-finds could
+            # push company-find runs out of the latest-50 scan and lose the company page cursor. The
+            # drawer still shows them as "Find" (source→type defaults to find) and tells people from
+            # company finds by `filter_body.per_org`, not the source.
+            source="apollo_people",
             rubric_version=fit.SCORE_RUBRIC_VERSION,
             rows_pushed=len(prospects),
             cost_usd=0.0,

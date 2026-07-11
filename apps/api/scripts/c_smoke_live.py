@@ -17,7 +17,7 @@ import uuid
 
 BASE = os.environ.get("API_BASE", "https://ooqe40p813.execute-api.us-east-1.amazonaws.com")
 # N21 — per-run random password (created + used entirely within this process). NEVER hardcode: the
-# smoke provisions a real ephemeral owner in dev Aurora, and a committed password is a live credential.
+# smoke provisions a real ephemeral owner in dev Aurora, and a committed password is a live secret.
 PW = secrets.token_urlsafe(16)
 
 

@@ -76,6 +76,7 @@ MODEL_FLAGS: tuple[str, ...] = (
 
 # People-tier reasons (people extrapolation — spec is company-tier only; carries risk ⑦).
 REASON_PARENT_EXCLUDED = "parent company excluded"
+REASON_PARENT_LOW_FIT = "parent company low fit"  # N27 — free-gate low_fit parents (no paid score)
 REASON_AVOIDED_TITLE = "rule: avoided title"
 
 # Wire services / press-release aggregators — a company `website` on one of these is not a real web
@@ -410,6 +411,13 @@ def assign_person_label(
         return Verdict(label=EXCLUDED, reason=REASON_AVOIDED_TITLE, flags=flags)
     if not (title and title.strip()) or not has_contact:
         return Verdict(label=LOW_FIT, reason=REASON_DATA_UNUSABLE, flags=flags)
+    # N27 (Q4) — a low_fit parent caps the person at low_fit (_cap_by_company) no matter how they
+    # score, so the paid people-axis call can never change the outcome. This person would otherwise
+    # be a paid survivor (valid title + contact, not excluded/data_unusable), so free-gate them here
+    # rather than pay to score a foregone conclusion. (A re-call that already carries subscores
+    # falls through and is capped as before.)
+    if company_label == LOW_FIT and subscores is None:
+        return Verdict(label=LOW_FIT, reason=REASON_PARENT_LOW_FIT, flags=flags)
     if subscores is None:
         return Verdict(label=None, reason="", flags=flags)
     total, clean = collapse_subscores(subscores, SUBSCORE_AXES_PEOPLE)

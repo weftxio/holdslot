@@ -38,6 +38,11 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 log = logging.getLogger("holdslot.auth")
 
+# N34 — a fixed argon2 hash to verify against when the email is unknown, so login spends the same
+# argon2 time whether or not the account exists (closes the user-enumeration timing oracle). It is
+# computed once at import with the live hashing params, so its verify cost tracks a real one.
+_DUMMY_PASSWORD_HASH = hash_password("holdslot-nonexistent-account")
+
 
 def _norm(email: str) -> str:
     return email.strip().lower()
@@ -53,12 +58,13 @@ def login(body: LoginIn, db: Session = Depends(get_db)) -> LoginOut:
     user = db.execute(
         select(AppUser).where(AppUser.email == _norm(body.email))
     ).scalar_one_or_none()
-    # Verify even when the user is missing is overkill here; a generic 401 avoids leaking.
-    if (
-        user is None
-        or user.status != UserStatus.active
-        or not verify_password(user.password_hash, body.password)
-    ):
+    # N34 — always run one argon2 verify (against the user's hash, or a fixed dummy when the email
+    # is unknown) so the response time can't distinguish a real account from a missing one. `and`
+    # keeps a disabled/absent user a generic 401 without short-circuiting past the hash work.
+    password_ok = verify_password(
+        user.password_hash if user is not None else _DUMMY_PASSWORD_HASH, body.password
+    )
+    if user is None or user.status != UserStatus.active or not password_ok:
         log.warning("auth: login failed email=%s", _email_digest(body.email))
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid email or password")
     user.last_login_at = datetime.now(UTC)

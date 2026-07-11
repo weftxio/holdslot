@@ -7,6 +7,7 @@ import {
   type ResearchSpecResult,
 } from "@/lib/api";
 import { type ExclRow, parseExclusionCsv } from "@/lib/csv";
+import { parseUtc } from "@/lib/dates";
 import type {
   Batch,
   Brief,
@@ -83,12 +84,26 @@ export function batchFromApi(b: BatchApi): Batch {
     approved: b.approved,
     icp: b.icp || "—",
     status: uiBatchStatus(b.status),
-    createdAt: (b.created_at ?? "").slice(0, 10),
-    sentAt: b.sent_at ? b.sent_at.slice(0, 10) : undefined,
+    // N38 — the viewer's LOCAL calendar date, not a raw .slice of the UTC string (which shows the
+    // UTC day and drifts a day for a late-UTC-evening event in a +tz zone like HK).
+    createdAt: localCalendarDate(b.created_at),
+    sentAt: b.sent_at ? localCalendarDate(b.sent_at) : undefined,
     // Only an *approved* batch has an approval date; a changes_requested ("Rejected") batch is
     // decided but not approved, so it must not render "Approved <date>".
-    approvedAt: b.status === "approved" && b.decided_at ? b.decided_at.slice(0, 10) : undefined,
+    approvedAt:
+      b.status === "approved" && b.decided_at ? localCalendarDate(b.decided_at) : undefined,
   };
+}
+
+// A UTC instant → the viewer's LOCAL calendar date ("YYYY-MM-DD"); "" when unusable. Used so the
+// batches UI groups/labels by the day the viewer actually saw, matching `daysAgoLabel` below.
+export function localCalendarDate(iso: string | null | undefined): string {
+  const d = parseUtc(iso);
+  if (!d) return "";
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
 }
 // Do-not-contact list, derived live from the client's Brief (§4 Exclusions & Guardrails) rather
 // than from mock fixtures. The three exclusion fields are stored as free-form text in the brief
@@ -188,7 +203,13 @@ export function fmtShortDate(iso: string) {
   return MONTHS[m - 1] + " " + d;
 }
 export function daysAgoLabel(iso: string, now: Date = new Date()) {
-  const diff = Math.round((now.getTime() - new Date(iso + "T00:00:00Z").getTime()) / 86400000);
+  // N38 — compare LOCAL calendar days: anchor both the date and `now` at LOCAL midnight so the
+  // label doesn't drift by the viewer's UTC offset (an event "today" in HK isn't "1 day ago").
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const then = new Date(y, m - 1, d).getTime();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const diff = Math.round((today - then) / 86400000);
   return diff <= 0 ? "today" : diff === 1 ? "1 day ago" : diff + " days ago";
 }
 

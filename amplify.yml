@@ -7,6 +7,9 @@ applications:
           commands:
             - corepack enable
             - pnpm install --frozen-lockfile
+            # N53 — fail loudly if the API base is unset. NEXT_PUBLIC_* is inlined at BUILD time, so a
+            # missing var would otherwise silently ship a bundle pointing every API call at localhost.
+            - test -n "$NEXT_PUBLIC_API_BASE_URL" || { echo "NEXT_PUBLIC_API_BASE_URL is not set — refusing to build"; exit 1; }
         build:
           commands:
             - pnpm run build

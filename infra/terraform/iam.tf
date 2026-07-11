@@ -60,6 +60,10 @@ resource "aws_iam_role_policy" "lambda_secrets" {
     Statement = [{
       Effect = "Allow"
       Action = ["secretsmanager:GetSecretValue"]
+      # N52 (PROD CUTOVER — not tightened now, to avoid breaking the running dev Lambda): the
+      # `${secrets_prefix}/*` wildcard grants read on EVERY secret under the prefix. At cutover,
+      # replace it with the exact ARNs the app reads (`.../app`, `.../openrouter`, `.../apollo`) so a
+      # future unrelated secret under the prefix isn't implicitly readable by this function.
       Resource = [
         aws_rds_cluster.this.master_user_secret[0].secret_arn,
         "arn:${data.aws_partition.current.partition}:secretsmanager:${var.region}:${var.aws_account_id}:secret:${local.secrets_prefix}/*",

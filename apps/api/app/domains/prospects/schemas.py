@@ -1,8 +1,7 @@
 """API I/O for the prospects domain (Apollo find + enrich).
 
 Thin Pydantic shapes over the ORM rows; the business logic lives in the pure modules
-(`suppression`, `fit`). The research-run list doubles as the cost scoreboard
-(`cost_per_accepted` is derived, not stored).
+(`suppression`, `fit`). The research-run list doubles as the cost scoreboard (`cost_usd` per run).
 """
 
 from __future__ import annotations
@@ -300,9 +299,9 @@ class FindResult(BaseModel):
 
 
 class ResearchRunOut(BaseModel):
-    """One research run; `cost_per_accepted` is the derived $/accepted. The `scope_source` /
-    `filter_body` / `result_meta` fields (D+ Stage 1, migration 0019) feed the Find-history drawer —
-    they are None for runs recorded before 0019."""
+    """One research run. The `scope_source` / `filter_body` / `result_meta` fields (D+ Stage 1,
+    migration 0019) feed the Find-history drawer — they are None for runs recorded before 0019.
+    (N26 — `cost_per_accepted` was dropped: `rows_accepted` is never written, so it was null.)"""
 
     run_id: str
     source: str
@@ -311,7 +310,6 @@ class ResearchRunOut(BaseModel):
     rows_pushed: int
     rows_accepted: int
     cost_usd: float | None = None
-    cost_per_accepted: float | None = None
     icp_id: str | None = None
     scope_source: str | None = None
     filter_body: dict | None = None

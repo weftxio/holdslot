@@ -117,7 +117,7 @@ def _envelope_error_detail(err: object) -> str:
 
 # All recorded USD costs are rounded here at the source (micro-dollar / 6 dp): per-call costs are
 # sub-cent, so 6 dp keeps real precision while everything downstream (llm_call telemetry, the run
-# scoreboard cost_usd, cost_per_accepted) inherits one consistent rounding. The full raw cost stays
+# scoreboard cost_usd) inherits one consistent rounding. The full raw cost stays
 # in the LlmCall.raw audit payload.
 def _round_cost(cost: object) -> float | None:
     return round(float(cost), 6) if cost is not None else None
@@ -207,6 +207,12 @@ def _execute(
     body = _build_body(messages, schema, models, extra_body)
     started = time.monotonic()
     retries = 0
+    # N28 — every attempt that reaches a 200 completion is BILLED, even one whose JSON we reject and
+    # retry. Accumulate the billed cost/tokens across attempts so the recorded spend/usage is the
+    # TOTAL consumed, not just the final attempt's (which undercounted on a parse-error retry).
+    billed_cost = 0.0
+    billed_in = 0
+    billed_out = 0
 
     def ms() -> int:
         return int((time.monotonic() - started) * 1000)
@@ -286,7 +292,9 @@ def _execute(
             )
 
         usage = resp.get("usage") or {}
-        cost = _round_cost(usage.get("cost"))
+        billed_cost += _round_cost(usage.get("cost")) or 0.0
+        billed_in += usage.get("prompt_tokens") or 0
+        billed_out += usage.get("completion_tokens") or 0
         content = (resp.get("choices") or [{}])[0].get("message", {}).get("content")
         try:
             parsed = json.loads(content) if content is not None else None
@@ -300,9 +308,9 @@ def _execute(
                 status="parse_error",
                 data=None,
                 model=resp.get("model"),
-                input_tokens=usage.get("prompt_tokens"),
-                output_tokens=usage.get("completion_tokens"),
-                cost_usd=cost,
+                input_tokens=billed_in,
+                output_tokens=billed_out,
+                cost_usd=_round_cost(billed_cost),
                 latency_ms=ms(),
                 retries=retries,
                 raw=resp,
@@ -313,9 +321,9 @@ def _execute(
             status="ok",
             data=parsed,
             model=resp.get("model"),
-            input_tokens=usage.get("prompt_tokens"),
-            output_tokens=usage.get("completion_tokens"),
-            cost_usd=cost,
+            input_tokens=billed_in,
+            output_tokens=billed_out,
+            cost_usd=_round_cost(billed_cost),
             latency_ms=ms(),
             retries=retries,
             raw=resp,

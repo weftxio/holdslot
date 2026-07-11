@@ -15,13 +15,14 @@ import { parseUtc, whenLabel } from "@/lib/dates";
 
 type RunType = "find" | "lookalike" | "scoring" | "enrichment";
 
-// research_run.source → the logical action. A source=apollo run is a Find (company OR people — the
-// per-org filter_body tells them apart); lookalike/rescore/enrich are their own doors.
+// research_run.source → the logical action. A company find is `apollo`, a people find is
+// `apollo_people` (N25 — separate so people-finds don't dilute the company page-cursor scan); both
+// are Finds here, told apart by `filter_body.per_org`. lookalike/rescore/enrich are their own doors.
 function runType(run: ResearchRunApi): RunType {
   if (run.source === "lookalike") return "lookalike";
   if (run.source === "rescore") return "scoring";
   if (run.source === "enrich") return "enrichment";
-  return "find";
+  return "find"; // apollo (company) + apollo_people (people)
 }
 const TYPE_BADGE: Record<RunType, { label: string; cls: string }> = {
   find: { label: "Find", cls: "badge-info" },
