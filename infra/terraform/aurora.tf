@@ -50,8 +50,13 @@ resource "aws_rds_cluster" "this" {
     seconds_until_auto_pause = var.aurora_min_acu == 0 ? var.aurora_seconds_until_auto_pause : null
   }
 
-  # Dev convenience — revisit for the prod workspace (final snapshot + deletion protection).
-  skip_final_snapshot = true
+  # This single cluster IS the production database (one shared backend). Guard it: block an
+  # accidental `terraform destroy`, and take a named final snapshot if it is ever torn down so the
+  # data is recoverable. To intentionally destroy, flip deletion_protection off in a separate apply
+  # first. (final_snapshot_identifier must be unique per account/region — the name_prefix scopes it.)
+  deletion_protection       = true
+  skip_final_snapshot       = false
+  final_snapshot_identifier = "${local.name_prefix}-aurora-final"
 }
 
 resource "aws_rds_cluster_instance" "this" {

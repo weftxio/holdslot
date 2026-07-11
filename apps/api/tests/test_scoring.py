@@ -59,6 +59,72 @@ def test_enrich_score_handler_empty_keys_is_dbless_zero():
     }
 
 
+def test_enrich_score_skips_excluded_parents(monkeypatch):
+    # N1 regression: `excluded_parents` is built from `select(Company.id).scalars()`, which yields
+    # raw UUIDs. The old comprehension did `c.id` on each of those UUIDs and blew up with
+    # AttributeError — crashing every Reveal & score batch that held a person under an excluded
+    # company.
+    # Pin that the set is built straight from the scalars and that those rows are dropped pre-enrich
+    # (no credit), while ALL rows still reach the free scoring gate.
+    import uuid
+
+    from app.domains.prospects import router
+
+    excluded_co = uuid.uuid4()
+    kept_co = uuid.uuid4()
+
+    class _Row:
+        def __init__(self, company_id):
+            self.company_id = company_id
+
+    rows = [_Row(excluded_co), _Row(kept_co), _Row(None)]
+
+    class _Scalars(list):
+        def all(self):
+            return self
+
+    class _Result:
+        def __init__(self, values):
+            self._values = values
+
+        def scalars(self):
+            return _Scalars(self._values)
+
+    class _Db:
+        def __init__(self):
+            # 1st execute → the Prospect load; 2nd → select(Company.id) for the excluded parents.
+            self._queue = [_Result(rows), _Result([excluded_co])]
+
+        def execute(self, _stmt):
+            return self._queue.pop(0)
+
+    captured: dict = {}
+
+    def _fake_enrich(db, enrichable, slug):
+        captured["enrichable"] = enrichable
+        return {"enriched": len(enrichable), "credits_spent": len(enrichable), "failed": 0}
+
+    def _fake_score(db, tenant_id, all_rows):
+        captured["scored_rows"] = all_rows
+        return {"scored": len(all_rows), "failed": 0, "cost_usd": 0.0}
+
+    monkeypatch.setattr(router, "_enrich_prospects", _fake_enrich)
+    monkeypatch.setattr(router, "_score_prospects_v2", _fake_score)
+
+    out = router.run_enrich_score_prospects(
+        _Db(), "tenant-1", {"identity_keys": ["k1", "k2", "k3"]}
+    )
+
+    # The excluded parent's person is dropped from enrichment (no credit); the kept + null-company
+    # rows enrich; all three rows still go to the free deterministic scoring gate.
+    assert out["skipped_excluded"] == 1
+    assert out["enriched"] == 2
+    assert out["credits_spent"] == 2
+    assert {r.company_id for r in captured["enrichable"]} == {kept_co, None}
+    assert len(captured["scored_rows"]) == 3
+    assert out["requested"] == 3
+
+
 def test_scoring_job_out_idle():
     out = _scoring_job_out(None)
     assert out.status == "idle"

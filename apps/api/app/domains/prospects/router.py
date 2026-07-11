@@ -1988,16 +1988,15 @@ def run_enrich_score_prospects(db: Session, tenant_id, params: dict) -> dict:
     # the free deterministic gate, so the excluded ones land labeled without a spend.
     company_ids = {p.company_id for p in rows if p.company_id}
     excluded_parents = (
-        {
-            c.id
-            for c in db.execute(
+        set(
+            db.execute(
                 select(Company.id).where(
                     Company.tenant_id == tenant_id,
                     Company.id.in_(company_ids),
                     Company.label == labeling.EXCLUDED,
                 )
             ).scalars()
-        }
+        )
         if company_ids
         else set()
     )

@@ -106,7 +106,8 @@ function maySelect(
 ): boolean {
   if (currentlyChecked) return true; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
   // Step 2 passes allowExcluded so a staged-then-excluded company can be TICKED for removal; the
-  // funnel-advancing actions (stage / find-people / reveal) still drop excluded rows (pruneExcluded).
+  // funnel-advancing handlers (stageForPeople / runFindPeople / reveal) each filter excluded rows out
+  // themselves, and the prune effect drops them from the selection after any reload/scoring wave.
   if (label === "excluded_by_rules") return allowExcluded;
   if (label === "low_fit") {
     return window.confirm("This scored Low fit. Add it to the selection anyway?");
@@ -1291,7 +1292,10 @@ export default function ListPage() {
   // them — chunked 8-orgs-per-call under one group_id — so sourcing people is one click, not two.
   // People land UNSCORED ("Pending"); the operator reveals + scores them via Reveal & score.
   async function stageForPeople() {
-    const ids = coSel.map((c) => c.id);
+    // Drop any `excluded_by_rules` row before staging — the LOCKED invariant (an excluded company is
+    // never staged into Step 2 / never has people found at it). Mirrors `runFindPeople`; belt-and-
+    // braces with the prune effect, which is async and can lag a just-landed exclusion label.
+    const ids = coSel.filter((c) => c.label !== "excluded_by_rules").map((c) => c.id);
     if (!ids.length) return;
     setStaging(true);
     try {
