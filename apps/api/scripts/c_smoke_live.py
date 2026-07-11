@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 import urllib.error
 import urllib.request
 import uuid
 
 BASE = os.environ.get("API_BASE", "https://ooqe40p813.execute-api.us-east-1.amazonaws.com")
-PW = "tryholdslot1!"
+# N21 — per-run random password (created + used entirely within this process). NEVER hardcode: the
+# smoke provisions a real ephemeral owner in dev Aurora, and a committed password is a live credential.
+PW = secrets.token_urlsafe(16)
 
 
 def call(method: str, path: str, token: str | None = None, body: dict | None = None):

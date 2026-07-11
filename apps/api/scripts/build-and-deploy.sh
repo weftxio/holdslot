@@ -13,9 +13,20 @@ cd "$HERE"
 echo "==> Building Linux x86_64 package"
 rm -rf build/pkg build/holdslot-api.zip
 mkdir -p build/pkg
+# N22 — resolve the runtime deps from pyproject.toml (the single source of truth) instead of a
+# hardcoded list that silently drifts: a dependency added to the app but not mirrored here would only
+# surface as an ImportError AFTER update-function-code + the alias shift, i.e. in production. `uv pip
+# compile` pins the full tree for the Lambda target (Linux/3.12) — reproducible, and uv-native so it
+# needs no particular system `python3`. boto3/botocore land here transitively but are stripped below.
+# --no-build so the resolver only considers WHEELS (matching the --only-binary install below): the
+# latest argon2-cffi-bindings ships no manylinux2014 wheel, so without this uv would pin it and the
+# install would then fail; --no-build makes it backtrack to a version that has a 2014 wheel.
+uv pip compile pyproject.toml --quiet \
+  --python-platform x86_64-manylinux2014 --python-version 3.12 --no-build \
+  -o build/requirements.txt
 uv pip install --python-platform x86_64-manylinux2014 --python-version 3.12 \
   --target build/pkg --only-binary=:all: \
-  fastapi mangum "sqlalchemy>=2.0" sqlalchemy-aurora-data-api argon2-cffi pyjwt email-validator
+  -r build/requirements.txt
 
 # boto3/botocore ship in the Lambda runtime — drop them to shrink the artifact.
 rm -rf build/pkg/boto3* build/pkg/botocore* build/pkg/s3transfer*
@@ -32,11 +43,19 @@ VER=$(aws lambda update-function-code --function-name "$FN" \
 echo "    published version $VER"
 
 echo "==> Waiting for version $VER to be Active (SnapStart)"
+ACTIVE=""
 for _ in $(seq 1 40); do
   ST=$(aws lambda get-function-configuration --function-name "$FN" --qualifier "$VER" \
     --region "$REGION" --query State --output text)
-  [ "$ST" = "Active" ] && break || sleep 10
+  if [ "$ST" = "Active" ]; then ACTIVE=1; break; fi
+  sleep 10
 done
+# N55 — never shift the live alias onto a version that isn't Active. The loop used to fall through on
+# timeout and point `live` at a still-optimizing/failed version, breaking prod on the next cold start.
+if [ -z "$ACTIVE" ]; then
+  echo "!! version $VER never reached Active (last state: ${ST:-unknown}) — NOT shifting live" >&2
+  exit 1
+fi
 
 echo "==> Shifting live alias -> $VER"
 aws lambda update-alias --function-name "$FN" --name live --function-version "$VER" \

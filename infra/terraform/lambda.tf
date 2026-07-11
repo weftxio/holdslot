@@ -76,6 +76,13 @@ resource "aws_lambda_function" "api" {
 # unqualified function = $LATEST). Zero retries: the worker records its own failures as a job
 # `error`, so an AWS-level retry would only risk re-spending a (billed) LLM call. Events older
 # than ~2 min are dropped rather than queued behind a slow run.
+#
+# N20 (PROD CUTOVER — deliberately NOT added now, to keep zero new AWS resources on dev): a worker
+# that dies BEFORE it can write its own job `error` (OOM, hard timeout, throttle) leaves the job stuck
+# `queued`/`running` until the 480s reaper flips it — and the drop is otherwise invisible. At cutover
+# add `destination_config { on_failure { destination = <SQS/SNS ARN> } }` here, and a CloudWatch alarm
+# on the function's `AsyncEventsDropped` + `DestinationDeliveryFailures` metrics, so a silent
+# dropped-job is paged rather than only surfaced by a user re-poll.
 resource "aws_lambda_function_event_invoke_config" "api_async" {
   function_name                = aws_lambda_function.api.function_name
   maximum_retry_attempts       = 0
