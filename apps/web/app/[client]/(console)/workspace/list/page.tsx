@@ -2215,13 +2215,6 @@ export default function ListPage() {
                                 {icpNameById.get(c.icp_id)}
                               </span>
                             ) : null}
-                            {/* R26 — the V2-3 "trigger" call-sheet element: the email hook (a paid
-                                LLM output), rendered as one line under the company when present. */}
-                            {c.trigger_line ? (
-                              <span className="domain" title="Email hook · AI trigger">
-                                ↳ {c.trigger_line}
-                              </span>
-                            ) : null}
                           </div>
                         </td>
                       );
