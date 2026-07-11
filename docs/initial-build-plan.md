@@ -6,7 +6,7 @@
 > [`backend-development-plan.md`](backend-development-plan.md).
 
 > **Status (2026-07-11): A–D live on `dev`; D+ complete through V2-4 (review #5 signed off).** Aurora
-> **head `0026` live · `0027` defined (pending deploy)** · backend deployed to `dev` (find-path Stages 1–4 +
+> **head `0027` applied to `dev`** · backend deployed to `dev` (find-path Stages 1–4 +
 > Scoring v2 + **V2-4 contraction** + classifier→Flash) · web **Amplify `dev`**. The Apollo **find → score → select → enrich → batch → masked
 > client-approval** loop is live end-to-end. **Phase D+** (the pre-E hardening block — §below) folds three
 > workstreams into one: **scope alignment** (sourcing width, Stages 1–4), **Scoring v2** (the 0–100 AI Score
@@ -14,17 +14,20 @@
 > doc now carries the whole spec, the standalone `holdslot-scoring-spec-v2.md` was folded in + deleted; **V2-4
 > retired the v1 `fit_score`/`fit_tier` path entirely** — 5 sync twin endpoints + the v1 fit module deleted,
 > columns dropped in `0026`), and the **Find-flow UX rebuild** (U1–U4 + the merged **Reveal & score** action).
-> **What's left before Phase E:** the **§D+.5 code-review fix wave is DONE** (executed 2026-07-10 across
-> F1–F7; all 31 resolved bar R21/R27-queries/R30-tests) and the **final pre-production review (2026-07-11)
-> consolidated everything into [`final-fix-plan.md`](final-fix-plan.md)** — 56 new findings (3 P1 · 19 P2 ·
-> 34 P3), phases **G1–G7**; work that doc before the production commit/push. Then the **founder-gated deploy
-> of migration `0027` + the dev smoke**, plus a paid re-score wave whenever a fresh web-grounded pass is
-> wanted (rows read `label`, NULL renders "needs re-score" — non-blocking). Then **Phase E (outreach +
+> **What's left before Phase E:** nothing in the fix backlog — both hardening waves are **DONE + deployed**.
+> The **§D+.5 code-review fix wave** (executed 2026-07-10 across F1–F7; all 31 resolved bar
+> R21/R27-queries/R30-tests) and the **final pre-production review (2026-07-11)** — 56 findings (3 P1 · 19 P2
+> · 34 P3), phases **G1–G7** — are built, committed, and **deployed across two pushes** (dev Lambda **v78** +
+> migration **`0027`** applied + Amplify prod FE job 52); see **§D+.6** below (both `final-fix-plan.md` and
+> `prod-cutover-checklist.md` were folded in here + deleted). The **Q7 re-score candidate list is empty**
+> (confirmed 2026-07-11 against dev Aurora — 0 geo-excluded rows; the one divergence-prone tenant has 0
+> companies; no data remediation needed). Only the **prod-cutover register** (deferred infra hardening —
+> §After A–G) remains. Then **Phase E (outreach +
 > Smartlead)**, still gated on warmed inboxes (warm-up running since 2026-06-17). S3 (batch round) is the
 > only untouched A–D gate (S1/S2 folded into review #5 ✅).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, head `0027` defined · `0026` live on dev). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, head `0027` applied to dev). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -67,8 +70,8 @@
 | Thing | State |
 |---|---|
 | Backend | Lambda alias `live`, `api.tryholdslot.com`, **~50 endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals`; D+ Stages 1–4 + Scoring v2 deployed to `dev` |
-| Database | Aurora Serverless v2 + Data API · **head `0026` live** (D+ migrations `0019`→`0026` applied to `dev`) · `0027` defined, pending deploy |
-| Web | Amplify `dev` (autoBuild on push); the V2-3 + UX frontend is **committed + pushed** (`2838d85`) — Amplify build rides it. `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Database | Aurora Serverless v2 + Data API · **head `0027` applied** (D+ migrations `0019`→`0027` applied to `dev`; `0027` = scoring-v2 + D+.5/final-fix indexes/constraints, deployed at push #1) |
+| Web | Amplify `dev` (autoBuild on push); the V2-3 + UX + G1–G7 frontend is **committed + pushed** (head `97f4725`; Amplify job 52 SUCCEED) — Amplify build rides it. `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
@@ -207,9 +210,9 @@ rows, and the majority low-fit.** Three interlocking workstreams, all on the `de
 **What's left before Phase E (the pending register):**
 - ✅ **Founder review #5** — signed off 2026-07-10 (v2 labels + the new toolbar in one sitting).
 - ✅ **V2-4 contraction** shipped — `0026` applied to dev, code committed + pushed (`2838d85`).
-- ✅ **Code-review fix wave** — the §D+.5 wrap-up register (7 P1 · 16 P2 · P3 cleanup, 2026-07-10). **Executed 2026-07-10 across F1–F7** (result log → `final-fix-plan.md` §0): all 31 resolved except R21 (deferred — MVP list < 1 page), the R27 cross-module query dups, and R30's two integration-test gaps (accepted, documented). Backend 228 passed/ruff clean · FE build+tsc+eslint clean. **Migration `0027` + dev deploy/smoke are founder-gated.**
-- ⏳ **Final fix wave (pre-production)** — the 2026-07-11 final review's [`final-fix-plan.md`](final-fix-plan.md): **G1–G7**, 56 findings (3 P1 — the R8 skip-set crash, the `stageForPeople` excluded-row leak, Aurora deletion protection). **§F decisions (Q1–Q8) answered by the founder 2026-07-11** — recorded in the doc (checkpoint commit made; G1–G4 → push #1 + deploy + smoke; G5–G6 follow-up → push #2). G7 = the push/deploy/smoke/re-score checklist.
-- **Paid re-score wave** — existing rows carry `label = NULL` where not yet re-scored; run via the UI ("Update AI Score", ≤15/batch) whenever a fresh web-grounded pass is wanted. Non-blocking (the list reads `label`, NULL renders as "Needs score").
+- ✅ **Code-review fix wave** — the §D+.5 wrap-up register (7 P1 · 16 P2 · P3 cleanup, 2026-07-10). **Executed 2026-07-10 across F1–F7** (per-item result log → **§D+.6** below): all 31 resolved except R21 (deferred — MVP list < 1 page), the R27 cross-module query dups, and R30's two integration-test gaps (accepted, documented). Backend 228 passed/ruff clean · FE build+tsc+eslint clean.
+- ✅ **Final fix wave (pre-production) — DONE + deployed** — the 2026-07-11 final review: **G1–G7**, 56 findings N1–N56 (3 P1 — the R8 skip-set crash, the `stageForPeople` excluded-row leak, Aurora deletion protection), §F founder decisions Q1–Q8. Built + committed (7 commits) + **deployed across two pushes** (dev Lambda **v78** + migration **`0027`** applied + Amplify prod FE job 52). Full digest → **§D+.6** below.
+- ✅ **Paid re-score wave — not needed** — the **Q7 candidate list is empty** (confirmed 2026-07-11 against dev Aurora: 0 geo-excluded rows; the one N6-divergence-prone tenant has 0 companies). N4/N6 are forward-looking. Rows never scored still carry `label = NULL`; run "Update AI Score" (≤15/batch) on demand for a fresh web-grounded pass. Non-blocking (NULL renders "Needs score").
 
 **KPI gate** ("more rows that score higher", measured in-app, baseline-relative targets are reference not a hard gate — no baseline round was captured): rows/find **≥3×** · `contact_now`+`contact_soon` share **≥2×** (or ≥30% absolute) · zero-result finds **<10%** (all auto-relaxed) · dupes on re-find **<5%** (≈100% today) · title match **≥7/10** · re-classification spend on known rows **$0**.
 
@@ -332,12 +335,12 @@ Both v2 LLM calls were A/B'd `deepseek-v4-pro` vs `deepseek-v4-flash` on the dog
 
 Full-pass D+ review (DB `0019`–`0026` · backend `prospects`/`briefs` domains · web list flow · cross-file
 contracts), investigation only. Every P1 was hand-verified against the code.
-**Execution plan was `docs/dplus-fix-plan.md`** — executed 2026-07-10, then folded into
-[`final-fix-plan.md`](final-fix-plan.md) **§0** by the 2026-07-11 final review (the dplus doc is deleted;
-final-fix-plan is now the single execution spec).
+**Execution plan was `docs/dplus-fix-plan.md`** (deleted) — executed 2026-07-10; its per-item result log
++ carve-outs are consolidated in **§D+.6** below. Both the dplus-fix-plan and the final-fix-plan docs were
+folded in here + deleted — this doc is now the single surviving plan/record.
 
-> **✅ FIX WAVE EXECUTED (2026-07-10) — all 7 phases (F1–F7) complete; per-item result log now in
-> `final-fix-plan.md` §0.** All **31 findings resolved** except **three documented carve-outs**: **R21**
+> **✅ FIX WAVE EXECUTED (2026-07-10) — all 7 phases (F1–F7) complete; per-item result log in **§D+.6**
+> below.** All **31 findings resolved** except **three documented carve-outs**: **R21**
 > deferred (job result carries counts not rows → the row-merge needs a backend row-return; F1/R5's index
 > already removed the per-page cost it "compounds", and at `FEED_PAGE=250` the MVP list is one request —
 > revisit past 250 rows); the **R27** `_latest_spec`×2 / `_feedback_rows`↔`_scored_company_rows` cross-module
@@ -347,13 +350,13 @@ final-fix-plan is now the single execution spec).
 > Aurora-gated and overlap existing coverage (`test_multi_icp_find_runs_icp_by_icp` exercises the per-ICP
 > find; the R22b resume test + FindHistoryDrawer exercise `research_run` reads). **Backend: 228 passed / 18
 > skipped, ruff clean. Frontend: `pnpm build` + `tsc` + `eslint` clean.** Migration `0027` + the deploy-to-dev
-> smokes (after F3/F4) are **founder-gated** (not run from the fix session). The register rows below are
-> historical (pre-fix findings); `final-fix-plan.md` §0 is the authoritative result log.
+> smokes were then done under the G-phase pushes (§D+.6). The register rows below are
+> historical (pre-fix findings); **§D+.6** below is the authoritative result log.
 > **Final pre-production review (2026-07-11):** six parallel full-file reviewers re-swept Phase A→D+ (backend ·
 > frontend · infra/migrations/scripts · docs + a live dev-Aurora read-only check + an executed e2e run) →
 > **56 new findings (N1–N56: 3 P1 · 19 P2 · 34 P3)** incl. six regressions/incomplete spots from the fix wave
-> itself (N1 = the R8 skip-set crashes; N17 = the R17 e2e test fails as written). All consolidated with
-> pre-made decisions in **`final-fix-plan.md` G1–G7 — work that before the production commit.**
+> itself (N1 = the R8 skip-set crashes; N17 = the R17 e2e test fails as written). Resolved with pre-made
+> decisions (§F Q1–Q8) across **G1–G7 — built + deployed (§D+.6 below).**
 **Verdict:** the pure cores (label engine, relax ladders, feedback/vocab, migrations) are clean and well-
 tested; the risk concentrates in **concurrency seams, pagination/cursor math, selection-gate edges, and one
 hot-read index regression** from the `0026` contraction. Fix **R1–R7 before Phase E** (R2/R8/R10 are
@@ -404,6 +407,70 @@ money/compliance-adjacent); fold P2s into the same pass where cheap; P3s are the
 | **R29** | Minor | `_is_apac` misses city-only APAC scopes (`:1408-24`) · find-people silently falls back to `icp_targeting[0]` for unknown-ICP companies vs the doc'd 400 (`:2453-58`, deliberate — align the doc) · FE chunk failure skips the final reload (`list/page.tsx:1265-79` → `finally`) · unused prefix-covered indexes `ix_company_tenant_id`/`ix_prospect_tenant_id` · retired `sourcing` prompt rows |
 | **R30** | Test gaps | No tests: `run_scoring_job` lifecycle · `_enrich_prospects` re-spend gate · enqueue race · 4 of 6 worker fns (registry-wired only) · research-runs endpoint · `_body_hash`/`_resume_page` · per-ICP people precedence (HTTP-level). `test_apollo.py:180-94` pins R1 as expected behavior |
 | **R31** | Doc drift | `data-schema.md`: head "`0025`" lines (L9/19/173/697-98) → `0026` · `ASYNC_BATCH_MAX = 20` (L562) → 15 · the label-index feed claim (L425-29, = R5) · `scoring_job` kind vocab (L568) · `market_excluded` description (L475) · `PHONE_ENABLED` documented as an env knob but hardcoded off · masking "fit tier+reason" (L583) · `prompt.stage` vocabulary missing `company_score`/`prospect_score` (L533/711-13). This doc: §D+.2 gate ladder drifted from the founder-amended code (geography = either-country in-target; Luma B2B-line guard removed 2026-07-10; ICP gate rides the paid `icp_match` signal, not a free check; size runs before ICP) — amend §D+.2 on the fix pass |
+
+---
+
+### D+.6 · Final pre-production fix wave (G1–G7) — DONE + deployed (2026-07-11)
+
+The last hardening wave before Phase E — **the consolidation of the deleted `final-fix-plan.md` +
+`prod-cutover-checklist.md`** (both folded in here). Six parallel full-file reviewers (backend · frontend ·
+infra/migrations/scripts · docs + a live dev-Aurora read-only check + an executed e2e run) produced **56
+findings N1–N56 (3 P1 · 19 P2 · 34 P3)**, six of them regressions from the D+.5 wave itself (N1←R8 skip-set
+crash · N5←R1 guard order · N6←R19 letter derivation · N17←R17 e2e test · N18←R16 · N29←R9 catch). All
+resolved; **built, committed (7 commits), and deployed across two founder-authorized pushes.**
+
+**§F founder decisions (2026-07-11) — binding:**
+
+| # | Decision |
+|---|---|
+| **Q1** | Checkpoint commit made · **one local commit per G-phase** · pushes per the Q1×Q2 reconciliation. |
+| **Q2** | **G1–G4 (all P1+P2) → push #1 + deploy + dev smoke → G5–G6 → push #2.** Two pushes (Amplify only deploys on push, and the G4 smoke needs the FE up); backend deploys first within each. |
+| **Q3** | N10 masking — deterministic redaction in `_masked` now + a "never name them" rubric line at the next prompt version. |
+| **Q4** | N27 — free-gate `low_fit "parent company low fit"` (skip the paid call); override→rescore recovers the text. |
+| **Q5** | N45 — wire "create client" to the real `POST /clients` (complete onboarding), not local create; switcher reads `me.clients`. |
+| **Q6** | N3 deletion-protection applies with push #1; N20 DLQ+alarm / N52 IAM narrowing / N54 throttling → **prod cutover** (zero-new-resources). |
+| **Q7** | Produce the re-score candidate list post-deploy; **founder** re-scores in the UI. **Result: list empty** (confirmed below). |
+| **Q8** | e2e = mandatory manual G7 gate now; wire into the deploy script at cutover. |
+
+**Phase → findings, and the delivered commits (all on `dev`):**
+
+| Phase | Commit | Findings | What |
+|---|---|---|---|
+| G1 | `7e97c1b` | N1 · N2 · N3 | P1 blockers — Reveal&score skip-set crash · `stageForPeople` excluded-row leak · Aurora `deletion_protection` |
+| G2 | `510d479` | N4–N10 (+N48/N49 folded into `0027`) | money/label path — geo-gate city segments · exhausted-cursor · ICP letter map · sync refresh-loop trim · `research_job` race + partial-unique · refresh-rotation status guard · masked-reason redaction |
+| G3 | `085b11b` | N11–N19 | FE selection/state integrity + **e2e 7-red → 18/18 green** (N17 was a stale `_mock.ts`, not one test) |
+| G4 | `843b86a` | N20(record) · N21 · N22 (+N55) | deploy-chain safety — random smoke pw · deps resolved from `pyproject.toml` (wheel-only compile) · never shift `live` off a non-Active version |
+| G5 | `813398e` | N23–N54 · N56 | P3 sweep (backend N23–N37 · frontend N38–N47 · infra/docs N50–N56) |
+| G6 | `b88cb6d` | §5 dead code + §6 perf | dead-code deletions · `list_research_runs` LIMIT 50 |
+| G7 | `97f4725` | — | consolidation/checklist (now this section) |
+
+**Standing carve-outs (from D+.5, still accepted):** R21 (post-wave full-list reload — revisit past 250
+rows) · R27 (`_latest_spec`×2 / `_feedback_rows`↔`_scored_company_rows` query dups — no clean shared home) ·
+R30 (research-runs endpoint + per-ICP people-precedence HTTP tests — Aurora-gated, overlap existing
+coverage). New rule from the N1 lesson: **money-path branches get a non-Aurora unit test** (an Aurora-gated
+integration test that skips locally is not enough — it let N1's crash through).
+
+**Deploy record (both founder-authorized):**
+- **Push #1 (G1–G4)** — **deploy-first** order (`0027` ADDS `uq_research_job_active_tenant`, a constraint old
+  live code doesn't catch, so deploy-first has no bad window): `build-and-deploy.sh` → Lambda **v77** ·
+  `alembic upgrade head` → **`0027`** (indexes verified via Data API) · push `dev` → Amplify job **51** · smoke
+  green. The N3 `terraform apply` rode this deploy. Mid-deploy gotcha (now in the script comment + fixed to a
+  wheel-only compile): without it `uv` pins an `argon2-cffi-bindings` with no manylinux2014 wheel and the
+  `--only-binary` install fails.
+- **Push #2 (G5–G6, no migration)** — Lambda **v78** · push `dev` → Amplify job **52** (also confirms N53's
+  preBuild env-guard) · Aurora batch/approval smoke green (3 transient "Resuming" cold-start fails → green on
+  warm retry).
+
+**Q7 re-score list — EMPTY (confirmed 2026-07-11, dev Aurora read-only):** `excluded_by_rules` rows carry
+only non-geo reasons (`rule: B2B only` ×37 · `acquired — no longer independent` ×12) → **0** geo-excluded
+rows (real specs used country-level geo — the N4 bug was latent). The one N6-divergence-prone tenant
+(`b4-17d76e96`, letterless ICP names) has **0 companies**; the only tenant with data (`holdslot`, 396
+companies) uses clean "ICP A/B" names + **0** paid rows with a null ICP. No existing label is wrong; N4/N6 are
+forward-looking → **no re-score wave needed.**
+
+**Baselines at close:** apps/api ruff clean + **pytest 242 passed / 18 skipped**; apps/web tsc+eslint+build
+clean + **playwright 18 passed**. **`dev` is 7 commits ahead; NOT merged `dev`→`main`** (that ships the prod
+FE — a separate founder call). Remaining = the **prod-cutover register** (§After A–G complete).
 
 ---
 
@@ -485,9 +552,9 @@ Work the live loop: meeting → pitch the live product (the product *is* the dem
 | Founder Brief→Scope round (dev) | S1 | ✅ folded into D+ review #5 (signed off 2026-07-10) |
 | Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ✅ folded into D+ review #5 (signed off 2026-07-10; Apollo credit-dashboard glance rides the next enrich round) |
 | Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live |
-| **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅ · pushed `2838d85`); **§D+.5 fix wave executed 2026-07-10 (F1–F7)**; **final review 2026-07-11 → [`final-fix-plan.md`](final-fix-plan.md) (G1–G7, 3 P1)** precedes the production commit; then **founder-gated deploy of migration `0027` + dev smoke** + on-demand paid re-score wave | pre-E | ✅ built + shipped · ✅ fix wave done · ⏳ final fix wave (G1–G7) |
+| **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅); **§D+.5 fix wave (F1–F7) ✅** + **final fix wave G1–G7 (56 findings) ✅ built + deployed** (two pushes → dev Lambda **v78** + migration `0027` + Amplify job 52; §D+.6); Q7 re-score list confirmed empty | pre-E | ✅ built + shipped · ✅ both fix waves done + deployed |
 | Warmed inboxes ready (~early Jul'26) | E0 | running since 06-17 |
-| **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation doesn't re-check `UserStatus` | — | tracked |
+| **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation now re-checks `UserStatus` + is single-use guarded (N9/N33 ✅) | — | tracked |
 | **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (**resolver BUILT in D+ Stage 4** — `tech_vocab` → `currently_using_any_of_technology_uids`) · `revenue_range` (no ICP form field) · funding-stage key **confirmed absent from the documented API** (2026-07-08) | — | post-MVP / D+ |
 | **Backlog:** step-3 console decide UI (the `decide_batch` endpoint + `decideBatch` client fn exist, tested; no UI) · `person` enrich-once cache (lands with tenant #2) · move `reloadBatches` onto the TanStack-Query cache | — | optional |
 
@@ -497,6 +564,33 @@ Work the live loop: meeting → pitch the live product (the product *is* the dem
 
 - **Production isolation** (cutover, not rewrite — Terraform is workspace-parameterised). `terraform workspace new prod` → `apply` → prod `aurora_min_acu ≥ 0.5` → fresh prod JWT keys → `alembic upgrade head` + seed → SES prod sandbox-exit → point Amplify `main` at prod → harden (S3 PAB, CI/CD). Trigger: Phase G DoD met.
 - **LLM usage rollup** — aggregate `llm_call` across every phase/`purpose` into a tenant×purpose×model×month panel + spend alarm. `llm_call` stays the single source; the rollup is derived. Valuable only once calls span every phase.
+
+### Production cutover register (deferred hardening — folds in the deleted `prod-cutover-checklist.md`)
+
+Findings deliberately deferred to the prod cutover — not applied on the shared dev-tier backend now, because
+most add or tighten AWS resources (zero-new-resources posture) and would risk the running dev Lambda. Each
+has an **in-code note pointing here**. Work these when standing up the production workspace:
+
+| # | Where | Do at cutover |
+|---|---|---|
+| **N20** | `terraform/lambda.tf` (`api_async`) | Add `destination_config { on_failure { destination = <SQS/SNS ARN> } }` + a CloudWatch alarm on `AsyncEventsDropped` + `DestinationDeliveryFailures`, so a silently-dropped background job pages, not just surfaces on a user re-poll. |
+| **N52** | `terraform/iam.tf` (`lambda_secrets`) | Replace the `${secrets_prefix}/*` wildcard with the exact secret ARNs the app reads (`.../app`, `.../openrouter`, `.../apollo`); verify the live Lambda still starts. |
+| **N54** | `terraform/apigw.tf` (`default` stage) | Add `default_route_settings { throttling_burst_limit, throttling_rate_limit }` sized to expected load, so the gateway sheds excess instead of amplifying it into Lambda concurrency + spend. |
+
+**Other cutover hardening:** **N3** (done — Aurora `deletion_protection = true` + `final_snapshot_identifier`;
+confirm it survives the prod-workspace apply — to intentionally destroy, flip protection off in a separate
+apply first) · **N53** (done — `amplify.yml` preBuild fails when `NEXT_PUBLIC_API_BASE_URL` is unset; confirm
+the prod branch sets it to the real API base) · **e2e in CI** (wire `pnpm exec playwright test` as a blocking
+deploy gate — currently a manual pre-push gate, Q8; baseline 18/18) · **Aurora min-ACU** (scale-to-zero is a
+dev cost choice; prod may want a warm floor ≥ 0.5 to avoid the "Resuming" first-call latency) · **S3 PAB**
+(confirm public-access-block on any bucket introduced at cutover — none today) · **fresh prod JWT keys** (mint
+prod-only `jwt_signing_key`/`jwt_refresh_key` — never reuse dev) · **`HOLDSLOT_SEED_PASSWORD`** (needed only to
+bootstrap a fresh DB, migration 0002 — see `infra/README.md`, N50).
+
+**Deploy runbook (recap):** backend before frontend; **migration order depends on the change** (see the
+`[[deploy-process]]` note): expand → `alembic upgrade` then deploy · contract OR add-a-constraint-old-code-
+violates → deploy the Lambda first, then `alembic upgrade`. Push #1 of the G-wave applied `0027` (a constraint
+add) with the **deploy-first** order for exactly that reason; push #2 (G5–G6) added no migration.
 
 ---
 

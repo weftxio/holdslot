@@ -24,7 +24,7 @@ you are selling the finished house.
   `textContent`; no `dangerouslySetInnerHTML`/`innerHTML` for any user-entered value.
 
 ## Stack
-Next.js 15 (App Router, TS) · React 19 · pnpm workspace. Fonts: Fraunces (display) + Archivo
+Next.js 16 (App Router, TS) · React 19 · pnpm workspace. Fonts: Fraunces (display) + Archivo
 (body) via `next/font`. `apps/api` (FastAPI) + `infra/` are later-phase placeholders.
 
 ## Layout

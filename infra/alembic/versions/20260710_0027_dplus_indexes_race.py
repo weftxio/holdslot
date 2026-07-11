@@ -4,7 +4,7 @@ Revision ID: 0027_dplus_indexes_race
 Revises: 0026_scoring_v2_contraction
 Create Date: 2026-07-10
 
-The DB foundation for the D+.5 fix wave (docs/dplus-fix-plan.md, phase F1). Five index/constraint/data
+The DB foundation for the D+.5 fix wave (docs/initial-build-plan.md §D+.5, phase F1). Five index/constraint/data
 changes that other phases build on:
 
   * R5  — the two list feeds sort `score_total DESC NULLS LAST, created_at DESC, id DESC`, but the only
@@ -21,7 +21,7 @@ changes that other phases build on:
     the new R5 ones) — dead write-amplification. Drop both. Also DELETE the retired `sourcing` prompt
     rows still lingering in `prompt`.
 
-final-fix-plan additions (this file was unapplied when the plan landed, so edited in place):
+Final fix wave additions (docs/initial-build-plan.md §D+.6; this file was unapplied when the plan landed, so edited in place):
   * N8  — `research_job` had the SAME check-then-insert race as `scoring_job` (a double Regenerate
     double-spends the DeepSeek Pro scoping call). Add a PARTIAL UNIQUE on `research_job (tenant_id)`
     WHERE status IN ('queued','running') — no `kind` column (one structuring surface per tenant), so

@@ -7,8 +7,8 @@
 > doc wins**, and schema changes are recorded **here first**.
 >
 > **A–D are LIVE** (verified against [`apps/api/app/models.py`](../apps/api/app/models.py) + the Alembic
-> migrations **through `0027` defined · `0026` applied to dev** (`0027` pending deploy) — verified
-> 2026-07-11, final pre-production review). C is the **Apollo-only**
+> migrations **through `0027` applied to dev** — verified
+> 2026-07-11, final pre-production review (`0027` deployed at push #1)). C is the **Apollo-only**
 > find → score → select → enrich loop (see [`initial-build-plan.md`](initial-build-plan.md) → Phase C); the
 > 2026-06-25 modularization + W0–W8 pass added the perf indexes + `prospect.fit_reason` (`0014`) and the
 > `scoring_job` async ledger (`0015`); `scope_override` (`0012`) is also defined below.
@@ -406,7 +406,10 @@ Scoping runs **DeepSeek V4 Pro** (thinking + web-search plugin, ~55-76s) — pas
 HTTP-API hard 30s cap. So `POST /brief/structure` inserts a `queued` row and fires a background
 worker (Lambda **self async-invoke**; a thread in local dev) that runs the LLM, inserts the next
 `research_spec` version, and flips this row terminal. The UI polls `GET /brief/structure/status`.
-One in-flight job per tenant (a queued/running job is returned as-is) so a double-click can't double-spend.
+One in-flight job per tenant (a queued/running job is returned as-is) so a double-click can't double-spend —
+now DB-enforced by the partial UNIQUE `uq_research_job_active_tenant` on (`tenant_id`) `WHERE status IN
+('queued','running')` (`0027`, N8; no `kind` column — one structuring surface per tenant): a concurrent
+double-POST hits IntegrityError and `enqueue_structuring` coalesces onto the winner.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
@@ -438,7 +441,8 @@ The two SCALE tables (`person` / `enrichment_request`) are the additive multi-te
 > single-column indexes were dropped in `0014` (`ix_company_domain`, `ix_prospect_identity_key`,
 > `ix_brief_tenant_id`, `ix_scope_override_tenant_id` — each covered by a UNIQUE constraint's index).
 > `research_run` carries `ix_research_run_tenant_created` (`tenant_id, created_at DESC`, `0027`) for the
-> find-history + Stage-3 resume scans.
+> find-history + Stage-3 resume scans; its prefix-covered `ix_research_run_tenant_id` was dropped in `0027`
+> (N49).
 
 ### Phase C end-to-end flow (Apollo, programmatic — two gates, no CSV)
 The objective is two gates: **(1) find companies likely to buy, (2) find the right person at each.**
@@ -706,12 +710,13 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260709_0024_scoring_v2_labels` ✅(dev) | D+ v2 | **scoring v2** — `label` varchar(32) + `score_total` int on **company AND prospect** + the `(tenant_id, label, score_total DESC NULLS LAST, created_at DESC)` index on both. **No backfill** (labels start NULL). v1 `fit_*` untouched (dropped in `0026`) |
 | `20260709_0025_scoring_v2_rubrics` ✅(dev) | D+ v2 | data-only — seed the new `company_score` + `prospect_score` prompt stages (the v2 axis rubrics) per tenant from the shipped `docs/prompts/{company,prospect}-score-v1.md` |
 | `20260710_0026_scoring_v2_contraction` ✅(dev) | D+ v2 | **the contraction pass (V2-4)** — drop v1 `fit_score`/`fit_tier` on company+prospect + the `ix_*_tenant_fit` indexes; drop `prospect.outreach_outcome`; `prospect.status` default `new`→`found`. `reason_tags` stopped being emitted (code, not a column). Reversible (re-adds columns empty). |
-| `20260710_0027_dplus_indexes_race` ⬜(pending dev) | D+.5 F1 | index/constraint foundation for the fix wave — add score-sorted feed composites `ix_{company,prospect}_tenant_score` (R5); partial UNIQUE `uq_scoring_job_active_tenant_kind` `WHERE status IN ('queued','running')` (R9); `ix_research_run_tenant_created` (R22a); drop composite-covered `ix_{company,prospect}_tenant_id` (R29a); `DELETE FROM prompt WHERE stage='sourcing'` (R29b). Reversible (index-only; the prompt delete is not restored). |
+| `20260710_0027_dplus_indexes_race` ✅(dev) | D+.5 F1 + final | index/constraint foundation for the fix wave — add score-sorted feed composites `ix_{company,prospect}_tenant_score` (R5); partial UNIQUE `uq_scoring_job_active_tenant_kind` `WHERE status IN ('queued','running')` (R9); partial UNIQUE `uq_research_job_active_tenant` on (`tenant_id`) same predicate (**N8** — research_job had the same race, no `kind` column); `ix_research_run_tenant_created` (R22a); drop composite-covered `ix_{company,prospect}_tenant_id` (R29a) **and prefix-covered `ix_research_run_tenant_id`** (**N49**); terminal-ize any pre-existing duplicate active job rows on both job tables before the CREATE UNIQUEs (**N48**); `DELETE FROM prompt WHERE stage='sourcing'` (R29b). **Applied to dev at push #1 (2026-07-11).** Reversible (index-only; the prompt delete + dup terminal-ization are not restored). |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0026`** (dev — the V2-4 contraction; `0027` pends the D+.5 F1 deploy, founder-gated).
-`0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill), `0026` the
-contraction (drops the v1 `fit_*` columns/indexes). All migrations `0001`→`0026` applied to dev Aurora. Earlier: `0017`/
+**Live Aurora head: `0027`** (dev — applied at push #1, 2026-07-11; the D+.5/final-fix index+constraint
+foundation). `0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
+`0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation. All
+migrations `0001`→`0027` applied to dev Aurora. Earlier: `0017`/
 `0018` are data-only prompt re-seeds; table count verified 2026-07-01 at head `0016`: 20 application
 tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
 retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01
