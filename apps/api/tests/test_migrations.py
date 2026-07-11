@@ -20,6 +20,7 @@ from app.models import (
     Company,
     Prospect,
     ProspectApproval,
+    ResearchJob,
     ResearchRun,
     ScopeOverride,
     ScoringJob,
@@ -151,5 +152,11 @@ def test_0027_dplus_indexes_present_on_models():
     sj_idx = {i.name: i for i in ScoringJob.__table__.indexes}
     active = sj_idx.get("uq_scoring_job_active_tenant_kind")
     assert active is not None and active.unique
-    # R22a — the research_run scan index.
-    assert "ix_research_run_tenant_created" in {i.name for i in ResearchRun.__table__.indexes}
+    # N8 — the structuring active-job partial unique (one queued/running job per tenant; no kind).
+    rj_idx = {i.name: i for i in ResearchJob.__table__.indexes}
+    rj_active = rj_idx.get("uq_research_job_active_tenant")
+    assert rj_active is not None and rj_active.unique
+    # R22a — the research_run scan index; N49 — its single-column tenant index is dropped (covered).
+    rr_idx = {i.name for i in ResearchRun.__table__.indexes}
+    assert "ix_research_run_tenant_created" in rr_idx
+    assert "ix_research_run_tenant_id" not in rr_idx

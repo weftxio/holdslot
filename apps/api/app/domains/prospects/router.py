@@ -643,14 +643,6 @@ def _apply_company_verdict(
     c.fit_components = comps
 
 
-def _icp_letter(name: str | None) -> str | None:
-    """The letter from an ICP profile's `name` ("ICP A" → "A", "ICP C" → "C"); None if it carries no
-    single-letter tag. Maps the scorer's `icp_match.icp` back to the ICP row. Any single A–Z letter
-    is accepted (R19 — a tenant with a 3rd+ ICP must re-tag past B)."""
-    tok = (name or "").strip().rsplit(" ", 1)[-1].upper()
-    return tok if len(tok) == 1 and tok.isalpha() else None
-
-
 def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
     """v2 rescore (spec §3): deterministic gates on every row → the paid web score on survivors →
     persist the `Verdict`. Records one `research_run` for cost; returns `{scored, failed, cost}`.
@@ -667,15 +659,12 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
     # so the model called it "not insurtech → wrong vertical". Built once, client-wide, per row.
     all_icps = icp_docs(db, tenant_id)
     company_targeting = _build_targeting(brief, spec, all_icps, None)
-    # Letter → ICP row id ("ICP A" → "A"), so a row whose model-matched ICP differs from its find-
-    # time icp_id is re-tagged to the matched ICP — Step-2 people-search then uses that ICP's
-    # personas (ICP B's Founder/MD, not ICP A's Head of Growth/Sales). Only the score pass can
-    # re-tag: it is the one place an ICP is judged.
-    icp_by_letter = {
-        letter: d.get("id")
-        for d in all_icps
-        if (letter := _icp_letter(d.get("name")))
-    }
+    # Letter → ICP row id, so a row whose model-matched ICP differs from its find-time icp_id is
+    # re-tagged to the matched ICP — Step-2 people-search then uses that ICP's personas (ICP B's
+    # Founder/MD, not ICP A's Head of Growth/Sales). Only the score pass can re-tag: it is the one
+    # place an ICP is judged. Built from the SAME `fit.icp_letter_map` the score schema's enum uses
+    # (N6), so the letter the model emits is guaranteed to map back here.
+    icp_by_letter = fit.icp_letter_map(all_icps)
 
     # Pass 1 — free deterministic gates. A caught row (excluded_by_rules / low_fit) is labeled now
     # and never web-checked; a survivor (label None) goes to the paid pass.
@@ -1314,25 +1303,34 @@ def _cursor_decision(prior_meta: dict | None) -> tuple[int, bool]:
     """
     if not prior_meta:
         return 1, False
-    # R1: the cursor's page numbers are denominated in a page SIZE. If that size changed (the
-    # FIND_COMPANY_LIMIT knob widened past 100, so `_paginate` walks different-width pages) or is
-    # missing (a pre-R1 run), the stored page/exhaustion no longer map to rows — discard and restart
-    # at page 1. `_paginate` now always fetches `PER_PAGE_MAX`-wide pages, so this only trips on a
-    # legacy cursor, and only once.
-    if prior_meta.get("per_page") != apollo.PER_PAGE_MAX:
+    per_page = prior_meta.get("per_page")
+    # R1: the cursor's page numbers are denominated in a page SIZE. A cursor recorded under a
+    # DIFFERENT (non-None) page size is stale — its page numbers don't map to the current width, so
+    # discard the whole meta (page AND exhaustion) and restart at page 1. `_paginate` always fetches
+    # `PER_PAGE_MAX`-wide pages now, so this only trips if that knob is ever changed.
+    if per_page is not None and per_page != apollo.PER_PAGE_MAX:
         return 1, False
+    # N5 — honor exhaustion BEFORE treating a missing per_page as legacy. An exhausted-scope
+    # short-circuit historically stored no page size (per_page None); ordering the size guard ahead
+    # of this made a walked-to-exhaustion scope look legacy → it re-bought page 1 every other find
+    # instead of short-circuiting. (New runs also carry per_page forward now — belt and braces.)
     if prior_meta.get("scope_exhausted"):
         return 1, True
+    # A missing per_page with no exhaustion flag is a pre-R1 cursor whose page can't be trusted.
+    if per_page != apollo.PER_PAGE_MAX:
+        return 1, False
     cursor = prior_meta.get("page_cursor")
     if isinstance(cursor, int) and cursor >= 1:
         return cursor + 1, False
     return 1, False
 
 
-def _resume_page(db: Session, tenant_id, body_hash: str) -> tuple[int, bool]:
+def _resume_page(db: Session, tenant_id, body_hash: str) -> tuple[int, bool, dict | None]:
     """DB-side of the page cursor: the most-recent run for THIS exact resolved scope (matched by
     `result_meta.body_hash`) decides where to resume. Scanned in Python over the tenant's recent
-    runs (small N) so it stays dialect-agnostic — no JSONB `->>` on the RDS Data API path."""
+    runs (small N) so it stays dialect-agnostic — no JSONB `->>` on the RDS Data API path. Returns
+    `(resume_page, prior_exhausted, prior_meta)`; the matched meta lets an exhausted short-circuit
+    carry the walked scope's cursor forward (N5)."""
     recent = (
         db.execute(
             select(ResearchRun.result_meta)
@@ -1348,8 +1346,9 @@ def _resume_page(db: Session, tenant_id, body_hash: str) -> tuple[int, bool]:
     )
     for meta in recent:
         if (meta or {}).get("body_hash") == body_hash:
-            return _cursor_decision(meta)
-    return 1, False
+            resume_page, prior_exhausted = _cursor_decision(meta)
+            return resume_page, prior_exhausted, meta
+    return 1, False, None
 
 
 # --------------------------------------------------------------------- D+ Stage 1b · relax ladder
@@ -1531,11 +1530,23 @@ def _run_company_find(
     # re-buying page 1 the moment feedback or the relax rung shifts. `resolved_body` (post-relax,
     # feedback) is still stored as the executed lineage on the run.
     body_hash = _body_hash(filter_body)
-    resume_page, prior_exhausted = (
-        _resume_page(db, tenant_id, body_hash) if use_cursor else (1, False)
+    resume_page, prior_exhausted, prior_meta = (
+        _resume_page(db, tenant_id, body_hash) if use_cursor else (1, False, None)
     )
     if prior_exhausted:
-        rows, search_meta, cache_hit = [], {"scope_exhausted": True}, False
+        # N5 — carry the exhausted scope's cursor forward so the new run's lineage stays well-formed
+        # (a valid per_page + page_cursor), not a bare {scope_exhausted} whose per_page=None reads
+        # as "unknown page size". Belt-and-braces with the reordered `_cursor_decision`: even if the
+        # exhaustion flag were ever missed, a valid per_page keeps the cursor from re-buying page 1.
+        pm = prior_meta or {}
+        rows, cache_hit = [], False
+        search_meta = {
+            "scope_exhausted": True,
+            "per_page": pm.get("per_page") or apollo.PER_PAGE_MAX,
+            "end_page": pm.get("page_cursor"),
+            "total_pages": pm.get("total_pages"),
+            "total_entries": pm.get("total_entries"),
+        }
     else:
         # W8 — serve a recent identical page from the warm-container cache so a re-run of the same
         # scope+page inside the TTL avoids the round-trip. `search_companies_meta` returns rows AND
@@ -2702,14 +2713,28 @@ def find_people(
         )
     )
     db.commit()
-    for p in prospects:
-        db.refresh(p)
-    prospects.sort(key=lambda p: (p.score_total is None, -(p.score_total or 0)))
+    # N7 — reload the freshly-inserted rows in ONE query instead of a per-row db.refresh (which was
+    # up to ASYNC_BATCH_MAX Data-API round trips on the 30s sync find path). PKs are populated by
+    # the flush RETURNING and survive the commit-expire without emitting SQL, so an IN()-by-id
+    # re-select is equivalent to the loop.
+    ids = [p.id for p in prospects]
+    fresh = (
+        db.execute(
+            select(Prospect).where(
+                Prospect.tenant_id == ctx.tenant.id, Prospect.id.in_(ids)
+            )
+        )
+        .scalars()
+        .all()
+        if ids
+        else []
+    )
+    fresh.sort(key=lambda p: (p.score_total is None, -(p.score_total or 0)))
     return FindResult(
         run_id=run_id,
         found=len(prospects),
         dropped=dropped_total,
-        prospects=[_prospect_out(p) for p in prospects],
+        prospects=[_prospect_out(p) for p in fresh],
     )
 
 

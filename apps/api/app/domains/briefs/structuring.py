@@ -119,18 +119,23 @@ def latest_job(db: Session, tenant_id) -> ResearchJob | None:
     return job
 
 
+def _active_job(db: Session, tenant_id) -> ResearchJob | None:
+    """The tenant's in-flight structuring job (queued|running), newest first — coalesce target."""
+    return db.execute(
+        select(ResearchJob)
+        .where(ResearchJob.tenant_id == tenant_id, ResearchJob.status.in_(_ACTIVE))
+        .order_by(ResearchJob.created_at.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
 def enqueue_structuring(db: Session, tenant_id, icp_ids: list[str] | None = None) -> ResearchJob:
     """Create a queued job + dispatch the worker. A still-active job is returned unchanged.
 
     `icp_ids` (optional) restricts the run to those ICP profiles (a selective re-scope); empty/None
     scopes every ICP. It rides in the dispatch event, not the job row — the worker reads it there.
     """
-    active = db.execute(
-        select(ResearchJob)
-        .where(ResearchJob.tenant_id == tenant_id, ResearchJob.status.in_(_ACTIVE))
-        .order_by(ResearchJob.created_at.desc())
-        .limit(1)
-    ).scalar_one_or_none()
+    active = _active_job(db, tenant_id)
     # Coalesce onto a genuinely in-flight job (a double-click never double-spends); but a stale
     # zombie must NOT wedge Regenerate forever — reap it and fall through to a fresh job.
     if active is not None and not _reap_if_stale(db, active):
@@ -138,7 +143,17 @@ def enqueue_structuring(db: Session, tenant_id, icp_ids: list[str] | None = None
 
     job = ResearchJob(tenant_id=tenant_id, status="queued")
     db.add(job)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # N8 — a concurrent Regenerate won the per-tenant partial-unique race (0027,
+        # `uq_research_job_active_tenant`) between our check and our insert. Coalesce onto its job
+        # rather than 500 — a double-click must never double-spend the DeepSeek Pro scoping call.
+        db.rollback()
+        winner = _active_job(db, tenant_id)
+        if winner is not None:
+            return winner
+        raise  # constraint fired but no active row visible — genuinely unexpected, surface it
     db.refresh(job)
     _dispatch(tenant_id, job.id, icp_ids)
     return job

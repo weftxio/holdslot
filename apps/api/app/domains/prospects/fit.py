@@ -175,6 +175,34 @@ _AXES_COMPANY = list(labeling.SUBSCORE_AXES)  # deal_fit / outbound_gap / trigge
 _AXES_PEOPLE = list(labeling.SUBSCORE_AXES_PEOPLE)  # persona_fit / authority / trigger / reach
 
 
+def icp_letter_from_name(name: str | None) -> str | None:
+    """The single-letter tag in an ICP profile's `name` ("ICP A" → "A", "ICP C" → "C"); None when
+    the name carries no single-letter tag. The company scorer's prompt tells the model to read the
+    match letter from the ICP name, and the router maps that letter back to the ICP row."""
+    tok = (name or "").strip().rsplit(" ", 1)[-1].upper()
+    return tok if len(tok) == 1 and tok.isalpha() else None
+
+
+def icp_letter_map(icps: list[dict] | None) -> dict[str, object]:
+    """Ordered `{letter: icp_id}` for a tenant's ICP set — the ONE source of truth for BOTH the
+    company-score schema enum (the letters the model may emit) and the router's re-tag (letter →
+    ICP row). They diverged before (N6): the enum was positional (A, B, …) while re-tag keyed on the
+    name letter, so after an ICP delete ("ICP A", "ICP C") the enum offered [A, B] but re-tag keyed
+    [A, C] — the model's intended "C" wasn't in the enum, and its forced pick mis-tagged the row.
+
+    Prefer the name letter (the prompt instructs the model to read it from the name), but ONLY when
+    every ICP yields a DISTINCT letter — a clean bijection. If any name is letterless or two
+    collide, fall back to positional letters (A, B, C, … in targeting order) for the whole set, so
+    the enum and the re-tag still agree on exactly the same keys."""
+    icps = icps or []
+    named = [icp_letter_from_name(d.get("name")) for d in icps]
+    if all(x is not None for x in named) and len(set(named)) == len(named):
+        letters: list[str] = named  # type: ignore[assignment]  # None ruled out above
+    else:
+        letters = [chr(ord("A") + i) for i in range(len(icps))]
+    return {letter: d.get("id") for letter, d in zip(letters, icps, strict=True)}
+
+
 def company_score_v2_schema(icp_letters: list[str]) -> dict:
     """The strict company-score schema, with the `icp_match.icp` enum built from the tenant's ICP
     letters (+ "none"). Dynamic because the enum was hard-coded to ["A","B","none"] (R19): a 3rd+
@@ -295,7 +323,9 @@ def build_company_score_v2_messages(rubric_body: str, company: dict, targeting: 
         "ICP A. `icp_match.clause` = the one-clause why. No match → the server marks it "
         "`wrong vertical`.\n\n"
         "`reason` — ONE short client-facing sentence, no number, matching the verdict; for a match "
-        "write \"fits ICP A — <clause>\". `trigger_line` — the single most compelling in-market "
+        "write \"fits ICP A — <clause>\". Do NOT name the person, their company, or its domain in "
+        "`reason` — the client sees it masked; refer to them generically (\"this prospect\", \"the "
+        "company\"). `trigger_line` — the single most compelling in-market "
         "hook to open a cold email with (or \"\" if none). `flags` — emit any that apply: "
         "revenue_implausible, founding_date_conflict, competitor_adjacent, partner_led, "
         "stale_record.\n\n"
@@ -331,8 +361,10 @@ def build_prospect_score_v2_messages(
         "  • `reachability` — can we reach them (a real email present, not buried in a layered "
         "org)?\n\n"
         "A field still unknown after enrichment scores low, not high. `reason` — ONE short "
-        "client-facing sentence (no number) on why this person is or is not the right contact. "
-        "`flags` — only if something is genuinely off; otherwise []. Emit ONLY the JSON schema.\n\n"
+        "client-facing sentence (no number) on why this person is or is not the right contact; do "
+        "NOT name the person, their company, or its domain (the client sees it masked) — refer to "
+        "them generically. `flags` — only if something is genuinely off; otherwise []. Emit ONLY "
+        "the JSON schema.\n\n"
         "=== PEOPLE RUBRIC (axis anchors, authoritative) ===\n" + rubric_body
     )
     user = (
@@ -352,9 +384,11 @@ def company_score_v2(*, tenant_id, rubric_body: str, company: dict, targeting: d
     signals for `labeling.assign_label` (NOT a final label): `{liveness, subscores, icp_match,
     reason, trigger_line, flags, llm_call_id, model, cost_usd}`. Raises `LlmError` on a non-ok call.
     Runs on the async path only (SCORE_V2_TIMEOUT ≫ the 30s gateway)."""
-    # R19 — build the icp enum from THIS tenant's ICP set (positional A, B, C, … per targeting
-    # order), so a 3rd+ ICP can be returned instead of being forced to "none".
-    icp_letters = [chr(ord("A") + i) for i in range(len(targeting.get("icps") or []))]
+    # R19/N6 — build the icp enum from THIS tenant's ICP set via the shared `icp_letter_map`, so the
+    # letters the model may emit are EXACTLY the letters the router's re-tag maps back (they
+    # diverged before: positional enum vs name-based re-tag). A 3rd+ ICP can be returned rather than
+    # being forced to "none".
+    icp_letters = list(icp_letter_map(targeting.get("icps")).keys())
     result = structured_completion(
         tenant_id=tenant_id,
         purpose=COMPANY_SCORE_PURPOSE,

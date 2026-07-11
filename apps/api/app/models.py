@@ -307,7 +307,19 @@ class ResearchJob(Base):
     """
 
     __tablename__ = "research_job"
-    __table_args__ = (Index("ix_research_job_tenant_id", "tenant_id"),)
+    __table_args__ = (
+        Index("ix_research_job_tenant_id", "tenant_id"),
+        # N8 (0027) — one in-flight structuring job per tenant, enforced in the DB so a concurrent
+        # double-POST can't both dispatch the DeepSeek Pro scoping call. `enqueue_structuring`
+        # catches the IntegrityError and coalesces. Partial: terminal rows don't participate.
+        # No `kind` column (a tenant has one structuring surface), so the key is `tenant_id` alone.
+        Index(
+            "uq_research_job_active_tenant",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued', 'running')"),
+        ),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
@@ -531,9 +543,10 @@ class ResearchRun(Base):
     __tablename__ = "research_run"
     __table_args__ = (
         UniqueConstraint("run_id", name="uq_research_run_run_id"),
-        Index("ix_research_run_tenant_id", "tenant_id"),
         # D+.5 (0027, R22a) — the Stage-3 `_resume_page` scan + find-history endpoint sort by
-        # (tenant, created_at DESC); without this they table-scan.
+        # (tenant, created_at DESC); without this they table-scan. Its `tenant_id` prefix covers
+        # plain tenant lookups, so the old single-column `ix_research_run_tenant_id` was dropped as
+        # dead write-amplification (N49).
         Index("ix_research_run_tenant_created", "tenant_id", text("created_at DESC")),
     )
 

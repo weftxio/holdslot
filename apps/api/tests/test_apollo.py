@@ -252,7 +252,13 @@ def test_cursor_decision_resume_reset_and_exhaustion():
     # discarded — its page numbers don't map to the current page width. Start fresh at page 1.
     assert router._cursor_decision({"page_cursor": 3}) == (1, False)  # missing per_page (legacy)
     assert router._cursor_decision({"per_page": pp - 1, "page_cursor": 3}) == (1, False)  # changed
+    # A CHANGED (non-None) page size discards exhaustion too — the wider scope may hold new rows.
     assert router._cursor_decision({"per_page": pp - 1, "scope_exhausted": True}) == (1, False)
+    # N5 — an exhausted-scope short-circuit historically stored ONLY {scope_exhausted} (per_page
+    # None). Exhaustion must still be honored so the next find short-circuits instead of re-buying
+    # page 1. (Before the fix the size guard ran first and returned (1, False) here.)
+    assert router._cursor_decision({"scope_exhausted": True}) == (1, True)
+    assert router._cursor_decision({"per_page": None, "scope_exhausted": True}) == (1, True)
 
 
 def test_is_apac_country_city_and_negative():

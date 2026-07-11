@@ -428,13 +428,25 @@ def _geographies_from_spec(spec_data: dict | None) -> tuple[str, ...]:
     found: list[str] = []
     seen: set[str] = set()
 
+    def _add(value: str) -> None:
+        key = _norm(value)
+        if key and key not in seen:
+            seen.add(key)
+            found.append(value)
+
     def _collect(block: object) -> None:
         if isinstance(block, dict):
             for loc in block.get("organization_locations") or []:
-                key = _norm(str(loc))
-                if key and key not in seen:
-                    seen.add(key)
-                    found.append(str(loc))
+                # Apollo `organization_locations` may be city-/region-qualified ("Kowloon, Hong
+                # Kong", "San Francisco, California") but the geo rule matches against country-level
+                # hq_country/field_country. Emit the full string AND each comma-split segment so the
+                # country tail ("Hong Kong") lands in the allowed set — otherwise a correctly-placed
+                # row whose spec used a city entry is falsely excluded before it can be scored.
+                raw = str(loc)
+                _add(raw)
+                if "," in raw:
+                    for part in raw.split(","):
+                        _add(part.strip())
             for v in block.values():
                 _collect(v)
         elif isinstance(block, list):

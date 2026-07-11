@@ -17,7 +17,7 @@ from app.core.security import (
     hash_token,
 )
 from app.domains.auth.schemas import TokenPair
-from app.models import AppUser, RefreshToken
+from app.models import AppUser, RefreshToken, UserStatus
 
 
 def issue_tokens(db: Session, user: AppUser) -> TokenPair:
@@ -51,7 +51,10 @@ def rotate_refresh(db: Session, raw_refresh: str) -> tuple[AppUser, TokenPair] |
         return None
 
     user = db.get(AppUser, payload["sub"])
-    if user is None:
+    # N9 — a disabled user must not be able to keep minting access tokens by rotating a still-valid
+    # refresh token. Reject here too (defence in depth: deps.py also rejects a non-active user on
+    # the access path), and do NOT revoke the presented token — a re-enabled user can then resume.
+    if user is None or user.status != UserStatus.active:
         return None
 
     row.revoked_at = now  # single-use: old token can't be reused

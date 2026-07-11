@@ -435,7 +435,7 @@ def test_resume_page_survives_interleaved_nonfind_runs(owner_member):
         ))
     db.commit()
 
-    resume, exhausted = _resume_page(db, tenant.id, bh)
+    resume, exhausted, _meta = _resume_page(db, tenant.id, bh)
     assert resume == 4 and exhausted is False  # cursor survived the interleave
     db.close()
 

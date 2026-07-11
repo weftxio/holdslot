@@ -9,6 +9,7 @@ fallback). Pure-ish: it mutates ORM rows passed in but never commits — the rou
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, datetime
 
@@ -123,6 +124,45 @@ def company_descriptor(
     """`"SaaS · 200–500 · US"` — firmographics only, joined by middot; the exact company name and
     domain are deliberately NOT included (that's the masking allow-list)."""
     return " · ".join(p for p in (industry, size, country) if p)
+
+
+def redact_identity(
+    reason: str | None,
+    *,
+    full_name: str | None = None,
+    company_name: str | None = None,
+    domain: str | None = None,
+) -> str:
+    """Deterministically scrub withheld identity from a free-text fit reason before it leaves the
+    public approval endpoint (N10). The reason is LLM-written, so it can name the person's SURNAME,
+    their exact company, or its domain — precisely what `mask_name`/`company_descriptor` withhold
+    (the first name IS shown as "Sarah K.", so it is left intact). This is the belt to the rubric's
+    braces (the prompt already forbids naming them): a well-behaved reason is unchanged, a leaky one
+    is neutralised. Errs toward OVER-redaction — a masking control must never under-fire."""
+    text = (reason or "").strip()
+    if not text:
+        return text
+
+    def _sub(token: str | None, placeholder: str) -> None:
+        nonlocal text
+        tok = (token or "").strip()
+        if len(tok) >= 3:  # skip 1–2 char tokens (initials/particles) — too collision-prone
+            text = re.sub(rf"\b{re.escape(tok)}\b", placeholder, text, flags=re.IGNORECASE)
+
+    full = (full_name or "").strip()
+    if full:
+        _sub(full, "this prospect")  # the whole "First Last" phrase, wherever it appears verbatim
+        # …and every name token AFTER the first — the client sees only "First L.", so surnames and
+        # middle names are withheld. The first name is public, so a standalone first name is left.
+        for part in full.split()[1:]:
+            _sub(part, "this prospect")
+    _sub(company_name, "their company")
+    dom = (domain or "").strip().lower()
+    if dom:
+        dom = re.sub(r"^https?://", "", dom).split("/")[0]  # bare host
+        _sub(dom, "their website")
+        _sub(dom.split(".")[0], "their website")  # the host slug, which often IS the company name
+    return text
 
 
 # --------------------------------------------------------------------------- counts (derived)

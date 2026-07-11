@@ -95,6 +95,25 @@ def test_geography_rule_excludes_when_no_known_country_in_target():
     assert v.reason == "rule: outside target geography"
 
 
+def test_geographies_from_spec_splits_city_qualified_locations():
+    """N4 — a city-/region-qualified `organization_locations` entry ('Kowloon, Hong Kong') must
+    contribute its country tail, since the geo rule matches country-level hq_country/field_country.
+    Before the fix only the full 'Kowloon, Hong Kong' string was emitted and never matched
+    'Hong Kong' → every correctly-located HK row was wrongly excluded before it could be scored."""
+    geos = L._geographies_from_spec(
+        {"company_search_params": {"organization_locations": ["Kowloon, Hong Kong"]}}
+    )
+    norm = {L._norm(g) for g in geos}
+    assert "hong kong" in norm  # country tail is extracted
+    # …and a HK-HQ'd row is no longer excluded once the tail is in the target set.
+    v = assign_label(
+        business_model="B2B", hq_country="Hong Kong", field_country=None,
+        industry="Executive search", name="Kowloon Co",
+        config=RulesConfig(market="B2B", geographies=geos),
+    )
+    assert v.label != "excluded_by_rules"
+
+
 def test_client_exclusion_rule_by_name_and_domain():
     by_name = assign_label(
         business_model="B2B", hq_country="Singapore", industry="IT",

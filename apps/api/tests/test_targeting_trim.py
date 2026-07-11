@@ -1,8 +1,8 @@
 """W7 — the fit-scoring targeting trim. Pure functions; no DB / LLM."""
 
+from app.domains.prospects.fit import icp_letter_from_name, icp_letter_map
 from app.domains.prospects.router import (
     _SCORING_BRIEF_FIELDS,
-    _icp_letter,
     _trim_brief_for_scoring,
     _trim_spec_for_scoring,
 )
@@ -64,13 +64,34 @@ def test_pii_and_operational_dropped():
 
 def test_icp_letter_maps_name_to_score_letter():
     # The scorer emits icp_match.icp = "A"/"B"; re-tagging maps it back via the ICP's name.
-    assert _icp_letter("ICP A") == "A"
-    assert _icp_letter("ICP B") == "B"
-    assert _icp_letter("icp b") == "B"
+    assert icp_letter_from_name("ICP A") == "A"
+    assert icp_letter_from_name("ICP B") == "B"
+    assert icp_letter_from_name("icp b") == "B"
     # No single-letter tag → no re-tag (find-time icp_id is left untouched).
-    assert _icp_letter("Insurtech") is None
-    assert _icp_letter("") is None
-    assert _icp_letter(None) is None
+    assert icp_letter_from_name("Insurtech") is None
+    assert icp_letter_from_name("") is None
+    assert icp_letter_from_name(None) is None
+
+
+def test_icp_letter_map_uses_name_letters_when_clean():
+    # N6 — clean, distinct name letters (even non-contiguous after an ICP delete: A, C) are used
+    # verbatim, so the schema enum and the router re-tag agree on {A, C} and "C" maps to its row.
+    m = icp_letter_map([{"id": "a", "name": "ICP A"}, {"id": "c", "name": "ICP C"}])
+    assert m == {"A": "a", "C": "c"}
+
+
+def test_icp_letter_map_falls_back_to_positional_on_letterless_or_collision():
+    # N6 — any letterless name OR a letter collision forces POSITIONAL letters for the whole set, so
+    # the enum and re-tag never disagree (better a consistent A/B than one side keyed differently).
+    letterless = icp_letter_map([{"id": "x", "name": "Insurtech"}, {"id": "y", "name": "ICP B"}])
+    assert letterless == {"A": "x", "B": "y"}
+    collide = icp_letter_map([{"id": "p", "name": "ICP A"}, {"id": "q", "name": "ICP A"}])
+    assert collide == {"A": "p", "B": "q"}
+
+
+def test_icp_letter_map_empty_is_empty():
+    assert icp_letter_map([]) == {}
+    assert icp_letter_map(None) == {}
 
 
 def test_spec_drops_credit_policy_keeps_search_params():

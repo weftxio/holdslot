@@ -21,8 +21,19 @@ changes that other phases build on:
     the new R5 ones) — dead write-amplification. Drop both. Also DELETE the retired `sourcing` prompt
     rows still lingering in `prompt`.
 
-Reversible: downgrade drops the four new indexes, re-creates the two single-column indexes, and no-ops
-the prompt delete (the retired rows are not restored — they were dead by design).
+final-fix-plan additions (this file was unapplied when the plan landed, so edited in place):
+  * N8  — `research_job` had the SAME check-then-insert race as `scoring_job` (a double Regenerate
+    double-spends the DeepSeek Pro scoping call). Add a PARTIAL UNIQUE on `research_job (tenant_id)`
+    WHERE status IN ('queued','running') — no `kind` column (one structuring surface per tenant), so
+    the key is `tenant_id` alone. `enqueue_structuring` catches the IntegrityError and coalesces.
+  * N48 — a CREATE UNIQUE aborts the whole upgrade if a dup active pair already exists. Terminal-ize
+    (flip to `error`, keep the newest) any duplicate active rows on BOTH job tables BEFORE creating
+    their partial-unique indexes.
+  * N49 — `ix_research_run_tenant_id` is prefix-covered by the new R22a `(tenant_id, created_at DESC)`
+    composite — dead write-amplification. Drop it too.
+
+Reversible: downgrade drops the new indexes, re-creates the dropped single-column indexes, and no-ops
+the prompt delete + the dup terminal-ization (data cleanups are not restored — they were dead/invalid).
 """
 
 from __future__ import annotations
@@ -48,9 +59,33 @@ def upgrade() -> None:
         "(tenant_id, score_total DESC NULLS LAST, created_at DESC)"
     )
 
+    # N48 — a partial-unique CREATE aborts the whole upgrade if a duplicate active pair already
+    # exists. Terminal-ize any duplicate active rows FIRST (keep the newest per key, flip the rest to
+    # `error`), on BOTH job tables, so the two CREATE UNIQUE statements below can never fail.
+    op.execute(
+        "UPDATE scoring_job SET status = 'error', "
+        "error = COALESCE(error, 'superseded: duplicate active job cleared for the 0027 unique') "
+        "WHERE status IN ('queued', 'running') AND id NOT IN ("
+        "  SELECT DISTINCT ON (tenant_id, kind) id FROM scoring_job "
+        "  WHERE status IN ('queued', 'running') ORDER BY tenant_id, kind, created_at DESC)"
+    )
+    op.execute(
+        "UPDATE research_job SET status = 'error', "
+        "error = COALESCE(error, 'superseded: duplicate active job cleared for the 0027 unique') "
+        "WHERE status IN ('queued', 'running') AND id NOT IN ("
+        "  SELECT DISTINCT ON (tenant_id) id FROM research_job "
+        "  WHERE status IN ('queued', 'running') ORDER BY tenant_id, created_at DESC)"
+    )
+
     # R9 — one-active-job-per-(tenant, kind) enforced in the DB (partial unique index).
     op.execute(
         "CREATE UNIQUE INDEX uq_scoring_job_active_tenant_kind ON scoring_job (tenant_id, kind) "
+        "WHERE status IN ('queued', 'running')"
+    )
+
+    # N8 — one-active-structuring-job-per-tenant enforced in the DB (partial unique; no kind column).
+    op.execute(
+        "CREATE UNIQUE INDEX uq_research_job_active_tenant ON research_job (tenant_id) "
         "WHERE status IN ('queued', 'running')"
     )
 
@@ -62,17 +97,22 @@ def upgrade() -> None:
     # R29a — drop the composite-covered single-column tenant indexes.
     op.drop_index("ix_company_tenant_id", table_name="company")
     op.drop_index("ix_prospect_tenant_id", table_name="prospect")
+    # N49 — research_run's tenant index is prefix-covered by the R22a composite created just above.
+    op.drop_index("ix_research_run_tenant_id", table_name="research_run")
 
     # R29b — purge retired sourcing-stage prompt rows (Apollo-only teardown left them behind).
     op.execute("DELETE FROM prompt WHERE stage = 'sourcing'")
 
 
 def downgrade() -> None:
+    op.create_index("ix_research_run_tenant_id", "research_run", ["tenant_id"])  # N49
     op.create_index("ix_prospect_tenant_id", "prospect", ["tenant_id"])
     op.create_index("ix_company_tenant_id", "company", ["tenant_id"])
 
     op.drop_index("ix_research_run_tenant_created", table_name="research_run")
+    op.drop_index("uq_research_job_active_tenant", table_name="research_job")  # N8
     op.drop_index("uq_scoring_job_active_tenant_kind", table_name="scoring_job")
     op.drop_index("ix_prospect_tenant_score", table_name="prospect")
     op.drop_index("ix_company_tenant_score", table_name="company")
-    # R29b is a data cleanup — the retired sourcing prompts are not restored (dead by design).
+    # R29b + N48 are data cleanups — the retired sourcing prompts and terminal-ized dup jobs are not
+    # restored (dead / invalid by design).

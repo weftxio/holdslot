@@ -58,13 +58,21 @@ def _masked(
         (company.size if company else None) or e.get("company_size"),
         (company.country if company else None),
     )
+    # N10 — the fit reason is free-text LLM output; deterministically scrub the withheld identity
+    # (surname / exact company / domain) so a leaky sentence can't defeat the masking allow-list.
+    fit_reason = svc.redact_identity(
+        prospect.fit_reason or comps.get("fit_reason", ""),
+        full_name=e.get("full_name"),
+        company_name=(company.name if company else None) or e.get("company"),
+        domain=(company.domain if company else None) or e.get("domain"),
+    )
     return ApprovalProspect(
         id=str(approval.id),
         name=svc.mask_name(e.get("full_name")),
         company_descriptor=descriptor,
         title=e.get("title", ""),
         seniority=e.get("seniority", ""),
-        fit_reason=prospect.fit_reason or comps.get("fit_reason", ""),
+        fit_reason=fit_reason,
         decision=approval.decision,
     )
 

@@ -36,10 +36,34 @@ def test_company_descriptor_firmographics_only():
     assert svc.company_descriptor(None, None, None) == ""
 
 
+def test_redact_identity_scrubs_surname_company_domain_keeps_first_name_and_prose():
+    # N10 — the fit reason is free LLM text; the surname / exact company / domain must be scrubbed,
+    # but the first name is already shown ("Sarah K.") so a standalone first name survives, and
+    # unrelated prose is untouched (word-boundary redaction, not blind substring nuking).
+    out = svc.redact_identity(
+        "Khan leads growth at Northwind Traders (northwind.example); Sarah will scale fast.",
+        full_name="Sarah Khan",
+        company_name="Northwind Traders",
+        domain="northwind.example",
+    )
+    assert "Khan" not in out
+    assert "northwind" not in out.lower()  # host slug + full domain both gone
+    assert "Northwind" not in out
+    assert "Sarah" in out  # first name is public via mask_name
+    assert "will scale fast" in out  # unrelated words survive
+
+
+def test_redact_identity_noops_on_empty():
+    assert svc.redact_identity("", full_name="A B") == ""
+    assert svc.redact_identity(None) == ""
+
+
 def _fake_prospect():
     return SimpleNamespace(
         id=uuid.uuid4(),
-        fit_reason="Active in your category; right seniority.",
+        # Embeds identity (surname / exact company / domain) so the masked serializer's N10 scrub is
+        # exercised end-to-end by the allow-list assertion below.
+        fit_reason="Khan at Northwind Traders (northwind.example) is active in your category.",
         enrichment={
             "full_name": "Sarah Khan",
             "title": "VP Marketing",
