@@ -830,6 +830,57 @@ defaults + the per-step **test-case register** → [`initial-build-plan.md`](ini
 | `used_at` | timestamptz nullable | single-use claim on submit |
 | `created_at` | timestamptz | |
 
+## Phase G (S7) — Stripe billing 🟡 pre-built + dormant (`0031` written, **not applied**; deploy-gated on the GS0 probe, GD-10)
+The billing metering layer. **Pre-built per GD-10** (code + `0031` + doc-fixtures now; the migration is
+applied and the Lambda deployed only after the founder's test-mode `stripe_smoke_live.py` probe pins the
+contract — the E0 pattern). **Ships dormant:** no tenant has a `subscription` row until the first signup
+(FR-7/FR-8), so the on-read billing sweep and the enrich-cap guard are both no-ops for tenant #0 today.
+Built on **Stripe Billing Meters** (the legacy usage-records API is removed ≥ API version `2025-03-31.basil`;
+the adapter pins the version header). Money rule stays the F one — `amount`/`is_billable`/`billing_chip` are
+unchanged; GS only adds a **charge trigger** (`billed_at`) + the subscription/usage state. Behavior spec →
+[`initial-build-plan.md`](initial-build-plan.md) → §GS.
+
+- **The charge trigger:** the on-read billing sweep (rides F4's `sweep_meetings`) finds rows
+  `is_billable(m) AND billed_at IS NULL AND` the tenant has an `active` subscription → emits **one meter
+  event** (`event_name = qualified_meeting`, `identifier = meeting:{id}`, `value = 1`) → claims
+  `UPDATE meeting SET billed_at = now() WHERE billed_at IS NULL`. Event-then-stamp is safe because the
+  identifier dedupes a crash-retry (the GS0 verdict). `short_call`/`noshow`/`disputed`/no-subscription rows
+  **never** emit; dogfood tenant #0 (no `subscription` row) is skipped.
+- **The enrich-cap guard:** before the paid Apollo `people/match` dispatch (`_enrich_prospects`), the
+  guard reads the tenant's `subscription` (none → unbounded no-op, today's behavior); past the plan cap it
+  emits `enrichment_overage` meter events (`value = 1` each, price $3), **never a silent block** — a hard
+  stop only when `overage_enabled = false` (§6 #7). Month rollover is an on-read `usage_month` check (no
+  EventBridge, GD-2).
+
+### `subscription` ⬜ (`0031`) — one billing row per paying tenant (tenant #0 has none — dogfood stays computed-only)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) **unique** | one subscription per tenant |
+| `plan` | varchar(16) | `free` · `launch` · `growth` (drives the default caps) |
+| `stripe_customer_id` | varchar(64) nullable | `cus_…` |
+| `stripe_subscription_id` | varchar(64) nullable | `sub_…` (carries the metered price item) |
+| `activation_paid_at` | timestamptz nullable | the standalone $400 activation invoice paid (GD-9) |
+| `enrichment_cap` | int | monthly Apollo `people/match` allowance (plan default; `admin_quota_override` wins) |
+| `icp_limit` | int | max ICPs (plan default) |
+| `current_month_usage` | int (default 0) | Apollo matches spent this `usage_month` |
+| `usage_month` | varchar(7) nullable | `YYYY-MM` (UTC) — rollover resets `current_month_usage` on read |
+| `admin_quota_override` | int nullable | founder override of `enrichment_cap` (support escape hatch) |
+| `overage_enabled` | bool (default true) | true = over-cap bills via `enrichment_overage` meter; false = hard-stop at cap (§6 #7) |
+| `status` | varchar(16) (default `active`) | mirrors Stripe: `active` · `past_due` · `canceled` · `incomplete` |
+| `created_at`, `updated_at` | timestamptz | |
+| | | `meeting.billed_at` (new col, `0031`) = the charge-emitted stamp; `is_billable`/`billing_chip` untouched |
+
+### `billing_event` ⬜ (`0031`) — append-only Stripe webhook log + the idempotency store (GS5)
+| Column | Type | Notes |
+|---|---|---|
+| `id` | uuid PK | |
+| `tenant_id` | uuid FK (CASCADE) nullable | resolved off `stripe_customer_id`; NULL if unknown (still stored) |
+| `stripe_event_id` | varchar(64) **unique** | `evt_…` — the dedupe key (a Stripe retry is a no-op, the `outreach_event` posture) |
+| `type` | varchar(64) | `invoice.paid` · `invoice.payment_failed` · `customer.subscription.updated|deleted` |
+| `payload` | JSONB | the raw verified event |
+| `created_at` | timestamptz | |
+
 ### `person` ⬜ SCALE — tenant-AGNOSTIC enrichment cache (the enrich-once seam)
 Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched once (one Apollo
 `people/match`, paid once) and referenced by N `prospect` rows.
@@ -885,6 +936,7 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260711_0028_phase_e_campaign` 🟢(applied) | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe — raw-SQL `WHERE smartlead_event_id IS NOT NULL`). **Applied to dev Aurora 2026-07-11** (4 tables + partial-unique index verified via rds-data); DB integration green. Reversible (drops the four tables in FK order). |
 | `20260711_0029_sending_account` 🟢(applied) | E | `sending_account` (per-tenant Smartlead sending-inbox pool — moves inbox ids OUT of the `holdslot/prod/smartlead` secret into the DB; an id is a reference not a credential, and the tenant→inbox map is config that grows per client). `bigint smartlead_account_id`, `status` warming/active/paused, unique(`tenant_id`,`smartlead_account_id`). Launch worker reads `active` rows (`active_sending_account_ids`) instead of `sl.sending_account_ids()`. **Seeds tenant #0 (`holdslot`) with `20084486`,`20084475`** (idempotent, tenant-scoped). **Applied to dev Aurora 2026-07-11**; integration green; backend v83. Reversible. |
 | `20260712_0030_phase_f_meeting` 🟢(applied) | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — **applied to dev Aurora 2026-07-12** (3 tables + 7 `meeting` money columns verified via rds-data); `f_smoke_live` green + `test_meetings_db` 2✓ on dev; backend v87. Reversible (drops the 3 tables in FK order). §Phase F above |
+| `20260713_0031_stripe_subscription` 🟡(**written, not applied** — NF-6/GD-10) | G | `subscription` (per-tenant billing state + usage counters, unique `tenant_id`), `billing_event` (append-only Stripe webhook log + dedupe), `meeting.billed_at` (the charge-emitted stamp) — an EXPAND migration (deploy-first-safe; nothing the live product reads is touched). **Applied only after the GS0 test-mode probe passes** (FR-7). Reversible (drops the 2 tables + the column). §Phase G above |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
 **Live Aurora head: `0030`** (dev — 2026-07-12; `0028`/`0029` Phase-E + `0030` Phase-F booking/meeting/feedback).

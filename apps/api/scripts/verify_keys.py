@@ -366,6 +366,53 @@ def check_google(sec: dict) -> None:
                      "https://meet.googleapis.com/v2/conferenceRecords?pageSize=1", auth)
 
 
+# ---- stripe (Phase G billing) ------------------------------------------------
+
+
+def check_stripe(sec: dict) -> None:
+    """Phase G (GS0): the Stripe key is valid (a FREE GET /v1/account) + the GD-3 envelope fields.
+    Prices/meters/webhook-secret are provisioned in-dashboard, so they PEND until present (--strict
+    at GS0). Never charges — the metered price + meter events are exercised by stripe_smoke_live.py."""
+    print("\nholdslot/prod/stripe")
+    api_key = sec.get("api_key")
+    record("stripe", "api_key present", bool(api_key), "stored" if api_key else "missing")
+    if not api_key:
+        return
+    auth = {"Authorization": f"Bearer {api_key}", "Stripe-Version": "2025-03-31.basil"}
+    acct = fetch_json("stripe", "api key valid", "GET", "https://api.stripe.com/v1/account", auth)
+    if acct is None:
+        return
+    mode = "test" if str(api_key).startswith(("sk_test", "rk_test")) else "live"
+    record("stripe", "api key valid", True, f"mode={mode}")
+
+    for field, label in (
+        ("price_launch", "Launch $800 price id"),
+        ("price_growth", "Growth $1,600 price id"),
+        ("price_activation", "$400 activation price id"),
+    ):
+        if sec.get(field):
+            record("stripe", label, True, "stored")
+        else:
+            pending("stripe", label, "created in-dashboard at GS0")
+    for field, label in (
+        ("meter_qualified_meeting", "qualified_meeting meter name"),
+        ("meter_enrichment_overage", "enrichment_overage meter name"),
+    ):
+        if sec.get(field):
+            record("stripe", label, True, "stored")
+        else:
+            pending("stripe", label, "created in-dashboard at GS0")
+
+    tok = sec.get("webhook_signing_secret")
+    if tok and str(tok).startswith("whsec_") and len(str(tok)) >= 24:
+        record("stripe", "webhook_signing_secret present + strong", True, f"len {len(str(tok))}")
+    elif tok:
+        record("stripe", "webhook_signing_secret present + strong", False,
+               "expected whsec_… (≥24 chars) from the Stripe webhook endpoint")
+    else:
+        pending("stripe", "webhook_signing_secret present", "from the Stripe webhook endpoint (GS0)")
+
+
 # ---- main --------------------------------------------------------------------
 
 CHECKS = {
@@ -374,6 +421,7 @@ CHECKS = {
     "apollo": lambda sec, args: check_apollo(sec),
     "smartlead": lambda sec, args: check_smartlead(sec),
     "google": lambda sec, args: check_google(sec),
+    "stripe": lambda sec, args: check_stripe(sec),
 }
 
 

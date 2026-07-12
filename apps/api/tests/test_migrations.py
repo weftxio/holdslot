@@ -45,7 +45,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0030_phase_f_meeting"]
+    assert _script_dir().get_heads() == ["0031_stripe_subscription"]
 
 
 def _fk_ondelete(model, target_table: str) -> str | None:
@@ -339,6 +339,7 @@ def test_0030_phase_f_models_match_migration():
         "feedback_at",
         "won",
         "summary",
+        "billed_at",  # added by 0031 (GS3 charge stamp) — the model column set is cumulative
         "created_at",
         "updated_at",
     }
@@ -365,3 +366,44 @@ def test_0030_phase_f_models_match_migration():
     assert "ix_booking_link_campaign_lead_id" in {i.name for i in BookingLink.__table__.indexes}
     assert "ix_meeting_tenant_scheduled" in {i.name for i in Meeting.__table__.indexes}
     assert "ix_feedback_link_meeting_id" in {i.name for i in FeedbackLink.__table__.indexes}
+
+
+def test_0031_stripe_models_match_migration():
+    """0031 (Phase G, dormant) adds `subscription` (one per paying tenant, unique tenant_id) +
+    `billing_event` (append-only Stripe log, deduped on stripe_event_id) + `meeting.billed_at`. The
+    ORM must match the columns + keys the migration builds."""
+    from app.models import BillingEvent, Subscription
+
+    assert set(Subscription.__table__.columns.keys()) == {
+        "id",
+        "tenant_id",
+        "plan",
+        "stripe_customer_id",
+        "stripe_subscription_id",
+        "activation_paid_at",
+        "enrichment_cap",
+        "icp_limit",
+        "current_month_usage",
+        "usage_month",
+        "admin_quota_override",
+        "overage_enabled",
+        "status",
+        "created_at",
+        "updated_at",
+    }
+    assert "uq_subscription_tenant" in {c.name for c in Subscription.__table__.constraints}
+
+    assert set(BillingEvent.__table__.columns.keys()) == {
+        "id",
+        "tenant_id",
+        "stripe_event_id",
+        "type",
+        "payload",
+        "created_at",
+    }
+    assert any(c.name == "stripe_event_id" and c.unique for c in BillingEvent.__table__.columns)
+    assert "ix_billing_event_tenant_id" in {i.name for i in BillingEvent.__table__.indexes}
+
+    # GS3 — the charge stamp lands on `meeting` (nullable; NULL for every row until Stripe is live).
+    assert "billed_at" in Meeting.__table__.columns
+    assert Meeting.__table__.columns["billed_at"].nullable

@@ -7,12 +7,19 @@ caller's memberships, so a user only ever sees tenants they belong to.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_current_user, get_db, require_membership
-from app.domains.clients.schemas import ClientCreateIn, ClientOut, MeOut, slugify
-from app.models import AppUser, Membership, MembershipRole, Tenant
+from app.domains.clients.schemas import (
+    ClientCreateIn,
+    ClientOut,
+    LlmUsageOut,
+    LlmUsageRow,
+    MeOut,
+    slugify,
+)
+from app.models import AppUser, LlmCall, Membership, MembershipRole, Tenant
 
 router = APIRouter(tags=["clients"])
 
@@ -61,6 +68,51 @@ def create_client(
     db.add(Membership(user_id=user.id, tenant_id=tenant.id, role=MembershipRole.owner))
     db.commit()
     return ClientOut(slug=tenant.slug, name=tenant.name, role=MembershipRole.owner.value)
+
+
+@router.get("/{client}/llm-usage", response_model=LlmUsageOut)
+def llm_usage(
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> LlmUsageOut:
+    """NF-4 — owner-only AI-COGS read: the `llm_call` telemetry grouped by month × purpose × model
+    with call/token/cost sums. The single source stays `llm_call`; this is a derived rollup (no
+    stored counters, the Phase-D rule). Swagger is the MVP surface — the FE panel + the spend alarm
+    land at cutover (GP, new-AWS-resource posture). Months bucket in UTC."""
+    month = func.to_char(
+        func.date_trunc("month", func.timezone("UTC", LlmCall.created_at)), "YYYY-MM"
+    )
+    rows = db.execute(
+        select(
+            month.label("month"),
+            LlmCall.purpose,
+            LlmCall.model,
+            func.count().label("calls"),
+            func.coalesce(func.sum(LlmCall.input_tokens), 0).label("input_tokens"),
+            func.coalesce(func.sum(LlmCall.output_tokens), 0).label("output_tokens"),
+            func.coalesce(func.sum(LlmCall.cost_usd), 0).label("cost_usd"),
+        )
+        .where(LlmCall.tenant_id == ctx.tenant.id)
+        .group_by(month, LlmCall.purpose, LlmCall.model)
+        .order_by(month.desc(), func.coalesce(func.sum(LlmCall.cost_usd), 0).desc())
+    ).all()
+    out_rows = [
+        LlmUsageRow(
+            month=r.month,
+            purpose=r.purpose,
+            model=r.model,
+            calls=r.calls,
+            input_tokens=int(r.input_tokens),
+            output_tokens=int(r.output_tokens),
+            cost_usd=float(r.cost_usd),
+        )
+        for r in rows
+    ]
+    return LlmUsageOut(
+        rows=out_rows,
+        total_cost_usd=round(sum(r.cost_usd for r in out_rows), 6),
+        total_calls=sum(r.calls for r in out_rows),
+    )
 
 
 @router.get("/{client}/context", response_model=ClientOut)

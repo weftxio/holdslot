@@ -366,6 +366,66 @@ def test_claim_atomicity_and_release(monkeypatch):
         _teardown(db, s)
 
 
+def test_won_door_isolates_billing():
+    """NF-3 — the dedicated `won` setter writes ONLY `won`. A qualified/billed meeting's outcome,
+    amount, dispute window, disputed flag and held state are all untouched (billing isolation), and
+    a `null` write clears the flag without moving the billing decision either."""
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.meetings import router
+    from app.domains.meetings.schemas import WonIn
+    from app.models import Meeting
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    s = _seed(db, suffix)
+    ctx = AccessContext(user=s["user"], tenant=s["tenant"], membership=s["membership"])
+    try:
+        meeting = Meeting(
+            tenant_id=s["tenant"].id,
+            campaign_lead_id=s["lead"].id,
+            prospect_id=s["prospect"].id,
+            approval_id=s["approval"].id,
+            scheduled_at=datetime.now(UTC) - timedelta(hours=2),
+            held=True,
+            duration_min=30,
+            outcome="qualified",
+            amount=500,
+            dispute_window_ends_at=datetime.now(UTC) + timedelta(hours=48),
+            disputed=False,
+            won=None,
+        )
+        db.add(meeting)
+        db.commit()
+        billing_before = (
+            meeting.outcome,
+            float(meeting.amount),
+            meeting.dispute_window_ends_at,
+            meeting.disputed,
+            meeting.held,
+        )
+
+        out = router.set_won(str(meeting.id), WonIn(won=True), ctx=ctx, db=db)
+        db.refresh(meeting)
+        assert meeting.won is True and out.won is True
+        assert (
+            meeting.outcome,
+            float(meeting.amount),
+            meeting.dispute_window_ends_at,
+            meeting.disputed,
+            meeting.held,
+        ) == billing_before
+        assert out.billing_chip in ("Held", "Billed")  # the billing decision is preserved
+
+        # null clears the flag back to undecided — still no billing movement.
+        router.set_won(str(meeting.id), WonIn(won=None), ctx=ctx, db=db)
+        db.refresh(meeting)
+        assert meeting.won is None
+        assert float(meeting.amount) == 500 and meeting.outcome == "qualified"
+    finally:
+        _teardown(db, s)
+
+
 def _bl_id(db, s):
     from app.models import BookingLink
 

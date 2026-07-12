@@ -29,6 +29,14 @@ class OutcomeIn(BaseModel):
     won: bool | None = None
 
 
+class WonIn(BaseModel):
+    """The dedicated `won` setter (NF-3 / GF-9) — writes the post-sale deal flag ONLY. Kept apart
+    from OutcomeIn so a conversion mark can never re-derive amount/window (billing isolation);
+    `null` clears it back to undecided."""
+
+    won: bool | None = None
+
+
 class SweepResult(BaseModel):
     swept: int = 0
     qualified: int = 0

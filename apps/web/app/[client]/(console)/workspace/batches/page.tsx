@@ -4,6 +4,7 @@ import Link from "next/link";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
 import {
+  decideBatch as apiDecideBatch,
   deleteBatch as apiDeleteBatch,
   getBatch,
   getBrief,
@@ -52,6 +53,11 @@ export default function BatchesPage() {
   // batch pending a confirmed delete (drives the confirm modal); `deleting` gates the modal button.
   const [pendingDelete, setPendingDelete] = useState<Batch | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // NF-1 step-3 fallback — the batch whose out-of-band client decision the operator is recording by
+  // hand (drives the decision modal); `decideChoice` is the picked outcome, `deciding` gates confirm.
+  const [decideFor, setDecideFor] = useState<Batch | null>(null);
+  const [decideChoice, setDecideChoice] = useState<"approve" | "changes" | null>(null);
+  const [deciding, setDeciding] = useState(false);
 
   // Refetch on every open (no stale cache): a batch's decisions can change after the client responds
   // via the link, so the prior detail is shown only until the fresh fetch lands.
@@ -129,6 +135,35 @@ export default function BatchesPage() {
       toast(e instanceof Error ? e.message : "Send failed", "warn");
     } finally {
       setSending(false);
+    }
+  };
+
+  // NF-1 — record the client's out-of-band decision by hand (the step-3 human fallback). "approve"
+  // approves the whole list (the same prospect_approval evidence the link flow writes); "changes"
+  // flags the batch changes_requested. The endpoint 409s a re-decide, so the button shows only for
+  // a still-Pending batch. reloadBatches then flips the status badge — the card's own decision log.
+  const onDecide = async () => {
+    const b = decideFor;
+    if (!b || !decideChoice) return;
+    setDeciding(true);
+    try {
+      await apiDecideBatch(
+        client,
+        b.id,
+        decideChoice === "changes" ? { request_changes: true } : { removed_ids: [] }
+      );
+      await reloadBatches();
+      toast(
+        decideChoice === "changes"
+          ? "Recorded · client requested changes"
+          : "Recorded · client approved the list"
+      );
+      setDecideFor(null);
+      setDecideChoice(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not record the decision", "warn");
+    } finally {
+      setDeciding(false);
     }
   };
 
@@ -302,6 +337,18 @@ export default function BatchesPage() {
                     )}
                   </div>
                 </div>
+                {b.status === "Pending" && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDecideChoice(null);
+                      setDecideFor(b);
+                    }}
+                  >
+                    Record client decision
+                  </button>
+                )}
                 {(b.status === "Pending" || b.status === "Rejected") && (
                   <button
                     className="btn btn-accent btn-sm"
@@ -512,6 +559,70 @@ export default function BatchesPage() {
               </>
             )}
           </p>
+        )}
+      </Modal>
+
+      <Modal
+        open={decideFor !== null}
+        onClose={() => !deciding && setDecideFor(null)}
+        title="Record the client's decision"
+        subtitle={decideFor ? `Batch "${decideFor.name}" · ${decideFor.count} prospects` : undefined}
+        footer={
+          <>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setDecideFor(null)}
+              disabled={deciding}
+            >
+              Cancel
+            </button>
+            <button
+              className="btn btn-accent btn-sm"
+              onClick={() => void onDecide()}
+              disabled={deciding || !decideChoice}
+            >
+              {deciding ? "Recording…" : "Record decision"}
+            </button>
+          </>
+        }
+      >
+        {decideFor && (
+          <>
+            <p style={{ margin: "0 0 14px", lineHeight: 1.5 }}>
+              Use this when the client approved or asked for changes <b>out-of-band</b> (a call or
+              email) instead of through the approval link — it records their decision on{" "}
+              <b>{decideFor.name}</b> directly.
+            </p>
+            <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className={clsx("btn btn-sm", decideChoice === "approve" ? "btn-accent" : "btn-ghost")}
+                aria-pressed={decideChoice === "approve"}
+                onClick={() => setDecideChoice("approve")}
+              >
+                Approve the whole list
+              </button>
+              <button
+                type="button"
+                className={clsx("btn btn-sm", decideChoice === "changes" ? "btn-danger" : "btn-ghost")}
+                aria-pressed={decideChoice === "changes"}
+                onClick={() => setDecideChoice("changes")}
+              >
+                Client requested changes
+              </button>
+            </div>
+            {decideChoice === "approve" && (
+              <p className="muted" style={{ marginTop: 12, lineHeight: 1.5 }}>
+                Records all <b>{decideFor.count}</b> prospect{decideFor.count === 1 ? "" : "s"} as
+                approved — the same approval evidence the client&apos;s own link would create.
+              </p>
+            )}
+            {decideChoice === "changes" && (
+              <p className="muted" style={{ marginTop: 12, lineHeight: 1.5 }}>
+                Marks the batch as changes requested. Revise the list, then re-send for approval.
+              </p>
+            )}
+          </>
         )}
       </Modal>
     </section>

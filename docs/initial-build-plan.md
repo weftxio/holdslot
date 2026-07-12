@@ -1274,6 +1274,212 @@ Mar'27).** No new build; everything G touches is already live:
   model → revisit copy/ICP before touching code; unsub/bounce spikes → pause + list hygiene (the E4
   write-back is the floor, not the ceiling).
 
+### Phase G execution research (2026-07-12) — dependency map + the plans each trigger fires
+
+Researched for the G handoff (full reads of `backend-development-plan.md` §S7/§5/§6/§11 + `data-schema.md`
++ an as-built repo/infra audit + external verification of the Stripe surface). **G's default posture is
+unchanged — human/run, no code** — but every dependency below is pinned so each triggered build starts
+with zero unresearched externals (the F precedent). Track map:
+
+| Track | What | Trigger | Code? |
+|---|---|---|---|
+| **G0** | entry gates (founder-only) | now | no |
+| **GOPS** | operating cadence + KPI register | S6 ticked | no |
+| **GOB** | per-signup onboarding runbook (the researched gap: sending infra) | every close | no (1 SQL INSERT/signup) |
+| **GS0–GS6** | Stripe billing build | first signup needs a real invoice | yes (`0031` + adapter + billing sweep) |
+| **GP0–GP9** | production cutover runbook | DoD met (6 signups H1) | infra only |
+| **GX1–GX4** | SCALE seams | 2nd paying tenant | yes (SCALE migration + cache path) |
+
+**Execution protocol (carry the F rules verbatim):** research-then-build per step · a step exits only when
+its gate is green · data-schema.md first on any schema change · expand → migrate-first · backend before
+frontend · money-path branches get a non-Aurora unit test (the N1 lesson) · a live test-mode probe before
+any code trusts a doc-built adapter (the E0/F2 lesson) · founder-authorized pushes only.
+
+### GF — research findings (what the G prose above under-specifies; verified against code 2026-07-12)
+
+| # | Finding | Consequence |
+|---|---|---|
+| **GF-1** | **New-tenant launch hard-blocks on sending infra.** `campaigns/launch.py:311-316` raises `SmartleadError` when a tenant has zero `active` `sending_account` rows, and **no app path creates those rows** — `0029` seeds tenant #0 only (its docstring defers to app seeding that was never built). Physically, each client also needs its **own warmed lookalike domain (~2–3 wk warm-up, spec S4; the $400 activation funds it)**. Smartlead **SmartSenders API path/shape is still UNVERIFIED** (spec §6 #9) — only matters if provisioning is automated. | GOB runbook: kick sending infra at close (the per-signup long pole); inboxes = **one INSERT by design** (`data-schema.md` `sending_account`). Automation = GD-1. |
+| **GF-2** | **No client user-invite door.** `auth` = login/refresh/forgot/reset only; `POST /clients` enrolls the **caller** (founder) as owner. A client cannot log into the console. | Operator-assisted posture holds: client touchpoints stay the tokenized external pages + email. Invite flow (riding the reset-token pattern) = deferred build, GD-8. |
+| **GF-3** | **Stripe is absent everywhere — confirmed** (no dep, no SDK, no schema; only "until Stripe (G)" comments, e.g. `meetings/service.py:22`). The F money columns (`amount` · `dispute_window_ends_at` · `disputed`) are the pre-Stripe scaffolding; `billable_this_cycle` (SQL, `campaigns/router.py:956-967`) + FE `cycleDue` both encode the derived rule. | GS adds `subscription` (backend-plan §3 fields) + a `meeting.billed_at` stamp; nothing else moves. |
+| **GF-4** | **Stripe external contract (verified 2026-07-12):** legacy usage-records API **removed at API version `2025-03-31.basil`** — **Billing Meters is the only metered path** (meter → meter events → metered price on the subscription; events don't require a live subscription). Stripe **supports HK businesses with USD settlement** to a USD-denominated bank account. Fee model in §5 stays 2.9% + $0.30. | Build meters, never usage records. Founder verifies the HK account + USD payout at GS0. |
+| **GF-5** | **The charge has no trigger event today** — `billable` is derived on read; nothing fires when the 48h window lapses. | GS3 billing sweep mirrors F4's claim: idempotent stamp `WHERE billed_at IS NULL` + meter event with a deterministic identifier (`meeting:{id}`) [money]. |
+| **GF-6** | **`secrets_prefix = "holdslot/prod"` is hardcoded + shared across workspaces** (`infra/terraform/locals.tf:13`) — "fresh prod JWT keys" is impossible without splitting the app secret per workspace. | GD-5 decision + GP1 Terraform change (provider keys stay shared; app secret splits). |
+| **GF-7** | **Cutover data strategy is unstated.** The register's `alembic upgrade + seed` implies a fresh DB — but at DoD the dev Aurora holds ~6 paying tenants' **append-only billing evidence + live tokens + Smartlead webhook targets**; a fresh seed orphans all of it. | GD-6 (recommend snapshot-restore) + GD-7 (prod takes `api.tryholdslot.com`; dev moves to `api-dev.*` so FE env + campaign webhook URLs keep working). |
+| **GF-8** | **Manual/ops seams at cutover:** `build-and-deploy.sh` defaults `holdslot-dev-api` (needs a prod fn param) · Amplify is console-managed, not Terraform (repoint `main`'s `NEXT_PUBLIC_API_BASE_URL`; the N53 preBuild guard already enforces presence) · SES sandbox-exit + MAIL FROM are operational steps with ~1-day review lead · **no CI exists at all** (Q8: wire e2e as a blocking gate at cutover). | GP0 files the SES case early; GP6–GP8 carry the rest. |
+| **GF-9** | **`meeting.won` has no console setter** ("G, manual" — recaps only render it); `disputed` DOES ride the owner outcome-correction door (`meetings/router.py:205-238`). | GOPS runbook row: mark `won` via SQL at MVP; a 1-endpoint `won` door is optional (GD-2 scope call). |
+
+### GD defaults — micro-decisions the G triggers leave open (recommended defaults; founder confirms at each trigger, none blocks G0/GOPS)
+
+| # | Question | Recommended default (execute this unless overridden) |
+|---|---|---|
+| **GD-1** | New-tenant sending infra: manual or build S4 SmartSenders provisioning? | **Manual runbook** at ≤6 tenants (GOB): register lookalike domain + 2 mailboxes + DNS + Smartlead warm-up by hand, then the one `sending_account` INSERT. SmartSenders automation waits for volume AND a verified API shape (spec §6 #9 ⚠). |
+| **GD-2** | Stripe charge cadence — EventBridge timers (the S7 spec) or the F posture? | **On-read billing sweep + Stripe-owned monthly cycle** (zero new AWS resources, mirrors F4): meter events at console-read cadence; the subscription's own billing period does the monthly close. EventBridge only if reads prove too infrequent at volume. Fold the optional `won` door into GS6 if wanted. |
+| **GD-3** | Where does Stripe config live? | Secret envelope **`holdslot/prod/stripe`** `{api_key, webhook_signing_secret, price_launch, price_growth, price_activation, meter names}` (the smartlead-envelope precedent) + per-tenant ids on the `subscription` row. `verify_keys.py` gains `check_stripe`. |
+| **GD-4** | Stripe entity/currency | **HK account · USD prices · USD settlement** (verified supported). Founder confirms business verification + USD-denominated payout bank at GS0. |
+| **GD-5** | Workspace secrets at cutover | Parameterise the **app secret path per env** (`holdslot/{env}/app` — fresh prod JWT signing+refresh keys, never reused); provider secrets (apollo/openrouter/smartlead/google/stripe) **stay shared** at `holdslot/prod/*`. |
+| **GD-6** | Prod DB: fresh seed or migrate? | **Snapshot-restore dev → prod** (a cutover, not a reset — keeps billing evidence, live tokens, webhook continuity), then `alembic upgrade head` on the restored cluster. Fresh-seed (`0002` + `HOLDSLOT_SEED_PASSWORD`) only if the founder explicitly wants a clean prod. |
+| **GD-7** | API hostname ownership | **Prod takes `api.tryholdslot.com`** (FE env + every stored Smartlead webhook URL keeps working); dev workspace re-maps to `api-dev.tryholdslot.com`. |
+| **GD-8** | Client console access | **Stay operator-assisted** (no client logins) through MVP; build the invite/set-password flow (rides the existing reset-token pattern) only on real client demand. |
+| **GD-9** | Activation invoice mechanics | **Standalone $400 invoice at close** (it funds the domain purchase — collect before provisioning), plan subscription starts same day; not an invoice item deferred to the first monthly close. |
+| **GD-10** | Pre-build the trigger-fired tracks before their triggers fire? | **Yes for GS** (code + tests + doc-fixtures + `0031` written in the G-NF run below; **NO deploy until the GS0 probe passes** — exactly the E0 pattern: build from docs, probe pins the contract, fix, then ship) and **yes for GP1 only** (Terraform prep on a branch, `plan`-reviewed, never applied). **No for GX** — additive but zero early benefit (the migration is <1 day at trigger; least-code wins). |
+
+### G0 — entry gates (founder-only, no code; G formally starts when all ✓)
+
+| ID | Gate | Ticks |
+|---|---|---|
+| G0-1 | Founder **S4/S5 acceptance run** — real campaign off the S3-round batch (the E gate left open) | S4/S5 |
+| G0-2 | Founder **S3 live batch round** (create → send masked link → approve) — the one untouched A–D gate | S3 |
+| G0-3 | **F0 real held-Meet** — `f_smoke_live.py --meeting-code` on the pooled seat + probe verdicts ②③ recorded | F0 |
+| G0-4 | Availability-windows doc authored (FD-1 shape) + FD defaults confirmed | F0 |
+| G0-5 | **FA-1…FA-12** whole-phase acceptance on live dev | **S6** (+ read-only S7 ledger) |
+
+### GOPS — the operating cadence + KPI register (the founder's loop; no code)
+
+| Cadence | Surface | Read / act | Threshold → action |
+|---|---|---|---|
+| Daily | Workspace → Reply queue | triage + respond (booking link via the one carrier) | same-day response |
+| Daily | performance-summary needs-attention | ② open/expired booking links → re-send/propose-new-time · ③ feedback pending → Send Follow-Up | overdue >5d chips |
+| Per meeting | Ledger + correction door | disputes handled **inside the 48h window** (owner `/outcome` door sets `disputed`) · mark `won` (SQL at MVP, GF-9) | never let a disputed row bill |
+| Weekly | performance-summary + ledger | funnel · booked-rate per 100 contacted · show-up rate (held ÷ ingested) · Held→Billed flips | booked-rate below model → revisit copy/ICP before code · unsub/bounce spike → pause + list hygiene |
+| Monthly | KPI vs §11 growth model | signups cumulative vs **6 (H1)** · adopter-vs-churn mix (15/85) · meetings/adopter (~4/mo HY0 → ~7 peak) · instrument the §11 missing metrics by hand (dispute rate · show-up · time-to-value · AI cost/meeting) | model divergence = a copy/ICP/pricing conversation, not a build |
+
+### GOB — per-signup onboarding runbook (repeats for every close; day offsets from signature)
+
+| Day | Step | Owner | Detail |
+|---|---|---|---|
+| D0 | Close: agreement signed ($400 activation + Launch/Growth plan) | founder | pre-GS: manual invoice/transfer · post-GS: GS4 doors (customer + subscription + activation invoice, GD-9) |
+| D0 | Switcher **"Create client"** → `POST /clients` | founder | tenant + owner membership; client gets NO login (GF-2) — external token pages are their surface |
+| D0 | **Kick sending infra — the long pole (GF-1):** register lookalike domain · 2 mailboxes · SPF/DKIM/DMARC · Smartlead warm-up ON | founder | ~2–3 wk clock; funded by the activation fee; manual per GD-1; check Smartlead tier headroom (Basic fits 2 inboxes) |
+| D0–2 | Brief + ICPs entered with the client → Generate Scope | founder | code-default prompts/templates/availability all apply to a fresh tenant (no seeding needed) |
+| D3–7 | Find → score → select → enrich → batch → **masked approval link** → client approves | founder | the A→D+ loop, per-tenant enrich spend starts here (cap enforcement arrives with GS4/GX3) |
+| D14–21 | Warm-up complete → **INSERT `sending_account` rows** (`status='active'`, unique tenant×account id) → launch campaign | founder | the one SQL step by design; launch hard-fails before it (GF-1) |
+| D21+ | Replies → booking → meeting → ledger (the E/F loop runs itself) | founder | GOPS cadence takes over |
+
+### GS — Stripe billing build (trigger: the first signup needs a real invoice)
+
+**Verified contract notes (GF-4):** build on **Billing Meters** (usage-records is removed ≥ `2025-03-31.basil`
+— pin the API version header); meter events carry `event_name · identifier (idempotency) · timestamp ·
+payload{stripe_customer_id, value}`; ⚠ GS0 pins the identifier dedupe window + the meter-event backdating
+limit. Adapter = the repo posture (stdlib `urllib`, NO SDK): Bearer auth · form-encoded bodies ·
+`Idempotency-Key` on every POST · webhook `Stripe-Signature` = `t`/`v1` HMAC-SHA256 over
+`"{t}.{payload}"`, `compare_digest`, ~300s tolerance ⚠.
+
+| Step | Builds | Key spec | Flag |
+|---|---|---|---|
+| **GS0** | Founder gates + **test-mode live probe** (`scripts/stripe_smoke_live.py`) | HK account verified + USD payout bank (GD-4) · products/prices/meters created in-dashboard (Launch $800 · Growth $1,600 · activation $400 · meter `qualified_meeting` @ $500 · meter `enrichment_overage` @ $3) · secret `holdslot/prod/stripe` seeded (GD-3) + `verify_keys.py check_stripe` · probe pins: customer → subscription w/ metered item → meter event ×2 same identifier (dedupe verdict ⚠) → upcoming-invoice preview shows $500 → webhook signature verify → **fixtures committed** | ⭐ |
+| **GS1** | `data-schema.md` first → migration **`0031`**: `subscription` (unique `tenant_id` · `plan` free/launch/growth · `stripe_customer_id` · `stripe_subscription_id` · `activation_paid_at` · `enrichment_cap` · `icp_limit` · `current_month_usage` · `usage_month` · `admin_quota_override` · `status`) + `meeting.billed_at` timestamptz NULL | backend-plan §3 `Subscription` fields; expand → migrate-first; tenant #0 gets NO row (dogfood stays computed-only) | |
+| **GS2** | `integrations/stripe/client.py` + `tests/test_stripe.py` | ONLY: `create_customer` · `create_subscription` · `create_invoice`+item (activation) · `meter_event` · `verify_webhook` — the smartlead adapter shape (lru_cache secret w/ env override · `_RETRYABLE` backoff · redaction asserts · `reset_secret`); two-layer tests (URL/body pins + fake urlopen) | ⭐ |
+| **GS3** | **The billing sweep [money]** — rides the existing F4 on-read sweep | rows `is_billable(m) AND billed_at IS NULL AND` tenant has an active `subscription` → emit meter event (`identifier = meeting:{id}`) → claim `UPDATE … SET billed_at WHERE billed_at IS NULL`; event-then-stamp is safe because the identifier dedupes a crash-retry (the GS0 verdict) · `disputed`/`short_call`/`noshow`/no-subscription rows **never** emit · dogfood tenant #0 skipped | ⭐ |
+| **GS4** | Onboarding money doors + the anti-burn guard going live | owner-gated: create customer+subscription at close · standalone activation invoice (GD-9) · **enrich-cap enforcement at the dispatch** (`current_month_usage` vs plan cap BEFORE `people/match`; past cap → `enrichment_overage` meter events, never a silent block; hard stop only when overage disabled — spec §6 #7) · month rollover = on-read `usage_month` check (no EventBridge, GD-2) | |
+| **GS5** | `webhooks/stripe` route (public: path-token + signature verify — the smartlead webhook posture) | handle `invoice.paid` / `invoice.payment_failed` / `customer.subscription.updated\|deleted` → update `subscription.status` + surface on the ledger; persist raw events append-only | |
+| **GS6** | FE minimal + register + **GSA acceptance** | Ledger gains an invoice-status line (chips stay derived); register discipline = F's ([money] musts: 2nd sweep emits nothing · disputed never bills · cap boundary 150/400 · signature-negative → 4xx · no-subscription skip) · **GSA:** first real signup — activation invoice paid → subscription active → a real qualified meeting flips Billed → meter event lands → the month's invoice shows the $500 line | |
+
+### GP — production cutover runbook (trigger: DoD met; the §After A–G register, ordered + the GF findings folded in)
+
+| # | Step | Detail / verify |
+|---|---|---|
+| **GP0** | Preconditions | DoD met · GD-5/6/7 confirmed · **SES prod-access case filed** (~1-day lead, GF-8) · pytest + e2e green |
+| **GP1** | Terraform prep (plan-only review first) | parameterise the app-secret path per env (GD-5/GF-6) · add **N20** `destination_config`+alarms · **N52** exact secret ARNs · **N54** stage throttling · prod tfvars: `aurora_min_acu ≥ 0.5` · prod `web_base_url`/`web_origins` · budget |
+| **GP2** | Mint prod app secret | fresh `jwt_signing_key`/`jwt_refresh_key` (≥32 chars, distinct, never dev's) + `HOLDSLOT_SEED_PASSWORD` iff GD-6 = fresh · `verify_keys.py --only app` against the prod path |
+| **GP3** | `terraform workspace new prod` → `apply` | per-workspace state key · account guard holds · confirm `deletion_protection` survives (N3) |
+| **GP4** | Database per GD-6 | snapshot-restore dev → prod cluster → `alembic upgrade head` (no-op if heads match) · OR fresh: `upgrade head` runs `0002` seed |
+| **GP5** | SES prod | identity + DKIM + custom MAIL FROM on the prod identity · sandbox-exit approved · test send lands |
+| **GP6** | Backend deploy | `build-and-deploy.sh` with the prod fn name (parameterise the `holdslot-dev-api` default, GF-8) → `/health` → `verify_keys.py --strict` |
+| **GP7** | Cut the hostname + FE | `api.tryholdslot.com` → prod API GW; dev re-maps to `api-dev.*` (GD-7) · Amplify `main` env `NEXT_PUBLIC_API_BASE_URL` → prod (console; N53 guard proves it) → build → `tryholdslot.com` smoke (login + one full-loop read) |
+| **GP8** | Harden | wire e2e as a **blocking deploy gate** (Q8) + minimal CI/CD · S3 PAB on any new bucket · Aurora min-ACU confirmed ≥ 0.5 |
+| **GP9** | Post-cut watch | live campaign webhooks still land (GD-7 makes this a no-op) · booking/feedback tokens minted pre-cut still resolve (GD-6 snapshot preserves them) · dev keeps running as staging |
+
+### GX — SCALE seams (trigger: the 2nd paying tenant)
+
+| # | Builds | Key spec |
+|---|---|---|
+| **GX1** | `data-schema.md` first → the SCALE migration (`person` + `enrichment_request`) | verbatim per the data-schema SCALE section (`identity_key` PK cache + fan-out map); additive — `prospect.identity_key`/`last_enriched_at` anchors already exist; `prospect` gains the FK, keeps the embedded `enrichment` until a later backfill |
+| **GX2** | Cache-first enrich path | before any `people/match`: look up `person` by `identity_key`, fresh within the ~90d TTL → copy through at **$0**; miss → enrich → write-through + `enrichment_request` provenance row [money — this is the enrich-once promise] |
+| **GX3** | Per-tenant billing expectations | plan-derived `enrichment_cap` enforced per tenant (rides GS4's guard) · per-tenant masking is already structural (the D serializer + F reveal) — verify with a 2-tenant read test, no new masking code expected |
+| **GX4** | Capacity review | 2nd sending domain ([SCALE] per §sending-infra) · Smartlead tier headroom · pooled Workspace host-seat count vs meeting volume |
+
+### G-FR — founder resolution register (everything across A→G that needs the founder; work these after the MVP build completes)
+
+Every item that only the founder can resolve, with the concrete resolution steps, the done-when evidence,
+and what each unblocks. Ordered — FR-1…FR-5 are sequential (each feeds the next); FR-6+ fire per trigger.
+
+| # | Item | How to resolve (concrete steps) | Done when | Unblocks |
+|---|---|---|---|---|
+| **FR-1** | **S3 live batch round** | On live dev: Prospect list → select approved-fit rows → create batch (Sendout Batch tab) → **Send** via the Brief attendee-email dropdown → open the masked link (incognito) → client-approve | Batch shows approved · `prospect_approval` rows recorded · status log updated | S3 tick · G0-2 · **the E acceptance campaign consumes THIS batch** (EF-Q2) |
+| **FR-2** | **S4/S5 acceptance run** | Campaign tab → create campaign on the FR-1 batch → confirm A/B/C variants → **launch** (sends ride the warmed `getholdslot.com` inboxes; unsub link auto-appends) → watch the webhook funnel move stages → answer ≥1 reply through the Reply-queue respond door | Real sends visible in Smartlead + ≥1 reply triaged in-app | S4/S5 tick · G0-1 |
+| **FR-3** | **F0 real held-Meet** | Hold one real Meet **≥10 min, 2 participants**, hosted on the pooled seat → `python scripts/f_smoke_live.py --meeting-code <abc-defg-hij>` → record probe verdicts **②** (host identifiable → drives the FD-2 duration refinement) + **③** (multi-record) into §F | Probe green · verdicts written into §F | G0-3 · the only sweep-qualify path not exercisable without a real meeting |
+| **FR-4** | **Availability doc + FD sign-off** | Author the weekly windows in the FD-1 JSON shape (`tz` · `meeting_minutes` · `windows.mon…fri`) into the Brief; confirm or override FD-1…FD-8 in writing (note: the shipped TZ default is `Asia/Singapore` — override if HK is wanted) | FD register annotated confirmed/overridden | G0-4 |
+| **FR-5** | **FA whole-phase acceptance** | Run the §FA table (FA-1…12) as one scripted sitting on live dev — book through a real reply thread → busy-slot masking → invites arrive → hold ≥10 min → auto-qualify $500 → Billed flip (SQL nudge) → feedback round → single-use proofs → no-show path | FA-12 gates green + FA-1…11 observed | **ticks S6 → G formally starts** |
+| **FR-6** | **GD-1…GD-10 decisions** | Read the §GD table; annotate each row confirmed or overridden (5 minutes each; recommended defaults pre-written) | Every GD row annotated | locks the GS/GP/GX execution shape + the G-NF wave plan below |
+| **FR-7** | **GS0 — Stripe account + config** (at the first invoice-needing signup, or earlier per GD-10) | stripe.com: HK business account + verification → Payouts: USD-denominated bank (GD-4) → Dashboard: products/prices **Launch $800/mo · Growth $1,600/mo · Activation $400 one-time** + meters **`qualified_meeting` @ $500 · `enrichment_overage` @ $3** → restricted API key + webhook signing secret → seed **`holdslot/prod/stripe`** (GD-3 envelope) → hand the **test-mode** key to the build session → authorize the GS0 probe | `verify_keys.py --only stripe` PASS · probe fixtures + dedupe verdict committed | GS deploy (code pre-built per GD-10) |
+| **FR-8** | **GSA — first real billing round** | After GS ships: first signup pays the activation invoice → subscription active → a real meeting qualifies → confirm the $500 line lands on that month's invoice | GSA row green | **GS DoD** — billing is real |
+| **FR-9** | **GOB per-signup ops** (×6 over H1) | Follow §GOB per close: D0 agreement + activation invoice · D0 lookalike-domain purchase + 2 mailboxes + DNS + warm-up ON (~2–3 wk clock) · D0–2 brief/ICP session · D3–7 approve round · D14–21 authorize the `sending_account` INSERT → launch | Each tenant's campaign launches | the DoD engine — every signup's revenue path |
+| **FR-10** | **GOPS cadence** (ongoing) | Daily reply queue + needs-attention · disputes **inside the 48h window** via the owner `/outcome` door · mark `won` (console door once NF-3 ships; SQL until then) · weekly funnel/show-up read · monthly KPI vs §11 | — (ongoing) | DoD progress visibility |
+| **FR-11** | **GP0 + GP2 — cutover go** (at DoD) | Authorize the cutover · file the **SES production-access case** (~1-day lead) · mint fresh prod JWT signing+refresh keys into the per-env app secret (GD-5) (+ `HOLDSLOT_SEED_PASSWORD` only if GD-6 is overridden to fresh-seed) | GP0 checklist ticked · prod secrets verified | GP3–GP9 (pre-prepped per GD-10/GP1) |
+| **FR-12** | **GX4 capacity spends** (at the 2nd paying tenant) | Buy the 2nd sending domain · Smartlead tier headroom · Workspace host seats as meeting volume needs | accounts provisioned | GX volume path |
+
+### G-NF — the non-founder build register (the Opus run plan: waves · files · build logic · post-build impact)
+
+Everything remaining across A→G that needs **no founder input to build** (founder authorizes pushes per the
+standing rule). Three waves: **Wave 1** has no precondition — execute immediately; **Wave 2** pre-builds
+the GS/GP1 tracks per **GD-10** (code + tests + fixtures now, deploy gated on the FR-7 probe / never-apply);
+**Wave 3** is trigger-fired — fully specced above, executed the day its trigger lands. Protocol per step:
+the §execution-protocol rules (data-schema first · expand→migrate-first · backend-before-frontend ·
+money-path non-Aurora unit tests · gates green before exit).
+
+**Wave 1 — no precondition (execute now, one push):**
+
+| # | Item | Files / seams | Build logic | Post-build impact |
+|---|---|---|---|---|
+| **NF-1** | Step-3 console decide UI | BE exists+tested: `batches/router.py:246` `POST /{client}/batches/{id}/decide` · FE fn exists: `lib/api.ts:1017 decideBatch` · surface: the Sendout Batch tab (`app/[client]/(console)/workspace/batches/`) | Owner-only **"Record client decision"** on a batch whose link is live/expired-unanswered: modal-confirmed Approve/Reject (the delete-confirm pattern) → `decideBatch` → `reloadBatches`; render the decision in the status log. No backend change | An out-of-band client "yes" (phone/email) no longer strands a batch or needs SQL — GOB D3–7 keeps moving; closes the last dead-end in the D approval loop |
+| **NF-2** | `reloadBatches` → TanStack Query | `components/workspace/WorkspaceProvider.tsx:61` (+ the campaigns/replies/meetings loaders it patterned) · `@tanstack/react-query` already a dep | `useQuery({queryKey:['batches', client]})`; mutations `invalidateQueries`; **keep the provider API identical** (`reloadBatches` becomes an invalidate wrapper) so zero consumer edits; then the same move for the 3 sibling loaders | Pure refactor (Playwright pins regression): deduped fetches, no stale lists across tab switches, one caching idiom for every workspace loader |
+| **NF-3** | `meeting.won` console door (GF-9) | BE: `domains/meetings/router.py` + `schemas.py` · FE: `workspace/summaries/page.tsx` (recap card already renders `won`) + `lib/api.ts` | `POST /{client}/meetings/{id}/won {won: bool\|null}` owner-gated — writes **`won` only, never outcome/amount** (billing isolation pinned by a unit test); FE: Deal won / No deal toggle on held-meeting recap cards | GOPS loses its only SQL step; the §11 adopter-vs-churn mix becomes console-readable per tenant |
+| **NF-4** | LLM usage read (the After-A–G rollup, panel half) | BE: owner endpoint `GET /{client}/llm-usage` off the `llm_call` telemetry table (B1) — group purpose×model×month, SUM tokens/cost | Read-only aggregation endpoint; Swagger is the MVP surface (no FE page — least code); the **spend alarm stays at GP** (new AWS resource = cutover posture) | Per-tenant AI COGS visible before pricing conversations; feeds §5 re-cost + GS4 margin sanity |
+| **NF-5** *(optional)* | R30 residual integration tests | `tests/` — research-runs endpoint read + per-ICP people-precedence HTTP (both Aurora-gated) | Only if the run has slack — they're **accepted** gaps overlapping existing coverage | Closes the last two D+.5 carve-outs that have no revisit condition |
+
+**Wave 2 — pre-build per GD-10 (this run writes it; deploy waits for its founder gate):**
+
+| # | Item | Files / seams | Build logic | Gate to deploy | Post-build impact |
+|---|---|---|---|---|---|
+| **NF-6** | **GS1–GS6 complete code** | `data-schema.md` (§Stripe, new) · `infra/alembic/versions/20260713_0031_stripe_subscription.py` · `models.py` (`Subscription`, `meeting.billed_at`) · `integrations/stripe/client.py` + `tests/test_stripe.py` (doc-fixtures) · `scripts/stripe_smoke_live.py` · `verify_keys.py` (+`check_stripe`) · `domains/meetings/` (GS3 sweep hook) · `domains/billing/` (GS4 doors + GS5 webhook, mounted in `main.py`) · `prospects/router.py::_enrich_prospects` (cap guard) · `workspace/billing/page.tsx` + `lib/api.ts` (GS6 line) | Exactly the §GS0–GS6 table — built from the verified contract notes with committed doc-fixtures, the [money] test musts all non-Aurora | **FR-7**: probe green on the founder's test-mode key → fix contract drift (the E0 lesson budgeted, not feared) → apply `0031` → deploy | The day the first signup needs an invoice, billing is a **probe + deploy day, not a build week** — revenue never waits on code |
+| **NF-7** | **GP1 Terraform prep** (branch, never applied) | branch `cutover-prep`: `locals.tf` (per-env app-secret path, GD-5) · `lambda.tf` (N20 `destination_config` + alarms) · `iam.tf` (N52 exact ARNs) · `apigw.tf` (N54 throttling) · prod tfvars (`aurora_min_acu ≥ 0.5` · prod `web_base_url`/`web_origins`) · `build-and-deploy.sh` (fn-name param replacing the `holdslot-dev-api` default) | Author + `terraform plan` both workspaces → review output committed to the branch; **no apply** | **FR-11**: DoD + founder go | Cutover day shrinks to the GP3–GP9 runbook (~half a day); the three register items (N20/N52/N54) stop being memory |
+
+**Wave 3 — trigger-fired (specced above; execute the day the trigger lands):**
+
+| # | Item | Trigger | Executes |
+|---|---|---|---|
+| **NF-8** | GS deploy + GSA support | FR-7 probe green | apply `0031` → deploy → walk FR-8 with the founder |
+| **NF-9** | GP3–GP9 cutover runbook | FR-11 (DoD + go) | workspace apply → snapshot-restore → SES → prod deploy → hostname/FE cut → e2e CI gate (Q8) |
+| **NF-10** | GX1–GX3 SCALE build | 2nd paying tenant | `person`+`enrichment_request` migration → cache-first enrich [money] → per-tenant caps (rides GS4) |
+| **NF-11** | Client invite flow | GD-8 overridden / client demand | invite + set-password riding the reset-token pattern |
+| **NF-12** | SmartSenders auto-provisioning | GD-1 overridden AND API verified | the S4 provisioning spec (§backend-plan) |
+| **NF-13** | AroundDeal 2nd-source adapter | their monthly API pricing unlock | the §Asia-depth provider seam (verified param facts recorded) |
+
+**The Opus run = Wave 1 + Wave 2 in one session** (sequencing: NF-1 → NF-3 → NF-4 → NF-2 → NF-6 → NF-7;
+NF-5 if slack). Exit gates: full pytest + ruff + `tsc`/`eslint`/`pnpm build` + Playwright green · zero
+deploys of Wave-2 code · one founder-authorized push. Nothing in Wave 1/2 touches live money paths —
+GS3's sweep hook ships **dormant** (no tenant has a `subscription` row until FR-7/FR-8).
+
+**BUILD LOG — 2026-07-12 (Opus run · uncommitted on `dev`, NF-7 on `cutover-prep`):** Wave 1 + Wave 2
+built in one session; sequence NF-1 → NF-3 → NF-4 → NF-2 → NF-6 → NF-7 all green (NF-5 skipped).
+
+| # | Built | Where |
+|---|---|---|
+| **NF-1** ✅ | Owner "Record client decision" modal on Pending batches → `decideBatch` (approve-all `{removed_ids:[]}` or `request_changes`) → reload; the status badge IS the decision log. No BE change. | `workspace/batches/page.tsx` |
+| **NF-3** ✅ | `POST /{client}/meetings/{id}/won` (owner, writes `won` ONLY — billing isolation pinned by `test_won_door_isolates_billing`) + Deal-won/No-deal toggle; `Recap.won` now tri-state `bool\|null`. | `meetings/{router,schemas}.py` · `summaries/page.tsx` · `api.ts` · `test_meetings_db.py` |
+| **NF-4** ✅ | `GET /{client}/llm-usage` (owner) — month×purpose×model rollup off `llm_call`; Swagger-only (no FE). | `clients/{router,schemas}.py` |
+| **NF-2** ✅ | WorkspaceProvider's four loaders → TanStack Query; provider API unchanged (`reload*` = invalidate wrappers, `setReplies` = setQueryData); the N14 in-flight-switch guard is structurally retired by per-client keys. | `WorkspaceProvider.tsx` |
+| **NF-6** ✅ | GS1–GS6 **dormant + deploy-gated**: data-schema §Phase G + migration **`0031`** (`subscription`·`billing_event`·`meeting.billed_at`, **written, NOT applied**) · `integrations/stripe/client.py` (stdlib urllib · Bearer · form-encode · Idempotency-Key · `2025-03-31.basil` · webhook HMAC) + `tests/test_stripe.py` (20✓) · `domains/billing/{service,router,webhooks}.py` (on-read sweep · enrich-cap guard · owner doors · public webhook, mounted in `main.py`) · cap guard in `prospects/_enrich_prospects` · `verify_keys check_stripe` · `scripts/stripe_smoke_live.py` (GS0 probe) · billing FE status line (dormant-safe). **Deploy waits on FR-7.** | (12 files + `data-schema.md`) |
+| **NF-7** ✅ | On branch **`cutover-prep`** (commit `cd0dca2`, **never applied to dev**): N20 async DLQ+SNS+alarms · N52 exact secret ARNs · N54 API-GW throttling · GD-5 per-env app-secret prefix · `prod.tfvars.example` (Aurora min-ACU 0.5) · `build-and-deploy.sh` env-aware fn name. | `infra/terraform/*` · `build-and-deploy.sh` |
+
+**Gates:** pytest **357✓ / 23 skip** (Aurora-gated, incl. new `test_won_door_isolates_billing` +
+`test_0031_stripe_models_match_migration`) · ruff clean · FE `tsc` + `eslint` + `pnpm build` clean.
+**Playwright deferred** — the founder's running `pnpm dev` holds Next 16's single-dev-server lock;
+run `pnpm exec playwright test` on a free port to close it. **Nothing deployed, applied, or pushed.**
+The one founder-authorized push = the `dev` working tree (Wave 1 + NF-6, dormant); NF-7 stays on
+`cutover-prep` for the FR-11 plan-review.
+
 ---
 
 ## Open gates & pending register
@@ -1287,7 +1493,7 @@ Mar'27).** No new build; everything G touches is already live:
 | Warmed inboxes ready | E0 | ramp **elapsed** (started 06-17, ~3 weeks) — E0 confirms reputation/health in the Smartlead dashboard, not the calendar |
 | **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation now re-checks `UserStatus` + is single-use guarded (N9/N33 ✅) | — | tracked |
 | **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (**resolver BUILT in D+ Stage 4** — `tech_vocab` → `currently_using_any_of_technology_uids`) · `revenue_range` (no ICP form field) · funding-stage key **confirmed absent from the documented API** (2026-07-08) | — | post-MVP / D+ |
-| **Backlog:** step-3 console decide UI (the `decide_batch` endpoint + `decideBatch` client fn exist, tested; no UI) · `person` enrich-once cache (lands with tenant #2) · move `reloadBatches` onto the TanStack-Query cache | — | optional |
+| **Backlog:** ~~step-3 console decide UI~~ ✅ **built (NF-1)** · ~~move `reloadBatches` onto the TanStack-Query cache~~ ✅ **built (NF-2)** · `person` enrich-once cache (lands with tenant #2, NF-10/GX1) | — | NF-1/NF-2 done · cache deferred |
 
 ---
 

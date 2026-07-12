@@ -1,13 +1,6 @@
 "use client";
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useMemo, type ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   listBatches,
   listCampaigns,
@@ -26,9 +19,12 @@ import type { Batch, Recap } from "@/lib/workspace/types";
 // unhandled count drives the tab pip) lives here in a provider mounted by the workspace layout,
 // above all the sub-routes.
 //
-// Phase E: `campaigns` and `replies` are now LIVE — loaded from the API on mount and refreshable
-// (create/launch/triage/respond call the matching reload). Only `recaps` (meeting summaries) stays
-// mock until Phase F writes the `meeting` moves.
+// NF-2: the four loaders now ride the app-wide TanStack Query cache (the same one the Business
+// Brief tab already uses), keyed per client. A tab-return within `staleTime` is a pure cache hit —
+// no refetch storm — and keying by `client` structurally retires the old N14 in-flight-switch guard
+// (a client switch changes the query key, so a stale fetch can never overwrite the new client's
+// rows). The provider's exposed shape is UNCHANGED — `reload*` are thin `invalidateQueries`
+// wrappers and `setReplies` a `setQueryData` wrapper — so every consumer keeps working verbatim.
 type WorkspaceCtx = {
   // batches / campaigns are read-only to consumers — mutated only via their live reload (the
   // create/send/launch flows refresh through it), so there's no setter escape hatch.
@@ -49,89 +45,77 @@ const Ctx = createContext<WorkspaceCtx | null>(null);
 
 export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const client = useClient();
-  const [batches, setBatches] = useState<Batch[]>([]);
-  const [campaigns, setCampaigns] = useState<CampaignApi[]>([]);
-  const [replies, setReplies] = useState<ReplyApi[]>([]);
-  const [recaps, setRecaps] = useState<Recap[]>([]);
-  // Always holds the latest client so an in-flight reload can detect a switch and drop its result.
-  // Updated in the mount/client-change effect below (not during render — refs must not be written
-  // in the render body).
-  const clientRef = useRef(client);
+  const queryClient = useQueryClient();
 
-  const reloadBatches = useCallback(async () => {
-    try {
-      const rows = await listBatches(client);
-      // N14 — a switch during the fetch would otherwise overwrite the NEW client's rows with the old
-      // client's (a cross-client leak). Bail if the active client moved on.
-      if (clientRef.current !== client) return;
-      setBatches(rows.map(batchFromApi));
-    } catch {
-      // Auth/cold-start failures surface via the console SessionGuard; an empty list is the safe
-      // default here so the tab still renders.
-      if (clientRef.current !== client) return;
-      setBatches([]);
-    }
-  }, [client]);
+  // The four cross-tab queries. An auth/cold-start failure leaves `data` undefined (retry:false is
+  // set globally — the data layer already does its own refresh/503 retry), so the `?? []` fallback
+  // renders an empty tab rather than throwing — the same safe default the old catch blocks gave.
+  const batchesQ = useQuery({ queryKey: ["batches", client], queryFn: () => listBatches(client) });
+  const campaignsQ = useQuery({
+    queryKey: ["campaigns", client],
+    queryFn: () => listCampaigns(client),
+  });
+  const repliesQ = useQuery({ queryKey: ["replies", client], queryFn: () => listReplies(client) });
+  const meetingsQ = useQuery({
+    queryKey: ["meetings", client, "past"],
+    queryFn: () => listMeetings(client, "past"),
+  });
 
-  const reloadCampaigns = useCallback(async () => {
-    try {
-      const rows = await listCampaigns(client);
-      if (clientRef.current !== client) return;
-      setCampaigns(rows);
-    } catch {
-      if (clientRef.current !== client) return;
-      setCampaigns([]);
-    }
-  }, [client]);
+  const batches = useMemo(() => (batchesQ.data ?? []).map(batchFromApi), [batchesQ.data]);
+  const campaigns = campaignsQ.data ?? [];
+  const replies = repliesQ.data ?? [];
+  // Recaps = held meetings only (a meeting summary is for a meeting that happened).
+  const recaps = useMemo<Recap[]>(
+    () =>
+      (meetingsQ.data ?? [])
+        .filter((r) => r.held)
+        .map((r) => ({
+          id: r.id,
+          campaign: r.campaign_name,
+          batch: r.batch_name,
+          prospectName: r.prospect_name,
+          companyName: r.company_name,
+          scheduledAt: r.scheduled_at,
+          outcome: r.outcome,
+          rating: r.feedback_rating,
+          won: r.won, // tri-state passthrough (NF-3): true | false | null (undecided)
+        })),
+    [meetingsQ.data]
+  );
 
-  const reloadReplies = useCallback(async () => {
-    try {
-      const rows = await listReplies(client);
-      if (clientRef.current !== client) return;
-      setReplies(rows);
-    } catch {
-      if (clientRef.current !== client) return;
-      setReplies([]);
-    }
-  }, [client]);
+  // A reload = invalidate its query; with the observer mounted here (always, while the workspace
+  // is open) that triggers a refetch and the returned promise resolves once the fresh rows land —
+  // so an awaiting caller (create/send/launch/triage) still sees updated data on resolve.
+  const reloadBatches = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["batches", client] }).then(() => {}),
+    [queryClient, client]
+  );
+  const reloadCampaigns = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["campaigns", client] }).then(() => {}),
+    [queryClient, client]
+  );
+  const reloadReplies = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["replies", client] }).then(() => {}),
+    [queryClient, client]
+  );
+  const reloadMeetings = useCallback(
+    () => queryClient.invalidateQueries({ queryKey: ["meetings", client, "past"] }).then(() => {}),
+    [queryClient, client]
+  );
 
-  const reloadMeetings = useCallback(async () => {
-    try {
-      const rows = await listMeetings(client, "past");
-      if (clientRef.current !== client) return;
-      // Recaps = held meetings only (a meeting summary is for a meeting that happened).
-      setRecaps(
-        rows
-          .filter((r) => r.held)
-          .map((r) => ({
-            id: r.id,
-            campaign: r.campaign_name,
-            batch: r.batch_name,
-            prospectName: r.prospect_name,
-            companyName: r.company_name,
-            scheduledAt: r.scheduled_at,
-            outcome: r.outcome,
-            rating: r.feedback_rating,
-            won: !!r.won,
-          }))
-      );
-    } catch {
-      if (clientRef.current !== client) return;
-      setRecaps([]);
-    }
-  }, [client]);
-
-  useEffect(() => {
-    // Load the cross-tab data on mount / client change — data-sync effects (external → React), not
-    // derived state; each setState lands after its awaited fetch. Stamp the current client BEFORE the
-    // fetches so a stale in-flight reload (from a prior client) bails on resolve.
-    clientRef.current = client;
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    void reloadBatches();
-    void reloadCampaigns();
-    void reloadReplies();
-    void reloadMeetings();
-  }, [client, reloadBatches, reloadCampaigns, reloadReplies, reloadMeetings]);
+  // Optimistic triage/respond writes go straight to the replies cache — same `useState` setter
+  // signature (value or updater), now backed by setQueryData so a later reloadReplies re-syncs.
+  const setReplies = useCallback<React.Dispatch<React.SetStateAction<ReplyApi[]>>>(
+    (update) => {
+      queryClient.setQueryData<ReplyApi[]>(["replies", client], (prev) => {
+        const base = prev ?? [];
+        return typeof update === "function"
+          ? (update as (p: ReplyApi[]) => ReplyApi[])(base)
+          : update;
+      });
+    },
+    [queryClient, client]
+  );
 
   return (
     <Ctx.Provider

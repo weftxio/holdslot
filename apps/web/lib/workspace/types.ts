@@ -105,7 +105,9 @@ export type Recap = {
   scheduledAt: string;
   outcome: string | null;
   rating: number | null;
-  won: boolean;
+  // tri-state (NF-3): true = deal won · false = no deal · null = not yet decided. Kept nullable so
+  // the §11 adopter-vs-churn read never conflates "explicitly no deal" with "undecided".
+  won: boolean | null;
 };
 
 export type Range = { min?: number | null; max?: number | null } | undefined;

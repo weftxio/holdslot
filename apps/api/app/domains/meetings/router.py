@@ -28,6 +28,7 @@ from app.domains.meetings.schemas import (
     MeetingOut,
     OutcomeIn,
     SweepResult,
+    WonIn,
 )
 from app.integrations.google import client as g
 from app.models import (
@@ -94,6 +95,17 @@ def sweep_meetings(db: Session, tenant_id) -> SweepResult:
             log.warning("sweep: google read failed for meeting=%s — skipped", meeting.id)
     if res.swept:
         db.commit()
+    # GS3 — the on-read billing sweep rides here (dormant until a tenant has a Stripe subscription).
+    # Lazy-imported + best-effort: a billing hiccup must never fail the meetings/ledger read. Roll
+    # back on any error so a DB-level failure (e.g. an Aurora resume mid-sweep) doesn't leave the
+    # session in an aborted transaction that then 500s the list query that follows this call.
+    try:
+        from app.domains.billing.router import bill_due_meetings
+
+        bill_due_meetings(db, tenant_id)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        log.warning("sweep: billing sweep failed for tenant=%s — deferred", tenant_id)
     return res
 
 
@@ -210,7 +222,12 @@ def correct_outcome(
     db: Session = Depends(get_db),
 ) -> MeetingOut:
     """The explicit owner-correction door (never the sweep) — re-derives amount/window off the
-    corrected outcome + the dispute flag."""
+    corrected outcome + the dispute flag.
+
+    Billing note (GS): the sweep emits a meter event only AFTER the 48h dispute window closes, and a
+    correction is expected inside that window, so `billed_at` is normally still NULL here. If a
+    meeting were corrected to short_call/noshow AFTER it had already billed, this door zeroes
+    `amount` but emits NO Stripe reversal — the dispute window guards that (accepted at MVP)."""
     meeting = _load_meeting(db, ctx.tenant.id, meeting_id)
     if body.outcome not in ("qualified", "short_call", "noshow"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid outcome")
@@ -236,6 +253,23 @@ def correct_outcome(
             _record_stage_move(db, lead, target, via="correction")
     db.commit()
     return _meeting_out(meeting, _name_maps(db, [meeting]), now)
+
+
+@router.post("/{client}/meetings/{meeting_id}/won", response_model=MeetingOut)
+def set_won(
+    meeting_id: str,
+    body: WonIn,
+    ctx: AccessContext = Depends(require_membership(MembershipRole.owner)),
+    db: Session = Depends(get_db),
+) -> MeetingOut:
+    """GF-9 — the console 'Deal won / No deal' setter. Writes `won` ONLY — never outcome, amount,
+    dispute_window, or disputed — so a post-sale conversion mark can never move a billing decision
+    (isolation pinned by a unit test). GOPS loses its one SQL step; the §11 adopter-vs-churn mix
+    becomes console-readable per tenant."""
+    meeting = _load_meeting(db, ctx.tenant.id, meeting_id)
+    meeting.won = body.won
+    db.commit()
+    return _meeting_out(meeting, _name_maps(db, [meeting]), datetime.now(UTC))
 
 
 # ============================================================ F5 — reads

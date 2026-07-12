@@ -1,6 +1,9 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
+import { setMeetingWon } from "@/lib/api";
+import { useClient } from "@/lib/nav";
+import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 
 const OUTCOME: Record<string, { label: string; badge: string }> = {
@@ -20,9 +23,25 @@ function fmt(iso: string): string {
 export default function SummariesPage() {
   // N47 — recaps come from the shared provider (not a static import) so a campaign rename remaps
   // their tag and they stay in this filter instead of orphaning under the old name.
-  const { campaigns, recaps } = useWorkspace();
+  const { campaigns, recaps, reloadMeetings } = useWorkspace();
+  const client = useClient();
+  const toast = useToast();
   const [sumCamp, setSumCamp] = useState("");
   const recapsInView = recaps.filter((rc) => !sumCamp || rc.campaign === sumCamp);
+  // NF-3 — which recap's `won` flag is mid-save (disables its toggle). The `won`-only door writes the
+  // deal outcome without touching any billing field, then reloadMeetings re-syncs the card.
+  const [savingWon, setSavingWon] = useState<string | null>(null);
+  const onSetWon = async (id: string, won: boolean) => {
+    setSavingWon(id);
+    try {
+      await setMeetingWon(client, id, won);
+      await reloadMeetings();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not update the deal outcome", "warn");
+    } finally {
+      setSavingWon(null);
+    }
+  };
 
   return (
     <section className="tabpane active">
@@ -101,9 +120,26 @@ export default function SummariesPage() {
               <div className="srow">
                 <span className="sk">Final conversion</span>
                 <span className="sv">
-                  <span className={clsx("badge", rc.won ? "badge-ok" : "badge-neutral")}>
-                    <span className="bdot" />
-                    {rc.won ? "Deal won" : "No deal"}
+                  <span className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                    <button
+                      type="button"
+                      className={clsx("btn btn-2xs", rc.won === true ? "btn-accent" : "btn-ghost")}
+                      aria-pressed={rc.won === true}
+                      disabled={savingWon === rc.id}
+                      onClick={() => void onSetWon(rc.id, true)}
+                    >
+                      Deal won
+                    </button>
+                    <button
+                      type="button"
+                      className={clsx("btn btn-2xs", rc.won === false ? "btn-danger" : "btn-ghost")}
+                      aria-pressed={rc.won === false}
+                      disabled={savingWon === rc.id}
+                      onClick={() => void onSetWon(rc.id, false)}
+                    >
+                      No deal
+                    </button>
+                    {rc.won == null && <span className="mph">Not set</span>}
                   </span>
                 </span>
               </div>

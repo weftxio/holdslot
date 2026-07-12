@@ -946,6 +946,54 @@ class BookingLink(Base):
     created_at: Mapped[datetime] = _created_at()
 
 
+class Subscription(Base):
+    """Phase G (S7, migration `0031`) — one billing row per PAYING tenant; tenant #0 (dogfood) has
+    none, so its billing stays computed-only. Carries the Stripe customer/subscription handles, the
+    plan-derived enrichment/ICP caps + the month usage counter (the GS4 enrich-cap guard), and the
+    Stripe-mirrored `status`. `amount`/`is_billable` on `meeting` are unchanged — GS only adds the
+    charge trigger (`meeting.billed_at`) + this state. Ships DORMANT (no rows until FR-7/FR-8)."""
+
+    __tablename__ = "subscription"
+    __table_args__ = (UniqueConstraint("tenant_id", name="uq_subscription_tenant"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    plan: Mapped[str] = mapped_column(String(16), nullable=False, server_default="free")
+    stripe_customer_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    stripe_subscription_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    activation_paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enrichment_cap: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    icp_limit: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    current_month_usage: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    usage_month: Mapped[str | None] = mapped_column(String(7), nullable=True)  # YYYY-MM (UTC)
+    admin_quota_override: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    overage_enabled: Mapped[bool] = mapped_column(nullable=False, server_default=text("true"))
+    status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class BillingEvent(Base):
+    """Phase G (`0031`) — append-only Stripe webhook log + the idempotency store (GS5). Mirrors the
+    `outreach_event` posture: the raw verified event is stored deduped on `stripe_event_id` (the
+    unique key), so a Stripe retry is a no-op. `tenant_id` resolves off the customer id (NULL if
+    unknown, still stored). Ships dormant with the rest of GS."""
+
+    __tablename__ = "billing_event"
+    __table_args__ = (Index("ix_billing_event_tenant_id", "tenant_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=True
+    )
+    stripe_event_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    type: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    created_at: Mapped[datetime] = _created_at()
+
+
 class Meeting(Base):
     """The one meeting row — funnel · ledger · recaps all derive from it; the public booking claim
     is the ONLY writer (a bare `replied→meeting` console move creates no row, FD-4).
@@ -995,6 +1043,10 @@ class Meeting(Base):
     feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     won: Mapped[bool | None] = mapped_column(nullable=True)
     summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # GS3 (`0031`) — the charge-emitted stamp: set once the billing sweep emits this meeting's meter
+    # event (idempotent `WHERE billed_at IS NULL` claim). NULL for every meeting until Stripe goes
+    # live; `is_billable`/`billing_chip` are unchanged (billing stays derived on read).
+    billed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 

@@ -21,6 +21,8 @@ from sqlalchemy.exc import DBAPIError
 from app.domains.approvals.router import router as approvals_router
 from app.domains.auth.router import router as auth_router
 from app.domains.batches.router import router as batches_router
+from app.domains.billing.router import router as billing_router
+from app.domains.billing.webhooks import router as stripe_webhooks_router
 from app.domains.briefs.router import router as briefs_router
 from app.domains.campaigns.router import router as campaigns_router
 from app.domains.campaigns.webhooks import router as smartlead_webhooks_router
@@ -170,6 +172,8 @@ app.include_router(campaigns_router)
 app.include_router(smartlead_webhooks_router)
 app.include_router(meetings_router)
 app.include_router(booking_public_router)
+app.include_router(billing_router)
+app.include_router(stripe_webhooks_router)
 
 # AWS Lambda entrypoint. Two event shapes reach this one function:
 #   * API Gateway (HTTP API) requests → Mangum → FastAPI.

@@ -4,7 +4,21 @@ import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { PER_MEETING_USD } from "@/lib/workspace/constants";
-import { listMeetings, refreshMeetings, type MeetingApi } from "@/lib/api";
+import {
+  getBillingStatus,
+  listMeetings,
+  refreshMeetings,
+  type BillingSubscriptionApi,
+  type MeetingApi,
+} from "@/lib/api";
+
+const PLAN_LABEL: Record<string, string> = { free: "Free", launch: "Launch", growth: "Growth" };
+const SUB_STATUS_BADGE: Record<string, string> = {
+  active: "badge-ok",
+  past_due: "badge-warn",
+  canceled: "badge-danger",
+  incomplete: "badge-warn",
+};
 
 const OUTCOME: Record<string, { label: string; badge: string }> = {
   qualified: { label: "Qualified", badge: "badge-ok" },
@@ -26,9 +40,13 @@ export default function BillingPage() {
   const toast = useToast();
   const [rows, setRows] = useState<MeetingApi[] | null>(null);
   const [busy, setBusy] = useState(false);
+  // GS6 — the Stripe subscription line; null until this tenant is on billing (every tenant today),
+  // so nothing extra renders. getBillingStatus never throws (a 404 → null), keeping the page dormant-safe.
+  const [sub, setSub] = useState<BillingSubscriptionApi | null>(null);
 
   const load = useCallback(() => {
     listMeetings(client, "past").then(setRows).catch(() => setRows([]));
+    getBillingStatus(client).then((s) => setSub(s.subscription));
   }, [client]);
   useEffect(() => load(), [load]);
 
@@ -97,6 +115,18 @@ export default function BillingPage() {
           <div>
             <h3>Billing Ledger</h3>
             <div className="ph-sub">Only completed, qualified meetings are billable</div>
+            {sub && (
+              <div className="ph-sub" style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <span>{PLAN_LABEL[sub.plan] || sub.plan} plan</span>
+                <span className={clsx("badge", SUB_STATUS_BADGE[sub.status] || "badge-neutral")}>
+                  <span className="bdot" />
+                  {sub.status === "past_due" ? "Payment due" : sub.status === "active" ? "Active" : sub.status}
+                </span>
+                <span>
+                  · {sub.current_month_usage}/{sub.enrichment_cap} enrichments this month
+                </span>
+              </div>
+            )}
           </div>
           <div className="row" style={{ gap: 8 }}>
             <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={busy}>

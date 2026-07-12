@@ -2944,6 +2944,23 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
         to_match.append(p)
     db.commit()  # R10 — persist the no-spend confirmations (covers the all-manual/all-cached case)
 
+    # GS4 — reserve the paid Apollo matches against the tenant's plan cap BEFORE dispatch. Lazy +
+    # dormant: no `subscription` row (tenant #0 + every tenant today) → returns len(to_match) as-is
+    # (unbounded, the pre-Stripe behavior). Past the cap it meters `enrichment_overage`; only when
+    # overage is disabled does it hard-stop the excess (those rows stay unmatched for next cycle).
+    if to_match:
+        allowed = len(to_match)
+        try:
+            from app.domains.billing.router import reserve_enrichment
+
+            allowed = reserve_enrichment(db, rows[0].tenant_id, len(to_match))
+        except Exception:  # noqa: BLE001 — a cap-guard hiccup must NEVER break the paid enrich loop
+            db.rollback()  # restore a usable session (R10 already committed the no-spend rows)
+            log.warning("enrich[%s]: cap guard failed — proceeding uncapped", slug)
+        if allowed < len(to_match):
+            log.info("enrich[%s]: cap reached — %d of %d matched", slug, allowed, len(to_match))
+            to_match = to_match[:allowed]
+
     # Fan out the slow Apollo match calls concurrently (HTTP-bound, thread-safe); collect results
     # before touching the ORM so DB writes stay single-threaded.
     matched_by_pid: dict[str, dict | Exception] = {}
