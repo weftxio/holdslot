@@ -18,7 +18,7 @@
 > `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
 > row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
 > link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). *(20 tables · head `0027` as of
-> that verification; now **28 tables · head `0030`** — see the Phase E/F callouts below.)*
+> that verification; now **30 tables · head `0031`** — see the Phase E/F/G callouts below.)*
 >
 > **Multi-ICP scoping (2026-07-06 → D+ Stage 4 2026-07-08)** — `research_spec.spec` is now **v6**:
 > `icp_targeting[]` carries one Apollo targeting block per ICP, the intent DATE windows are removed
@@ -40,7 +40,7 @@
 > `meeting` · `feedback_link`, **`0030`**) are **built + SHIPPED to dev (2026-07-12)** — applied to dev
 > Aurora, backend Lambda **v87** (commit `44b761b`); the F execution plan, FD-1…FD-8 defaults, and the
 > per-step **test-case register** live in [`initial-build-plan.md`](initial-build-plan.md) → Phase F.
-> Built head is now **`0030` · 28 tables**.
+> Built head is now **`0031` · 30 tables** (`0031` Phase-G Stripe billing, dormant).
 >
 > **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
 > `research_run` gains **`filter_body`** JSONB (the exact executed Apollo body; find-people stores
@@ -184,7 +184,7 @@ reveal_phone=False)` (phone **hardcoded off**, not an env knob). Phone (8 cr) is
 
 # Part 2 — Internal database
 
-## Entity-relationship overview (28 tables · head `0030`)
+## Entity-relationship overview (30 tables · head `0031`)
 
 Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, the W4
 async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
@@ -830,10 +830,11 @@ defaults + the per-step **test-case register** → [`initial-build-plan.md`](ini
 | `used_at` | timestamptz nullable | single-use claim on submit |
 | `created_at` | timestamptz | |
 
-## Phase G (S7) — Stripe billing 🟡 pre-built + dormant (`0031` written, **not applied**; deploy-gated on the GS0 probe, GD-10)
-The billing metering layer. **Pre-built per GD-10** (code + `0031` + doc-fixtures now; the migration is
-applied and the Lambda deployed only after the founder's test-mode `stripe_smoke_live.py` probe pins the
-contract — the E0 pattern). **Ships dormant:** no tenant has a `subscription` row until the first signup
+## Phase G (S7) — Stripe billing 🟢 SHIPPED dormant to dev (`0031` **applied** to dev Aurora 2026-07-12, head `0031`; backend Lambda **v89**; **billing gated on the GS0/FR-7 probe before the first real invoice**, GD-10)
+The billing metering layer. **Pre-built per GD-10** (code + `0031` + doc-fixtures; the migration is now
+applied and the code deployed, but **billing stays inert** until the founder's test-mode
+`stripe_smoke_live.py` probe pins the live contract — the E0 pattern). **Ships dormant:** no tenant has a
+`subscription` row (verified 0 rows on dev) until the first signup
 (FR-7/FR-8), so the on-read billing sweep and the enrich-cap guard are both no-ops for tenant #0 today.
 Built on **Stripe Billing Meters** (the legacy usage-records API is removed ≥ API version `2025-03-31.basil`;
 the adapter pins the version header). Money rule stays the F one — `amount`/`is_billable`/`billing_chip` are
@@ -936,10 +937,10 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260711_0028_phase_e_campaign` 🟢(applied) | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe — raw-SQL `WHERE smartlead_event_id IS NOT NULL`). **Applied to dev Aurora 2026-07-11** (4 tables + partial-unique index verified via rds-data); DB integration green. Reversible (drops the four tables in FK order). |
 | `20260711_0029_sending_account` 🟢(applied) | E | `sending_account` (per-tenant Smartlead sending-inbox pool — moves inbox ids OUT of the `holdslot/prod/smartlead` secret into the DB; an id is a reference not a credential, and the tenant→inbox map is config that grows per client). `bigint smartlead_account_id`, `status` warming/active/paused, unique(`tenant_id`,`smartlead_account_id`). Launch worker reads `active` rows (`active_sending_account_ids`) instead of `sl.sending_account_ids()`. **Seeds tenant #0 (`holdslot`) with `20084486`,`20084475`** (idempotent, tenant-scoped). **Applied to dev Aurora 2026-07-11**; integration green; backend v83. Reversible. |
 | `20260712_0030_phase_f_meeting` 🟢(applied) | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — **applied to dev Aurora 2026-07-12** (3 tables + 7 `meeting` money columns verified via rds-data); `f_smoke_live` green + `test_meetings_db` 2✓ on dev; backend v87. Reversible (drops the 3 tables in FK order). §Phase F above |
-| `20260713_0031_stripe_subscription` 🟡(**written, not applied** — NF-6/GD-10) | G | `subscription` (per-tenant billing state + usage counters, unique `tenant_id`), `billing_event` (append-only Stripe webhook log + dedupe), `meeting.billed_at` (the charge-emitted stamp) — an EXPAND migration (deploy-first-safe; nothing the live product reads is touched). **Applied only after the GS0 test-mode probe passes** (FR-7). Reversible (drops the 2 tables + the column). §Phase G above |
+| `20260713_0031_stripe_subscription` 🟢(**applied** — NF-6/GD-10) | G | `subscription` (per-tenant billing state + usage counters, unique `tenant_id`), `billing_event` (append-only Stripe webhook log + dedupe), `meeting.billed_at` (the charge-emitted stamp) — an EXPAND migration (deploy-first-safe; nothing the live product reads is touched). **Applied to dev Aurora 2026-07-12** (2 tables + `meeting.billed_at` verified via the Data API; 0 subscription rows = dormant); backend Lambda v89; the billing code stays inert until the GS0 probe (FR-7). Reversible (drops the 2 tables + the column). §Phase G above |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0030`** (dev — 2026-07-12; `0028`/`0029` Phase-E + `0030` Phase-F booking/meeting/feedback).
+**Live Aurora head: `0031`** (dev — 2026-07-12; `0028`/`0029` Phase-E + `0030` Phase-F + `0031` Phase-G Stripe billing, dormant).
 `0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
 `0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation,
 `0028` the Phase-E outreach tables, `0029` the per-tenant sending-inbox pool, `0030` the Phase-F

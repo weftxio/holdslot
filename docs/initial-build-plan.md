@@ -1461,24 +1461,40 @@ NF-5 if slack). Exit gates: full pytest + ruff + `tsc`/`eslint`/`pnpm build` + P
 deploys of Wave-2 code · one founder-authorized push. Nothing in Wave 1/2 touches live money paths —
 GS3's sweep hook ships **dormant** (no tenant has a `subscription` row until FR-7/FR-8).
 
-**BUILD LOG — 2026-07-12 (Opus run · uncommitted on `dev`, NF-7 on `cutover-prep`):** Wave 1 + Wave 2
-built in one session; sequence NF-1 → NF-3 → NF-4 → NF-2 → NF-6 → NF-7 all green (NF-5 skipped).
+**BUILD LOG — 2026-07-12 (Opus run · SHIPPED to dev, backend live-verified · NF-7 on `cutover-prep`):**
+Wave 1 + Wave 2 built in one session; sequence NF-1 → NF-3 → NF-4 → NF-2 → NF-6 → NF-7 (NF-5 skipped).
+Commits `b96668f` (Wave 1 + NF-6) + `4bcb4ed` (llm-usage fix) on `dev`; **`0031` applied to dev Aurora
+(head `0031`), backend deployed → Lambda live alias v89**; then an independent code review + a live
+bug-test against the deployed Lambda (below).
 
 | # | Built | Where |
 |---|---|---|
 | **NF-1** ✅ | Owner "Record client decision" modal on Pending batches → `decideBatch` (approve-all `{removed_ids:[]}` or `request_changes`) → reload; the status badge IS the decision log. No BE change. | `workspace/batches/page.tsx` |
 | **NF-3** ✅ | `POST /{client}/meetings/{id}/won` (owner, writes `won` ONLY — billing isolation pinned by `test_won_door_isolates_billing`) + Deal-won/No-deal toggle; `Recap.won` now tri-state `bool\|null`. | `meetings/{router,schemas}.py` · `summaries/page.tsx` · `api.ts` · `test_meetings_db.py` |
-| **NF-4** ✅ | `GET /{client}/llm-usage` (owner) — month×purpose×model rollup off `llm_call`; Swagger-only (no FE). | `clients/{router,schemas}.py` |
+| **NF-4** ✅ | `GET /{client}/llm-usage` (owner) — month×purpose×model rollup off `llm_call`; Swagger-only (no FE). **Live-caught bug + fixed (`4bcb4ed`):** the month-bucket format args were bound params → SELECT/GROUP-BY mismatch → Postgres 500; now `literal_column` (`_llm_month_bucket()`), pinned by `test_clients`. | `clients/{router,schemas}.py` · `test_clients.py` |
 | **NF-2** ✅ | WorkspaceProvider's four loaders → TanStack Query; provider API unchanged (`reload*` = invalidate wrappers, `setReplies` = setQueryData); the N14 in-flight-switch guard is structurally retired by per-client keys. | `WorkspaceProvider.tsx` |
-| **NF-6** ✅ | GS1–GS6 **dormant + deploy-gated**: data-schema §Phase G + migration **`0031`** (`subscription`·`billing_event`·`meeting.billed_at`, **written, NOT applied**) · `integrations/stripe/client.py` (stdlib urllib · Bearer · form-encode · Idempotency-Key · `2025-03-31.basil` · webhook HMAC) + `tests/test_stripe.py` (20✓) · `domains/billing/{service,router,webhooks}.py` (on-read sweep · enrich-cap guard · owner doors · public webhook, mounted in `main.py`) · cap guard in `prospects/_enrich_prospects` · `verify_keys check_stripe` · `scripts/stripe_smoke_live.py` (GS0 probe) · billing FE status line (dormant-safe). **Deploy waits on FR-7.** | (12 files + `data-schema.md`) |
+| **NF-6** ✅ | GS1–GS6 **SHIPPED dormant** (code live on v89; **billing stays gated on the FR-7 probe before the first real invoice**): data-schema §Phase G + migration **`0031`** (`subscription`·`billing_event`·`meeting.billed_at`, **applied to dev Aurora**, 0 rows = dormant) · `integrations/stripe/client.py` (stdlib urllib · Bearer · form-encode · Idempotency-Key · `2025-03-31.basil` · webhook HMAC) + `tests/test_stripe.py` (20✓) · `domains/billing/{service,router,webhooks}.py` (on-read sweep · enrich-cap guard · owner doors · public webhook, mounted in `main.py`) · cap guard in `prospects/_enrich_prospects` (**fail-open**) · `verify_keys check_stripe` · `scripts/stripe_smoke_live.py` (GS0 probe) · billing FE status line (dormant-safe). | (12 files + `data-schema.md`) |
 | **NF-7** ✅ | On branch **`cutover-prep`** (commit `cd0dca2`, **never applied to dev**): N20 async DLQ+SNS+alarms · N52 exact secret ARNs · N54 API-GW throttling · GD-5 per-env app-secret prefix · `prod.tfvars.example` (Aurora min-ACU 0.5) · `build-and-deploy.sh` env-aware fn name. | `infra/terraform/*` · `build-and-deploy.sh` |
 
-**Gates:** pytest **357✓ / 23 skip** (Aurora-gated, incl. new `test_won_door_isolates_billing` +
-`test_0031_stripe_models_match_migration`) · ruff clean · FE `tsc` + `eslint` + `pnpm build` clean.
-**Playwright deferred** — the founder's running `pnpm dev` holds Next 16's single-dev-server lock;
-run `pnpm exec playwright test` on a free port to close it. **Nothing deployed, applied, or pushed.**
-The one founder-authorized push = the `dev` working tree (Wave 1 + NF-6, dormant); NF-7 stays on
-`cutover-prep` for the FR-11 plan-review.
+**Gates:** pytest **358✓ / 23 skip** (Aurora-gated incl. `test_won_door_isolates_billing` +
+`test_0031_…`; +`test_clients` llm-usage) · ruff clean · FE `tsc` + `eslint` + `pnpm build` clean.
+
+**Code review (independent pass):** no BLOCKER/HIGH; dormant-safety confirmed. Fixed pre-deploy —
+**MEDIUM-1** the billing-sweep hook now `db.rollback()`s on error (a DB hiccup on a live meetings read
+no longer poisons the session), **MEDIUM-2** the enrich-cap guard is fail-open (never breaks the paid
+loop), **LOW-5** the public Stripe webhook 404s (not 500s) when the secret is absent; **LOW-3/4**
+comment accuracy (overage best-effort · no meter reversal after billing, dispute-window-guarded).
+
+**Live bug-test (deployed Lambda v89, ephemeral tenant, torn down):** 15/15 PASS —
+NF-4 rollup (3 calls · company_score→2 · $0.0032) · NF-6 billing/status dormant (null, no 500) ·
+the billing-sweep hook safe on the live meetings read · NF-3 `won` isolation (amount/outcome/chip
+untouched, null clears) · the webhook 404 · owner context. The **one live-caught bug** (llm-usage 500,
+the doc-built-SQL param/GROUP-BY mismatch — the E0 lesson again) was fixed + re-verified all-pass.
+
+**Still open:** the FE (decide UI · won toggle · billing line · TanStack) is committed on `dev` but
+**not pushed** (founder-authorized pushes only) — a push builds it onto dev Amplify · **Playwright**
+not yet run (the founder's `pnpm dev` holds Next 16's single-dev-server lock) · **NF-7** stays on
+`cutover-prep` for the FR-11 plan-review · **Stripe billing stays dormant until the FR-7 probe**.
 
 ---
 
