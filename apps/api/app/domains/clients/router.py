@@ -7,7 +7,7 @@ caller's memberships, so a user only ever sees tenants they belong to.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, status
-from sqlalchemy import func, select
+from sqlalchemy import func, literal_column, select
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_current_user, get_db, require_membership
@@ -22,6 +22,19 @@ from app.domains.clients.schemas import (
 from app.models import AppUser, LlmCall, Membership, MembershipRole, Tenant
 
 router = APIRouter(tags=["clients"])
+
+
+def _llm_month_bucket():
+    """The UTC `YYYY-MM` month bucket for the NF-4 llm-usage rollup. The date_trunc / timezone /
+    to_char format args are SQL literals (literal_column), NOT bound params: a bound param makes the
+    SELECT and GROUP BY copies of this expression differ textually, so Postgres rejects the query
+    ("created_at must appear in the GROUP BY clause") — a live-caught bug (test_clients)."""
+    return func.to_char(
+        func.date_trunc(
+            literal_column("'month'"), func.timezone(literal_column("'UTC'"), LlmCall.created_at)
+        ),
+        literal_column("'YYYY-MM'"),
+    )
 
 
 def _clients_for(db: Session, user: AppUser) -> list[ClientOut]:
@@ -79,9 +92,7 @@ def llm_usage(
     with call/token/cost sums. The single source stays `llm_call`; this is a derived rollup (no
     stored counters, the Phase-D rule). Swagger is the MVP surface — the FE panel + the spend alarm
     land at cutover (GP, new-AWS-resource posture). Months bucket in UTC."""
-    month = func.to_char(
-        func.date_trunc("month", func.timezone("UTC", LlmCall.created_at)), "YYYY-MM"
-    )
+    month = _llm_month_bucket()
     rows = db.execute(
         select(
             month.label("month"),
