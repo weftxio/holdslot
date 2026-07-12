@@ -5,8 +5,8 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-12): A–E SHIPPED (A–D+ dev AND prod; E dev).** Aurora **head `0029` applied** · backend Lambda
-> **v86** on the one shared backend (`api.tryholdslot.com`; find-path Stages 1–4 +
+> **Status (2026-07-12): A–F SHIPPED to dev (A–D+ dev AND prod; E–F dev).** Aurora **head `0030` applied** · backend Lambda
+> **v87** on the one shared backend (`api.tryholdslot.com`; find-path Stages 1–4 +
 > Scoring v2 + **V2-4 contraction** + classifier→Flash) · web on **both Amplify branches at `b36b61d`**
 > (dev job 53 · prod job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
 > shared dev-tier backend until the prod cutover). The Apollo **find → score → select → enrich → batch → masked
@@ -30,10 +30,13 @@
 > Lambda **v86** · Amplify dev **job 55**; `0028`+`0029` applied; all 5 Smartlead webhook payloads captured
 > live + all 3 contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email
 > unsubscribe link enforced; **only the founder S4/S5 acceptance run remains**.
-> **Phase F (book + meeting + feedback) — 🟢 BUILT code-complete (2026-07-12)** — F1–F6 written, local
-> gates green (backend `pytest` 336✓/22 Aurora-skipped · `ruff` clean · FE `tsc`+`eslint` clean); remaining
-> = apply `0030` + push #1 deploy + F0 founder Meet + push #2 FE + FA acceptance (see the §Phase F BUILT
-> callout). §Phase F below is the build plan + the researched execution sections (Google contract · FD
+> **Phase F (book + meeting + feedback) — 🟢 SHIPPED to dev + LIVE-VERIFIED (2026-07-12)** — commit
+> `44b761b` · `0030` applied (dev Aurora head **`0030`**) · Lambda **v87** live (`cryptography`) · Amplify
+> dev auto-builds. Gates all green: backend `pytest` 338✓/22 Aurora-skipped · `ruff`/`tsc`/`eslint`/`pnpm
+> build` clean · Playwright **26✓** · `f_smoke_live` green + `test_meetings_db` 2✓ on dev · **click-review
+> API-complete + browser 8/8 clean, zero product bugs** (see the §Phase F SHIPPED callout). **Remaining =
+> founder-only: F0 real held-Meet (`--meeting-code`) + availability doc + FA acceptance → tick S6.**
+> §Phase F below is the build plan + the researched execution sections (Google contract · FD
 > defaults · seams · build table · **per-step test-case register** + FA acceptance)
 > (**EF-Q9** places the last three mock console surfaces — performance-summary v1 rides E7, its meeting half +
 > the client-status Booking/Feedback tabs land in F5/F6). The inbox warm-up (running since 2026-06-17) has
@@ -41,7 +44,7 @@
 > (S1/S2 folded into review #5 ✅).
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0029` applied** — Phase E `0028` outreach + `0029` `sending_account`; **Phase F tables planned as `0030`**). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0030` applied** — Phase E `0028` outreach + `0029` `sending_account`; **Phase F `0030` `booking_link`/`meeting`/`feedback_link`**). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -70,7 +73,7 @@
 | **D** | S3 Batch+Approval | ✅ **live** | Batch → masked tokenized approval link → record decision; delete / re-send-reopen / attendee dropdown | C | ⏳ **S3**: founder live batch round (create→send→approve) |
 | **D+** | Sourcing + Scoring + UX | ✅ **shipped (dev + prod FE)** · re-score wave on demand | Scope alignment (Stages 1–4) + **Scoring v2** (4-label + liveness gate, v1 retired in V2-4) + **UX rebuild** (U1–U4 + Reveal & score) — migrations `0019`→`0027` | C · Apollo | KPI gate (≥3× rows/find · ≥2× `contact_now`+`contact_soon` share · <5% dupes) — review #5 ✅ |
 | **E** | S4/S5 Outreach | 🟢 **built + SHIPPED (2026-07-12)** — commit `d8aef2b` · Lambda **v86** · Amplify dev job 55; `0028`+`0029` applied; E0 probe CLOSED (5 payloads real, 3 verdicts confirmed, unsub link enforced) · only the founder **acceptance run** remains | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
-| **F** | S6 Book+Meeting | ⬜ **planned — finalized 2026-07-11** | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
+| **F** | S6 Book+Meeting | 🟢 **built + SHIPPED to dev (2026-07-12)** — commit `44b761b` · Lambda **v87** (`cryptography`) · `0030` applied; `f_smoke_live` green + `test_meetings_db` 2✓ + Playwright 26✓ + click-review browser 8/8 clean (zero product bugs) · only founder **F0 real-Meet + FA acceptance** remain | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
 | **G** | Run & close | ⬜ **human** | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
 
 **Critical path:** A → B → C → D → **D+ (sourcing + scoring + UX)** → E → F → G.
@@ -783,14 +786,19 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 
 ## Phase F — Book + meeting + feedback (S6 min) · **plan finalized 2026-07-11**
 
-> 🟢 **BUILT — code-complete (2026-07-12), local gates green; deploy + founder gates remain.**
-> The full F1–F6 stack is written and passing every non-Aurora gate:
+> 🟢 **SHIPPED to dev + LIVE-VERIFIED (2026-07-12).** `0030` applied (dev Aurora head `0030`) · Lambda
+> **v87** live (`cryptography` loaded · `/health` OK · all 9 F routes in `openapi.json`) · commit `44b761b`
+> pushed to `dev` (Amplify dev auto-builds). The full F1–F6 stack is written, deployed, and click-reviewed
+> end-to-end against the live stack (Lambda + real Google + dev Aurora):
 > - **F1** — migration [`20260712_0030_phase_f_meeting`](../infra/alembic/versions/20260712_0030_phase_f_meeting.py)
 >   + `BookingLink`/`Meeting`/`FeedbackLink` in `models.py`; `test_migrations.py::test_0030_…` green
->   (head assert bumped to `0030`; FK ondelete money-pins asserted). **Not yet applied to dev Aurora.**
+>   (head assert bumped to `0030`; FK ondelete money-pins asserted). **Applied to dev Aurora — head `0030`,
+>   3 tables + all 7 `meeting` money columns verified via the Data API.**
 > - **F2** — `app/integrations/google/client.py` (the 6 contract methods, JWT/token-cache/401-remint/
 >   backoff/redaction) + `pyproject.toml` gains **`cryptography`** + `tests/test_google.py` (15 cases,
->   FT2-1…12) + `tests/fixtures/google/` (doc-built; overwritten by the probe) + `scripts/f_smoke_live.py`.
+>   FT2-1…12) + `tests/fixtures/google/` (doc-built, **retained** — `f_smoke_live.py` ran green but the real
+>   host calendar is empty + resolves synchronously, so the busy-parse + pending-reread branches need the
+>   crafted fixtures) + `scripts/f_smoke_live.py`.
 > - **F3** — `app/domains/meetings/{service,schemas,public}.py` (booking slots · never-404 state · atomic
 >   claim → create_event → meeting row → stage move; feedback token routes) + the `respond_reply`
 >   `include_booking_link` carrier. Public routes mounted in `main.py`.
@@ -805,9 +813,27 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 >   + the reply-queue "Include booking link" checkbox; `e2e/meetings.spec.ts` (FE-1…9) + the `_mock.ts`
 >   fixtures. **`tsc` + `eslint` clean.**
 >
-> **Local gates green:** backend `pytest` **336 passed / 22 skipped** (the 22 Aurora-gated =
-> `test_meetings_db.py` + the E DB tests); `ruff` clean (app/tests + `f_smoke_live.py`); FE `tsc` + `eslint`
-> clean. **Deviations from the plan (flagged per "be flexible"):**
+> **Gates — all green (2026-07-12):**
+> - **Local:** backend `pytest` **338 passed / 22 Aurora-skipped** · `ruff` clean · FE `tsc`+`eslint` clean ·
+>   `pnpm build` clean (all F routes compiled) · Playwright e2e **26 passed**.
+> - **Live (dev):** `verify_keys --only google` **4 PASS** (SA + domain-wide delegation + Calendar/Meet
+>   read HTTP 200 — the founder HAS provisioned delegation) · `f_smoke_live.py` **green** (real Calendar+Meet:
+>   token mint, freebusy, `create_event` → real Meet link + `conferenceId==hangoutLink` correlation, `get_event`
+>   re-read; scratch event auto-deleted) · `test_meetings_db.py` **2 passed** against dev Aurora (claim
+>   atomicity, release-on-Google-fail+503, approval snapshot, sweep-qualify→billable, idempotent re-sweep,
+>   feedback single-use 410).
+> - **Click-review (live Lambda + real Google + dev Aurora, self-cleaning `clickrev-*` tenant, then torn
+>   down + real event deleted):** API-level walk — **every endpoint correct**: login/me · public book (233
+>   slots → **real Meet booking** `meet.google.com/…` → double-book 410) · bookings Confirmed · upcoming/past
+>   ledger · sweep · owner `/outcome`→qualified $500 (Held) → **Billed** after the 48h window elapses ·
+>   `performance-summary` `billable_this_cycle` $500 + funnel "Meeting booked" 1 · public feedback submit +
+>   single-use 410 · feedback list Received rating 5 · `/feedback/send` 200 · `/inform-client` 204. Browser
+>   **8/8 surfaces render clean** (no error boundary, no JS console error): performance-summary (1 qualified ·
+>   $500 billable · leads funnel · Meeting Calendar cell on the real date) · billing ($500 **Billed** row) ·
+>   feedback (5.0 ★★★★★ · "Great call.") · booking (Confirmed) · summaries (Qualified · 5/5 · **Deal won**) ·
+>   replies · campaign · public book-used ("this link has been used" card). **Zero product bugs.**
+>
+> **Deviations from the plan (flagged per "be flexible"):**
 > 1. **Test split** — the DB-flow FT3/FT4/FTI money cases (claim atomicity, release-on-fail, approval
 >    snapshot, sweep-qualify, feedback single-use) live in **`test_meetings_db.py`** (Aurora-gated,
 >    `_FakeGoogle`/SL/SES mocked), not `test_meetings.py`, because the codebase has **no non-Aurora DB
@@ -819,11 +845,22 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 >    config const (the EF-Q6 family).
 > 4. **Booking-link carrier** — the primary path is the **reply-queue "Include booking link" checkbox**
 >    (an operator replies to an interested prospect), plus the client-status **Propose-new-time** re-send.
+> 5. **e2e mock debt fixed (test-only, found during push #2)** — the workspace layout's reply pip
+>    (`replies.filter`) crashed under the e2e mock because `_mock.ts` lacked `/replies` + `/campaigns`
+>    (pre-existing since Phase E made them live; e2e had not been run since). Added both as arrays,
+>    retargeted a stale campaign-tab assertion (an "Edit campaign name" textbox removed in the Phase E
+>    rewrite → the current `Campaign` selector), and loosened the FE-5 `$500` locator to `.first()`. **The
+>    live app was never affected** — `listReplies`/`listCampaigns` `throw`→`[]` on any non-OK response.
+> 6. **f_smoke_live verdict ①** — the real Google response OMITS `conferenceData.status` on synchronous
+>    resolve (a `createRequest` echo + `hangoutLink`, no `status.statusCode`); the adapter correctly treats
+>    absent-status + present `hangoutLink` as resolved. The two API-review "fails" were **test-script**
+>    artifacts (the ledger defaults to `when=past`; `/inform-client` returns 204), not product issues.
 >
-> **Remaining (deploy + human gates — NOT run this session):** apply `0030` to dev Aurora → **push #1**
-> (deploy Lambda w/ `cryptography` → `f_smoke_live.py` → run `test_meetings_db.py` against dev) · **F0**
-> founder real-Meet + availability doc + FD sign-off · **push #2** (FE + `pnpm build` + Playwright 18+9 in
-> a clean env — a dev server currently holds the workspace) · **FA** whole-phase acceptance → tick **S6**.
+> **Remaining (founder-only, no code):** **F0** — one real held Meet on the pooled seats → read its
+> `conference-records`+`participants` (`f_smoke_live.py --meeting-code <code>`); this is the ONLY
+> sweep-qualify path not exercisable without a real meeting (the click-review proved the derived logic via
+> the owner `/outcome` door + `test_meetings_db` `_FakeGoogle`) · author the availability-windows doc ·
+> **FA** founder whole-phase acceptance → tick **S6**.
 
 > **Kickoff readiness (2026-07-12, post-E-ship): NEXT FRONT — plan finalized + execution-researched; F1 is unblocked.**
 > - ✅ **E is SHIPPED** (2026-07-12): commit `d8aef2b` pushed · Lambda **v86** live (`_smartlead_settings`
@@ -1194,6 +1231,30 @@ local.
 ---
 
 ## Phase G — Run & close (human) · **refined 2026-07-11**
+
+> **🟢 G kickoff readiness (2026-07-12, post-F ship).** With F shipped, the **whole A→F loop is live on
+> dev** for any tenant, so G's "run the loop" has no missing rails:
+> - **Onboarding entry verified live** — `POST /clients` (enrolls the caller as owner, N45) is on Lambda
+>   **v87**, wired to the switcher **"Create client"** (`ClientSwitcher.tsx` → `createClient`). A new tenant
+>   drops straight into Brief → ICPs → Generate Scope → find → approve → send → book → bill (schema was
+>   multi-tenant from day 0; the F click-review ran a fresh `clickrev-*` tenant through book→qualify→bill→
+>   feedback end-to-end).
+> - **Proof surface live** — the **performance-summary page is fully live** (verified in the F click-review:
+>   qualified headline · billable $ · leads funnel · Meeting Calendar · needs-attention ②③). Per **EF-Q9,
+>   G adds no page build.**
+> - **G builds NO new code by default** — it's a human/ops phase. The only engineering G *triggers* (each
+>   on its own condition, not now):
+>   1. **Stripe billing** — when the **first signup needs a real invoice** (activation $400 + subscription +
+>      $500 metered + $3 overage, backend-development-plan §7). The F ledger already computes the amounts
+>      (Billed/Held chips + `billable_this_cycle`); Stripe is the collection layer only.
+>   2. **Production cutover** — when the **DoD is met** (6 signups H1): `terraform workspace new prod` →
+>      apply → prod Aurora min ACU ≥ 0.5 → fresh prod JWT keys → `alembic upgrade head` + seed → SES
+>      sandbox-exit → point Amplify `main` at prod → harden (S3 PAB, CI/CD). A cutover, not a rewrite.
+>   3. **SCALE seams** — at the **2nd paying tenant**: the `person` enrich-once cache (data-schema SCALE
+>      tables) + real per-tenant masking/billing expectations.
+> - **Gate before G formally starts:** the founder **S6 acceptance (F0 real held-Meet + FA)** ticks S6 —
+>   the clean F→G handoff. G's own founder gates (S1/S2/S3 live rounds) are already folded into D+ review #5
+>   except **S3** (the live batch round), still ⏳ operational.
 
 Work the live loop: meeting → pitch the live product (**the product IS the demo** — the prospect on the call
 is looking at the same console that sourced them, with the **performance-summary page fully live since F as
