@@ -11,13 +11,13 @@ import {
 import {
   listBatches,
   listCampaigns,
+  listMeetings,
   listReplies,
   type CampaignApi,
   type ReplyApi,
 } from "@/lib/api";
 import { useClient } from "@/lib/nav";
 import { batchFromApi } from "@/lib/workspace/constants";
-import { RECAPS } from "@/lib/workspace/fixtures";
 import type { Batch, Recap } from "@/lib/workspace/types";
 
 // The cross-tab state that must survive sub-route navigation. The workspace tabs are real nested
@@ -40,10 +40,9 @@ type WorkspaceCtx = {
   replies: ReplyApi[];
   reloadReplies: () => Promise<void>;
   setReplies: React.Dispatch<React.SetStateAction<ReplyApi[]>>;
-  // Recaps are stateful (not a static import) so they don't orphan out of the summaries filter.
-  // Mock until Phase F.
+  // Recaps are derived from the held `meeting` rows (F5) — loaded on mount + refreshable.
   recaps: Recap[];
-  setRecaps: React.Dispatch<React.SetStateAction<Recap[]>>;
+  reloadMeetings: () => Promise<void>;
 };
 
 const Ctx = createContext<WorkspaceCtx | null>(null);
@@ -53,7 +52,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const [batches, setBatches] = useState<Batch[]>([]);
   const [campaigns, setCampaigns] = useState<CampaignApi[]>([]);
   const [replies, setReplies] = useState<ReplyApi[]>([]);
-  const [recaps, setRecaps] = useState<Recap[]>(RECAPS);
+  const [recaps, setRecaps] = useState<Recap[]>([]);
   // Always holds the latest client so an in-flight reload can detect a switch and drop its result.
   // Updated in the mount/client-change effect below (not during render — refs must not be written
   // in the render body).
@@ -96,6 +95,32 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     }
   }, [client]);
 
+  const reloadMeetings = useCallback(async () => {
+    try {
+      const rows = await listMeetings(client, "past");
+      if (clientRef.current !== client) return;
+      // Recaps = held meetings only (a meeting summary is for a meeting that happened).
+      setRecaps(
+        rows
+          .filter((r) => r.held)
+          .map((r) => ({
+            id: r.id,
+            campaign: r.campaign_name,
+            batch: r.batch_name,
+            prospectName: r.prospect_name,
+            companyName: r.company_name,
+            scheduledAt: r.scheduled_at,
+            outcome: r.outcome,
+            rating: r.feedback_rating,
+            won: !!r.won,
+          }))
+      );
+    } catch {
+      if (clientRef.current !== client) return;
+      setRecaps([]);
+    }
+  }, [client]);
+
   useEffect(() => {
     // Load the cross-tab data on mount / client change — data-sync effects (external → React), not
     // derived state; each setState lands after its awaited fetch. Stamp the current client BEFORE the
@@ -105,7 +130,8 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     void reloadBatches();
     void reloadCampaigns();
     void reloadReplies();
-  }, [client, reloadBatches, reloadCampaigns, reloadReplies]);
+    void reloadMeetings();
+  }, [client, reloadBatches, reloadCampaigns, reloadReplies, reloadMeetings]);
 
   return (
     <Ctx.Provider
@@ -118,7 +144,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         reloadReplies,
         setReplies,
         recaps,
-        setRecaps,
+        reloadMeetings,
       }}
     >
       {children}

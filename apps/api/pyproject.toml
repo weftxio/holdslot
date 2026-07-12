@@ -12,6 +12,7 @@ dependencies = [
     "sqlalchemy-aurora-data-api>=0.5",   # SQLAlchemy dialect over the RDS Data API (no VPC)
     "argon2-cffi>=23.1",                 # password hashing
     "pyjwt>=2.10",                       # access + refresh tokens
+    "cryptography>=44.0",                # pyjwt RS256 backend — the Google SA JWT (Phase F, GR8)
     "email-validator>=2.0",              # pydantic EmailStr
 ]
 

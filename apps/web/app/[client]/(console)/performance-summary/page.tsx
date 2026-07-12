@@ -3,7 +3,6 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useClient } from "@/lib/nav";
-import { Sample } from "@/components/Sample";
 import { getPerformanceSummary, type PerformanceSummaryApi } from "@/lib/api";
 import "./performance-summary.css";
 
@@ -59,40 +58,32 @@ export default function PerformanceSummary() {
   const approvalsPending = summary?.approvals_pending ?? 0;
   const awaitingReview = summary?.replies_awaiting_review ?? 0;
   const positiveReplies = summary?.new_positive_replies ?? 0;
+  const qualified = summary?.qualified_last_30d ?? 0;
+  const delta = summary?.qualified_delta ?? 0;
+  const showUp = summary?.show_up_rate;
+  const awaitingWeek = summary?.awaiting_this_week ?? 0;
+  const openLinks = summary?.open_booking_links ?? 0;
+  const heldNoFeedback = summary?.held_without_feedback ?? 0;
 
   return (
     <>
       <div className="headline">
         <div className="hl-main">
-          <div className="big">
-            <span className="ph-inline ph">
-              <span className="ph-tag">count</span>
-            </span>
-          </div>
+          <div className="big">{qualified}</div>
           <div className="cap">Qualified meetings booked</div>
           <div className="delta">
-            <span className="up">▲ sample</span> vs. prior 30 days
+            <span className={delta >= 0 ? "up" : "down"}>
+              {delta >= 0 ? "▲" : "▼"} {Math.abs(delta)}
+            </span>{" "}
+            vs. prior 30 days
           </div>
         </div>
         <div className="hl-cell">
-          <div className="n">
-            <span className="ph-inline ph">
-              <span className="ph-tag" style={{ fontSize: 8 }}>
-                n
-              </span>
-            </span>
-            %
-          </div>
+          <div className="n">{showUp == null ? "—" : Math.round(showUp * 100)}%</div>
           <div className="l">Show-up rate on booked meetings</div>
         </div>
         <div className="hl-cell">
-          <div className="n">
-            <span className="ph-inline ph">
-              <span className="ph-tag" style={{ fontSize: 8 }}>
-                n
-              </span>
-            </span>
-          </div>
+          <div className="n">{awaitingWeek}</div>
           <div className="l">Awaiting on the calendar this week</div>
         </div>
       </div>
@@ -131,8 +122,10 @@ export default function PerformanceSummary() {
             <div className="na-body">
               <div className="t">Outstanding booking links</div>
               <div className="d">
-                <b>4 interested prospects</b> sent a booking link. <b>1 expired unused</b>, 3 still
-                open. One reminder is scheduled.
+                <b>
+                  {openLinks} booking {openLinks === 1 ? "link" : "links"}
+                </b>{" "}
+                sent and not yet booked. Re-send a fresh link from the reply thread when one lapses.
               </div>
             </div>
             <div className="na-act">
@@ -146,8 +139,10 @@ export default function PerformanceSummary() {
             <div className="na-body">
               <div className="t">Post-meeting feedback forms</div>
               <div className="d">
-                <b>2 forms pending</b> from meetings held this week. Feedback gates billing &amp;
-                the qualified-meeting count.
+                <b>
+                  {heldNoFeedback} held {heldNoFeedback === 1 ? "meeting" : "meetings"}
+                </b>{" "}
+                without feedback yet. Send the feedback form from the Feedback tab.
               </div>
             </div>
             <div className="na-act">
@@ -168,7 +163,7 @@ export default function PerformanceSummary() {
                 Meetings held
               </span>
               <span className="tnum" style={{ fontWeight: 700 }}>
-                <Sample>n</Sample>
+                {summary?.meetings_held_week ?? 0}
               </span>
             </div>
             <hr className="hr" />
@@ -198,7 +193,7 @@ export default function PerformanceSummary() {
                 Billable this cycle
               </span>
               <span className="tnum" style={{ fontWeight: 700 }}>
-                $<Sample>amt</Sample>
+                ${(summary?.billable_this_cycle ?? 0).toLocaleString()}
               </span>
             </div>
           </div>
@@ -251,13 +246,11 @@ export default function PerformanceSummary() {
           <div className="panel-head">
             <div>
               <h3>Meeting Calendar</h3>
-              <div className="ph-sub">
-                Booked meetings this month · all dates <Sample>sample</Sample>
-              </div>
+              <div className="ph-sub">Booked meetings · shown in your local timezone</div>
             </div>
           </div>
           <div className="panel-pad">
-            <MeetingCalendar />
+            <MeetingCalendar items={summary?.calendar ?? []} />
           </div>
         </div>
       </div>

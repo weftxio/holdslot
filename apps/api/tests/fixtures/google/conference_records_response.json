@@ -1,0 +1,11 @@
+{
+  "conferenceRecords": [
+    {
+      "name": "conferenceRecords/rec_xyz",
+      "startTime": "2026-07-15T10:00:00Z",
+      "endTime": "2026-07-15T10:47:00Z",
+      "expireTime": "2026-08-14T10:47:20Z",
+      "space": "spaces/space_abc"
+    }
+  ]
+}

@@ -94,7 +94,19 @@ export type LedgerRow = {
   billingBadge: string;
 };
 
-export type Recap = { campaign: string; batch: string; recId: string; won: boolean };
+// A meeting-summary card. Derived from a held `meeting` row (F5); the detail fields
+// (Attendees/Discussed/Next step/Sentiment/Recording) stay pending until the LLM summary lands (FD-8).
+export type Recap = {
+  id: string;
+  campaign: string;
+  batch: string;
+  prospectName: string;
+  companyName: string;
+  scheduledAt: string;
+  outcome: string | null;
+  rating: number | null;
+  won: boolean;
+};
 
 export type Range = { min?: number | null; max?: number | null } | undefined;
 

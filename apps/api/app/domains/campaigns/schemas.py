@@ -128,9 +128,13 @@ class TriageIn(BaseModel):
 
 
 class RespondIn(BaseModel):
-    """Send an operator-authored threaded reply (→ Smartlead `reply_to_thread`)."""
+    """Send an operator-authored threaded reply (→ Smartlead `reply_to_thread`).
+
+    `include_booking_link` (F3) mints a single-use booking link for the lead and substitutes it
+    into the reply (`{{booking_link}}` placeholder, or appended) — the one booking-link carrier."""
 
     body: str
+    include_booking_link: bool = False
 
 
 # --------------------------------------------------------------------------- variant winner (E6)
@@ -148,13 +152,29 @@ class FunnelStage(BaseModel):
     n: int
 
 
+class MeetingCalendarItem(BaseModel):
+    id: str
+    scheduled_at: str  # UTC `…Z`; the FE renders viewer-local
+    prospect_name: str = ""
+    outcome: str | None = None
+
+
 class PerformanceSummaryOut(BaseModel):
     """Derived-on-read (no stored counters). The Leads-funnel + reply stats go live at E7; the
-    meeting-dependent cells stay 0/None until Phase F writes `meeting` moves."""
+    meeting-dependent cells go live at F5 (the summary read runs the F4 sweep first)."""
 
     funnel: list[FunnelStage] = Field(default_factory=list)
     new_positive_replies: int = 0
     replies_awaiting_review: int = 0
     approvals_pending: int = 0  # needs-attention ① (batches sent, undecided — D data, live today)
-    # Phase-F cells (0/None until F): meetings held, billable, show-up rate, calendar.
-    meetings_booked: int = 0
+    meetings_booked: int = 0  # ever-reached meeting (funnel + headline)
+    # Phase-F meeting cells (live at F5).
+    qualified_last_30d: int = 0
+    qualified_delta: int = 0  # vs the prior 30-day window
+    meetings_held_week: int = 0
+    show_up_rate: float | None = None  # held ÷ ingested
+    awaiting_this_week: int = 0
+    billable_this_cycle: float = 0.0  # Σ is_billable amounts
+    open_booking_links: int = 0  # needs-attention ② (unused booking links)
+    held_without_feedback: int = 0  # needs-attention ③ (held meetings, no feedback)
+    calendar: list[MeetingCalendarItem] = Field(default_factory=list)

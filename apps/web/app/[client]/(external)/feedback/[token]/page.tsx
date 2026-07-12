@@ -1,8 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import clsx from "clsx";
-import { Sample } from "@/components/Sample";
 import { ExternalShell } from "@/components/external/ExternalShell";
+import { getFeedbackView, submitFeedback, type FeedbackViewApi } from "@/lib/api";
 import "./feedback.css";
 
 const LABELS: Record<number, string> = {
@@ -15,21 +16,43 @@ const LABELS: Record<number, string> = {
 const CHIPS = ["Relevant to me", "Good timing", "Well prepared", "Not a fit", "Too early"];
 
 export default function Feedback() {
+  const token = useParams<{ token: string }>().token;
+  const [view, setView] = useState<FeedbackViewApi | null>(null);
   const [rating, setRating] = useState(0);
   const [hover, setHover] = useState(0);
   const [chips, setChips] = useState<Record<string, boolean>>({});
   const [comment, setComment] = useState("");
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
 
   const shown = hover || rating;
 
-  function submit() {
+  useEffect(() => {
+    getFeedbackView(token)
+      .then(setView)
+      .catch(() => setView({ state: "expired", client_name: "", expires_at: null }));
+  }, [token]);
+
+  async function submit() {
     if (!rating) {
       setErr("Please pick a rating first.");
       return;
     }
-    setDone(true);
+    if (busy) return;
+    setBusy(true);
+    try {
+      await submitFeedback(token, {
+        rating,
+        chips: CHIPS.filter((c) => chips[c]),
+        comment,
+      });
+      setDone(true);
+    } catch {
+      setView((v) => (v ? { ...v, state: "used" } : v));
+    } finally {
+      setBusy(false);
+    }
   }
 
   const success = (
@@ -59,13 +82,14 @@ export default function Feedback() {
       ]}
       success={success}
       done={done}
+      forceExpired={!!view && view.state !== "valid"}
     >
       <div className="ext-head">
         <span className="eyebrow">Quick feedback</span>
         <h1>How was your meeting?</h1>
         <p>
-          Thanks for meeting with <b>HoldSlot</b> <Sample>sample</Sample>. A few seconds of
-          feedback helps us keep these intros relevant. It goes only to HoldSlot &amp; the host.
+          Thanks for meeting with <b>{view?.client_name || "HoldSlot"}</b>. A few seconds of feedback
+          helps us keep these intros relevant. It goes only to HoldSlot &amp; the host.
         </p>
       </div>
       <div className="ext-pad">
@@ -123,8 +147,13 @@ export default function Feedback() {
           />
         </div>
 
-        <button className="btn btn-primary" style={{ width: "100%" }} onClick={submit}>
-          Submit feedback
+        <button
+          className="btn btn-primary"
+          style={{ width: "100%" }}
+          onClick={submit}
+          disabled={busy}
+        >
+          {busy ? "Submitting…" : "Submit feedback"}
         </button>
         <p className="muted" style={{ fontSize: 12, textAlign: "center", marginTop: 14 }}>
           Your rating won&apos;t be shared with anyone you&apos;d meet again.

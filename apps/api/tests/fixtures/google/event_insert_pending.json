@@ -1,0 +1,26 @@
+{
+  "id": "evt_abc123",
+  "status": "confirmed",
+  "start": {
+    "dateTime": "2026-07-15T10:00:00Z",
+    "timeZone": "UTC"
+  },
+  "end": {
+    "dateTime": "2026-07-15T10:30:00Z",
+    "timeZone": "UTC"
+  },
+  "conferenceData": {
+    "createRequest": {
+      "requestId": "req-uuid-1",
+      "conferenceSolutionKey": {
+        "type": "hangoutsMeet"
+      },
+      "status": {
+        "statusCode": "pending"
+      }
+    },
+    "status": {
+      "statusCode": "pending"
+    }
+  }
+}

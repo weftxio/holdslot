@@ -26,6 +26,8 @@ from app.domains.campaigns.router import router as campaigns_router
 from app.domains.campaigns.webhooks import router as smartlead_webhooks_router
 from app.domains.clients.router import router as clients_router
 from app.domains.icps.router import router as icps_router
+from app.domains.meetings.public import router as booking_public_router
+from app.domains.meetings.router import router as meetings_router
 from app.domains.prospects.router import router as prospects_router
 
 log = logging.getLogger("holdslot.request")
@@ -166,6 +168,8 @@ app.include_router(batches_router)
 app.include_router(approvals_router)
 app.include_router(campaigns_router)
 app.include_router(smartlead_webhooks_router)
+app.include_router(meetings_router)
+app.include_router(booking_public_router)
 
 # AWS Lambda entrypoint. Two event shapes reach this one function:
 #   * API Gateway (HTTP API) requests → Mangum → FastAPI.

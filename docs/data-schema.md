@@ -17,7 +17,8 @@
 > present, 20 application tables). Phase D (S3 · Sendout batch + client approval) adds **4 tables** — `batch`,
 > `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
 > row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
-> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). **20 tables · head `0027`.**
+> link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). *(20 tables · head `0027` as of
+> that verification; now **25 tables · head `0029`** — see the Phase E callout below.)*
 >
 > **Multi-ICP scoping (2026-07-06 → D+ Stage 4 2026-07-08)** — `research_spec.spec` is now **v6**:
 > `icp_targeting[]` carries one Apollo targeting block per ICP, the intent DATE windows are removed
@@ -32,13 +33,14 @@
 > (`currently_using`/`currently_not_using_any_of_technology_uids`), resolved server-side by
 > `prospects/tech_vocab` from `auth/supported_technologies_csv` (never model-emitted).
 >
-> **Phase E built + live (2026-07-11).** The S4/S5 outreach tables (`campaign` · `message_variant` ·
+> **Phase E built + SHIPPED (2026-07-12).** The S4/S5 outreach tables (`campaign` · `message_variant` ·
 > `campaign_lead` · `outreach_event`, **`0028`**) plus the per-tenant `sending_account` pool (**`0029`** —
 > Smartlead inbox ids moved out of Secrets Manager into the DB) are **applied to dev Aurora**; backend
-> deployed (v83). The S6 booking/meeting tables (`booking_link` · `meeting` · `feedback_link`, planned
-> **`0030`**) are **specified below** (⬜ PLANNED) so the F build starts schema-first from this doc. Built
-> head is now **`0029` · 25 tables**; behavior spec → [`initial-build-plan.md`](initial-build-plan.md)
-> → Phase E / Phase F.
+> **Lambda v86** (commit `d8aef2b` · Amplify dev job 55). The S6 booking/meeting tables (`booking_link` ·
+> `meeting` · `feedback_link`, planned **`0030`**) are **specified below (⬜ READY TO BUILD)** — the F
+> execution plan, FD-1…FD-8 defaults, and the per-step **test-case register** live in
+> [`initial-build-plan.md`](initial-build-plan.md) → Phase F; the F build starts schema-first from this
+> doc. Built head is now **`0029` · 25 tables**.
 >
 > **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
 > `research_run` gains **`filter_body`** JSONB (the exact executed Apollo body; find-people stores
@@ -182,16 +184,16 @@ reveal_phone=False)` (phone **hardcoded off**, not an env knob). Phone (8 cr) is
 
 # Part 2 — Internal database
 
-## Entity-relationship overview (20 tables · head `0027`)
+## Entity-relationship overview (25 tables · head `0029`)
 
 Clusters: Identity/Tenancy (global), Phase B Targeting, Phase C Apollo find→enrich, the W4
 async-scoring `scoring_job` ledger + the `scope_override` Find-Settings store, and **Phase D**
 batch/approval (`batch`, `prospect_approval`, `approval_link`, `approval_template`). The ORM
 ([`apps/api/app/models.py`](../apps/api/app/models.py)) matches the migrations — **no drift**.
 **Live:** Phase E campaign/outreach — 4 tables (`0028`) + `sending_account` (`0029`, per-tenant Smartlead
-inbox pool) — **applied to dev Aurora 2026-07-11** (backend deployed v83). **Planned (specified, not yet
-migrated):** Phase F booking/meeting/feedback — 3 tables, `0030` — §below (the diagram shows pre-E built
-tables only).
+inbox pool) — **applied to dev Aurora 2026-07-11** (backend shipped v86, 2026-07-12). **Ready to build
+(specified, not yet migrated):** Phase F booking/meeting/feedback — 3 tables, `0030` — §below (the
+diagram shows pre-E built tables only).
 
 ```mermaid
 erDiagram
@@ -671,7 +673,7 @@ client/batch name, so a forwarded stale link can't reveal tenant existence). **W
 badge. `mask_name` also defends in depth — an "@"-bearing value (an email mistaken for a name) is
 reduced to its local-part name tokens, never echoed whole. (Post-booking reveal = Phase F.)
 
-## Phase E (S4/S5) — Campaign & outreach 🟢 LIVE (`0028` + `0029` applied to dev Aurora 2026-07-11; backend deployed v83)
+## Phase E (S4/S5) — Campaign & outreach 🟢 LIVE + SHIPPED (`0028` + `0029` applied to dev Aurora 2026-07-11; backend Lambda v86, commit `d8aef2b`, 2026-07-12)
 One expand migration (migrate-first). Design rules carried forward from A–D: statuses are **plain strings,
 never DB enums**; counts/metrics are **derived from the event ledger, never stored** (the Phase-D
 derived-counts rule); **`campaign_lead.stage` is the funnel's single source of truth** — Smartlead webhook
@@ -756,14 +758,28 @@ global-secret edit + Lambda cache-bust + redeploy. The launch worker reads this 
 | `status` | varchar(16) (default `active`) | `warming` · `active` · `paused` — **only `active` inboxes are attached to a campaign** |
 | `created_at`, `updated_at` | timestamptz | |
 
-## Phase F (S6) — Booking, meeting & feedback ⬜ PLANNED (`0030` — spec locked 2026-07-11, not migrated)
+## Phase F (S6) — Booking, meeting & feedback 🟢 BUILT — code-complete (`0030` models + migration written 2026-07-12, matches `models.py`; **not yet applied** to dev Aurora — applies at push #1)
 `booking_link` / `feedback_link` mirror `approval_link`/`password_reset` exactly: SHA-256 **`token_hash`**
 only (raw token lives only in the sent URL) · validity checked **on read**, no scheduler · **atomic
 single-use claim** (`UPDATE … SET used_at WHERE used_at IS NULL`). Feedback answers live **on `meeting`**
 (1:1 — no separate feedback table). **`billable` is never stored** — derived on read as
-`outcome = 'qualified' AND dispute_window_ends_at < now() AND NOT disputed` (the 48-h window of
-backend-development-plan §7; Stripe charges it at G). Behavior spec →
-[`initial-build-plan.md`](initial-build-plan.md) → Phase F.
+`outcome = 'qualified' AND amount IS NOT NULL AND dispute_window_ends_at < now() AND NOT disputed`
+(the 48-h window of backend-development-plan §7; **`amount` is stamped only when `approval_id` is
+present** — no approval evidence, never billable; Stripe charges it at G). Behavior spec + the FD-1…FD-8
+defaults + the per-step **test-case register** → [`initial-build-plan.md`](initial-build-plan.md) → Phase F.
+
+**Semantics the columns rely on (locked with the F execution plan, 2026-07-12):**
+- **No 4th table:** per-tenant availability windows live in **`brief.data.availability`** (opaque JSONB,
+  the `targetMarket` precedent — FD-1): `{tz, meeting_minutes: 30, windows: {mon: [["10:00","18:00"]], …}}`;
+  code default Mon–Fri 10:00–18:00 host TZ when absent.
+- **`held`** (FD-2): true = a Meet conference record exists **with ≥2 participants**; `duration_min` =
+  ceil(record `endTime − startTime` / 60). NULL = not yet ingested (the sweep's `WHERE held IS NULL`
+  claim guard); false = no-show, decided only past a **24 h grace** after `scheduled_at` (FD-3).
+- **Correlation key:** the Meet meeting code (the last path segment of `meet_link`, ==
+  Calendar `conferenceData.conferenceId`) drives the Meet REST `space.meeting_code` records filter —
+  no extra column needed; `conference_record_id` stores the resolved record handle.
+- **`amount`** = `PER_MEETING_USD` (500), a module-level constant in `domains/meetings/service.py`
+  (the `DEFAULT_DAILY_CAP` precedent), mirrored by the FE `lib/workspace/constants.ts` display const.
 
 ### `booking_link` ⬜ (`0030`) — tokenized booking link, per replied lead
 | Column | Type | Notes |
@@ -868,7 +884,7 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260710_0027_dplus_indexes_race` ✅(dev) | D+.5 F1 + final | index/constraint foundation for the fix wave — add score-sorted feed composites `ix_{company,prospect}_tenant_score` (R5); partial UNIQUE `uq_scoring_job_active_tenant_kind` `WHERE status IN ('queued','running')` (R9); partial UNIQUE `uq_research_job_active_tenant` on (`tenant_id`) same predicate (**N8** — research_job had the same race, no `kind` column); `ix_research_run_tenant_created` (R22a); drop composite-covered `ix_{company,prospect}_tenant_id` (R29a) **and prefix-covered `ix_research_run_tenant_id`** (**N49**); terminal-ize any pre-existing duplicate active job rows on both job tables before the CREATE UNIQUEs (**N48**); `DELETE FROM prompt WHERE stage='sourcing'` (R29b). **Applied to dev at push #1 (2026-07-11).** Reversible (index-only; the prompt delete + dup terminal-ization are not restored). |
 | `20260711_0028_phase_e_campaign` 🟢(applied) | E | `campaign` (1:1 approved batch, `batch_id` unique + RESTRICT), `message_variant`, `campaign_lead` (funnel SoT + `approval_id` evidence hop), `outreach_event` (append-only ledger + partial-unique `smartlead_event_id` webhook dedupe — raw-SQL `WHERE smartlead_event_id IS NOT NULL`). **Applied to dev Aurora 2026-07-11** (4 tables + partial-unique index verified via rds-data); DB integration green. Reversible (drops the four tables in FK order). |
 | `20260711_0029_sending_account` 🟢(applied) | E | `sending_account` (per-tenant Smartlead sending-inbox pool — moves inbox ids OUT of the `holdslot/prod/smartlead` secret into the DB; an id is a reference not a credential, and the tenant→inbox map is config that grows per client). `bigint smartlead_account_id`, `status` warming/active/paused, unique(`tenant_id`,`smartlead_account_id`). Launch worker reads `active` rows (`active_sending_account_ids`) instead of `sl.sending_account_ids()`. **Seeds tenant #0 (`holdslot`) with `20084486`,`20084475`** (idempotent, tenant-scoped). **Applied to dev Aurora 2026-07-11**; integration green; backend v83. Reversible. |
-| *(planned)* `0030_phase_f_meeting` | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — spec locked 2026-07-11, §Phase F above |
+| *(built, not applied)* `0030_phase_f_meeting` | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — migration + models written 2026-07-12 (`test_0030_…` green); applies to dev Aurora at push #1, §Phase F above |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
 **Live Aurora head: `0029`** (dev — 2026-07-11; `0028` Phase-E outreach + `0029` `sending_account`).

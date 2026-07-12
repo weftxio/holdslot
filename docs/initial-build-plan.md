@@ -5,8 +5,8 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-11): A–D+ SHIPPED — dev AND prod.** Aurora **head `0027` applied** · backend Lambda
-> **v79** on the one shared backend (`api.tryholdslot.com`; find-path Stages 1–4 +
+> **Status (2026-07-12): A–E SHIPPED (A–D+ dev AND prod; E dev).** Aurora **head `0029` applied** · backend Lambda
+> **v86** on the one shared backend (`api.tryholdslot.com`; find-path Stages 1–4 +
 > Scoring v2 + **V2-4 contraction** + classifier→Flash) · web on **both Amplify branches at `b36b61d`**
 > (dev job 53 · prod job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
 > shared dev-tier backend until the prod cutover). The Apollo **find → score → select → enrich → batch → masked
@@ -26,11 +26,15 @@
 > `prod-cutover-checklist.md` were folded in here + deleted). The **Q7 re-score candidate list is empty**
 > (confirmed 2026-07-11 against dev Aurora — 0 geo-excluded rows; the one divergence-prone tenant has 0
 > companies; no data remediation needed). Only the **prod-cutover register** (deferred infra hardening —
-> §After A–G) remains. **Phase E is BUILT + its E0 live-contract probe is CLOSED (2026-07-12)** — backend +
-> both FE tabs live on dev; `0028`+`0029` applied; all 5 Smartlead webhook payloads captured live + all 3
-> contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email unsubscribe link
-> enforced; only the founder-gated **ship** (commit + deploy + `git push`) and the acceptance run remain.
-> **Next front = Phase F (book + meeting + feedback)** — §Phase F below is the finalized build plan
+> §After A–G) remains. **Phase E is BUILT + E0-probe CLOSED + SHIPPED (2026-07-12)** — commit `d8aef2b` ·
+> Lambda **v86** · Amplify dev **job 55**; `0028`+`0029` applied; all 5 Smartlead webhook payloads captured
+> live + all 3 contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email
+> unsubscribe link enforced; **only the founder S4/S5 acceptance run remains**.
+> **Phase F (book + meeting + feedback) — 🟢 BUILT code-complete (2026-07-12)** — F1–F6 written, local
+> gates green (backend `pytest` 336✓/22 Aurora-skipped · `ruff` clean · FE `tsc`+`eslint` clean); remaining
+> = apply `0030` + push #1 deploy + F0 founder Meet + push #2 FE + FA acceptance (see the §Phase F BUILT
+> callout). §Phase F below is the build plan + the researched execution sections (Google contract · FD
+> defaults · seams · build table · **per-step test-case register** + FA acceptance)
 > (**EF-Q9** places the last three mock console surfaces — performance-summary v1 rides E7, its meeting half +
 > the client-status Booking/Feedback tabs land in F5/F6). The inbox warm-up (running since 2026-06-17) has
 > **elapsed** — E0 confirmed warm-up health in-dashboard. S3 (batch round) is the only untouched A–D gate
@@ -65,7 +69,7 @@
 | **C** | S2 Prospects+Apollo | ✅ **live** | Apollo find → fit-score → select → enrich loop, in-app, no CSV (C0–C10) | B · Apollo | ⏳ **S2**: founder live Apollo round |
 | **D** | S3 Batch+Approval | ✅ **live** | Batch → masked tokenized approval link → record decision; delete / re-send-reopen / attendee dropdown | C | ⏳ **S3**: founder live batch round (create→send→approve) |
 | **D+** | Sourcing + Scoring + UX | ✅ **shipped (dev + prod FE)** · re-score wave on demand | Scope alignment (Stages 1–4) + **Scoring v2** (4-label + liveness gate, v1 retired in V2-4) + **UX rebuild** (U1–U4 + Reveal & score) — migrations `0019`→`0027` | C · Apollo | KPI gate (≥3× rows/find · ≥2× `contact_now`+`contact_soon` share · <5% dupes) — review #5 ✅ |
-| **E** | S4/S5 Outreach | 🟢 **built + deployed · E0 live-probe CLOSED (2026-07-12)** · backend + both FE tabs live on dev; `0028`+`0029` applied; DB integration green; all 5 webhook payloads real + 3 verdicts confirmed + unsub link enforced · only the founder-gated **ship** (commit + deploy + `git push`) + acceptance run remain | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
+| **E** | S4/S5 Outreach | 🟢 **built + SHIPPED (2026-07-12)** — commit `d8aef2b` · Lambda **v86** · Amplify dev job 55; `0028`+`0029` applied; E0 probe CLOSED (5 payloads real, 3 verdicts confirmed, unsub link enforced) · only the founder **acceptance run** remains | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
 | **F** | S6 Book+Meeting | ⬜ **planned — finalized 2026-07-11** | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
 | **G** | Run & close | ⬜ **human** | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
 
@@ -79,9 +83,9 @@
 
 | Thing | State |
 |---|---|
-| Backend | Lambda **v79** alias `live`, `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **~50 endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals` |
-| Database | Aurora Serverless v2 + Data API · **head `0027` applied** (D+ migrations `0019`→`0027` applied; `0027` = scoring-v2 + D+.5/final-fix indexes/constraints, deployed at push #1) |
-| Web | **Both Amplify branches at `b36b61d`** (autoBuild on push): dev job 53 · prod job 20 SUCCEED — the **first public prod-FE release** (2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Backend | Lambda **v86** alias `live` (2026-07-12), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **~60 endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals·campaigns·webhooks` |
+| Database | Aurora Serverless v2 + Data API · **head `0029` applied** (`0028` Phase-E outreach + `0029` `sending_account`) |
+| Web | Amplify autoBuild on push: **dev at `d8aef2b`** (job 55, Phase-E tabs live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
@@ -514,11 +518,13 @@ code. Anything discovered from here belongs to a **new** register opened by the 
 
 ## Phase E — Outreach + Smartlead (S4/S5) — the current front · **plan finalized 2026-07-11**
 
-> **Build status (2026-07-12): E0–E7 COMPLETE + E0 LIVE-PROBE CLOSED — backend + BOTH interactive FE
-> tabs live on the shared dev backend. `0028` + `0029` applied to dev Aurora; DB integration green
-> against Aurora. All 5 Smartlead webhook payloads captured LIVE + all 3 contract verdicts CONFIRMED;
-> the per-email unsubscribe link is now enforced. Only the founder-gated ship (commit + push + deploy)
-> and the acceptance run remain (below).**
+> **Build status (2026-07-12): E0–E7 COMPLETE + E0 LIVE-PROBE CLOSED + SHIPPED — backend + BOTH
+> interactive FE tabs live on the shared dev backend. `0028` + `0029` applied to dev Aurora; DB
+> integration green against Aurora. All 5 Smartlead webhook payloads captured LIVE + all 3 contract
+> verdicts CONFIRMED; the per-email unsubscribe link is now enforced. The ship landed 2026-07-12:
+> commit `d8aef2b` (Phase-E backend + fixtures + unsub link) · Lambda **v86** published + `live`-shifted
+> (`build-and-deploy.sh`; `/health` OK) · `git push origin dev` → Amplify dev **job 55 SUCCEED**. Only
+> the founder acceptance run remains (below).**
 >
 > **Backend (E0–E7, built + tested + DEPLOYED):** `app/integrations/smartlead/` (the 11-method adapter —
 > sliding-window throttle + 429 backoff + `api_key` redaction), `app/domains/campaigns/` (`service.py`
@@ -530,8 +536,8 @@ code. Anything discovered from here belongs to a **new** register opened by the 
 > migration **`0028`** (four tables, matches `data-schema.md`) — **applied to dev Aurora 2026-07-11**,
 > `scripts/e_smoke_live.py` (E0 live probe), `tests/fixtures/smartlead/` (**all 5 webhook payloads now
 > real** + real API responses + `_VERDICTS.md`). Wired into `app/main.py` (router + public webhook route +
-> `campaign_launch` job). **Deployed to `holdslot-dev-api` (live alias, v85) — the shared dev backend both
-> FEs use; the post-v85 unsubscribe-link change (below) ships with the founder-gated deploy.**
+> `campaign_launch` job). **Deployed to `holdslot-dev-api` — live alias now v86 (2026-07-12), the shared
+> dev backend both FEs use; the unsubscribe-link change (below) is live in v86.**
 >
 > **⭐ Launch bug found + fixed during Aurora integration (2026-07-11):** the launch worker's tenant
 > guard compared `campaign.tenant_id != tid` where the fresh worker session loads the UUID column as a
@@ -585,8 +591,8 @@ code. Anything discovered from here belongs to a **new** register opened by the 
 > overrides the wording — Smartlead auto-appends it as the clickable opt-out link on **every** sequence
 > step/variant, so no launch can ship an email without a working unsubscribe (CAN-SPAM / SG-PDPA floor).
 > A recipient click → `LEAD_UNSUBSCRIBED` → `doNotContact` write-back (the loop the fixtures now prove
-> end-to-end). Unit tests + the `e_smoke_live.py` probe both assert it. **Not yet deployed** (post-v85) —
-> ships with the founder-gated commit + deploy.
+> end-to-end). Unit tests + the `e_smoke_live.py` probe both assert it. **Live since Lambda v86
+> (2026-07-12).**
 >
 > **Frontend (E7 — LIVE):** full Phase-E API client (`apps/web/lib/api.ts`); the **Campaign** tab
 > (`CampaignTab.tsx`) rewired to live detail — funnel counts / A-B-C variants (edit on draft · winner
@@ -606,11 +612,10 @@ code. Anything discovered from here belongs to a **new** register opened by the 
 > live-API tests flake only under the concurrent full-suite run — real Apollo/OpenRouter rate limits +
 > founder-only secrets — and pass in isolation; unrelated to E.)
 >
-> **Founder-gated (the only remainders):** the **ship** — `git commit` the Phase-E backend + real
-> fixtures + the unsubscribe-link change (nothing committed yet), `build-and-deploy.sh` to publish the
-> post-v85 Lambda (so `_smartlead_settings` is live), and **`git push origin dev`** to ship the FE via
-> Amplify autoBuild (needs the `weftxio` gh account) — then the **acceptance run** (one real campaign from
-> a real approved batch → replies triaged in-app) ticks **S4/S5**. The `{prefix}/smartlead` secret is
+> **Founder-gated (the only remainder):** the **acceptance run** (one real campaign from
+> a real approved batch → replies triaged in-app) ticks **S4/S5**. ~~The ship~~ — ✅ **DONE 2026-07-12**:
+> commit `d8aef2b`, Lambda **v86** (`build-and-deploy.sh`, `_smartlead_settings` live, `/health` OK),
+> `git push origin dev` (weftxio) → Amplify dev **job 55 SUCCEED**. The `{prefix}/smartlead` secret is
 > **complete** (`api_key` + `webhook_path_token`, set 2026-07-11; sending-inbox ids in `sending_account`
 > `0029`). The E0 live probe is **CLOSED** — every webhook payload + verdict is captured; the disposable
 > scratch campaign `3623750` can be deleted (`e_smoke_live.py --delete-id 3623750`).
@@ -778,7 +783,52 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 
 ## Phase F — Book + meeting + feedback (S6 min) · **plan finalized 2026-07-11**
 
-> **Kickoff readiness (2026-07-12): NEXT FRONT — plan finalized, unblocked bar the E ship.**
+> 🟢 **BUILT — code-complete (2026-07-12), local gates green; deploy + founder gates remain.**
+> The full F1–F6 stack is written and passing every non-Aurora gate:
+> - **F1** — migration [`20260712_0030_phase_f_meeting`](../infra/alembic/versions/20260712_0030_phase_f_meeting.py)
+>   + `BookingLink`/`Meeting`/`FeedbackLink` in `models.py`; `test_migrations.py::test_0030_…` green
+>   (head assert bumped to `0030`; FK ondelete money-pins asserted). **Not yet applied to dev Aurora.**
+> - **F2** — `app/integrations/google/client.py` (the 6 contract methods, JWT/token-cache/401-remint/
+>   backoff/redaction) + `pyproject.toml` gains **`cryptography`** + `tests/test_google.py` (15 cases,
+>   FT2-1…12) + `tests/fixtures/google/` (doc-built; overwritten by the probe) + `scripts/f_smoke_live.py`.
+> - **F3** — `app/domains/meetings/{service,schemas,public}.py` (booking slots · never-404 state · atomic
+>   claim → create_event → meeting row → stage move; feedback token routes) + the `respond_reply`
+>   `include_booking_link` carrier. Public routes mounted in `main.py`.
+> - **F4** — `sweep_meetings` (on-read poll) + `POST /meetings/refresh` + the `POST /meetings/{id}/outcome`
+>   owner-correction door; the whole qualify/billing rule is pure in `service.py` (unit-tested off the F2
+>   fixtures) — held/duration/`amount`/dispute-window/`is_billable`, idempotent `WHERE held IS NULL` claim.
+> - **F5** — `GET /meetings?when=` · `/bookings` · `/feedback` · feedback-send · inform-client (all sweep
+>   first); public feedback GET/POST; the grown `GET /performance-summary` (headline · held · billable ·
+>   show-up · attention ②③ · calendar feed; funnel "Meeting booked" = ever-reached).
+> - **F6** — all 8 FE surfaces wired to `lib/api.ts` (book · feedback · client-status booking/feedback ·
+>   billing ledger · recaps via `WorkspaceProvider.reloadMeetings` · performance-summary + `MeetingCalendar`)
+>   + the reply-queue "Include booking link" checkbox; `e2e/meetings.spec.ts` (FE-1…9) + the `_mock.ts`
+>   fixtures. **`tsc` + `eslint` clean.**
+>
+> **Local gates green:** backend `pytest` **336 passed / 22 skipped** (the 22 Aurora-gated =
+> `test_meetings_db.py` + the E DB tests); `ruff` clean (app/tests + `f_smoke_live.py`); FE `tsc` + `eslint`
+> clean. **Deviations from the plan (flagged per "be flexible"):**
+> 1. **Test split** — the DB-flow FT3/FT4/FTI money cases (claim atomicity, release-on-fail, approval
+>    snapshot, sweep-qualify, feedback single-use) live in **`test_meetings_db.py`** (Aurora-gated,
+>    `_FakeGoogle`/SL/SES mocked), not `test_meetings.py`, because the codebase has **no non-Aurora DB
+>    harness** (PG-specific `PgUUID`/`JSONB`); the pure branches (slots, qualify, billing matrix, link
+>    state, derivations — the bulk of FT3-8/FT4/FT5) ARE non-Aurora in `test_meetings.py` (20 cases).
+> 2. **FD-1 default TZ** = `Asia/Singapore` (UTC+8, the existing campaign-schedule default) when
+>    `brief.data.availability.tz` is absent; the founder authors the real one at F0.
+> 3. **Link TTL** reuses `config.approval_ttl_seconds` (7 days) for booking + feedback links — no new
+>    config const (the EF-Q6 family).
+> 4. **Booking-link carrier** — the primary path is the **reply-queue "Include booking link" checkbox**
+>    (an operator replies to an interested prospect), plus the client-status **Propose-new-time** re-send.
+>
+> **Remaining (deploy + human gates — NOT run this session):** apply `0030` to dev Aurora → **push #1**
+> (deploy Lambda w/ `cryptography` → `f_smoke_live.py` → run `test_meetings_db.py` against dev) · **F0**
+> founder real-Meet + availability doc + FD sign-off · **push #2** (FE + `pnpm build` + Playwright 18+9 in
+> a clean env — a dev server currently holds the workspace) · **FA** whole-phase acceptance → tick **S6**.
+
+> **Kickoff readiness (2026-07-12, post-E-ship): NEXT FRONT — plan finalized + execution-researched; F1 is unblocked.**
+> - ✅ **E is SHIPPED** (2026-07-12): commit `d8aef2b` pushed · Lambda **v86** live (`_smartlead_settings`
+>   unsub link included; `/health` OK) · Amplify dev **job 55 SUCCEED** at `d8aef2b`. Only the founder
+>   **S4/S5 acceptance run** remains (real campaign off the S3-round batch) — it does NOT gate F1 code.
 > - ✅ **Google creds ready** — `holdslot/prod/google` verified (SA + domain-wide delegation + Calendar +
 >   Meet REST v2 all 200, 2026-06-10). F2's adapter has its secret; no new AWS resources (on-read poll).
 > - ✅ **Schema pre-specified** — `data-schema.md` → Phase F carries the `0030` tables (`booking_link` ·
@@ -786,11 +836,17 @@ code; E5 = where the founder works replies daily.** **Cost:** Smartlead Basic **
 > - ✅ **All EF decisions locked** — billing rule (approval + ≥10 min + 48h dispute), booking-link TTL
 >   (7 days, no reminders — EF-Q6), availability source (per-tenant weekly windows ∩ Calendar free/busy —
 >   EF-Q5), qualified-meeting definition. Derived-on-read throughout (no stored counters/`billable`).
-> - ⏳ **Gate before F1 (E ship + F0 no-code):** ship E first — commit + deploy the post-v85 Lambda +
->   `git push` (FE), then the S4/S5 acceptance run. In parallel, the **F0 founder gates** (EF-Q7): one real
->   Meet → read its `conference-records` on the pooled seats + author the per-tenant availability-windows doc.
+> - ✅ **Execution research DONE (2026-07-12)** — the §Google API contract, §repo seams, §FD defaults,
+>   §execution build table and §step-gate matrix below were researched (official Google docs + full repo
+>   inventory) so the F build has **zero unresearched external dependencies**.
+> - ✅ **Test cases DESIGNED (2026-07-12)** — the §test-case register below gives every step a binary
+>   pass gate (FT/FP/FTI/FE blocks + the FA whole-phase acceptance). **The build rule: a step exits only
+>   when its register block is green; the next step does not start before.**
+> - ⏳ **F0 founder gates only (no-code, EF-Q7):** one real Meet → read its `conference-records` on the
+>   pooled seats + author the availability-windows doc + confirm the §FD defaults (F0-C1…C5).
 > - **Step 1 = F1** (`0030` migration) → F2 (Google adapter) → F3 (booking flow). **Cost:** +$0 (Google
->   Workspace already in the floor; Stripe deferred to G).
+>   Workspace already in the floor; Stripe deferred to G). **One new runtime dep: `cryptography`** (RS256
+>   for the SA JWT — see §Google contract).
 
 Lights the funnel's bottom half: booking + the meeting become real (Calendar event + Meet link + invites;
 held + duration via **Meet REST v2**), the two terminal stages feed the *Billing ledger* + *Meeting recaps*
@@ -841,6 +897,299 @@ chip; Stripe later) · Meeting recaps (upcoming/past · feedback · `won`; LLM s
 (booking-tab status · feedback history · summary headline/calendar). **Path:**
 F0→F1→F2→F3→F4→F5→F6. **F4 + the booking-token claim are the only [money] branches — both unit-tested
 without Aurora.** **Cost:** Google Workspace ~**$15/mo** (already in the floor); $0 Stripe until G.
+
+### Google API contract — doc-verified 2026-07-12 (fills in F2; ⚠ = the F2 live probe pins it)
+
+Two Google surfaces, ONE adapter (`app/integrations/google/`): **Calendar v3** (event + Meet create ·
+free/busy) and **Meet REST v2** (conference records — held/duration evidence). Auth = **service-account
+JWT (RS256) + domain-wide delegation** — no OAuth consent flow, no Google client library. Secret
+`holdslot/prod/google` (✅ all-200 2026-06-10 via `verify_keys.py --only google`): envelope
+`{service_account_json, delegated_subject, scopes}` (or a raw SA JSON — `verify_keys.check_google`
+accepts both; fallback subject `info@tryholdslot.com`). The **DWD grant in the Workspace admin console is
+frozen to exactly two scopes** — `https://www.googleapis.com/auth/calendar` +
+`https://www.googleapis.com/auth/meetings.space.readonly` — and they cover ALL of F (events.insert ·
+freeBusy · conferenceRecords · participants). Adding any scope string = founder admin-console
+re-authorization (propagation up to 24h) — don't.
+
+**Token flow (per Google's service-account HTTP/REST doc; `verify_keys.google_access_token` is the
+working reference, but it signs via an `openssl` subprocess — a script trick, NOT the app pattern):**
+JWT header `{"alg":"RS256","typ":"JWT"}` · claims `iss=client_email · sub=delegated_subject (the
+impersonated host seat) · scope="<the two scopes, space-joined>" · aud="https://oauth2.googleapis.com/token"
+· iat=now−60 · exp≤iat+3600 (1h hard max)` → `POST https://oauth2.googleapis.com/token` with
+`grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer&assertion=<jwt>` → `{access_token, expires_in≈3600}`
+→ `Authorization: Bearer` on every call. **In-app signing = `pyjwt` (already a dep) + `cryptography`
+(the ONE new runtime dep — pyjwt's RS256 backend; manylinux2014 wheels exist so the wheel-only
+`build-and-deploy.sh` compile picks it up from `pyproject.toml` automatically, N22).** Cache the token
+module-level with an expiry-refresh (~60s early); **never `@lru_cache`** (tokens expire); never log the
+token or `private_key` (R1-style redaction asserts).
+
+| Adapter fn | Endpoint | Verified contract |
+|---|---|---|
+| `access_token()` | `POST oauth2.googleapis.com/token` | flow above; bounded retry on 5xx; 401 at an API call → drop cache, re-mint once |
+| `create_event` | `POST /calendar/v3/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all` | `primary` = the impersonated `delegated_subject`'s calendar (the host seat). Body: `summary` · `description` · `start`/`end` = `{dateTime: RFC3339, timeZone}` · `attendees: [{email}]` (prospect + Brief attendee — **populating attendees REQUIRES DWD, confirmed in the reference**; `sendUpdates=all` makes Google send the invite emails) · `conferenceData: {createRequest: {requestId: <uuid4, idempotency key>, conferenceSolutionKey: {type: "hangoutsMeet"}}}`. Response: `id` → `meeting.google_event_id` · `hangoutLink` → `meeting.meet_link` · `conferenceData.conferenceId` = **the 10-char meeting code `abc-defg-hij`** (== Meet REST `space.meeting_code` — THE correlation key; also the last path segment of `hangoutLink`) · `conferenceData.status.statusCode`: **`pending` → `success` (conference creation is async ⚠)** — if `pending`, re-read via `get_event` (bounded, ~3×) before trusting `hangoutLink`/`conferenceId` |
+| `get_event` | `GET /calendar/v3/calendars/primary/events/{eventId}` | the pending re-read |
+| `freebusy` | `POST /calendar/v3/freeBusy` | body `{timeMin, timeMax (RFC3339), timeZone: "UTC", items: [{id: delegated_subject}]}` → `calendars.<id>.busy: [{start, end}]` (start inclusive, end exclusive); per-calendar `errors[]` (`notFound`…) — treat a calendar error as "no availability", never 500 |
+| `list_conference_records` | `GET meet.googleapis.com/v2/conferenceRecords?filter=space.meeting_code = "abc-defg-hij"` | filterable: `space.meeting_code` · `space.name` · `start_time` · `end_time`; record fields: `name` = `conferenceRecords/{id}` → `meeting.conference_record_id` · `startTime` (**always set**) · `endTime` (**unset while the conference is ongoing** — the sweep must skip) · `expireTime` (**records auto-delete 30 days after end** — GR4) · `space`. A record exists **iff someone actually joined** — no record = the no-show signal |
+| `list_participants` | `GET meet.googleapis.com/v2/conferenceRecords/{id}/participants` | per participant: `earliestStartTime` · `latestEndTime` (null while active) · union `signedinUser {user: "users/{id}", displayName}` / `anonymousUser` / `phoneUser` — the held/duration evidence (⚠ probe pins whether the host seat is identifiable via `signedinUser`) |
+
+**Scope semantics (why `.readonly`):** `meetings.space.created` is principal-scoped — it only sees spaces
+the token's user created and **silently returns empty** otherwise; `.readonly` reads any record the
+impersonated user can access (host or attendee). We impersonate the host seat AND create the events as it,
+so either would work — `.readonly` is what's verified + granted; keep it.
+
+### FD defaults — micro-decisions the locked plan left open (recommended defaults; founder confirms at F0, none blocks the build start)
+
+| # | Question | Recommended default (build this unless F0 overrides) |
+|---|---|---|
+| **FD-1** | Where do the per-tenant availability windows live? (`0030` is locked at 3 tables — no new table) | **`brief.data.availability`** (opaque JSONB, no migration — the `targetMarket` precedent): `{tz, meeting_minutes: 30, windows: {mon: [["10:00","18:00"]], …}}`; **code default Mon–Fri 10:00–18:00 host TZ** when absent. Edited via the existing brief PUT |
+| **FD-2** | What counts as **held**? (a host who waits alone 15 min must NOT bill $500) | `held = a conference record exists AND ≥2 participants`. `duration_min = ceil((record.endTime − record.startTime)/60)`; ⚠ if the probe shows the host is identifiable (`signedinUser`), refine `duration_min` to the **non-host** participant's presence (`latestEndTime − earliestStartTime`) — the money-safe measure |
+| **FD-3** | When is a no-show decided? (a record may not exist *yet*) | sweep verdicts `noshow` only past `scheduled_at + 24h` with no record; between scheduled-end and +24h the row stays `held IS NULL` ("awaiting" on the summary) |
+| **FD-4** | Does a **manual** `replied→meeting` console move create a `meeting` row? | **No** — a bare stage move (it already works via `moveLeadStage`); the public booking claim is the ONLY `meeting`-row writer at MVP. Recaps/Ledger/Calendar derive from `meeting` rows only |
+| **FD-5** | Slot geometry | next **5 weekdays** starting ≥24h out (min-notice) · slots = FD-1 windows cut into `meeting_minutes` steps ∖ free/busy `busy[]` · returned as **UTC ISO instants**; the FE groups by the *viewer's* local day (the mock's "Times shown in your local timezone") |
+| **FD-6** | Booking claim vs Google failure ordering | claim the token FIRST (`UPDATE … WHERE used_at IS NULL` — blocks a double-book race), then `create_event`; on a Google hard-fail **release the claim** (`used_at = NULL`) + 503 so the prospect can retry — mirrors N31's "don't persist what didn't send" |
+| **FD-7** | `feedback_link` TTL | same **7-day** token family (EF-Q6 / `approval_ttl_seconds` precedent) |
+| **FD-8** | Recap "Recording" link | stays `.ph` placeholder at MVP — real recording files need the **Restricted** `drive.meet.readonly` scope (app-verification friction) + a Drive read; deliberate [SKIP→later] alongside the LLM `meeting_summary` |
+
+### Repo seams — as-built inventory (2026-07-12) the F build touches
+
+**Backend patterns to copy (exact carriers):**
+
+| Pattern | Where (verbatim) |
+|---|---|
+| Token mint/hash | `core/security.py` — `new_opaque_token()` (`secrets.token_urlsafe(32)`) · `hash_token()` (SHA-256 hex) · `as_utc()` for every expiry compare |
+| Atomic single-use claim | `approvals/router.py::decide_approval` — `update(ApprovalLink).where(id==, used_at.is_(None)).values(used_at=now)`; `rowcount == 0` → **410 GONE**. View endpoint **never 404s** — returns `state: valid\|expired\|used` (no tenant-existence leak) |
+| Send-before-persist (N31) | `batches/router.py::send_approval` — render → mint token → `send_email` (SES via `core/email.py`, returns bool) → only on accept: revoke prior live links → insert the new link row |
+| Public router | `approvals/router.py` (no prefix, no `{client}`, no auth dep) + `campaigns/webhooks.py` (path-token, `hmac.compare_digest`, 404); mounted plainly in `main.py` |
+| Adapter shape | `integrations/smartlead/client.py` — stdlib `urllib` transport (NO httpx/requests at runtime) · `@lru_cache` `_secret()` reading `{prefix}/google` w/ env override (`HOLDSLOT_GOOGLE_SA`) · `_RETRYABLE={429,500,502,503,504}` + exp backoff · non-default `USER_AGENT` · redaction (`_redact` + `Error.__init__` scrub) · `reset_secret()` |
+| Adapter tests | `tests/test_smartlead.py` — layer (a) `monkeypatch _request` → URL/body pins per method; layer (b) fake `urlopen` → retry/redaction/log asserts (caplog at DEBUG) |
+| Stage move writer | `campaigns/router.py::record_stage_move(db, lead, target, via=…)` — checks `svc.is_legal_move` (`MOVES`: `REPLIED→[FOLLOWUP, MEETING, DROP]` · `MEETING→[REPLIED, BILLABLE, NOSHOW, DROP]` · `NOSHOW→[MEETING, REPLIED, DROP]` · `BILLABLE→[MEETING, DROP]`), writes the `stage_moved` event; `move_lead_or_409` = the console 409 wrapper |
+| Booking-link carrier | `campaigns/router.py::respond_reply` (`POST /{client}/replies/{event_id}/respond`) — reads the thread handle off the stored event (`svc.reply_handle`), calls `sl.reply_to_thread`, stores `response_body` + a `reply_sent` event. **F3 extends THIS door** |
+| Money constants | module-level in the owning domain (`launch.DEFAULT_DAILY_CAP=40`, `scoring.MAX_JOB_AGE_SECONDS=480` — the precedent for `PER_MEETING_USD=500` in `domains/meetings/service.py`); NOT `config.Settings` |
+| Migration 0030 | mirror `0028` (`op.create_table` + `_tenant_fk()` helper + `UUID/PK/NOW` aliases; raw `op.execute` only needed for partial-uniques — F has none, `token_hash` is a plain unique); bump `tests/test_migrations.py::test_single_alembic_head` → `["0030_…"]` + add `test_0030_…_match_migration` column/constraint asserts |
+| Aurora-gated integration | `tests/test_campaigns_db.py` — `pytest.mark.skipif(not HOLDSLOT_DB_CLUSTER_ARN)` + fully-mocked provider (`_FakeSmartlead` via monkeypatch) + self-cleaning ephemeral tenant |
+| Live-probe script | `scripts/e_smoke_live.py` (the pattern for `f_smoke_live.py`); `verify_keys.py --only google` already 200s both APIs |
+
+**Frontend seams (F6 wiring map — file → mock to swap → wire to):**
+
+| Surface | File | Swap | Wire to |
+|---|---|---|---|
+| External book | `app/[client]/(external)/book/[token]/page.tsx` | `DAYS`/`SLOTS`/`TAKEN` consts; **token is never read today** | `useParams` token → `getBookingView(token)`; pass `forceExpired = view.state !== "valid"` to `ExternalShell` (the `approve/[token]` page is the exact wiring exemplar); slots grouped by viewer-local day; confirm → `submitBooking` |
+| External feedback | `app/[client]/(external)/feedback/[token]/page.tsx` | keep `LABELS`/`CHIPS` (they ARE the design vocab); token never read today | `getFeedbackView(token)` + `submitFeedback(token, {rating, chips, comment})`; `forceExpired` |
+| Client-status Booking | `app/[client]/(console)/client-status/booking/page.tsx` + `lib/fixtures/client-status.ts` | `B_LOG`/`BookingRow` | `GET /{client}/bookings` — chips (Invites sent/Accepted/Expired unused) + per-row derived status + invitation preview = the stored `response_body`; **Propose new time** (Expired rows) → `respondReply(…, {include_booking_link: true})` — the one carrier, so the feed must return each lead's latest reply-event id |
+| Client-status Feedback | `…/client-status/feedback/page.tsx` + same fixtures | `F_LOG`/`FeedbackRow` | `GET /{client}/feedback` — chips + history rows + `overdue` (>5d, computed on read); **Send Follow-Up** → `sendFeedbackForm(meetingId)`; **Inform client** → `informClient(meetingId)` |
+| Billing ledger | `…/workspace/billing/page.tsx` + `lib/workspace/fixtures.ts` | `LEDGER` const **+ the page's hardcoded Date/"Meeting with"/Campaign-Batch cells** (they're not in `LedgerRow`) | `GET /{client}/meetings?when=past` rows; Amount renders `amount` when the derived chip = Billed; CSV export goes live; `PER_MEETING_USD=500` (`lib/workspace/constants.ts`) stays the display const |
+| Meeting recaps | `…/workspace/summaries/page.tsx` + `components/workspace/WorkspaceProvider.tsx` | provider `recaps: useState(RECAPS)` — the ONLY mock left in the provider | add a meetings loader (`reloadMeetings`) → recap cards derive (feedback · `won` · Qualified badge); detail fields (Attendees/Discussed/Next step/Sentiment/Recording) stay pending per FD-8/[SKIP→later] |
+| performance-summary | `…/performance-summary/page.tsx` | the `.ph` cells (headline ×3 · Meetings held · Billable · attention ②③) — **the funnel is already live from E7**, there is no FUNNEL const here | the grown `getPerformanceSummary` fields; **copy amendments (locked):** ② drop "one reminder is scheduled" (no scheduler, EF-Q6) · ③ drop "feedback gates billing" (billing gates on held-≥10-min + 48h window) |
+| Meeting calendar | `…/performance-summary/MeetingCalendar.tsx` | `MEETINGS` const (react-big-calendar) | month feed off `meeting.scheduled_at` — parse ISO **with the Z suffix** (the R16/N18 UTC lesson); viewer-local render is then correct |
+| API client | `lib/api.ts` | — | public fns mirror `getApproval`/`decideApproval` (bare `fetch`, `state` discriminator); console fns mirror `listCampaigns`/`respondReply` (`authFetch`); `PerformanceSummaryApi` grows the meeting fields |
+
+### Phase F execution build table (the build-session checklist; every row exits through its §step-gate)
+
+| Step | Builds | Key spec (carry verbatim) | Flag |
+|---|---|---|---|
+| **F1** | Migration `20260712_0030_phase_f_meeting` + models `BookingLink`/`Meeting`/`FeedbackLink` in `models.py` | The 3 tables EXACTLY per `data-schema.md` → Phase F (`booking_link` · `meeting` incl. outcome/amount/dispute/feedback/`won`/`summary` cols · `feedback_link`); FKs: `meeting.approval_id → prospect_approval` **no cascade** (the evidence snapshot) · `campaign_lead_id`/`prospect_id` SET NULL nullable; model conventions = `_uuid_pk()`/`_tenant_fk()`/`_created_at()`; statuses plain strings. **Expand → migrate-first**: apply `0030` to dev Aurora before the push-#1 deploy | |
+| **F2** | `app/integrations/google/client.py` (+ `pyproject.toml` gains **`cryptography`**) + `tests/test_google.py` + fixtures + **`scripts/f_smoke_live.py`** | Exactly the 6 §contract methods, nothing more; token cache w/ expiry refresh; redaction asserts (no Bearer/private_key in any log/error string); throttle/backoff = the apollo posture. **The live probe (the E0 lesson — 5 bugs came from doc-built adapters):** create a scratch event on the host seat (founder as attendee) → assert `statusCode`/`conferenceId`/`hangoutLink` → freebusy read → after the F0 real meeting: records + participants read → **fixtures committed to `tests/fixtures/google/`** (`event_insert_response.json` · `event_insert_pending.json` if seen · `freebusy_response.json` · `conference_records_response.json` · `participants_response.json`) + recorded verdicts: ① is `statusCode` ever `pending` in practice ② is the host identifiable in `participants[].signedinUser` (drives FD-2's refinement) ③ can one meeting code carry >1 record (GR5). Probe deletes its scratch event | ⭐ |
+| **F3** | `app/domains/meetings/` (`service.py` + `router.py` console + `public.py` token-only, mounted in `main.py`) + the `respond_reply` extension | **Mint+send (one carrier):** `RespondIn` gains `include_booking_link: bool` — server revokes the lead's prior live links (approval resend ladder), mints (`new_opaque_token`/`hash_token`, TTL 7d = EF-Q6), URL `{web_base_url}/{slug}/book/{token}`, appends/substitutes into the reply text, sends via the EXISTING `reply_to_thread` path, **link row persists only after Smartlead accepts** (N31). **Public:** `GET /book/{token}` → never-404 view `{state, host/duration display bits, slots[]}` (slots per FD-1/FD-5: windows ∩ `freebusy`, UTC ISO). `POST /book/{token} {slot}` → **atomic claim → re-check slot free → `create_event` (attendees = prospect + Brief attendee; `sendUpdates=all` sends the invites) → pending re-read → insert `meeting` row (`approval_id` snapshotted OFF `campaign_lead.approval_id`; `scheduled_at` UTC) → `record_stage_move(lead, MEETING, via="booking")`** — `book_meeting()` is the one meeting-row writer (FD-4); Google hard-fail after claim → release claim + 503 (FD-6). Illegal-state rules: link's lead not in a bookable stage → still bookable (the operator sent it deliberately); expired/used → 410 on POST, `state` on GET | ⭐ |
+| **F4** | `service.sweep_meetings(db, tenant)` + `POST /{client}/meetings/refresh` + the owner-correction door `POST /{client}/meetings/{id}/outcome` | **The one billing rule, unit-tested off the F2 fixtures (N1):** sweep = rows `held IS NULL AND scheduled_at + meeting_minutes < now()`: meeting code = last path segment of `meet_link` → `list_conference_records`; ongoing (`endTime` unset) → skip; ended → `list_participants` → **held per FD-2** → ONE guarded claim `UPDATE meeting SET held, duration_min, conference_record_id, outcome, amount, dispute_window_ends_at WHERE id = ? AND held IS NULL` (idempotent — the token-claim shape); no record + past FD-3 grace → `held=false, outcome='noshow'` + stage→`noshow`. **Outcome:** `held AND duration_min ≥ 10` → `qualified` (+ stage→`billable` via the moves map); `held AND < 10` → `short_call` (stage stays); **`amount = PER_MEETING_USD (500)` + `dispute_window_ends_at = record.endTime + 48h` stamp ONLY when `approval_id` is present** — no approval evidence, no amount, never billable. **`billable` never stored** — `is_billable(m) = outcome=='qualified' AND amount IS NOT NULL AND dispute_window_ends_at < now() AND NOT disputed`; ledger chip Held (in-window) / Billed (past) / Not billable. Correction = the explicit owner door (re-derives amount/window; never the sweep) | ⭐ |
+| — | **PUSH #1** | apply `0030` → deploy Lambda (picks up `cryptography`) → `f_smoke_live.py` against dev → pytest + 18-e2e green (Q8) | |
+| **F5** | Read seams: `GET /{client}/meetings?when=upcoming\|past` · `GET /{client}/bookings` · `GET /{client}/feedback` · `POST /{client}/meetings/{id}/feedback/send` · `POST /{client}/meetings/{id}/inform-client` · public `GET/POST /feedback/{token}` · the grown `GET /{client}/performance-summary` | Every console meetings/bookings/feedback/summary read **runs the F4 sweep first** (the on-read poll — zero new AWS resources). Shapes per the §F5 task row above + the FE wiring map: meetings rows carry prospect/company/campaign/batch names + `meet_link`/held/duration/outcome/amount/billing-chip/dispute/feedback-state/`won`; bookings rows carry derived status (Confirmed = meeting exists · Awaiting = live unused · Expired = past-TTL unused) + invitation preview (`response_body`) + the lead's latest reply-event id; feedback feed computes `overdue = pending > 5 days` on read; feedback-send = mint `feedback_link` (FD-7) + SES to the prospect (send-before-persist), operator-manual — needs-attention ③ is the nudge surface, no scheduler; inform-client = SES to the Brief attendee (low-rating context). Public feedback POST = atomic claim → write `feedback_rating/chips/comment/feedback_at` onto the meeting row. Summary grows: headline (qualified last-30d + delta vs prior-30d · show-up rate = held ÷ ingested · awaiting this week) · Meetings held (week) · Billable this cycle (Σ `is_billable` amounts) · attention ② (open/expired unused links) ③ (held meetings w/o feedback) · calendar month feed (`scheduled_at` UTC ISO) | |
+| **F6** | The FE wiring map above, end-to-end + e2e additions | All 8 surfaces + `lib/api.ts` fns; e2e adds: book valid→success + expired · feedback submit + expired · ledger renders live rows · booking/feedback status tabs render · summary meeting cells render (mock-routed via `e2e/_mock.ts` — baseline 18 + new, all green) | |
+| — | **PUSH #2** | FE + read seams live → **founder acceptance: self-book a real Meet through a real reply thread, hold it 10 min, watch it auto-qualify + land on the ledger AND the performance summary** → tick **S6** (+ read-only **S7** ledger) | |
+
+### Step-gate test & confirmation matrix (F0→F6)
+
+| Step | Build-time tests (fixtures, no Aurora) | Confirmation gate (observe, then proceed) |
+|---|---|---|
+| **F0** | — (no code) | founder: one real Meet on the pooled seat → its `conference-records` + `participants` read 200 (probe verdict ② lands here) · availability-windows doc authored (FD-1 shape) · FD-1…FD-8 confirmed or overridden · qualified-rule reconfirmed (approval + ≥10 min + 48h) |
+| **F1** | model↔migration match test (`test_0030_…`) · head assert bumped · FK pins: `meeting.approval_id` survives batch/campaign deletes (no cascade); `booking_link → campaign_lead` CASCADE | `0030` applied to dev Aurora (expand → migrate-first); `alembic heads` = `0030` |
+| **F2** | `test_google.py`: every method URL/query/body pinned · JWT claims pin (iss/sub/scope/aud/exp≤1h) · token-cache expiry refresh · 401→re-mint-once · 429/5xx backoff bounded · **redaction asserts** (no token/private_key in logs/errors) · pending-statusCode re-read | `f_smoke_live.py` all-green against the real host seat; fixtures + 3 verdicts committed |
+| **F3** | booking units: mint revokes prior live links [money-adjacent] · link row only after send accepts (N31) · GET never-404 state machine (valid/expired/used) · slot math off freebusy fixtures (windows ∩ busy, UTC, min-notice) · **POST claim atomicity — second POST → 410, one meeting row** [money] · claim-release on Google failure (FD-6) · `approval_id` snapshot correctness [money] · stage move `replied→meeting` writes `stage_moved` · illegal-move 409 untouched | dev Swagger round: respond-with-link on the scratch reply → link lands in-thread → self-book → Calendar event + invite emails arrive + `meeting` row + stage `meeting` |
+| **F4** | qualify units off the F2 fixtures (N1): held/FD-2 branches (record+2 participants ≥10min → qualified+500+window · <10 → short_call, no amount-stamp without `approval_id` [money] · no record past grace → noshow · ongoing → skipped) · **sweep idempotence — second sweep changes nothing** (`WHERE held IS NULL`) [money] · `is_billable` window/dispute matrix · stage effects through the moves map | **PUSH #1** → `f_smoke_live` re-run through the deployed Lambda; the F0 real meeting's row qualifies correctly on a console read |
+| **F5** | derivation units: bookings status triple (Confirmed/Awaiting/Expired — expiry-on-read) · feedback overdue >5d · summary ever-reached meeting fields (show-up rate ÷ ingested; Σ billable) · feedback POST claim single-use · calendar feed UTC-pinned | dev Swagger: all reads render the F0/F3 real rows; feedback-send email arrives; public feedback submit lands on the meeting row |
+| **F6** | FE `pnpm build` + tsc + eslint · e2e baseline 18 + the new book/feedback/ledger/status/summary specs green | **PUSH #2** → founder acceptance (the S6 tick, §above); prod FE follows at the usual cadence |
+
+### Phase F test-case register (designed 2026-07-12 — the per-step pass gates)
+
+**The rule: a step EXITS only when its whole block below is green (plus its §matrix observation gate);
+the next step does not start before.** IDs: `FT<step>-n` = build-time tests (fixtures, no Aurora) ·
+`FP-n` = `f_smoke_live.py` live-probe assertions · `FTI-n` = Aurora-gated integration
+(`test_meetings_db.py`, Google/Smartlead/SES fully mocked — proves OUR logic, the `test_campaigns_db.py`
+posture) · `FE-n` = Playwright e2e (mock-routed via `e2e/_mock.ts`) · `FA-n` = the whole-phase founder
+acceptance. Test files: `tests/test_migrations.py` (FT1) · `tests/test_google.py` (FT2) ·
+`tests/test_meetings.py` (FT3/FT4/FT5) · `tests/test_meetings_db.py` (FTI) · `apps/web/e2e/meetings.spec.ts`
+(FE). `[money]` rows are the N1-rule branches — they may never ship untested.
+
+**F0 — founder confirmations (no code; recorded, not automated):**
+
+| ID | Check |
+|---|---|
+| F0-C1 | one real Meet held on the pooled host seat; `verify_keys.py --only google` still all-200 |
+| F0-C2 | that meeting's `conferenceRecords` read returns ≥1 record with `startTime` + `endTime` set |
+| F0-C3 | its `participants` read shows every joiner; **record verdict ②** — is the host identifiable via `signedinUser`? |
+| F0-C4 | availability-windows doc authored in the FD-1 shape (`tz` · `meeting_minutes` · `windows.mon…fri`) |
+| F0-C5 | FD-1…FD-8 each confirmed or overridden in writing; qualify rule reconfirmed (approval + ≥10 min + 48h) |
+
+**F1 — migration `0030` + models:**
+
+| ID | Case (Given → When → Then) |
+|---|---|
+| FT1-1 | alembic script dir → `get_heads()` → exactly `["0030_phase_f_meeting"]` (bump the existing head assert) |
+| FT1-2 | `BookingLink.__table__` columns → compare → EXACT `data-schema.md` column set (id · tenant_id · campaign_lead_id · token_hash · expires_at · used_at · created_at) |
+| FT1-3 | `Meeting.__table__` → EXACT column set incl. outcome/amount/dispute_window_ends_at/disputed/feedback_*/won/summary |
+| FT1-4 | `FeedbackLink.__table__` → EXACT column set |
+| FT1-5 | FK semantics pins: `meeting.approval_id` ondelete **RESTRICT/no-cascade** · `meeting.campaign_lead_id`+`prospect_id` **SET NULL** · `booking_link.campaign_lead_id` **CASCADE** · `feedback_link.meeting_id` **CASCADE** |
+| FT1-6 | unique constraints present: `booking_link.token_hash` · `feedback_link.token_hash` |
+| FT1-7 | `downgrade()` drops exactly the 3 tables in reverse-FK order (script structural pin) |
+
+**F2 — Google adapter (`test_google.py`; transport monkeypatched, the `test_smartlead.py` two-layer pattern):**
+
+| ID | Case |
+|---|---|
+| FT2-1 | JWT claim pin: decoded assertion carries `iss`=client_email · `sub`=delegated_subject · `scope`= the two scopes space-joined · `aud`=token URL · `exp−iat ≤ 3600` |
+| FT2-2 | token POST body pin: `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` + `assertion`; response parses `access_token` |
+| FT2-3 | token cache: 2nd call inside expiry → NO 2nd token POST; forced-expired cache → re-mints |
+| FT2-4 | API call returns 401 → cache dropped → ONE re-mint + replay → then raise (no retry storm) |
+| FT2-5 | `create_event` pin: `POST …/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all`; body carries `start/end{dateTime,timeZone}` · `attendees[{email}×2]` · `createRequest{requestId, hangoutsMeet}` |
+| FT2-6 | response parse: `id`/`hangoutLink`/`conferenceId`/`statusCode`; **`pending` fixture → bounded `get_event` re-reads (≤3) → `success`; still pending → typed error** |
+| FT2-7 | `freebusy` pin: body `{timeMin,timeMax,timeZone:"UTC",items:[{id:subject}]}`; parses `busy[]`; a per-calendar `errors[]` fixture → typed "no availability" result, never an exception escape |
+| FT2-8 | `list_conference_records` pin: `filter=space.meeting_code = "…"` URL-encoded; parses records; `endTime`-absent (ongoing) fixture handled |
+| FT2-9 | `list_participants` parse: `earliestStartTime`/`latestEndTime` + all three user-union arms (signedin/anonymous/phone) |
+| FT2-10 | **redaction [compliance]**: no `access_token`/`private_key` fragment in ANY log line (caplog DEBUG) or exception string |
+| FT2-11 | 429/5xx → exponential backoff → bounded retries (`_MAX_RETRIES+1` calls) → typed error |
+| FT2-12 | secret shapes: env override `HOLDSLOT_GOOGLE_SA` wins; envelope `{service_account_json, delegated_subject, scopes}` AND raw-SA JSON both parse (the `verify_keys.check_google` contract) |
+
+**F2 live probe (`f_smoke_live.py` — run before ANY code trusts the adapter; the E0 lesson):**
+
+| ID | Assertion |
+|---|---|
+| FP-1 | token mint 200 on the real secret |
+| FP-2 | `freebusy` 200; `busy[]` present for the host seat |
+| FP-3 | scratch event created (founder attendee, +2 days) → `statusCode` reaches `success` · `conferenceId` == `hangoutLink` tail → **fixture `event_insert_response.json`** (+ `event_insert_pending.json` if seen — verdict ①) |
+| FP-4 | `get_event` re-read 200, same ids |
+| FP-5 | the F0 meeting's records read → ≥1 record → **fixture `conference_records_response.json`**; note if >1 record for one code (verdict ③ / GR5) |
+| FP-6 | its participants read → **fixture `participants_response.json`**; record verdict ② (host identifiable?) |
+| FP-7 | probe cleans up: script-local `DELETE …/events/{id}?sendUpdates=none` on its scratch event (delete stays OUT of the 6-method adapter) |
+
+**F3 — booking flow (`test_meetings.py`; Smartlead/Google/SES mocked):**
+
+| ID | Case |
+|---|---|
+| FT3-1 | respond w/ `include_booking_link` → token minted · URL = `{web_base_url}/{slug}/book/{token}` · `{{booking_link}}` placeholder substituted (no placeholder → appended) |
+| FT3-2 | re-mint revokes the lead's prior live links (approval resend ladder) → ≤1 live link per lead |
+| FT3-3 | **[money-adjacent]** `reply_to_thread` raises → NO `booking_link` row persisted (N31 ordering) |
+| FT3-4 | respond WITHOUT the flag → byte-identical E5 behavior, no link row (regression pin) |
+| FT3-5 | GET unknown token → 200 `{state: "expired"}`-class view; NO 404, NO tenant/prospect data (the approvals never-404 posture) |
+| FT3-6 | GET valid → `state:"valid"` + slots + display bits (duration · host); response carries nothing beyond the allow-list |
+| FT3-7 | GET past-`expires_at` → `expired`; `used_at` set → `used` |
+| FT3-8 | slot math off freebusy+windows fixtures: windows ∖ busy · ≥24h min-notice · 5 weekdays · UTC instants; HK-TZ windows convert correctly (the R16/N18 pin) |
+| FT3-9 | freebusy typed-error → `slots: []`, page state stays `valid` (never 500) |
+| FT3-10 | **[money]** claim atomicity: two POSTs, same token → 1st 200 + ONE meeting row · 2nd **410** · still ONE row |
+| FT3-11 | **[money]** Google hard-fail AFTER claim → `used_at` released back to NULL + 503 → a retry then succeeds (FD-6) |
+| FT3-12 | POSTed slot no longer free on the re-check → 409 + claim released + no event created |
+| FT3-13 | **[money]** meeting row: `approval_id` == the lead's `campaign_lead.approval_id` snapshot · `scheduled_at` stored UTC · `google_event_id`/`meet_link` from the response |
+| FT3-14 | stage: lead at `replied` → moves to `meeting` (`stage_moved` written, `via="booking"`); lead at a stage where the move is illegal → **booking still succeeds, move skipped + logged** (the operator sent the link deliberately) |
+| FT3-15 | **[money]** tampered slot (ISO not in the offered set / outside windows) → 400, no event, claim released |
+
+**F4 — sweep + qualify (the money branch; every case runs off the FP fixtures):**
+
+| ID | Case |
+|---|---|
+| FT4-1 | rows not yet due (`scheduled_at + meeting_minutes` in future) → untouched |
+| FT4-2 | ongoing record (`endTime` unset) → skipped; `held` stays NULL |
+| FT4-3 | **[money]** ended record · ≥2 participants · 47 min · `approval_id` set → `held=true · duration_min=47 · outcome=qualified · amount=500 · dispute_window_ends_at=end+48h` · stage `meeting→billable` + `stage_moved` |
+| FT4-4 | duration 7 min → `short_call` · amount NULL · NO stage move |
+| FT4-5 | **[money]** boundary: exactly 10 min → `qualified` (≥, not >) |
+| FT4-6 | ended record with ONE participant (host alone) → NOT held (FD-2); before FD-3 grace → stays NULL; past grace → `noshow` |
+| FT4-7 | no record + past 24h grace → `held=false · outcome=noshow` · stage→`noshow` |
+| FT4-8 | no record + before grace → stays NULL ("awaiting") |
+| FT4-9 | **[money]** qualified duration but `approval_id` NULL → `outcome=qualified` · **amount NULL · never billable** |
+| FT4-10 | **[money]** idempotence: same sweep twice → 2nd run changes NOTHING (`WHERE held IS NULL` claim) |
+| FT4-11 | `is_billable` matrix: qualified+amount+window-passed+undisputed → true · in-window → false (chip **Held**) · `disputed` → false · short_call/noshow → false |
+| FT4-12 | multi-record code (GR5 fixture) → deterministic pick = longest-duration record overlapping `[sched−60min, sched+24h]` |
+| FT4-13 | *(conditional on verdict ②)* host identifiable → `duration_min` = the non-host participant's presence |
+| FT4-14 | owner-correction door: overrides outcome → amount/window re-derived + audit event; **the sweep never touches a row with `held` already set** |
+| FT4-15 | duration rounding: `ceil((end−start)/60)` across an hour boundary |
+
+**F5 — read seams:**
+
+| ID | Case |
+|---|---|
+| FT5-1 | `?when=upcoming` = `held IS NULL AND scheduled_at ≥ now` (join link present) · `past` = ingested; both invoke the sweep first (spy assert) |
+| FT5-2 | ledger row derivation: prospect/company/campaign/batch names joined · billing chip derived (Held/Billed/Not billable) · amount present only when stamped |
+| FT5-3 | bookings status triple off one fixture set: meeting exists → **Confirmed** · live unused → **Awaiting confirm** · past-TTL unused → **Expired** (computed on read); chips == row counts |
+| FT5-4 | bookings row carries the invitation preview (= the `reply_sent` `response_body` that carried the link) + the lead's latest reply-event id (the Propose-new-time handle) |
+| FT5-5 | feedback feed: Awaiting (live link, no `feedback_at`) vs Received; `overdue` flips at pending > 5 days exactly |
+| FT5-6 | feedback-send door: mints `feedback_link` (7d TTL) · revokes prior live · **SES fail → no row** (N31) · re-send re-mints |
+| FT5-7 | inform-client door: SES to the Brief attendee email w/ rating context; no state change |
+| FT5-8 | public feedback GET state machine = FT3-5/6/7 shapes |
+| FT5-9 | **[money-adjacent]** public feedback POST: atomic claim (2nd POST 410) · writes `feedback_rating/chips/comment/feedback_at` onto the meeting · rating 0/6 → 422 |
+| FT5-10 | summary growth off a cross-window fixture: qualified last-30d + delta vs prior-30d · show-up rate = held ÷ ingested · awaiting-this-week · Meetings held (week) · Billable this cycle = Σ `is_billable` amounts · ② open+expired unused links · ③ held w/o feedback · calendar feed = UTC-`Z` ISO strings |
+| FT5-11 | funnel "Meeting booked" = **ever-reached** `meeting` via the `stage_moved` ledger (a lead now at `billable` still counts) |
+
+**F5/F3 integration (`test_meetings_db.py`, Aurora-gated, self-cleaning, runs 2×):**
+
+| ID | Case |
+|---|---|
+| FTI-1 | seed tenant → approved batch → campaign_lead @`replied` w/ approval → respond+link (fake SL) → GET book (slots) → POST book (fake Google) → meeting row + stage `meeting` |
+| FTI-2 | …sweep w/ fake records (qualified path) → ledger/bookings/feedback/summary reads all render the row with derived chips/counts |
+| FTI-3 | …feedback-send (fake SES) → public feedback GET/POST → rating lands on the meeting row; 2nd POST 410 |
+
+**F6 — e2e additions (`e2e/meetings.spec.ts`, mock-routed; baseline 18 must stay green):**
+
+| ID | Case |
+|---|---|
+| FE-1 | book valid: mocked view+slots → day tabs render viewer-local · pick slot · confirm → success pane echoes the slot |
+| FE-2 | book expired **via API state** (not just `?state=`) → expired pane (`forceExpired` wiring proof) |
+| FE-3 | feedback: no rating → inline error; rating+chips+comment → success pane |
+| FE-4 | feedback expired via API state |
+| FE-5 | billing ledger renders live rows (Amount only on Billed) + CSV export non-empty |
+| FE-6 | recaps render from provider meetings; detail fields show pending (FD-8) |
+| FE-7 | client-status Booking: chips + rows + **Propose new time only on Expired rows** → fires the respond carrier (mock asserted) |
+| FE-8 | client-status Feedback: chips + **Send Follow-Up gated on overdue** + **Inform client gated on rating ≤3** |
+| FE-9 | performance-summary meeting cells render mocked numbers + the calendar renders the month feed |
+| FE-10 | full suite: baseline 18 + FE-1…9 green · `pnpm build` + tsc + eslint clean |
+
+### Final whole-phase confirmation (FA — the S6 acceptance run, founder + build session together)
+
+Run AFTER push #2, on the live dev stack, as one scripted sitting; every row must pass. SQL nudges (via
+rds-data on the scratch rows) stand in for waiting out real clocks — never code changes.
+
+| # | Step | Pass = |
+|---|---|---|
+| FA-1 | respond to a real reply thread w/ booking link | email arrives **in-thread**, link resolves |
+| FA-2 | open the link (incognito) + pre-place a busy block on the host calendar | valid pane; the busy slot is **masked**; times render viewer-local |
+| FA-3 | book a slot | success pane · Calendar event on the host seat · **invite emails arrive** (prospect + Brief attendee) · Meet link joins |
+| FA-4 | console after booking | lead stage `meeting` · Upcoming pane shows the row + join link · summary "awaiting this week" ticks |
+| FA-5 | hold the Meet ≥10 min, 2 participants, then leave | — |
+| FA-6 | console read (or Refresh) | row: held ✓ · duration ≥10 · outcome **Qualified** · amount **$500** · chip **Held** · stage `billable` · funnel + headline update |
+| FA-7 | client-status Booking tab | row **Confirmed**; invitation preview shows the sent text |
+| FA-8 | feedback-send → submit the public form (rating 4 + chips) | email arrives · ledger Feedback → **Received** · avg rating updates |
+| FA-9 | re-open both used links | booking → used/expired pane · feedback → used pane (single-use proof) |
+| FA-10 | SQL-nudge `dispute_window_ends_at` past | chip flips **Billed** · Billable-this-cycle sums it |
+| FA-11 | book a 2nd slot, never join; SQL-nudge `scheduled_at` −25h; read | outcome **No-show** on the ledger · stage `noshow` |
+| FA-12 | full gates | pytest (all FT/FTI) green · e2e (18+10) green · ruff clean |
+
+**FA-12 green + FA-1…11 observed → tick S6 (+ read-only S7 ledger). Phase F is DONE; G starts.**
+
+### Integration risks (Google — doc-researched 2026-07-12; GR = carry into the build)
+
+**GR1 scope freeze** — the DWD admin-console grant lists exactly the two verified scopes; any new scope
+string (e.g. Drive for recordings) = founder re-auth + up-to-24h propagation → FD-8 skips recordings.
+**GR2 async conference create** — `createRequest` may return `status.statusCode = "pending"`; re-read the
+event before storing `meet_link`/code (probe verdict ①). **GR3 principal-scoped `.created`** — the
+`meetings.space.created` scope silently returns empty for non-creator tokens; we use `.readonly` + the
+host-seat subject (F0 proves on the real seats). **GR4 record expiry** — conference records auto-delete
+**30 days** after end; the on-read sweep at console cadence beats it by construction, but a >30-day
+abandoned tenant would lose evidence → the sweep result is *persisted once* on the `meeting` row (the
+claim), never re-read. **GR5 multi-record codes** — one meeting code can in principle yield several
+conference records (rejoin after everyone left); deterministic pick = the record with the longest
+duration overlapping `[scheduled_at − 60min, scheduled_at + 24h]` (probe verdict ③ pins whether this
+occurs). **GR6 attendees need DWD** — confirmed: service accounts can only populate `attendees[]` under
+domain-wide delegation; we always impersonate. **GR7 late records** — a prospect may join late; never
+verdict `noshow` before the FD-3 24h grace. **GR8 RS256 dep** — `cryptography` is the one new wheel;
+`verify_keys`' openssl-subprocess is NOT portable into Lambda code. **GR9 timezone discipline** — every
+Google timestamp parses UTC-pinned (the R16/N18 lesson); slots ship as UTC instants; only the FE renders
+local.
 
 ---
 

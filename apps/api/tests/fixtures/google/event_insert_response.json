@@ -1,0 +1,42 @@
+{
+  "id": "evt_abc123",
+  "status": "confirmed",
+  "htmlLink": "https://www.google.com/calendar/event?eid=evt_abc123",
+  "hangoutLink": "https://meet.google.com/abc-defg-hij",
+  "start": {
+    "dateTime": "2026-07-15T10:00:00Z",
+    "timeZone": "UTC"
+  },
+  "end": {
+    "dateTime": "2026-07-15T10:30:00Z",
+    "timeZone": "UTC"
+  },
+  "attendees": [
+    {
+      "email": "buyer@prospect.com",
+      "responseStatus": "needsAction"
+    },
+    {
+      "email": "founder@getholdslot.com",
+      "responseStatus": "accepted"
+    }
+  ],
+  "conferenceData": {
+    "conferenceId": "abc-defg-hij",
+    "conferenceSolution": {
+      "key": {
+        "type": "hangoutsMeet"
+      },
+      "name": "Google Meet"
+    },
+    "entryPoints": [
+      {
+        "entryPointType": "video",
+        "uri": "https://meet.google.com/abc-defg-hij"
+      }
+    ],
+    "status": {
+      "statusCode": "success"
+    }
+  }
+}

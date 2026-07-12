@@ -72,6 +72,28 @@ function jsonFor(method: string, path: string): unknown {
     };
   }
 
+  // Public booking view (F3) — no /{client} prefix. A valid state keeps the page on its live card;
+  // the slots are two future UTC instants the FE groups by local day.
+  if (path.startsWith("/book/")) {
+    const now = Date.now();
+    const day2 = now + 2 * 86400000;
+    return {
+      state: "valid",
+      client_name: "HoldSlot",
+      duration_min: 30,
+      slots: [
+        new Date(day2).toISOString(),
+        new Date(day2 + 1800000).toISOString(),
+        new Date(now + 3 * 86400000).toISOString(),
+      ],
+      expires_at: null,
+    };
+  }
+  // Public feedback view (F5) — no /{client} prefix.
+  if (path.startsWith("/feedback/")) {
+    return { state: "valid", client_name: "HoldSlot", expires_at: null };
+  }
+
   // Strip the leading /{client} so the per-client endpoints match regardless of slug.
   const rel = path.replace(new RegExp(`^/${CLIENT}`), "");
 
@@ -112,6 +134,46 @@ function jsonFor(method: string, path: string): unknown {
         sent_at: n === 1 ? "2026-07-10T01:00:00" : null,
         decided_at: null,
       }));
+    // Campaigns (CampaignApi[]) — WorkspaceProvider loads these on mount for the campaign pip + tab.
+    // One sending campaign linked to Batch 1.
+    case "/campaigns":
+      return [
+        {
+          id: "camp-1",
+          batch_id: "batch-1",
+          batch_name: "Batch 1",
+          name: "Campaign 1",
+          icp: "ICP A",
+          status: "sending",
+          smartlead_campaign_id: "900123",
+          lead_total: 5,
+          stages: { contacted: 2, replied: 1, meeting: 1, billable: 1 },
+          created_at: "2026-07-10T00:00:00",
+          updated_at: "2026-07-11T00:00:00",
+        },
+      ];
+    // Reply queue (ReplyApi[]) — the WorkspaceProvider loads this on mount and the workspace LAYOUT's
+    // reply pip does `replies.filter(r => !r.handled_at)`, so this MUST be an array. A bare `{}` from
+    // the catch-all (this case missing) crashed EVERY workspace route with a reply-pip TypeError. One
+    // open (unhandled) reply so the pip shows a count.
+    case "/replies":
+      return [
+        {
+          id: "rep-1",
+          campaign_id: "camp-1",
+          campaign_name: "Campaign 1",
+          campaign_lead_id: "lead-1",
+          prospect_name: "Dana Reyes",
+          prospect_role: "VP Ops",
+          stage: "replied",
+          reply_body: "Sounds interesting — could you share a couple of times?",
+          subject: "Re: quick intro",
+          occurred_at: "2026-07-11T09:00:00Z",
+          triage: "positive",
+          handled_at: null,
+          response_body: null,
+        },
+      ];
     case "/approval-template":
       // ApprovalTemplateApi — the client-status approval page does `tmpl.body.split("\n\n")` on
       // load, so the catch-all `{}` (no `body`) crashed it. Return a valid template.
@@ -119,6 +181,132 @@ function jsonFor(method: string, path: string): unknown {
         subject: "Prospects for your review",
         body: "Hi there,\n\nHere are this week's prospects.\n\nApprove or request changes.",
         cta: "Review prospects",
+      };
+    // Phase F console reads. `/meetings` is hit by the WorkspaceProvider on every workspace route
+    // (recaps loader) + the billing ledger — MUST be an array or `.filter`/`.map` throws.
+    case "/meetings":
+      return [
+        {
+          id: "m1",
+          prospect_name: "Dana Reyes",
+          company_name: "Acme",
+          campaign_name: "Campaign 1",
+          batch_name: "Batch 1",
+          scheduled_at: "2026-07-10T10:00:00Z",
+          meet_link: "https://meet.google.com/abc-defg-hij",
+          held: true,
+          duration_min: 32,
+          outcome: "qualified",
+          amount: 500,
+          billing_chip: "Billed",
+          dispute_window_ends_at: "2026-07-12T10:32:00Z",
+          disputed: false,
+          feedback_state: "Received",
+          feedback_rating: 4,
+          won: true,
+        },
+        {
+          id: "m2",
+          prospect_name: "Lee Park",
+          company_name: "Globex",
+          campaign_name: "Campaign 1",
+          batch_name: "Batch 1",
+          scheduled_at: "2026-07-11T14:00:00Z",
+          meet_link: null,
+          held: true,
+          duration_min: 7,
+          outcome: "short_call",
+          amount: null,
+          billing_chip: "Not billable",
+          dispute_window_ends_at: null,
+          disputed: false,
+          feedback_state: "None",
+          feedback_rating: null,
+          won: null,
+        },
+      ];
+    case "/bookings":
+      return [
+        {
+          id: "b1",
+          prospect_name: "Dana Reyes",
+          company_name: "Acme",
+          campaign_name: "Campaign 1",
+          status: "Confirmed",
+          invitation_preview: "Pick a time: https://tryholdslot.com/holdslot/book/xyz",
+          reply_event_id: "ev1",
+          sent_at: "2026-07-08T00:00:00Z",
+          expires_at: "2026-07-15T00:00:00Z",
+        },
+        {
+          id: "b2",
+          prospect_name: "Sam Cole",
+          company_name: "Initech",
+          campaign_name: "Campaign 1",
+          status: "Expired",
+          invitation_preview: "Pick a time: https://tryholdslot.com/holdslot/book/abc",
+          reply_event_id: "ev2",
+          sent_at: "2026-06-20T00:00:00Z",
+          expires_at: "2026-06-27T00:00:00Z",
+        },
+      ];
+    case "/feedback":
+      return [
+        {
+          id: "m1",
+          prospect_name: "Dana Reyes",
+          company_name: "Acme",
+          state: "Received",
+          overdue: false,
+          rating: 4,
+          chips: ["Well prepared"],
+          comment: "Useful, relevant call.",
+          feedback_at: "2026-07-11T00:00:00Z",
+          scheduled_at: "2026-07-10T10:00:00Z",
+        },
+        {
+          id: "m3",
+          prospect_name: "Jo Vance",
+          company_name: "Umbrella",
+          state: "None",
+          overdue: true,
+          rating: null,
+          chips: [],
+          comment: "",
+          feedback_at: null,
+          scheduled_at: "2026-06-30T10:00:00Z",
+        },
+      ];
+    case "/performance-summary":
+      return {
+        funnel: [
+          { label: "Sourced", n: 120 },
+          { label: "Approved", n: 60 },
+          { label: "Contacted", n: 50 },
+          { label: "Replied", n: 20 },
+          { label: "Positive", n: 12 },
+          { label: "Meeting booked", n: 4 },
+        ],
+        new_positive_replies: 3,
+        replies_awaiting_review: 2,
+        approvals_pending: 1,
+        meetings_booked: 4,
+        qualified_last_30d: 3,
+        qualified_delta: 1,
+        meetings_held_week: 2,
+        show_up_rate: 0.75,
+        awaiting_this_week: 1,
+        billable_this_cycle: 1000,
+        open_booking_links: 2,
+        held_without_feedback: 1,
+        calendar: [
+          {
+            id: "m1",
+            scheduled_at: "2026-07-10T10:00:00Z",
+            prospect_name: "Dana Reyes",
+            outcome: "qualified",
+          },
+        ],
       };
     case "/sourcing-docs":
       return { company_fit: null, prospect_fit: null }; // SourcingDocList

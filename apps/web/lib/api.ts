@@ -1271,29 +1271,188 @@ export async function triageReply(
 export async function respondReply(
   client: string,
   eventId: string,
-  body: string
+  body: string,
+  opts?: { includeBookingLink?: boolean }
 ): Promise<ReplyApi> {
   const r = await authFetch(`/${client}/replies/${eventId}/respond`, {
     method: "POST",
     json: true,
-    body: JSON.stringify({ body }),
+    // include_booking_link (F3) mints + threads a fresh booking link — the one carrier.
+    body: JSON.stringify({ body, include_booking_link: !!opts?.includeBookingLink }),
   });
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
 }
 
-// Performance-summary v1 (EF-Q9) — derived on read. The Leads funnel + reply stats + needs-attention
-// ① go live; the meeting-dependent cells stay placeholder (meetings_booked = 0) until Phase F.
+// Performance-summary (EF-Q9) — derived on read. The Leads funnel + reply stats + needs-attention ①
+// go live at E7; the meeting cells (headline, held, billable, calendar, ②③) go live at F5.
 export type FunnelStageApi = { label: string; n: number };
+export type MeetingCalendarItemApi = {
+  id: string;
+  scheduled_at: string; // UTC …Z; render viewer-local
+  prospect_name: string;
+  outcome: string | null;
+};
 export type PerformanceSummaryApi = {
   funnel: FunnelStageApi[];
   new_positive_replies: number;
   replies_awaiting_review: number;
   approvals_pending: number;
   meetings_booked: number;
+  qualified_last_30d: number;
+  qualified_delta: number;
+  meetings_held_week: number;
+  show_up_rate: number | null;
+  awaiting_this_week: number;
+  billable_this_cycle: number;
+  open_booking_links: number;
+  held_without_feedback: number;
+  calendar: MeetingCalendarItemApi[];
 };
 export async function getPerformanceSummary(client: string): Promise<PerformanceSummaryApi> {
   const r = await authFetch(`/${client}/performance-summary`);
   if (!r.ok) throw new Error(await detail(r));
   return r.json();
+}
+
+// --- Phase F (S6) — booking · meeting · feedback -----------------------------
+// Public token endpoints (bare fetch, no auth — the token is the credential; the endpoint always
+// 200s with a `state` so the page picks its pane, never leaking tenant existence). Console reads run
+// the on-read sweep server-side before returning.
+
+export type BookingViewApi = {
+  state: "valid" | "used" | "expired";
+  client_name: string;
+  duration_min: number;
+  slots: string[]; // UTC …Z instants; group by the viewer's local day
+  expires_at: string | null;
+};
+export async function getBookingView(token: string): Promise<BookingViewApi> {
+  const r = await fetch(`${API_BASE}/book/${encodeURIComponent(token)}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export type BookingConfirmApi = { state: string; scheduled_at: string; meet_link: string | null };
+export async function submitBooking(token: string, slot: string): Promise<BookingConfirmApi> {
+  const r = await fetch(`${API_BASE}/book/${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ slot }),
+  });
+  if (!r.ok) throw new Error(await detail(r)); // 400 tampered · 409 taken · 410 used · 503 retry
+  return r.json();
+}
+
+export type FeedbackViewApi = {
+  state: "valid" | "used" | "expired";
+  client_name: string;
+  expires_at: string | null;
+};
+export async function getFeedbackView(token: string): Promise<FeedbackViewApi> {
+  const r = await fetch(`${API_BASE}/feedback/${encodeURIComponent(token)}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function submitFeedback(
+  token: string,
+  body: { rating: number; chips: string[]; comment: string }
+): Promise<{ state: string }> {
+  const r = await fetch(`${API_BASE}/feedback/${encodeURIComponent(token)}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r)); // 410 once used
+  return r.json();
+}
+
+export type MeetingApi = {
+  id: string;
+  prospect_name: string;
+  company_name: string;
+  campaign_name: string;
+  batch_name: string;
+  scheduled_at: string;
+  meet_link: string | null;
+  held: boolean | null;
+  duration_min: number | null;
+  outcome: string | null; // qualified · short_call · noshow
+  amount: number | null;
+  billing_chip: string; // Held · Billed · Not billable
+  dispute_window_ends_at: string | null;
+  disputed: boolean;
+  feedback_state: string; // Received · None
+  feedback_rating: number | null;
+  won: boolean | null;
+};
+export async function listMeetings(
+  client: string,
+  when: "upcoming" | "past" = "past"
+): Promise<MeetingApi[]> {
+  const r = await authFetch(`/${client}/meetings?when=${when}`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export type SweepResultApi = { swept: number; qualified: number; noshow: number };
+export async function refreshMeetings(client: string): Promise<SweepResultApi> {
+  const r = await authFetch(`/${client}/meetings/refresh`, { method: "POST" });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function correctOutcome(
+  client: string,
+  meetingId: string,
+  body: { outcome: string; disputed?: boolean; won?: boolean }
+): Promise<MeetingApi> {
+  const r = await authFetch(`/${client}/meetings/${meetingId}/outcome`, {
+    method: "POST",
+    json: true,
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export type BookingRowApi = {
+  id: string;
+  prospect_name: string;
+  company_name: string;
+  campaign_name: string;
+  status: string; // Confirmed · Awaiting confirm · Expired
+  invitation_preview: string;
+  reply_event_id: string | null; // the Propose-new-time carrier handle
+  sent_at: string | null;
+  expires_at: string | null;
+};
+export async function listBookings(client: string): Promise<BookingRowApi[]> {
+  const r = await authFetch(`/${client}/bookings`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+
+export type FeedbackRowApi = {
+  id: string; // meeting id
+  prospect_name: string;
+  company_name: string;
+  state: string; // Received · Pending · None
+  overdue: boolean;
+  rating: number | null;
+  chips: string[];
+  comment: string;
+  feedback_at: string | null;
+  scheduled_at: string;
+};
+export async function listFeedback(client: string): Promise<FeedbackRowApi[]> {
+  const r = await authFetch(`/${client}/feedback`);
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function sendFeedbackForm(client: string, meetingId: string): Promise<FeedbackRowApi> {
+  const r = await authFetch(`/${client}/meetings/${meetingId}/feedback/send`, { method: "POST" });
+  if (!r.ok) throw new Error(await detail(r));
+  return r.json();
+}
+export async function informClient(client: string, meetingId: string): Promise<void> {
+  const r = await authFetch(`/${client}/meetings/${meetingId}/inform-client`, { method: "POST" });
+  if (!r.ok) throw new Error(await detail(r));
 }

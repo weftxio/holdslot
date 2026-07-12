@@ -1,8 +1,9 @@
 "use client";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Calendar, dateFnsLocalizer } from "react-big-calendar";
 import { format, parse, startOfWeek, getDay } from "date-fns";
 import { enUS } from "date-fns/locale";
+import type { MeetingCalendarItemApi } from "@/lib/api";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 
 const localizer = dateFnsLocalizer({
@@ -13,55 +14,37 @@ const localizer = dateFnsLocalizer({
   locales: { "en-US": enUS },
 });
 
-// Fixed reference month for the mock (deterministic — avoids SSR hydration drift)
-const CAL_NOW = new Date(2026, 5, 3);
-const CAL_MONTH = new Date(2026, 5, 1);
-const getNow = () => CAL_NOW;
 const VIEWS: "month"[] = ["month"];
+const OUTCOME_LABEL: Record<string, string> = {
+  qualified: "Qualified",
+  short_call: "Short call",
+  noshow: "No-show",
+};
 
-const MEETINGS = [
-  {
-    title: "Cyberdyne · Qualified",
-    start: new Date(2026, 5, 4, 10, 0),
-    end: new Date(2026, 5, 4, 10, 45),
-  },
-  {
-    title: "Globex · Intro call",
-    start: new Date(2026, 5, 9, 14, 30),
-    end: new Date(2026, 5, 9, 15, 0),
-  },
-  {
-    title: "HoldSlot · Demo",
-    start: new Date(2026, 5, 12, 11, 0),
-    end: new Date(2026, 5, 12, 11, 45),
-  },
-  {
-    title: "Initech · Discovery",
-    start: new Date(2026, 5, 17, 9, 30),
-    end: new Date(2026, 5, 17, 10, 15),
-  },
-  {
-    title: "Soylent · Follow-up",
-    start: new Date(2026, 5, 23, 16, 0),
-    end: new Date(2026, 5, 23, 16, 30),
-  },
-  {
-    title: "Umbrella · Qualified",
-    start: new Date(2026, 5, 26, 13, 0),
-    end: new Date(2026, 5, 26, 13, 45),
-  },
-];
-
-export default function MeetingCalendar() {
-  const [calDate, setCalDate] = useState<Date>(CAL_MONTH);
+// The month feed comes from `meeting.scheduled_at` (UTC …Z ISO). Parsing with `new Date(iso)` renders
+// each event in the viewer's local zone (the R16/N18 UTC lesson: the Z suffix makes this correct).
+export default function MeetingCalendar({ items = [] }: { items?: MeetingCalendarItemApi[] }) {
+  const events = useMemo(
+    () =>
+      items.map((m) => {
+        const start = new Date(m.scheduled_at);
+        const label = m.outcome ? OUTCOME_LABEL[m.outcome] || m.outcome : "Meeting";
+        return {
+          title: `${m.prospect_name || "Prospect"} · ${label}`,
+          start,
+          end: new Date(start.getTime() + 30 * 60000),
+        };
+      }),
+    [items]
+  );
+  const [calDate, setCalDate] = useState<Date>(() => new Date());
   return (
     <div className="cal-wrap">
       <Calendar
         localizer={localizer}
-        events={MEETINGS}
+        events={events}
         date={calDate}
         onNavigate={setCalDate}
-        getNow={getNow}
         defaultView="month"
         views={VIEWS}
         popup

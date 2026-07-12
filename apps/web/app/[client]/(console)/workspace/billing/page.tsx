@@ -1,39 +1,70 @@
 "use client";
-import { useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useParams } from "next/navigation";
 import clsx from "clsx";
-import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { PER_MEETING_USD } from "@/lib/workspace/constants";
-import { LEDGER } from "@/lib/workspace/fixtures";
+import { listMeetings, refreshMeetings, type MeetingApi } from "@/lib/api";
+
+const OUTCOME: Record<string, { label: string; badge: string }> = {
+  qualified: { label: "Qualified", badge: "badge-ok" },
+  short_call: { label: "Short call", badge: "badge-warn" },
+  noshow: { label: "No-show", badge: "badge-danger" },
+};
+const BILLING_BADGE: Record<string, string> = {
+  Billed: "badge-ok",
+  Held: "badge-warn",
+  "Not billable": "badge-neutral",
+};
+
+function fmt(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
 
 export default function BillingPage() {
+  const client = useParams<{ client: string }>().client;
   const toast = useToast();
+  const [rows, setRows] = useState<MeetingApi[] | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(() => {
+    listMeetings(client, "past").then(setRows).catch(() => setRows([]));
+  }, [client]);
+  useEffect(() => load(), [load]);
+
+  async function refresh() {
+    setBusy(true);
+    try {
+      await refreshMeetings(client);
+      load();
+      toast("Ledger refreshed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const list = rows ?? [];
+  const billed = list.filter((r) => r.billing_chip === "Billed");
+  const cycleDue = billed.reduce((s, r) => s + (r.amount || 0), 0);
 
   function exportLedgerCsv() {
     const headers = [
-      "Date",
-      "Meeting with",
-      "Company",
-      "Campaign",
-      "Batch",
-      "Outcome",
-      "Feedback",
-      "Status",
+      "Date", "Meeting with", "Company", "Campaign", "Batch", "Outcome", "Feedback", "Status",
       "Amount (USD)",
     ];
-    const rows = LEDGER.map((row, i) => [
-      "Placeholder date",
-      "Prospect " + (i + 1),
-      "Sample Co " + (i + 1),
-      "Campaign 1",
-      "Batch 3",
-      row.outcome,
-      row.feedback,
-      row.billing,
-      row.billing === "Billed" ? String(PER_MEETING_USD) : "",
+    const csvRows = list.map((r) => [
+      fmt(r.scheduled_at),
+      r.prospect_name,
+      r.company_name,
+      r.campaign_name,
+      r.batch_name,
+      OUTCOME[r.outcome || ""]?.label || r.outcome || "",
+      r.feedback_state,
+      r.billing_chip,
+      r.billing_chip === "Billed" && r.amount != null ? String(r.amount) : "",
     ]);
-    const csv = [headers, ...rows]
-      .map((r) => r.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+    const csv = [headers, ...csvRows]
+      .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -50,15 +81,11 @@ export default function BillingPage() {
       <div className="ledger-sum">
         <div className="ls">
           <div className="lcap">Meetings billed</div>
-          <div className="ln">
-            <Sample>n</Sample>
-          </div>
+          <div className="ln">{billed.length}</div>
         </div>
         <div className="ls">
           <div className="lcap">Current cycle due</div>
-          <div className="ln">
-            $<Sample>amt</Sample>
-          </div>
+          <div className="ln">${cycleDue.toLocaleString()}</div>
         </div>
         <div className="ls accent">
           <div className="lcap">Per qualified meeting</div>
@@ -71,9 +98,14 @@ export default function BillingPage() {
             <h3>Billing Ledger</h3>
             <div className="ph-sub">Only completed, qualified meetings are billable</div>
           </div>
-          <button className="btn btn-ghost btn-sm" onClick={exportLedgerCsv}>
-            Export CSV
-          </button>
+          <div className="row" style={{ gap: 8 }}>
+            <button className="btn btn-ghost btn-sm" onClick={refresh} disabled={busy}>
+              {busy ? "Refreshing…" : "Refresh"}
+            </button>
+            <button className="btn btn-ghost btn-sm" onClick={exportLedgerCsv}>
+              Export CSV
+            </button>
+          </div>
         </div>
         <div className="tbl-scroll">
           <table className="tbl">
@@ -89,41 +121,58 @@ export default function BillingPage() {
               </tr>
             </thead>
             <tbody>
-              {LEDGER.map((row, i) => (
-                <tr key={i}>
-                  <td className="muted">Placeholder date</td>
-                  <td>
-                    <div className="nm">Prospect {i + 1}</div>
-                    <div className="sub">Sample Co {i + 1}</div>
-                  </td>
-                  <td>
-                    <div className="sum-tags">
-                      <span className="stag">Campaign 1</span>
-                      <span className="stag">Batch 3</span>
-                    </div>
-                  </td>
-                  <td>
-                    <span className={clsx("badge", row.outcomeBadge)}>
-                      <span className="bdot" />
-                      {row.outcome}
-                    </span>
-                  </td>
-                  <td className="muted">{row.feedback}</td>
-                  <td>
-                    <span className={clsx("badge", row.billingBadge)}>
-                      <span className="bdot" />
-                      {row.billing}
-                    </span>
-                  </td>
-                  <td className="amt-cell">
-                    {row.billing === "Billed" ? (
-                      `$${PER_MEETING_USD}`
-                    ) : (
-                      <span className="muted">·</span>
-                    )}
+              {rows === null && (
+                <tr>
+                  <td colSpan={7} className="muted">
+                    Loading…
                   </td>
                 </tr>
-              ))}
+              )}
+              {rows !== null && list.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="muted">
+                    No completed meetings yet.
+                  </td>
+                </tr>
+              )}
+              {list.map((r) => {
+                const oc = OUTCOME[r.outcome || ""] || { label: r.outcome || "—", badge: "badge-neutral" };
+                return (
+                  <tr key={r.id}>
+                    <td className="muted">{fmt(r.scheduled_at)}</td>
+                    <td>
+                      <div className="nm">{r.prospect_name || "Prospect"}</div>
+                      <div className="sub">{r.company_name}</div>
+                    </td>
+                    <td>
+                      <div className="sum-tags">
+                        {r.campaign_name && <span className="stag">{r.campaign_name}</span>}
+                        {r.batch_name && <span className="stag">{r.batch_name}</span>}
+                      </div>
+                    </td>
+                    <td>
+                      <span className={clsx("badge", oc.badge)}>
+                        <span className="bdot" />
+                        {oc.label}
+                      </span>
+                    </td>
+                    <td className="muted">{r.feedback_state === "Received" ? "Received" : "—"}</td>
+                    <td>
+                      <span className={clsx("badge", BILLING_BADGE[r.billing_chip] || "badge-neutral")}>
+                        <span className="bdot" />
+                        {r.billing_chip}
+                      </span>
+                    </td>
+                    <td className="amt-cell">
+                      {r.billing_chip === "Billed" && r.amount != null ? (
+                        `$${r.amount.toLocaleString()}`
+                      ) : (
+                        <span className="muted">·</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

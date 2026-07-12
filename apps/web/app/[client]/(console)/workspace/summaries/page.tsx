@@ -3,6 +3,20 @@ import { useState } from "react";
 import clsx from "clsx";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 
+const OUTCOME: Record<string, { label: string; badge: string }> = {
+  qualified: { label: "Qualified", badge: "badge-ok" },
+  short_call: { label: "Short call", badge: "badge-warn" },
+  noshow: { label: "No-show", badge: "badge-danger" },
+};
+
+function fmt(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}
+
 export default function SummariesPage() {
   // N47 — recaps come from the shared provider (not a static import) so a campaign rename remaps
   // their tag and they stay in this filter instead of orphaning under the old name.
@@ -30,54 +44,59 @@ export default function SummariesPage() {
       </div>
       <div>
         {recapsInView.map((rc, sx) => {
-          const recUrl = `https://meet.google.com/rec/${rc.recId}`;
+          const oc = OUTCOME[rc.outcome || ""] || {
+            label: rc.outcome || "—",
+            badge: "badge-neutral",
+          };
           return (
-            <div className="sum-card" key={rc.recId}>
+            <div className="sum-card" key={rc.id}>
               <div className="sum-tags">
-                <span className="stag">{rc.campaign}</span>
-                <span className="stag">{rc.batch}</span>
+                {rc.campaign && <span className="stag">{rc.campaign}</span>}
+                {rc.batch && <span className="stag">{rc.batch}</span>}
               </div>
               <div className="sh">
                 <div>
                   <div className="sm">
-                    Meeting {sx + 1} · Prospect {sx + 1}
+                    Meeting {sx + 1} · {rc.prospectName || "Prospect"}
                   </div>
                   <div className="smeta">
-                    Placeholder date · Sample Co {sx + 1} · recording on file
+                    {fmt(rc.scheduledAt)} · {rc.companyName || "—"}
                   </div>
                 </div>
-                <span className="badge badge-ok">
+                <span className={clsx("badge", oc.badge)}>
                   <span className="bdot" />
-                  Qualified
+                  {oc.label}
                 </span>
               </div>
               <div className="srow">
                 <span className="sk">Recording</span>
                 <span className="sv">
-                  <a className="rec-link" href={recUrl} target="_blank" rel="noopener noreferrer">
-                    {recUrl}
-                  </a>
+                  <span className="mph">Pending</span> · captured after the call
                 </span>
               </div>
               <div className="srow">
                 <span className="sk">Attendees</span>
-                <span className="sv">Placeholder names and titles</span>
+                <span className="sv">
+                  <span className="mph">Pending</span>
+                </span>
               </div>
               <div className="srow">
                 <span className="sk">Discussed</span>
                 <span className="sv">
-                  Placeholder summary of the conversation, pain points, and current stack.
+                  <span className="mph">Pending</span> · a summary is prepared after the meeting.
                 </span>
               </div>
               <div className="srow">
                 <span className="sk">Next step</span>
                 <span className="sv">
-                  <span className="mph">Placeholder</span>: follow-up action and owner.
+                  <span className="mph">Pending</span>
                 </span>
               </div>
               <div className="srow">
-                <span className="sk">Sentiment</span>
-                <span className="sv">Placeholder: qualified, warm, evaluating.</span>
+                <span className="sk">Feedback</span>
+                <span className="sv">
+                  {rc.rating ? `${rc.rating}/5` : <span className="mph">Awaiting</span>}
+                </span>
               </div>
               <div className="srow">
                 <span className="sk">Final conversion</span>
@@ -92,7 +111,7 @@ export default function SummariesPage() {
           );
         })}
         {recapsInView.length === 0 && (
-          <div className="sum-empty">No meeting recaps for {sumCamp} yet.</div>
+          <div className="sum-empty">No meeting recaps {sumCamp ? `for ${sumCamp}` : "yet"}.</div>
         )}
       </div>
     </section>

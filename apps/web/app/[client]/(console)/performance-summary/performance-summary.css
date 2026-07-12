@@ -60,6 +60,10 @@
   color: var(--cerulean);
   font-weight: 700;
 }
+.hl-main .delta .down {
+  color: var(--danger);
+  font-weight: 700;
+}
 .hl-cell {
   padding: 24px 30px;
   border-left: 1px solid var(--line);

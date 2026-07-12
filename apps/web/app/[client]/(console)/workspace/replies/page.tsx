@@ -35,6 +35,7 @@ export default function RepliesPage() {
   const { replies, reloadReplies, campaigns } = useWorkspace();
   const [replyCamp, setReplyCamp] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [bookLink, setBookLink] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<Set<string>>(new Set());
 
   const remaining = replies.filter((r) => !r.handled_at).length; // global total (matches the tab pip)
@@ -72,10 +73,11 @@ export default function RepliesPage() {
         toast("Write a reply first", "warn");
         return;
       }
-      await respondReply(client, r.id, text);
+      const includeBookingLink = !!bookLink[r.id];
+      await respondReply(client, r.id, text, { includeBookingLink });
       await reloadReplies();
       setDraft(r.id, "");
-      toast("Reply sent");
+      toast(includeBookingLink ? "Reply sent with a booking link" : "Reply sent");
     });
 
   return (
@@ -171,7 +173,22 @@ export default function RepliesPage() {
                     placeholder="Write a threaded reply to send via Smartlead…"
                     onChange={(e) => setDraft(r.id, e.target.value)}
                   />
-                  <div className="reply-actions">
+                  <div className="reply-actions" style={{ alignItems: "center", gap: 12 }}>
+                    {!sent && (
+                      <label
+                        className="dl"
+                        style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!!bookLink[r.id]}
+                          onChange={(e) =>
+                            setBookLink((s) => ({ ...s, [r.id]: e.target.checked }))
+                          }
+                        />
+                        Include booking link
+                      </label>
+                    )}
                     <button
                       className="btn btn-accent btn-sm"
                       disabled={rowBusy || sent}

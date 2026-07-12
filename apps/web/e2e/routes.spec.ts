@@ -119,10 +119,11 @@ const WORKSPACE_TABS: { key: string; assert: (page: Page) => Promise<void> }[] =
   },
   {
     key: "campaign",
-    // The campaign selector + the "Edit campaign name" input are always rendered; assert the input
-    // (a real visible element, unlike <option>s which Playwright treats as hidden).
+    // The campaign selector (<select aria-label="Campaign">) is always rendered once ≥1 campaign
+    // exists; assert that combobox — a real visible element, unlike its <option>s which Playwright
+    // treats as hidden. (Was a stale "Edit campaign name" textbox from before the Phase E rewrite.)
     assert: async (page) =>
-      void (await expect(page.getByRole("textbox", { name: "Edit campaign name" })).toBeVisible()),
+      void (await expect(page.getByRole("combobox", { name: "Campaign" })).toBeVisible()),
   },
   {
     key: "replies",

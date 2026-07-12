@@ -1,0 +1,14 @@
+{
+  "kind": "calendar#freeBusy",
+  "calendars": {
+    "info@tryholdslot.com": {
+      "errors": [
+        {
+          "domain": "global",
+          "reason": "notFound"
+        }
+      ],
+      "busy": []
+    }
+  }
+}

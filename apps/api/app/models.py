@@ -589,9 +589,7 @@ class Prompt(Base):
 
     __tablename__ = "prompt"
     __table_args__ = (
-        UniqueConstraint(
-            "tenant_id", "stage", "version", name="uq_prompt_tenant_stage_version"
-        ),
+        UniqueConstraint("tenant_id", "stage", "version", name="uq_prompt_tenant_stage_version"),
         Index("ix_prompt_tenant_id", "tenant_id"),
     )
 
@@ -616,16 +614,12 @@ class ScopeOverride(Base):
     __tablename__ = "scope_override"
     # uq_scope_override_tenant_kind (tenant_id, kind) covers tenant_id lookups via its leftmost
     # prefix, so a separate ix_scope_override_tenant_id is redundant — dropped in migration 0014.
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "kind", name="uq_scope_override_tenant_kind"),
-    )
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_scope_override_tenant_kind"),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
     kind: Mapped[str] = mapped_column(String(16), nullable=False)  # people · company
-    params: Mapped[dict] = mapped_column(
-        JSONB, nullable=False, server_default=text("'{}'::jsonb")
-    )
+    params: Mapped[dict] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
 
@@ -656,9 +650,7 @@ class Batch(Base):
 
     __tablename__ = "batch"
     # List feed orders by (tenant, created_at desc) — the composite matches that ORDER BY exactly.
-    __table_args__ = (
-        Index("ix_batch_tenant_created", "tenant_id", text("created_at DESC")),
-    )
+    __table_args__ = (Index("ix_batch_tenant_created", "tenant_id", text("created_at DESC")),)
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()
@@ -685,9 +677,7 @@ class ProspectApproval(Base):
     # uq_prospect_approval_batch_prospect (batch_id, prospect_id) covers batch_id lookups via its
     # leftmost prefix (the derived-count rollups GROUP BY batch_id), so no separate batch_id index.
     __table_args__ = (
-        UniqueConstraint(
-            "batch_id", "prospect_id", name="uq_prospect_approval_batch_prospect"
-        ),
+        UniqueConstraint("batch_id", "prospect_id", name="uq_prospect_approval_batch_prospect"),
         Index("ix_prospect_approval_tenant_id", "tenant_id"),
     )
 
@@ -766,9 +756,7 @@ class Campaign(Base):
     __tablename__ = "campaign"
     __table_args__ = (
         UniqueConstraint("batch_id", name="uq_campaign_batch"),
-        UniqueConstraint(
-            "tenant_id", "smartlead_campaign_id", name="uq_campaign_tenant_smartlead"
-        ),
+        UniqueConstraint("tenant_id", "smartlead_campaign_id", name="uq_campaign_tenant_smartlead"),
         Index("ix_campaign_tenant_created", "tenant_id", text("created_at DESC")),
     )
 
@@ -921,3 +909,113 @@ class SendingAccount(Base):
     status: Mapped[str] = mapped_column(String(16), nullable=False, server_default="active")
     created_at: Mapped[datetime] = _created_at()
     updated_at: Mapped[datetime] = _updated_at()
+
+
+# ==================================================== Phase F (S6) — booking, meeting & feedback
+# (migration 0030). `booking_link`/`feedback_link` mirror `approval_link` exactly (SHA-256
+# token_hash only; validity-on-read; atomic single-use `used_at` claim). `meeting` is the one row
+# feeding funnel · ledger · recaps; feedback answers live ON it (1:1, no feedback table). `billable`
+# is NEVER stored — derived as `outcome=='qualified' AND amount IS NOT NULL AND
+# dispute_window_ends_at
+# < now() AND NOT disputed`; `amount` ($500 = PER_MEETING_USD) is stamped only when `approval_id` is
+# present (no approval evidence → never billable). Behavior spec → docs/initial-build-plan.md §
+# Phase F; schema → docs/data-schema.md § Phase F.
+
+
+class BookingLink(Base):
+    """The tokenized, expiring booking link, per replied lead — mirrors `approval_link` exactly.
+
+    The raw `secrets.token_urlsafe` token lives only in the sent reply; the DB stores its SHA-256
+    `token_hash` (unique). Validity is checked **on read** (`expires_at` + single-use `used_at`,
+    7-day TTL) — no scheduler. `POST /book/{token}` claims `used_at` atomically (the double-book
+    guard). The resend ladder revokes a lead's prior live links and mints a fresh row;
+    `campaign_lead_id` is indexed so that ladder can find them.
+    """
+
+    __tablename__ = "booking_link"
+    __table_args__ = (Index("ix_booking_link_campaign_lead_id", "campaign_lead_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    campaign_lead_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign_lead.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+
+
+class Meeting(Base):
+    """The one meeting row — funnel · ledger · recaps all derive from it; the public booking claim
+    is the ONLY writer (a bare `replied→meeting` console move creates no row, FD-4).
+
+    `approval_id` is the billing-evidence **snapshot** taken off `campaign_lead.approval_id` at
+    booking time (no cascade / RESTRICT — the qualify rule reads this column, not a live join).
+    `held` is NULL until the on-read sweep ingests it (the `WHERE held IS NULL` claim guard): true =
+    a Meet conference record with ≥2 participants (FD-2); false = no-show, decided only past a 24h
+    grace (FD-3). `amount` ($500) + `dispute_window_ends_at` (record end+48h) stamped only when
+    the meeting `qualified` AND `approval_id` is present. Feedback lands on this row (1:1).
+    """
+
+    __tablename__ = "meeting"
+    __table_args__ = (
+        Index("ix_meeting_tenant_scheduled", "tenant_id", text("scheduled_at DESC")),
+        Index("ix_meeting_campaign_lead_id", "campaign_lead_id"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    campaign_lead_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("campaign_lead.id", ondelete="SET NULL"), nullable=True
+    )
+    prospect_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("prospect.id", ondelete="SET NULL"), nullable=True
+    )
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("prospect_approval.id", ondelete="RESTRICT"), nullable=True
+    )
+    google_event_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    meet_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    conference_record_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    held: Mapped[bool | None] = mapped_column(nullable=True)
+    duration_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    amount: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    dispute_window_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    disputed: Mapped[bool] = mapped_column(nullable=False, server_default=text("false"))
+    feedback_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    feedback_chips: Mapped[list] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    feedback_comment: Mapped[str | None] = mapped_column(String, nullable=True)
+    feedback_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    won: Mapped[bool | None] = mapped_column(nullable=True)
+    summary: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+
+
+class FeedbackLink(Base):
+    """The tokenized, expiring post-meeting feedback link — mirrors `booking_link`/`approval_link`.
+
+    SHA-256 `token_hash` only; validity-on-read (7-day TTL); atomic single-use claim on submit. The
+    public `POST /feedback/{token}` writes `feedback_rating/chips/comment/feedback_at` onto the
+    referenced `meeting` (1:1). `meeting_id` is indexed (CASCADE — links die with their meeting).
+    """
+
+    __tablename__ = "feedback_link"
+    __table_args__ = (Index("ix_feedback_link_meeting_id", "meeting_id"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    tenant_id: Mapped[uuid.UUID] = _tenant_fk()
+    meeting_id: Mapped[uuid.UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("meeting.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = _created_at()

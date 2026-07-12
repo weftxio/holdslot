@@ -1,4 +1,4 @@
-import type { LedgerRow, Recap, Reply } from "./types";
+import type { LedgerRow, Reply } from "./types";
 
 // (The v1 mock enrichment fixtures SCORE_TIERS / SAMPLE_INDUSTRIES / SAMPLE_CONNECTIONS / STAFF_ROLES
 // were removed in D+.5/R25 — the Approval Batches table reads live enrichment now.)
@@ -39,12 +39,6 @@ export const LEDGER: LedgerRow[] = [
     billing: "Not billable",
     billingBadge: "badge-neutral",
   },
-];
-
-export const RECAPS: Recap[] = [
-  { campaign: "Campaign 1", batch: "Batch 3", recId: "kfx-9d2a-bv1", won: true },
-  { campaign: "Campaign 1", batch: "Batch 3", recId: "qmt-7r4c-zp8", won: false },
-  { campaign: "Campaign 1", batch: "Batch 3", recId: "hla-2w6e-nk3", won: true },
 ];
 
 // Per-mode copy for the reply card (inbound reply vs outbound follow-up nudge).

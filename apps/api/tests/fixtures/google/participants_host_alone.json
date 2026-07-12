@@ -1,0 +1,13 @@
+{
+  "participants": [
+    {
+      "name": "conferenceRecords/rec_xyz/participants/p_host",
+      "earliestStartTime": "2026-07-15T10:00:05Z",
+      "latestEndTime": "2026-07-15T10:15:00Z",
+      "signedinUser": {
+        "user": "users/host123",
+        "displayName": "Jason Tse"
+      }
+    }
+  ]
+}

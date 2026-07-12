@@ -16,10 +16,13 @@ from app.models import (
     ApprovalLink,
     ApprovalTemplate,
     Batch,
+    BookingLink,
     Brief,
     Campaign,
     CampaignLead,
     Company,
+    FeedbackLink,
+    Meeting,
     MessageVariant,
     OutreachEvent,
     Prospect,
@@ -42,7 +45,13 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0029_sending_account"]
+    assert _script_dir().get_heads() == ["0030_phase_f_meeting"]
+
+
+def _fk_ondelete(model, target_table: str) -> str | None:
+    """The ON DELETE action of `model`'s FK into `target_table` (the money-path pins in FT1-5)."""
+    fk = next(fk for fk in model.__table__.foreign_keys if fk.column.table.name == target_table)
+    return fk.ondelete
 
 
 def test_0011_columns_present_on_models():
@@ -80,8 +89,17 @@ def test_0015_scoring_job_model_matches_migration():
     """0015 creates `scoring_job` (the W4 async-scoring tracker) — the ORM model must match the
     columns + index the migration builds."""
     cols = set(ScoringJob.__table__.columns.keys())
-    assert cols == {"id", "tenant_id", "kind", "params", "status", "result", "error",
-                    "created_at", "updated_at"}
+    assert cols == {
+        "id",
+        "tenant_id",
+        "kind",
+        "params",
+        "status",
+        "result",
+        "error",
+        "created_at",
+        "updated_at",
+    }
     assert "ix_scoring_job_tenant_kind" in {i.name for i in ScoringJob.__table__.indexes}
 
 
@@ -89,50 +107,94 @@ def test_0016_phase_d_models_match_migration():
     """0016 creates the four Phase D tables — the ORM models must match the columns + keys the
     migration builds (the masking serializer + billing rows depend on this exact shape)."""
     assert set(Batch.__table__.columns.keys()) == {
-        "id", "tenant_id", "icp_id", "name", "status", "sent_at", "decided_at", "created_at"
+        "id",
+        "tenant_id",
+        "icp_id",
+        "name",
+        "status",
+        "sent_at",
+        "decided_at",
+        "created_at",
     }
     assert "ix_batch_tenant_created" in {i.name for i in Batch.__table__.indexes}
 
     assert set(ProspectApproval.__table__.columns.keys()) == {
-        "id", "tenant_id", "batch_id", "prospect_id", "decision", "decided_at", "created_at"
+        "id",
+        "tenant_id",
+        "batch_id",
+        "prospect_id",
+        "decision",
+        "decided_at",
+        "created_at",
     }
     pa_cons = {c.name for c in ProspectApproval.__table__.constraints}
     assert "uq_prospect_approval_batch_prospect" in pa_cons
 
     assert set(ApprovalLink.__table__.columns.keys()) == {
-        "id", "tenant_id", "batch_id", "recipient_email", "token_hash", "expires_at",
-        "used_at", "created_at"
+        "id",
+        "tenant_id",
+        "batch_id",
+        "recipient_email",
+        "token_hash",
+        "expires_at",
+        "used_at",
+        "created_at",
     }
     assert set(ApprovalTemplate.__table__.columns.keys()) == {
-        "id", "tenant_id", "data", "created_at", "updated_at"
+        "id",
+        "tenant_id",
+        "data",
+        "created_at",
+        "updated_at",
     }
-    assert "uq_approval_template_tenant" in {
-        c.name for c in ApprovalTemplate.__table__.constraints
-    }
+    assert "uq_approval_template_tenant" in {c.name for c in ApprovalTemplate.__table__.constraints}
 
 
 def test_0028_phase_e_models_match_migration():
     """0028 creates the four Phase E tables — the ORM models must match the columns + keys the
     migration builds (the funnel SoT + webhook dedupe depend on this exact shape)."""
     assert set(Campaign.__table__.columns.keys()) == {
-        "id", "tenant_id", "batch_id", "icp_id", "name", "smartlead_campaign_id", "status",
-        "settings", "created_at", "updated_at"
+        "id",
+        "tenant_id",
+        "batch_id",
+        "icp_id",
+        "name",
+        "smartlead_campaign_id",
+        "status",
+        "settings",
+        "created_at",
+        "updated_at",
     }
     c_cons = {c.name for c in Campaign.__table__.constraints}
     assert "uq_campaign_batch" in c_cons  # 1:1 with an approved batch
     assert "uq_campaign_tenant_smartlead" in c_cons
 
     assert set(MessageVariant.__table__.columns.keys()) == {
-        "id", "tenant_id", "campaign_id", "key", "subject", "body", "is_winner",
-        "created_at", "updated_at"
+        "id",
+        "tenant_id",
+        "campaign_id",
+        "key",
+        "subject",
+        "body",
+        "is_winner",
+        "created_at",
+        "updated_at",
     }
     assert "uq_message_variant_campaign_key" in {
         c.name for c in MessageVariant.__table__.constraints
     }
 
     assert set(CampaignLead.__table__.columns.keys()) == {
-        "id", "tenant_id", "campaign_id", "prospect_id", "approval_id", "smartlead_lead_id",
-        "stage", "stage_changed_at", "variant_key", "created_at"
+        "id",
+        "tenant_id",
+        "campaign_id",
+        "prospect_id",
+        "approval_id",
+        "smartlead_lead_id",
+        "stage",
+        "stage_changed_at",
+        "variant_key",
+        "created_at",
     }
     assert "uq_campaign_lead_campaign_prospect" in {
         c.name for c in CampaignLead.__table__.constraints
@@ -146,8 +208,18 @@ def test_0028_phase_e_models_match_migration():
     assert approval_fk.ondelete == "RESTRICT"
 
     assert set(OutreachEvent.__table__.columns.keys()) == {
-        "id", "tenant_id", "campaign_id", "campaign_lead_id", "event_type", "smartlead_event_id",
-        "payload", "triage", "handled_at", "response_body", "occurred_at", "created_at"
+        "id",
+        "tenant_id",
+        "campaign_id",
+        "campaign_lead_id",
+        "event_type",
+        "smartlead_event_id",
+        "payload",
+        "triage",
+        "handled_at",
+        "response_body",
+        "occurred_at",
+        "created_at",
     }
     assert "ix_outreach_event_tenant_type_created" in {
         i.name for i in OutreachEvent.__table__.indexes
@@ -160,8 +232,14 @@ def test_0029_sending_account_model_matches_migration():
     from app.models import SendingAccount
 
     assert set(SendingAccount.__table__.columns.keys()) == {
-        "id", "tenant_id", "smartlead_account_id", "from_email", "from_name", "status",
-        "created_at", "updated_at"
+        "id",
+        "tenant_id",
+        "smartlead_account_id",
+        "from_email",
+        "from_name",
+        "status",
+        "created_at",
+        "updated_at",
     }
     assert "uq_sending_account_tenant_smartlead" in {
         c.name for c in SendingAccount.__table__.constraints
@@ -222,3 +300,68 @@ def test_0027_dplus_indexes_present_on_models():
     rr_idx = {i.name for i in ResearchRun.__table__.indexes}
     assert "ix_research_run_tenant_created" in rr_idx
     assert "ix_research_run_tenant_id" not in rr_idx
+
+
+def test_0030_phase_f_models_match_migration():
+    """0030 creates the three Phase F tables — the ORM models must match the columns + keys + the
+    money-path FK ondelete semantics (FT1-2…FT1-6). booking_link/feedback_link mirror approval_link;
+    `meeting` is the one row funnel/ledger/recaps derive from."""
+    # FT1-2 — booking_link exact column set.
+    assert set(BookingLink.__table__.columns.keys()) == {
+        "id",
+        "tenant_id",
+        "campaign_lead_id",
+        "token_hash",
+        "expires_at",
+        "used_at",
+        "created_at",
+    }
+    # FT1-3 — meeting exact column set (outcome/amount/dispute/feedback/won/summary included).
+    assert set(Meeting.__table__.columns.keys()) == {
+        "id",
+        "tenant_id",
+        "campaign_lead_id",
+        "prospect_id",
+        "approval_id",
+        "google_event_id",
+        "meet_link",
+        "scheduled_at",
+        "conference_record_id",
+        "held",
+        "duration_min",
+        "outcome",
+        "amount",
+        "dispute_window_ends_at",
+        "disputed",
+        "feedback_rating",
+        "feedback_chips",
+        "feedback_comment",
+        "feedback_at",
+        "won",
+        "summary",
+        "created_at",
+        "updated_at",
+    }
+    # FT1-4 — feedback_link exact column set.
+    assert set(FeedbackLink.__table__.columns.keys()) == {
+        "id",
+        "tenant_id",
+        "meeting_id",
+        "token_hash",
+        "expires_at",
+        "used_at",
+        "created_at",
+    }
+    # FT1-5 — FK ondelete money-path pins.
+    assert _fk_ondelete(Meeting, "prospect_approval") == "RESTRICT"  # evidence snapshot, no cascade
+    assert _fk_ondelete(Meeting, "campaign_lead") == "SET NULL"  # manual meeting survives
+    assert _fk_ondelete(Meeting, "prospect") == "SET NULL"
+    assert _fk_ondelete(BookingLink, "campaign_lead") == "CASCADE"
+    assert _fk_ondelete(FeedbackLink, "meeting") == "CASCADE"
+    # FT1-6 — single-use token uniques.
+    assert any(c.name == "token_hash" and c.unique for c in BookingLink.__table__.columns)
+    assert any(c.name == "token_hash" and c.unique for c in FeedbackLink.__table__.columns)
+    # indexes the resend ladder / sweep read.
+    assert "ix_booking_link_campaign_lead_id" in {i.name for i in BookingLink.__table__.indexes}
+    assert "ix_meeting_tenant_scheduled" in {i.name for i in Meeting.__table__.indexes}
+    assert "ix_feedback_link_meeting_id" in {i.name for i in FeedbackLink.__table__.indexes}

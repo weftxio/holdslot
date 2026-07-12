@@ -10,14 +10,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.deps import AccessContext, get_db, require_membership
+from app.core.security import hash_token, new_opaque_token
 from app.domains.batches import service as bsvc
 from app.domains.campaigns import launch
 from app.domains.campaigns import service as svc
@@ -28,6 +30,7 @@ from app.domains.campaigns.schemas import (
     FunnelStage,
     LeadEventOut,
     LeadOut,
+    MeetingCalendarItem,
     PerformanceSummaryOut,
     ReplyOut,
     RespondIn,
@@ -38,13 +41,16 @@ from app.domains.campaigns.schemas import (
     VariantsIn,
     WinnerIn,
 )
+from app.domains.meetings import service as msvc
 from app.domains.prospects.scoring import is_unique_violation
 from app.integrations.smartlead import client as sl
 from app.models import (
     Batch,
+    BookingLink,
     Campaign,
     CampaignLead,
     Icp,
+    Meeting,
     MembershipRole,
     MessageVariant,
     OutreachEvent,
@@ -645,6 +651,15 @@ def respond_reply(
             status.HTTP_409_CONFLICT, "reply thread handle not available yet — retry after a sync"
         )
 
+    # F3 — mint the booking token BEFORE the send (its URL goes in the reply text) but persist the
+    # link row only AFTER Smartlead accepts (N31: never persist what didn't send).
+    booking_token = None
+    if body.include_booking_link:
+        s = get_settings()
+        booking_token = new_opaque_token()
+        url = f"{s.web_base_url}/{ctx.tenant.slug}/book/{booking_token}"
+        text = msvc.inject_booking_link(text, url)
+
     sl.reply_to_thread(
         campaign.smartlead_campaign_id,
         email_stats_id=stats_id,
@@ -666,6 +681,21 @@ def respond_reply(
             occurred_at=now,
         )
     )
+    if booking_token:
+        # Revoke the lead's prior live booking links (the approval resend ladder), then mint fresh.
+        db.execute(
+            update(BookingLink)
+            .where(BookingLink.campaign_lead_id == lead.id, BookingLink.used_at.is_(None))
+            .values(expires_at=now)
+        )
+        db.add(
+            BookingLink(
+                tenant_id=ctx.tenant.id,
+                campaign_lead_id=lead.id,
+                token_hash=hash_token(booking_token),
+                expires_at=now + timedelta(seconds=get_settings().approval_ttl_seconds),
+            )
+        )
     db.commit()
     prospect = db.get(Prospect, lead.prospect_id)
     return _reply_out(ev, lead, prospect, campaign.name or "")
@@ -687,9 +717,7 @@ def _recover_handle(
     if not found:
         return None, None
     payload = dict(ev.payload or {})
-    payload.update(
-        stats_id=found.get("email_stats_id"), message_id=found.get("reply_message_id")
-    )
+    payload.update(stats_id=found.get("email_stats_id"), message_id=found.get("reply_message_id"))
     ev.payload = payload
     return found.get("email_stats_id"), found.get("reply_message_id")
 
@@ -752,7 +780,10 @@ def pause_campaign(
     if campaign.status != launch.SENDING:
         raise HTTPException(status.HTTP_409_CONFLICT, "only a sending campaign can be paused")
     _set_campaign_status(
-        db, campaign, sl_status=sl.STATUS_PAUSED, new_status=launch.PAUSED,
+        db,
+        campaign,
+        sl_status=sl.STATUS_PAUSED,
+        new_status=launch.PAUSED,
         event_type=svc.CAMPAIGN_PAUSED,
     )
     return _detail(db, ctx.tenant.id, campaign)
@@ -769,7 +800,10 @@ def resume_campaign(
     if campaign.status != launch.PAUSED:
         raise HTTPException(status.HTTP_409_CONFLICT, "only a paused campaign can be resumed")
     _set_campaign_status(
-        db, campaign, sl_status=sl.STATUS_START, new_status=launch.SENDING,
+        db,
+        campaign,
+        sl_status=sl.STATUS_START,
+        new_status=launch.SENDING,
         event_type=svc.CAMPAIGN_RESUMED,
     )
     return _detail(db, ctx.tenant.id, campaign)
@@ -818,11 +852,14 @@ def performance_summary(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> PerformanceSummaryOut:
-    """The performance-summary v1 read (EF-Q9) — derived on read, no stored counters (the Phase-D
-    rule). The Leads funnel goes fully live except **Meeting booked = 0 until F** writes the meeting
-    moves; reply stats + needs-attention ① (approvals pending) are live today. The meeting cells
-    (headline band, Meetings held, Billable, calendar, attention ②③) stay `.ph` until F5/F6."""
+    """The performance-summary read (EF-Q9) — derived on read, no stored counters (Phase-D rule).
+    The Leads funnel + reply stats + needs-attention ① are live from E7; the meeting cells (headline
+    band, Meetings held, Billable, calendar, attention ②③) go live at F5 — the read runs the sweep
+    first (the on-read poll)."""
     tid = ctx.tenant.id
+    from app.domains.meetings.router import sweep_meetings
+
+    sweep_meetings(db, tid)
 
     def _count(q) -> int:
         return int(db.execute(q).scalar_one() or 0)
@@ -853,13 +890,21 @@ def performance_summary(
             OutreachEvent.triage == svc.TRIAGE_POSITIVE,
         )
     )
+    # Meeting booked = ever-reached: distinct leads that have a meeting row (the public booking
+    # claim
+    # is the only writer, so this never shrinks as a lead advances to billable — FT5-11).
+    meetings_booked = _count(
+        select(func.count(func.distinct(Meeting.campaign_lead_id))).where(
+            Meeting.tenant_id == tid, Meeting.campaign_lead_id.is_not(None)
+        )
+    )
     funnel = [
         FunnelStage(label="Sourced", n=sourced),
         FunnelStage(label="Approved", n=approved),
         FunnelStage(label="Contacted", n=contacted),
         FunnelStage(label="Replied", n=replied),
         FunnelStage(label="Positive", n=positive),
-        FunnelStage(label="Meeting booked", n=0),  # Phase F
+        FunnelStage(label="Meeting booked", n=meetings_booked),
     ]
 
     new_positive = _count(
@@ -882,10 +927,104 @@ def performance_summary(
         .select_from(Batch)
         .where(Batch.tenant_id == tid, Batch.status == "sent")
     )
+
+    # ---- F5 meeting cells (all derived off the swept `meeting` rows) --------------------------
+    now = datetime.now(UTC)
+    d30, d60 = now - timedelta(days=30), now - timedelta(days=60)
+    week_ahead = now + timedelta(days=7)
+
+    def _meeting_count(*conds) -> int:
+        return _count(
+            select(func.count()).select_from(Meeting).where(Meeting.tenant_id == tid, *conds)
+        )
+
+    qualified_last_30d = _meeting_count(Meeting.outcome == "qualified", Meeting.scheduled_at >= d30)
+    qualified_prev_30d = _meeting_count(
+        Meeting.outcome == "qualified", Meeting.scheduled_at >= d60, Meeting.scheduled_at < d30
+    )
+    meetings_held_week = _meeting_count(
+        Meeting.held.is_(True), Meeting.scheduled_at >= now - timedelta(days=7)
+    )
+    ingested = _meeting_count(Meeting.held.is_not(None))
+    held_total = _meeting_count(Meeting.held.is_(True))
+    show_up_rate = round(held_total / ingested, 3) if ingested else None
+    awaiting_this_week = _meeting_count(
+        Meeting.held.is_(None), Meeting.scheduled_at >= now, Meeting.scheduled_at < week_ahead
+    )
+    # Billable this cycle = Σ amounts of the meetings whose 48h window has passed, undisputed (the
+    # is_billable rule expressed in SQL; amount is only ever stamped on a qualified+approval row).
+    billable_this_cycle = float(
+        db.execute(
+            select(func.coalesce(func.sum(Meeting.amount), 0)).where(
+                Meeting.tenant_id == tid,
+                Meeting.outcome == "qualified",
+                Meeting.amount.is_not(None),
+                Meeting.disputed.is_(False),
+                Meeting.dispute_window_ends_at < now,
+            )
+        ).scalar_one()
+        or 0
+    )
+    open_booking_links = _count(
+        select(func.count())
+        .select_from(BookingLink)
+        .where(BookingLink.tenant_id == tid, BookingLink.used_at.is_(None))
+    )
+    held_without_feedback = _meeting_count(Meeting.held.is_(True), Meeting.feedback_at.is_(None))
+
+    # Calendar month feed — meetings scheduled within ±45 days (the react-big-calendar surface).
+    cal_rows = (
+        db.execute(
+            select(Meeting)
+            .where(
+                Meeting.tenant_id == tid,
+                Meeting.scheduled_at >= now - timedelta(days=45),
+                Meeting.scheduled_at <= now + timedelta(days=45),
+            )
+            .order_by(Meeting.scheduled_at.asc())
+        )
+        .scalars()
+        .all()
+    )
+    prospects = (
+        {
+            p.id: p
+            for p in db.execute(
+                select(Prospect).where(
+                    Prospect.id.in_({r.prospect_id for r in cal_rows if r.prospect_id})
+                )
+            ).scalars()
+        }
+        if cal_rows
+        else {}
+    )
+    calendar = [
+        MeetingCalendarItem(
+            id=str(r.id),
+            scheduled_at=msvc.iso_z(r.scheduled_at),
+            prospect_name=(
+                (prospects.get(r.prospect_id).enrichment or {}).get("full_name", "")
+                if prospects.get(r.prospect_id)
+                else ""
+            ),
+            outcome=r.outcome,
+        )
+        for r in cal_rows
+    ]
+
     return PerformanceSummaryOut(
         funnel=funnel,
         new_positive_replies=new_positive,
         replies_awaiting_review=awaiting,
         approvals_pending=approvals_pending,
-        meetings_booked=0,
+        meetings_booked=meetings_booked,
+        qualified_last_30d=qualified_last_30d,
+        qualified_delta=qualified_last_30d - qualified_prev_30d,
+        meetings_held_week=meetings_held_week,
+        show_up_rate=show_up_rate,
+        awaiting_this_week=awaiting_this_week,
+        billable_this_cycle=billable_this_cycle,
+        open_booking_links=open_booking_links,
+        held_without_feedback=held_without_feedback,
+        calendar=calendar,
     )

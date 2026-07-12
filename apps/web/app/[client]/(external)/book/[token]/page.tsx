@@ -1,44 +1,85 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useParams } from "next/navigation";
 import { Sample } from "@/components/Sample";
 import { ExternalShell } from "@/components/external/ExternalShell";
+import { getBookingView, submitBooking, type BookingViewApi } from "@/lib/api";
 import "./book.css";
 
-const DAYS: [string, string][] = [
-  ["Mon", "12"],
-  ["Tue", "13"],
-  ["Wed", "14"],
-  ["Thu", "15"],
-  ["Fri", "16"],
-];
-const SLOTS: string[][] = [
-  ["9:00", "10:30", "13:00", "14:00", "15:30", "16:30"],
-  ["9:30", "11:00", "11:30", "13:30", "15:00", "16:00"],
-  ["10:00", "10:30", "12:00", "14:30", "15:30", "17:00"],
-  ["9:00", "9:30", "13:00", "14:00", "16:00", "16:30"],
-  ["10:30", "11:00", "12:30", "13:30", "14:30", "15:00"],
-];
-const TAKEN: number[][] = [[2], [4], [1], [3], [0]];
+// Group UTC slot instants into the viewer's local days (the mock's "Times shown in your local
+// timezone"). Each day carries its weekday label + day-of-month + the local time buttons.
+type LocalDay = { key: string; dow: string; dnum: string; slots: { iso: string; label: string }[] };
+
+function groupByLocalDay(slots: string[]): LocalDay[] {
+  const days = new Map<string, LocalDay>();
+  for (const iso of slots) {
+    const d = new Date(iso);
+    const key = d.toLocaleDateString(undefined, { year: "numeric", month: "2-digit", day: "2-digit" });
+    if (!days.has(key)) {
+      days.set(key, {
+        key,
+        dow: d.toLocaleDateString(undefined, { weekday: "short" }),
+        dnum: d.toLocaleDateString(undefined, { day: "numeric" }),
+        slots: [],
+      });
+    }
+    days.get(key)!.slots.push({
+      iso,
+      label: d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }),
+    });
+  }
+  return [...days.values()];
+}
 
 export default function Book() {
-  const [day, setDay] = useState(1);
-  const [time, setTime] = useState<string | null>(null);
+  const token = useParams<{ token: string }>().token;
+  const [view, setView] = useState<BookingViewApi | null>(null);
+  const [day, setDay] = useState(0);
+  const [slot, setSlot] = useState<string | null>(null);
   const [done, setDone] = useState(false);
-  const dn = DAYS[day][0] + " " + DAYS[day][1];
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    getBookingView(token)
+      .then(setView)
+      .catch(() =>
+        setView({ state: "expired", client_name: "", duration_min: 0, slots: [], expires_at: null })
+      );
+  }, [token]);
+
+  const localDays = useMemo(() => groupByLocalDay(view?.slots ?? []), [view?.slots]);
+  const chosenLabel = useMemo(() => {
+    if (!slot) return null;
+    const d = new Date(slot);
+    return `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric" })} at ${d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`;
+  }, [slot]);
+
+  async function confirm() {
+    if (!slot || busy) return;
+    setBusy(true);
+    try {
+      await submitBooking(token, slot);
+      setDone(true);
+    } catch {
+      // The slot was just taken / the link lapsed between load and submit — reflect it.
+      setView((v) => (v ? { ...v, state: "used" } : v));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   const success = (
     <div className="success-inner">
       <div className="tick">✓</div>
       <h1>You&apos;re booked.</h1>
-      <div className="booked-chip">
-        📅{" "}
-        <span>
-          {dn} · {time} (placeholder)
-        </span>
-      </div>
+      {chosenLabel && (
+        <div className="booked-chip">
+          📅 <span>{chosenLabel}</span>
+        </div>
+      )}
       <p>
-        A calendar invite with the video link is on its way to your inbox. You&apos;ll get a
-        reminder before the call.
+        A calendar invite with the video link is on its way to your inbox. You&apos;ll get a reminder
+        before the call.
       </p>
       <p className="muted" style={{ fontSize: 13, marginTop: 16 }}>
         Need to reschedule? Use the link in your confirmation email.
@@ -46,103 +87,111 @@ export default function Book() {
     </div>
   );
 
+  const forceExpired = !!view && view.state !== "valid";
+  const active = localDays[day];
+
   return (
     <ExternalShell
       secure="🔒 Secure link · expires after use"
       footBy="Scheduling by HoldSlot"
       footNote="No account needed."
-      expiredTitle="This booking link has expired"
+      expiredTitle={view?.state === "used" ? "This booking link has been used" : "This booking link has expired"}
       expiredLines={[
         "For security, booking links are valid for a limited time or a single use. This one is no longer active.",
         "Reply to the email you received and we'll send a fresh link with new times right away.",
       ]}
       success={success}
       done={done}
+      forceExpired={forceExpired}
     >
       <div className="ext-head">
         <span className="eyebrow">You&apos;re invited</span>
         <h1>Book your meeting</h1>
         <p>
-          Thanks for your interest in <b>HoldSlot</b> <Sample>sample</Sample>. Pick a time that
-          works and it drops straight onto both calendars with an invite.
+          Thanks for your interest in <b>{view?.client_name || "HoldSlot"}</b>. Pick a time that works
+          and it drops straight onto both calendars with an invite.
         </p>
         <div className="meeting-meta" style={{ marginTop: 16 }}>
           <span className="mm">
-            <span className="mi">◷</span>30 minutes
+            <span className="mi">◷</span>
+            {view?.duration_min || 30} minutes
           </span>
           <span className="mm">
             <span className="mi">▦</span>Video call
           </span>
           <span className="mm">
-            <span className="mi">◑</span>With placeholder host
+            <span className="mi">◑</span>With {view?.client_name || "your host"}
           </span>
         </div>
       </div>
       <div className="ext-pad">
-        <div className="section-label">Choose a day</div>
-        <div className="day-tabs">
-          {DAYS.map((d, i) => (
-            <button
-              key={i}
-              className={"day-tab" + (i === day ? " on" : "")}
-              onClick={() => {
-                setDay(i);
-                setTime(null);
-              }}
-            >
-              <div className="dow">{d[0]}</div>
-              <div className="dnum">{d[1]}</div>
-            </button>
-          ))}
-        </div>
+        {!view ? (
+          <div className="ph" style={{ padding: "24px 4px" }}>
+            Loading available times…
+          </div>
+        ) : localDays.length === 0 ? (
+          <div className="ph" style={{ padding: "24px 4px" }}>
+            No times are open right now. Reply to your email and we&apos;ll send fresh options.
+          </div>
+        ) : (
+          <>
+            <div className="section-label">Choose a day</div>
+            <div className="day-tabs">
+              {localDays.map((d, i) => (
+                <button
+                  key={d.key}
+                  className={"day-tab" + (i === day ? " on" : "")}
+                  onClick={() => {
+                    setDay(i);
+                    setSlot(null);
+                  }}
+                >
+                  <div className="dow">{d.dow}</div>
+                  <div className="dnum">{d.dnum}</div>
+                </button>
+              ))}
+            </div>
 
-        <div className="section-label">
-          Available times <Sample>sample</Sample>
-        </div>
-        <div className="slots">
-          {SLOTS[day].map((t, si) => {
-            const taken = TAKEN[day].includes(si);
-            return (
-              <button
-                key={si}
-                className={"slot" + (taken ? " taken" : "") + (!taken && time === t ? " on" : "")}
-                disabled={taken}
-                onClick={() => !taken && setTime(t)}
-              >
-                {t}
-                {!taken && <span className="smark">✓</span>}
+            <div className="section-label">Available times</div>
+            <div className="slots">
+              {active?.slots.map((sl) => (
+                <button
+                  key={sl.iso}
+                  className={"slot" + (slot === sl.iso ? " on" : "")}
+                  onClick={() => setSlot(sl.iso)}
+                >
+                  {sl.label}
+                  <span className="smark">✓</span>
+                </button>
+              ))}
+            </div>
+            <div className="tzrow">🌐 Times shown in your local timezone</div>
+
+            <div className="consent">
+              <span className="ci">●</span>
+              <span>
+                <b style={{ color: "var(--ink)" }}>Recording notice.</b> This call may be recorded and
+                transcribed so HoldSlot can prepare a meeting summary for the host. By booking, you
+                consent to recording. You can ask the host to turn it off at any point during the call.
+              </span>
+            </div>
+
+            <div className="confirm-bar">
+              <span className="pick">
+                {chosenLabel ? (
+                  <>
+                    Selected · <b>{chosenLabel}</b>
+                  </>
+                ) : (
+                  "Select a time to continue"
+                )}
+              </span>
+              <button className="btn btn-primary" disabled={!slot || busy} onClick={confirm}>
+                {busy ? "Booking…" : "Confirm booking"}
               </button>
-            );
-          })}
-        </div>
-        <div className="tzrow">🌐 Times shown in your local timezone · placeholder TZ</div>
-
-        <div className="consent">
-          <span className="ci">●</span>
-          <span>
-            <b style={{ color: "var(--ink)" }}>Recording notice.</b> This call may be recorded and
-            transcribed so HoldSlot can prepare a meeting summary for the host. By booking, you
-            consent to recording. You can ask the host to turn it off at any point during the call.
-          </span>
-        </div>
-
-        <div className="confirm-bar">
-          <span className="pick">
-            {time ? (
-              <>
-                Selected ·{" "}
-                <b>
-                  {dn} at {time}
-                </b>
-              </>
-            ) : (
-              "Select a time to continue"
-            )}
-          </span>
-          <button className="btn btn-primary" disabled={!time} onClick={() => setDone(true)}>
-            Confirm booking
-          </button>
-        </div>
+            </div>
+          </>
+        )}
       </div>
     </ExternalShell>
   );
