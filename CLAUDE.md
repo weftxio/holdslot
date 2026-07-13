@@ -3,68 +3,77 @@
 Stop buying sales tools. Start buying meetings.
 
 Done-for-you B2B service: turns a client brief into qualified, booked sales meetings; bills
-only for meetings that qualify. **Multi-client.** Phase 1 = build the mock UI in `apps/web`,
-ported pixel-faithfully from the Claude Design bundle, backed by mock fixtures (no backend).
+only for meetings that qualify. **Multi-client.** Phases A–F are **built and shipped to dev**
+(A–D+ also on prod FE): `apps/web` is a live-wired console + external pages on a deployed
+FastAPI backend (`api.tryholdslot.com`). The mock-fixture Phase 1 is history — the only mock
+residue is the homepage stats strip. **Read `docs/initial-build-plan.md` first** — its status
+header is the current state of record; `docs/data-schema.md` governs every table/column.
 
-By positioning HoldSlot as a done-for-you, pay-per-qualified-meeting engine, 
-you are positioning yourself at the terminal state of this value chain. 
-You aren’t selling the hammer (ZoomInfo), nor the workshop (Clay); 
+By positioning HoldSlot as a done-for-you, pay-per-qualified-meeting engine,
+you are positioning yourself at the terminal state of this value chain.
+You aren’t selling the hammer (ZoomInfo), nor the workshop (Clay);
 you are selling the finished house.
 
 ## Golden rules
-- **The design IS the spec.** `design/` (8 HTML pages + `holdslot.css` + `client-switch.js`) is
-  the source of truth. Match it exactly. Don't redesign. Read `design/<page>.html` before porting.
+- **The design IS the spec for look & feel.** `design/` (8 HTML pages + `holdslot.css`) is the
+  visual source of truth. Match it; don't redesign. Behavior/data now follow the live API and
+  `initial-build-plan.md` where they've moved past the mock.
 - **Least code wins.** Reuse `design/holdslot.css` near-verbatim as the global stylesheet; emit its
   existing class names from thin components. Don't re-author CSS that already exists.
 - **Plain CSS** (globals + co-located page styles). No Tailwind. Tokens live once in `globals.css`.
 - Copy is exact; separators are middot `·` only (no em/en dashes). Keep `.sample`/`.ph` markers.
-- All data is placeholder in this phase (incl. homepage "meetings booked" count) — wire later.
+- Homepage stats strip is still placeholder; everything else renders live data.
 - **Security exception to "match exactly":** some `design/` JS concatenates user input into
   `innerHTML` (client-switch.js, workspace.html). Never port that — render names/labels via JSX or
   `textContent`; no `dangerouslySetInnerHTML`/`innerHTML` for any user-entered value.
+- **Deploy/ops rules live in `initial-build-plan.md` §Locked context** (OpenRouter non-US models
+  only · Apollo enrich is the only credit spend · backend-before-frontend · commit/push only when asked).
 
 ## Stack
-Next.js 16 (App Router, TS) · React 19 · pnpm workspace. Fonts: Fraunces (display) + Archivo
-(body) via `next/font`. `apps/api` (FastAPI) + `infra/` are later-phase placeholders.
+Web: Next.js 16 (App Router, TS) · React 19 · TanStack Query (root `app/providers.tsx`) ·
+react-big-calendar + date-fns · Playwright e2e (`apps/web/e2e`, route-mocked, no live API) ·
+pnpm workspace. Fonts: Fraunces (display) + Archivo (body).
+Backend: FastAPI on one Lambda (SnapStart) · Aurora Serverless v2 via Data API · SQLAlchemy +
+Alembic (`infra/alembic`, head `0031`) · Terraform (`infra/terraform`). LLM = OpenRouter
+(DeepSeek; HK geo-block — non-US providers only). Integrations: Apollo · Smartlead · Google
+(Calendar/Meet) · Stripe (dormant).
 
 ## Layout
 ```
-apps/web/         the UI. app/ routes · components/ · lib/ · globals.css
-design/           vendored Claude Design bundle (READ-ONLY reference)
-docs/             backend plans (read before any backend work)
-apps/api/ infra/  placeholders, not built yet
+apps/web/         the UI. app/ routes · components/ · lib/ (api.ts = the API seam) · e2e/
+apps/api/         FastAPI backend. app/domains/* (13 routers) · app/integrations/* · tests/ · scripts/
+infra/            alembic migrations + terraform (applied; dev workspace live)
+design/           vendored Claude Design bundle (READ-ONLY visual reference)
+docs/             initial-build-plan.md (status of record) · data-schema.md · backend-development-plan.md · business-plan.md
 ```
 
-## Backend (next phase — planning only, no code yet)
-Two planning docs in `docs/`, read before touching `apps/api`/`infra`:
-- **`backend-development-plan.md`** — full spec: architecture, domain model, build stages S0–S7,
-  locked decisions (§6), cost model (§5), USD pricing (§7), 2-year growth model (§11). LLM = **OpenRouter**.
-- **`initial-build-plan.md`** — scoped first build (dogfood MVP): the single-tenant outbound→booked-meeting
-  loop so HoldSlot sells itself. DoD = 6 signups in H1 (Oct'26–Mar'27). Builds the Clay + Smartlead +
-  meeting connections; skips billing/masking/analytics until paying signups.
+## Routes (client slug = `[client]`)
+| Route | Design source | Shell | Data |
+|---|---|---|---|
+| `/` | `home.html` | marketing | mock stats strip |
+| `/login` | `login.html` | marketing | live auth (login/forgot/reset → first membership) |
+| `/privacy` · `/terms` | — | marketing | static (`components/LegalPage`) |
+| `/[client]/performance-summary` | `overview.html` | console | live |
+| `/[client]/workspace/{brief,list,batches,campaign,replies,summaries,billing}` | `workspace.html` | console | live |
+| `/[client]/client-status/{approval,booking,feedback}` | `external-status.html` | console | live |
+| `/[client]/approve/[token]` | `client-approval.html` | external | live |
+| `/[client]/book/[token]` | `booking.html` | external | live |
+| `/[client]/feedback/[token]` | `feedback.html` | external | live |
 
-## Routes (client slug = `[client]`, drives holdslot.com/<slug>)
-| Route | Source file | Shell |
-|---|---|---|
-| `/` | `home.html` | marketing (self-contained) |
-| `/login` | `login.html` | marketing |
-| `/[client]/performance-summary` | `overview.html` | console |
-| `/[client]/workspace` | `workspace.html` | console |
-| `/[client]/client-status` | `external-status.html` | console |
-| `/[client]/approve/[token]` | `client-approval.html` | external |
-| `/[client]/book/[token]` | `booking.html` | external |
-| `/[client]/feedback/[token]` | `feedback.html` | external |
-
-`app/[client]/(console)/layout.tsx` and `app/[client]/(external)/layout.tsx` provide the two shells.
+Workspace/client-status tabs are **nested routes** (not hash tabs); each index route only
+translates legacy `#hash` links (`lib/nav.ts useHashRedirect`). Tab bars are portaled into the
+console topbar (`TopbarSlotCtx`). `app/[client]/(console)/layout.tsx` and `(external)/layout.tsx`
+provide the two shells.
 
 ## Three shells
 - **marketing** — standalone; home keeps its own page styles.
-- **console** — dark sidebar (logo, client switcher, nav groups "Get Meeting" = Workspace/Performance Summary,
-  "Client Action Status" = List approval/Booking links/Feedback forms → all to `client-status`
-  tabs) + topbar (breadcrumb w/ client name, mobile toggle) + scrim. Shared by performance-summary/workspace/
-  client-status. CSS class `.app/.side/.topbar/.content` in holdslot.css.
-- **external** — cerulean `.ext-body` + `.ext-card`; each page renders valid / success / expired
-  (read `?state=expired`). Class `.ext-*` in holdslot.css.
+- **console** — dark sidebar (logo, client switcher, nav groups "Get Meeting" =
+  Workspace/Performance Summary, "Client Action" = List Approval/Booking Status/Meeting Feedback →
+  `client-status` routes) + topbar (breadcrumb, portal slot, mobile toggle) + scrim. `ConsoleShell`
+  provides `ToastProvider` + `MeProvider` + `SessionGuard` (JWT, refresh, cold-start retry in
+  `lib/api.ts`). CSS `.app/.side/.topbar/.content`.
+- **external** — cerulean `.ext-body` + `.ext-card`; valid / success / expired states are
+  **API-driven** (`?state=expired` survives only as a demo override). Class `.ext-*`.
 
 ## Design system (holdslot.css `:root`)
 Accent cerulean `#9BB7D6` · deep `#5E7C9E` · wash `#EEF3F9` · ink `#0E1116` · line `#E4E7EC`.
@@ -73,43 +82,32 @@ Components already in CSS: `.btn`(primary/ghost/accent/danger, -sm/-xs) · `.bad
 info/neutral) · `.panel` · `.tbl` · `.tabs/.tab` · `.field/.input/.textarea/.select` · `.toast` ·
 console shell · external card · `.ph`/`.sample` markers.
 
-## Client switcher (`client-switch.js` → port to `lib/client.ts` + context)
-Clients + selection persist in localStorage; name → slug; updates `[data-client-name]`. Defaults:
-Northwind, Acme Robotics. Switching navigates to `/[client]/workspace` (the default page).
+## Client switcher
+Live memberships from `GET /me` (no localStorage client list — N45); `lib/client.ts` holds the
+single-tenant default `{HoldSlot, holdslot}` + slug helpers. Switching navigates to
+`/[client]/workspace` (the default page).
 
-## Page interactions (all client-side, mock)
-- **home**: sticky nav + mobile menu · pinned 300vh "how it works" scroll (progress fill + active
-  step) · trust parallax · pricing formula · lead-form validation→success · IntersectionObserver
-  reveals · honor `prefers-reduced-motion`.
-- **login**: 3 views (sign-in / forgot / reset-sent), email+pw validation, show/hide pw, mock submit
-  → `/[client]/workspace` (the default page).
-- **performance-summary**: headline band · needs-attention (links to client-status tabs) · weekly stats ·
-  animated funnel bars.
-- **workspace**: 7 tabs synced to URL hash — Business brief (form+completeness ring+ICP profiles),
-  Prospect list (filter table, select, create batch), Sendout Batch, Campaign (send controls + A/B/C
-  variants), Reply queue (approve/edit/send, status, empty state, count pips), Billing ledger,
-  Meeting summaries. New batch reactively appears in Sendout Batch + Campaign select.
-- **client-status**: 3 tabs (approval/booking/feedback) synced to hash + sidebar highlight +
-  breadcrumb + back-button; summary chips, email-template preview, status logs.
-- **external** (approve/book/feedback): row-remove / slot-picker / star+chips; consent notices;
-  valid→success transitions; expired state.
+## Workspace tabs (live)
+Client Brief (form + completeness ring + ICP profiles + async Regenerate Scope) · Prospect List
+(find → 4-label buckets → select → **Reveal & score** = the only credit spend → batch) · Approval
+Batches (send masked link · owner "Record client decision") · Outreach Campaigns (Smartlead launch,
+A/B/C, funnel) · Reply Queue (cross-campaign triage) · Meeting Recaps (held/qualify · Deal-won
+toggle) · Billing Ledger (derived rows + dormant Stripe status line).
 
 ## As built (apps/web)
-- `app/globals.css` = `design/holdslot.css` **verbatim** (root layout, applies everywhere). Each page's
-  original `<style>` block is extracted to a co-located plain `.css` (e.g. `home.css`, `workspace.css`,
-  `approve.css`) imported by that page. No CSS modules — exact class names preserved. Fonts via the
-  design's Google Fonts `<link>` in `app/layout.tsx`.
-- Shells: `components/console/ConsoleShell` (+ `Sidebar`, `ClientSwitcher`) wraps console pages and
-  provides `ToastProvider`; `components/external/ExternalShell` wraps the 3 external pages (valid/
-  success/expired, read straight from `?state=expired`). Shared bits: `components/Toast`, `Sample`.
-- `lib/client.ts` (multi-client storage/slug). Data-model types/taxonomy live in the spec doc, not
-  in code, until the API needs them (avoids unused contract files).
-- **Mock data is co-located** with each page as clearly-named consts (the data/view split is the seam);
-  move behind an accessor returning `lib/types` shapes when the API lands. `apps/web` is self-contained.
+- `app/globals.css` = `design/holdslot.css` **verbatim**; page styles co-located per page,
+  **class selectors only** (see gotcha). Fonts via the design's Google Fonts `<link>`.
+- Data flows through `lib/api.ts` (typed client, auth/refresh, cursor pagination) +
+  `components/workspace/WorkspaceProvider` (TanStack Query loaders; `reload*` = invalidate).
+- `lib/workspace/fixtures.ts` + `lib/fixtures/client-status.ts` are **dead** (zero importers) —
+  delete on the next cleanup pass, don't add new fixture files.
 - **CSS gotcha:** plain `.css` imports are GLOBAL in Next and persist across client-side navigation.
   Page CSS must use **class selectors only** — never bare element selectors (`nav`, `header`, `h1`…),
   or they leak onto other routes. `home.css` (the one page with element selectors) is scoped under a
-  `.home` wrapper (`app/page.tsx` wraps content in `<div className="home">`); reset/base lives in globals.
+  `.home` wrapper; reset/base lives in globals.
 
 ## Commands
-`pnpm install` · `pnpm dev` (runs apps/web). `pnpm build` to typecheck + production build.
+`pnpm install` · `pnpm dev` (apps/web) · `pnpm build` (typecheck + prod build) ·
+`pnpm exec playwright test` (in apps/web; spawns its own server, API mocked).
+Backend (in apps/api): `.venv/bin/python -m pytest -q` · `.venv/bin/ruff check app tests` ·
+deploy via `scripts/build-and-deploy.sh` (founder-authorized).

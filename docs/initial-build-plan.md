@@ -5,10 +5,11 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-12): A–F SHIPPED to dev (A–D+ dev AND prod; E–F dev).** Aurora **head `0030` applied** · backend Lambda
-> **v87** on the one shared backend (`api.tryholdslot.com`; find-path Stages 1–4 +
-> Scoring v2 + **V2-4 contraction** + classifier→Flash) · web on **both Amplify branches at `b36b61d`**
-> (dev job 53 · prod job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
+> **Status (2026-07-12): A–F SHIPPED to dev (A–D+ dev AND prod; E–F dev) + G-NF Wave 1+2 SHIPPED (Stripe
+> dormant).** Aurora **head `0031` applied** · backend Lambda **v89** on the one shared backend
+> (`api.tryholdslot.com`; find-path Stages 1–4 + Scoring v2 + **V2-4 contraction** + classifier→Flash + E/F
+> domains + dormant billing) · web: **dev Amplify at `a978b36`** (autoBuild; incl. the G-NF FE) · **prod at
+> `b36b61d`** (job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
 > shared dev-tier backend until the prod cutover). The Apollo **find → score → select → enrich → batch → masked
 > client-approval** loop is live end-to-end. **Phase D+** (the pre-E hardening block — §below) folds three
 > workstreams into one: **scope alignment** (sourcing width, Stages 1–4), **Scoring v2** (the 0–100 AI Score
@@ -31,9 +32,9 @@
 > live + all 3 contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email
 > unsubscribe link enforced; **only the founder S4/S5 acceptance run remains**.
 > **Phase F (book + meeting + feedback) — 🟢 SHIPPED to dev + LIVE-VERIFIED (2026-07-12)** — commit
-> `44b761b` · `0030` applied (dev Aurora head **`0030`**) · Lambda **v87** live (`cryptography`) · Amplify
-> dev auto-builds. Gates all green: backend `pytest` 338✓/22 Aurora-skipped · `ruff`/`tsc`/`eslint`/`pnpm
-> build` clean · Playwright **26✓** · `f_smoke_live` green + `test_meetings_db` 2✓ on dev · **click-review
+> `44b761b` · `0030` applied · Lambda **v87** at F-ship (`cryptography`; **v89 now**, post-G-NF) · Amplify
+> dev auto-builds. Gates all green (re-verified 2026-07-12 post-G-NF): backend `pytest` **358✓/23 skipped** ·
+> `ruff`/`tsc`/`eslint`/`pnpm build` clean · Playwright **26✓** · `f_smoke_live` green + `test_meetings_db` 2✓ on dev · **click-review
 > API-complete + browser 8/8 clean, zero product bugs** (see the §Phase F SHIPPED callout). **Remaining =
 > founder-only: F0 real held-Meet (`--meeting-code`) + availability doc + FA acceptance → tick S6.**
 > §Phase F below is the build plan + the researched execution sections (Google contract · FD
@@ -41,10 +42,15 @@
 > (**EF-Q9** places the last three mock console surfaces — performance-summary v1 rides E7, its meeting half +
 > the client-status Booking/Feedback tabs land in F5/F6). The inbox warm-up (running since 2026-06-17) has
 > **elapsed** — E0 confirmed warm-up health in-dashboard. S3 (batch round) is the only untouched A–D gate
-> (S1/S2 folded into review #5 ✅).
+> (S1/S2 folded into review #5 ✅). **MVP-checker review round (2026-07-12, post-G-NF):** full-repo
+> plan-vs-code audit + code review + simplify check → **code verified AHEAD of the docs (zero missing
+> features); 0 P1 · 10 P2 · ~22 P3** in the new **M-register**
+> ([`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md)); gates re-verified same session (pytest
+> 358✓/23 · Playwright **26✓ run fresh** · ruff/tsc/eslint clean · dev pushed); this doc's status
+> blocks + `data-schema.md` + `CLAUDE.md` reconciled to the shipped state.
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0030` applied** — Phase E `0028` outreach + `0029` `sending_account`; **Phase F `0030` `booking_link`/`meeting`/`feedback_link`**). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0031` applied** — Phase E `0028` outreach + `0029` `sending_account` · **Phase F `0030` `booking_link`/`meeting`/`feedback_link`** · **Phase G `0031` Stripe `subscription`/`billing_event`, dormant**). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -74,7 +80,7 @@
 | **D+** | Sourcing + Scoring + UX | ✅ **shipped (dev + prod FE)** · re-score wave on demand | Scope alignment (Stages 1–4) + **Scoring v2** (4-label + liveness gate, v1 retired in V2-4) + **UX rebuild** (U1–U4 + Reveal & score) — migrations `0019`→`0027` | C · Apollo | KPI gate (≥3× rows/find · ≥2× `contact_now`+`contact_soon` share · <5% dupes) — review #5 ✅ |
 | **E** | S4/S5 Outreach | 🟢 **built + SHIPPED (2026-07-12)** — commit `d8aef2b` · Lambda **v86** · Amplify dev job 55; `0028`+`0029` applied; E0 probe CLOSED (5 payloads real, 3 verdicts confirmed, unsub link enforced) · only the founder **acceptance run** remains | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
 | **F** | S6 Book+Meeting | 🟢 **built + SHIPPED to dev (2026-07-12)** — commit `44b761b` · Lambda **v87** (`cryptography`) · `0030` applied; `f_smoke_live` green + `test_meetings_db` 2✓ + Playwright 26✓ + click-review browser 8/8 clean (zero product bugs) · only founder **F0 real-Meet + FA acceptance** remain | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
-| **G** | Run & close | ⬜ **human** | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
+| **G** | Run & close | ⬜ **human** — but **G-NF Wave 1+2 code SHIPPED (2026-07-12)**: decide UI · won door · llm-usage · TanStack · **Stripe GS1–GS6 dormant** (`0031` applied, 0 subscription rows) · NF-7 Terraform prep on `cutover-prep` (never applied) | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
 
 **Critical path:** A → B → C → D → **D+ (sourcing + scoring + UX)** → E → F → G.
 **Parallel since day 0:** domain warm-up (started 2026-06-17, the schedule driver) · keys (done 2026-06-10) · ICP + cold-email copy.
@@ -86,9 +92,9 @@
 
 | Thing | State |
 |---|---|
-| Backend | Lambda **v86** alias `live` (2026-07-12), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **~60 endpoints** across `auth·clients·briefs·icps·prospects·batches·approvals·campaigns·webhooks` |
-| Database | Aurora Serverless v2 + Data API · **head `0029` applied** (`0028` Phase-E outreach + `0029` `sending_account`) |
-| Web | Amplify autoBuild on push: **dev at `d8aef2b`** (job 55, Phase-E tabs live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Backend | Lambda **v89** alias `live` (2026-07-12), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·meetings-public·billing·stripe-webhooks`) |
+| Database | Aurora Serverless v2 + Data API · **head `0031` applied** (30 tables; `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe, dormant) |
+| Web | Amplify autoBuild on push: **dev at `a978b36`** (Phase E/F tabs + G-NF FE live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
@@ -327,7 +333,7 @@ Founder toolbar review (2026-07-10): buttons weren't ordered by business logic, 
 
 What DID ship: ① individual row ticks · ③ stage→find merge · ④ per-ICP server-side overrides (U1) · ⑥ Find-history v2 (U4) · the **Reveal & score** merged paid action (below) · **checked-set invariants** (D+.5/R6+R13 hardened them).
 
-**Stages (backend-before-frontend):** **U1** per-ICP scope overrides — `ScopeOverride.params` keyed `by_icp` (people) + new `kind="company"` rows; GET/PUT/DELETE gain kind+icp params; find precedence = body override → per-ICP override → AI spec; FE write-through migration of the localStorage company override (no migration — `params` is JSONB). **U2** people-find lineage (`filter_body`/`scope_source`/`result_meta` on people runs; `group_id` threads the chunked stage→find). **U3** toolbar rebuild (Find ▾ split + ICP-on-button, selection bar at ≥1 tick, bucket CTA + auto-chain, filter shrink, **checked ⊆ visible** invariant — fixes the "Score 3 but ran 9" mismatch). **U4** Find-history drawer v2 (day groups · type chips · body_hash/`group_id` threading · spend summary).
+**Stages (backend-before-frontend):** **U1** per-ICP scope overrides — `ScopeOverride.params` keyed `by_icp` (people) + new `kind="company"` rows; GET/PUT/DELETE gain kind+icp params; find precedence = body override → per-ICP override → AI spec; FE write-through migration of the localStorage company override (no migration — `params` is JSONB). **U2** people-find lineage (`filter_body`/`scope_source`/`result_meta` on people runs; `group_id` threads the chunked stage→find). **U3** toolbar rebuild (Find ▾ split + ICP-on-button, selection bar at ≥1 tick, bucket CTA + auto-chain, filter shrink, **checked ⊆ visible** invariant — fixes the "Score 3 but ran 9" mismatch; *as-built note:* the literal subset invariant was NOT implemented — the shipped resolution is N11's prune-excluded-ids-on-reload + R13's counts reading the whole selection so countrow/dock agree). **U4** Find-history drawer v2 (day groups · type chips · body_hash/`group_id` threading · spend summary).
 
 **Reveal & score — the merged Step-2 paid action (founder 2026-07-10, this session; supersedes decision ⑦'s separate "Reveal emails" dock button).** The Step-2 "Get AI score" + "Reveal emails" buttons are merged into **one** async job (`enrich_score_prospects`): it **reveals verified emails (Apollo `people/match` — the only credit spend) THEN scores on the revealed row, in one worker run.** Reveal-first is the fix — Apollo obfuscates seniority/department/email until match, so scoring a pre-reveal person gated on missing contact and landed a degraded label. The button label adapts: `Reveal & score N · N credits` when rows still need a reveal, plain `Score N` when the selection is already revealed (idempotent — a re-run just re-scores, no spend). Capped at 15/wave. `_enrich_prospects` is the shared credit-safe, idempotent reveal path — now committed **per row** (D+.5/R10) so a concurrent door or a re-run can't double-charge. *(The v1 sync `/prospects/enrich` twin was **retired in D+.5/R10** — the async Reveal & score door is the only reveal path now.)* Also this session: the free-text fit-reason prose was **removed from the Step-2 people fit cell** (label chip + subscore breakdown only), and the frontend **250-row list ceiling was removed** (the UI now loads the whole list, so bucket counts match the DB).
 
@@ -503,6 +509,9 @@ isolated prod backend remains the deferred cutover (§After A–G register).
 final pre-production review (N1–N56) are all resolved, deployed, and verified, with exactly three standing
 carve-outs (R21 · R27-dups · R30's two Aurora-gated tests — above). No open findings remain against A–D+
 code. Anything discovered from here belongs to a **new** register opened by the phase that finds it.
+*That register now exists:* the **M-register** ([`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md),
+post-G-NF full-repo review) — 0 P1 · 10 P2 · ~22 P3 + dead-code/simplify registers, almost all in
+E/F/G-NF-era code; the A–D+ closure stands.
 
 ---
 
@@ -1491,10 +1500,11 @@ the billing-sweep hook safe on the live meetings read · NF-3 `won` isolation (a
 untouched, null clears) · the webhook 404 · owner context. The **one live-caught bug** (llm-usage 500,
 the doc-built-SQL param/GROUP-BY mismatch — the E0 lesson again) was fixed + re-verified all-pass.
 
-**Still open:** the FE (decide UI · won toggle · billing line · TanStack) is committed on `dev` but
-**not pushed** (founder-authorized pushes only) — a push builds it onto dev Amplify · **Playwright**
-not yet run (the founder's `pnpm dev` holds Next 16's single-dev-server lock) · **NF-7** stays on
-`cutover-prep` for the FR-11 plan-review · **Stripe billing stays dormant until the FR-7 probe**.
+**Still open (updated 2026-07-12, MVP-checker session):** ~~FE not pushed~~ → **pushed** (`dev` ==
+`origin/dev` at `a978b36`; Amplify dev auto-built) · ~~Playwright not yet run~~ → **run this session:
+26✓** (dev-server lock freed; pytest 358✓/23 skip + ruff + `tsc` + `eslint` re-verified green same
+session) · **NF-7** stays on `cutover-prep` for the FR-11 plan-review · **Stripe billing stays dormant
+until the FR-7 probe**.
 
 ---
 
@@ -1504,12 +1514,13 @@ not yet run (the founder's `pnpm dev` holds Next 16's single-dev-server lock) ·
 |---|---|---|
 | Founder Brief→Scope round (dev) | S1 | ✅ folded into D+ review #5 (signed off 2026-07-10) |
 | Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ✅ folded into D+ review #5 (signed off 2026-07-10; Apollo credit-dashboard glance rides the next enrich round) |
-| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live; **schedule before E7** (EF-Q2 — the E acceptance campaign consumes this approved batch; runs in parallel with E0–E6) |
+| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live; E7 has shipped, so this now gates the **E acceptance campaign** (EF-Q2 — that campaign consumes this approved batch; = G0-2) |
 | **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅); **§D+.5 fix wave (F1–F7) ✅** + **final fix wave G1–G7 (56 findings) ✅** (two pushes → Lambda v78 + migration `0027`), then the **close-out push shipped dev + PROD** (Lambda **v79** · Amplify dev 53 / prod 20; §D+.6); Q7 re-score list confirmed empty; **review cycle CLOSED** | pre-E | ✅ shipped (dev + prod) · ✅ review closed |
 | Warmed inboxes ready | E0 | ramp **elapsed** (started 06-17, ~3 weeks) — E0 confirms reputation/health in the Smartlead dashboard, not the calendar |
 | **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation now re-checks `UserStatus` + is single-use guarded (N9/N33 ✅) | — | tracked |
 | **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (**resolver BUILT in D+ Stage 4** — `tech_vocab` → `currently_using_any_of_technology_uids`) · `revenue_range` (no ICP form field) · funding-stage key **confirmed absent from the documented API** (2026-07-08) | — | post-MVP / D+ |
 | **Backlog:** ~~step-3 console decide UI~~ ✅ **built (NF-1)** · ~~move `reloadBatches` onto the TanStack-Query cache~~ ✅ **built (NF-2)** · `person` enrich-once cache (lands with tenant #2, NF-10/GX1) | — | NF-1/NF-2 done · cache deferred |
+| **M-register (MVP-checker review, 2026-07-12)** — the new post-G-NF findings register per the §D+.6 closure rule: **0 P1 · 10 P2 (M1–M10, all re-verified) · ~22 P3 · dead-code inventory · ~500-LOC simplify register (S1–S31)**, concentrated in E/F/G-NF-era code; none gate-blocking. Full register + suggested execution order → [`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md). Same session: doc reconciliation applied (this doc's status blocks + API-surface table · `data-schema.md` head line · `CLAUDE.md` rewritten) + gates re-verified (pytest 358✓/23 · Playwright **26✓ run fresh** · ruff/tsc/eslint clean · dev pushed) | — | ⏳ open — the only build backlog |
 
 ---
 
@@ -1590,9 +1601,15 @@ Auth = JWT Bearer; tenant scope via `require_membership()` on every `/{client}/�
 | Router | Routes (key) |
 |---|---|
 | `auth` | `POST /auth/{login,refresh,forgot,reset}` (public) |
-| `clients` | `GET /me·/clients` · `POST /clients` · `GET /{client}/context` |
+| `clients` | `GET /me·/clients` · `POST /clients` · `GET /{client}/context` · `GET /{client}/llm-usage` (+Owner, NF-4 — month×purpose×model rollup) |
 | `briefs` | brief GET/PUT · `POST /{client}/brief/structure` (async) + status/preview · `GET /research-spec` |
 | `icps` | CRUD `/{client}/icps` |
 | `prospects` | **(largest, ~22)** list `/prospects`·`/companies` (cursor-paged) · `select`·`update-fields` · `find-people`·`facets`·`scope-override` (per-ICP, kind people\|company) · **`enrich-score-async`** (merged Reveal & score — **the only credit spend**) · `…-async` find/scoring + poll (6 job kinds) · `research-runs` · `sourcing-docs` (rubrics) |
 | `batches` (**D**) | `GET/POST /{client}/batches` · `GET /{id}` (company-grouped) · `POST /{id}/decide` (owner step-3) · `DELETE /{id}` (cascade) · `GET/PUT /approval-template` · `POST /{id}/send` (mint link + SES) |
 | `approvals` (**D**, public token-only) | `GET /approve/{token}` (masked) · `POST /approve/{token}/decide` |
+| `campaigns` (**E**) | campaigns CRUD/launch/variants/winner/pause/resume/sync · `GET /{client}/replies` + triage/respond (cross-campaign reply queue) · `GET /{client}/performance-summary` |
+| `webhooks` (**E**, public token-path) | `POST /webhooks/smartlead/{token}` (funnel-event ingest, synchronous insert) |
+| `meetings` (**F**) | refresh · `GET /{client}/meetings?when=` · `POST /{id}/outcome` · `POST /{id}/won` (+Owner, NF-3) · `GET /{client}/bookings` · feedback list/send · inform-client |
+| meetings public (**F**, token-only) | `GET/POST /book/{token}` (slot-pick → Calendar/Meet) · `GET/POST /feedback/{token}` (stars+chips, single-use) |
+| `billing` (**G-NF**, dormant) | `GET /{client}/billing/status` · `POST …/subscription` · `POST …/activation-invoice` (+Owner; no-op until a `subscription` row exists) |
+| stripe webhook (**G-NF**, public token-path) | `POST /webhooks/stripe/{token}` (HMAC-verified; 404s when the secret is absent) |

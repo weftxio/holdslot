@@ -944,7 +944,7 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 `0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
 `0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation,
 `0028` the Phase-E outreach tables, `0029` the per-tenant sending-inbox pool, `0030` the Phase-F
-booking/meeting/feedback tables. All migrations `0001`→`0030` applied to dev Aurora. Earlier: `0017`/
+booking/meeting/feedback tables, `0031` the Phase-G Stripe billing tables (dormant). All migrations `0001`→`0031` applied to dev Aurora. Earlier: `0017`/
 `0018` are data-only prompt re-seeds; table count verified 2026-07-01 at head `0016`: 20 application
 tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
 retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01
