@@ -380,3 +380,99 @@ def test_smartlead_settings_preserves_operator_overrides():
     )
     assert out["unsubscribe_text"] == "Opt out here"
     assert out["send_as_plain_text"] is True
+
+
+# --------------------------------------------------------------------------- M8: variant ingest
+
+
+def test_variant_label_reads_aliases_trims_and_defaults_none():
+    """M8 — the per-lead A/B/C variant is read tolerantly off the send event (Smartlead echoes the
+    `variant_label` we set on each seq_variant; aliases cover doc drift), trimmed to the 8-char
+    `MessageVariant.key` width, and is None when absent/blank so an un-reported lead stays
+    unattributed rather than mis-bucketed."""
+    assert svc.variant_label({"variant_label": "A"}) == "A"
+    assert svc.variant_label({"email_variant_label": " B "}) == "B"  # trimmed
+    assert svc.variant_label({"variant": "C"}) == "C"
+    # explicit label wins over the loose alias when both present.
+    assert svc.variant_label({"variant_label": "A", "variant": "B"}) == "A"
+    assert svc.variant_label({"variant_label": "TOOLONGLABEL"}) == "TOOLONGL"  # 8-char cap
+    assert svc.variant_label({}) is None
+    assert svc.variant_label({"variant_label": "   "}) is None  # blank → None
+
+
+# --------------------------------------------------------------------------- M6: UTC-pinned ISO
+
+
+def test_campaign_iso_serializer_pins_utc_z():
+    """M6 — the campaigns router serializes timestamps with a `Z` (like the meetings domain), so a
+    naive-UTC Data API datetime is read as an instant by the FE, not as local time. A bare
+    `.isoformat()` (the old bug) shifted an HK reply to the wrong calendar day."""
+    from datetime import UTC, datetime
+
+    from app.domains.campaigns.router import _iso
+
+    assert _iso(None) is None
+    # naive-UTC (what the Data API returns) → Z-suffixed instant.
+    assert _iso(datetime(2026, 7, 11, 20, 0, 0)) == "2026-07-11T20:00:00Z"
+    # already-aware UTC → same instant, still Z (never `+00:00`).
+    assert _iso(datetime(2026, 7, 11, 20, 0, 0, tzinfo=UTC)) == "2026-07-11T20:00:00Z"
+
+
+# --------------------------------------------------------------------------- M3: PDPA writeback
+
+
+class _FakeBrief:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeResult:
+    def __init__(self, obj):
+        self._obj = obj
+
+    def scalar_one_or_none(self):
+        return self._obj
+
+
+class _FakeDb:
+    """A DB stand-in for `_unsub_writeback` — its only query is the tenant's Brief."""
+
+    def __init__(self, brief):
+        self._brief = brief
+
+    def execute(self, *a, **k):
+        return _FakeResult(self._brief)
+
+
+def test_unsub_writeback_appends_email_off_payload_list_and_string_forms():
+    """M3 — the write-back resolves the address from the PAYLOAD (not the lead — an unsub carries no
+    lead-id) and appends it to the Brief `doNotContact`, whether that field is a list or a legacy
+    newline string, de-duping. This is the SG-PDPA honor the ingest now runs on EVERY unsubscribe,
+    independent of any stage move (an unsub from a lead already at `drop` moves no stage —
+    `event_stage_effect(LEAD_UNSUBSCRIBED, …, DROP) is None` — yet must still be honored)."""
+    from app.domains.campaigns import webhooks
+
+    payload = {"lead_email": "Opt.Out@Acme.com"}
+    # list form
+    brief = _FakeBrief({"doNotContact": ["existing@x.com"]})
+    webhooks._unsub_writeback(_FakeDb(brief), "tenant-1", payload)
+    assert brief.data["doNotContact"] == ["existing@x.com", "opt.out@acme.com"]  # lowercased
+    # idempotent — a second identical unsub doesn't duplicate.
+    webhooks._unsub_writeback(_FakeDb(brief), "tenant-1", payload)
+    assert brief.data["doNotContact"].count("opt.out@acme.com") == 1
+    # legacy newline-string form
+    brief_s = _FakeBrief({"doNotContact": "prior@x.com"})
+    webhooks._unsub_writeback(_FakeDb(brief_s), "tenant-1", payload)
+    assert "opt.out@acme.com" in brief_s.data["doNotContact"]
+    assert "prior@x.com" in brief_s.data["doNotContact"]
+
+
+def test_unsub_writeback_noop_without_email_or_brief():
+    from app.domains.campaigns import webhooks
+
+    # no candidate email in the payload → no write (returns quietly).
+    brief = _FakeBrief({"doNotContact": []})
+    webhooks._unsub_writeback(_FakeDb(brief), "tenant-1", {"event_type": "LEAD_UNSUBSCRIBED"})
+    assert brief.data["doNotContact"] == []
+    # no Brief row → no crash.
+    webhooks._unsub_writeback(_FakeDb(None), "tenant-1", {"lead_email": "x@y.com"})

@@ -1,8 +1,9 @@
 "use client";
 import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
-import { decideApproval, getApproval, type ApprovalViewApi } from "@/lib/api";
+import { decideApproval, getApproval, isLinkGoneError, type ApprovalViewApi } from "@/lib/api";
 import { ExternalShell } from "@/components/external/ExternalShell";
+import { RetryNotice } from "@/components/external/RetryNotice";
 import "./approve.css";
 
 export default function Approve() {
@@ -12,29 +13,50 @@ export default function Approve() {
   const [done, setDone] = useState(false);
   const [mode, setMode] = useState<"approved" | "changes">("approved");
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
+    let alive = true;
+    // Never-404: a dead link returns a 200 `state`, so a THROWN load error is transient. Show a
+    // retry rather than fake an "expired" pane on a cold-start hiccup (M5).
     getApproval(token)
-      .then(setView)
-      .catch(() =>
-        setView({ state: "expired", batch_name: "", client_name: "", count: 0, expires_at: null, prospects: [] })
-      );
-  }, [token]);
+      .then((v) => alive && setView(v))
+      .catch(() => alive && setLoadError(true));
+    return () => {
+      alive = false;
+    };
+  }, [token, reloadNonce]);
+
+  const reload = () => {
+    setView(null);
+    setSubmitError("");
+    setLoadError(false);
+    setReloadNonce((n) => n + 1);
+  };
 
   const prospects = view?.prospects ?? [];
   const live = prospects.length - prospects.filter((p) => removed[p.id]).length;
 
+  // A decide failure: 410 means the link is truly gone (flip the pane); anything else is transient
+  // (503/network) — keep the list and let them retry (M5).
+  function onDecideError(e: unknown) {
+    if (isLinkGoneError(e)) setView((v) => (v ? { ...v, state: "used" } : v));
+    else setSubmitError("We couldn't record that just now — please try again.");
+  }
+
   async function approve() {
     if (busy) return;
     setBusy(true);
+    setSubmitError("");
     try {
       const removed_ids = prospects.filter((p) => removed[p.id]).map((p) => p.id);
       await decideApproval(token, { removed_ids });
       setMode("approved");
       setDone(true);
-    } catch {
-      // The link lapsed/was used between load and submit — flip to the expired pane.
-      setView((v) => (v ? { ...v, state: "used" } : v));
+    } catch (e) {
+      onDecideError(e);
     } finally {
       setBusy(false);
     }
@@ -43,12 +65,13 @@ export default function Approve() {
   async function requestChanges() {
     if (busy) return;
     setBusy(true);
+    setSubmitError("");
     try {
       await decideApproval(token, { request_changes: true });
       setMode("changes");
       setDone(true);
-    } catch {
-      setView((v) => (v ? { ...v, state: "used" } : v));
+    } catch (e) {
+      onDecideError(e);
     } finally {
       setBusy(false);
     }
@@ -122,9 +145,13 @@ export default function Approve() {
         </div>
 
         {!view ? (
-          <div className="ph" style={{ padding: "24px 4px" }}>
-            Loading your prospect list…
-          </div>
+          loadError ? (
+            <RetryNotice onRetry={reload} />
+          ) : (
+            <div className="ph" style={{ padding: "24px 4px" }}>
+              Loading your prospect list…
+            </div>
+          )
         ) : (
           <div className="approve-list">
             {prospects.map((p, i) => (
@@ -161,6 +188,11 @@ export default function Approve() {
           </span>
         </div>
 
+        {submitError && (
+          <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
+            {submitError}
+          </div>
+        )}
         <div className="cta-row">
           {live > 0 ? (
             <button className="btn btn-primary" onClick={approve} disabled={busy || !view}>

@@ -217,3 +217,25 @@ def test_feedback_state():
 
 def test_per_meeting_price_constant():
     assert m.PER_MEETING_USD == 500
+
+
+# ============================================================ M2 — free/busy outage sentinel
+
+
+def test_read_busy_returns_none_sentinel_on_google_error(monkeypatch):
+    """M2 — a free/busy read that hits a GoogleError returns the `None` sentinel, NOT `[]`. `[]`
+    means 'no busy intervals' (every slot free), so the old behaviour offered the full grid + let
+    the POST re-check pass during an outage → a double-booked seat. `None` lets `view_booking` show
+    no slots and `book_meeting` 503+release instead."""
+    import app.integrations.google.client as g
+    from app.domains.meetings import public
+
+    def _boom(*a, **k):
+        raise g.GoogleError("calendar outage")
+
+    monkeypatch.setattr(g, "freebusy", _boom)
+    assert public._read_busy(NOW) is None
+
+    # a healthy read still passes the busy intervals straight through (unchanged path).
+    monkeypatch.setattr(g, "freebusy", lambda *a, **k: [{"start": "s", "end": "e"}])
+    assert public._read_busy(NOW) == [{"start": "s", "end": "e"}]

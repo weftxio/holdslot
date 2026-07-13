@@ -44,15 +44,23 @@ class _FakeGoogle:
         self.records: list[dict] = []
         self.participants: list[dict] = []
         self.create_error = False
+        self.busy_error = False  # M2 — simulate a free/busy outage
         self.created: list[dict] = []
 
     def install(self, monkeypatch):
         import app.integrations.google.client as g
 
-        monkeypatch.setattr(g, "freebusy", lambda tmin, tmax, **k: list(self.busy))
+        monkeypatch.setattr(g, "freebusy", self._freebusy)
         monkeypatch.setattr(g, "create_event", self._create)
         monkeypatch.setattr(g, "list_conference_records", lambda code: list(self.records))
         monkeypatch.setattr(g, "list_participants", lambda rid: list(self.participants))
+
+    def _freebusy(self, tmin, tmax, **k):
+        import app.integrations.google.client as g
+
+        if self.busy_error:
+            raise g.GoogleError("freebusy outage")
+        return list(self.busy)
 
     def _create(self, **kw):
         import app.integrations.google.client as g
@@ -209,6 +217,46 @@ def _teardown(db, s):
     db.delete(s["tenant"])
     db.commit()
     db.close()
+
+
+def test_freebusy_outage_offers_no_slots_and_503_releases(monkeypatch):
+    """M2 — a Google free/busy outage must never confirm a booking blind: `view_booking` offers NO
+    slots (not the full grid) and `book_meeting` 503s + RELEASES the single-use claim so the
+    prospect can retry once Google recovers (FT3-9 / FD-6)."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.meetings import public
+    from app.domains.meetings.schemas import BookIn
+    from app.models import BookingLink
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    s = _seed(db, suffix)
+    ctx = AccessContext(user=s["user"], tenant=s["tenant"], membership=s["membership"])
+    fake = _FakeGoogle()
+    fake.install(monkeypatch)
+    try:
+        token = _respond_with_link(db, s, ctx, monkeypatch)
+        # A healthy read first — grab a real grid slot to POST during the outage.
+        healthy = public.view_booking(token, db=db)
+        assert healthy.state == "valid" and healthy.slots
+        slot = healthy.slots[0]
+
+        # Outage: the view offers no slots at all (the old []-return offered the full grid).
+        fake.busy_error = True
+        outage_view = public.view_booking(token, db=db)
+        assert outage_view.state == "valid" and outage_view.slots == []
+
+        # A POST during the outage 503s and releases the claim (used_at back to NULL).
+        with pytest.raises(HTTPException) as ei:
+            public.book_meeting(token, BookIn(slot=slot), db=db)
+        assert ei.value.status_code == 503
+        link = db.query(BookingLink).filter_by(tenant_id=s["tenant"].id).one()
+        assert link.used_at is None  # released for retry — never left claimed on an outage
+    finally:
+        _teardown(db, s)
 
 
 def _respond_with_link(db, s, ctx, monkeypatch):

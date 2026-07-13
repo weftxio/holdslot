@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -32,6 +33,7 @@ from app.domains.batches.schemas import (
     TemplateIn,
     TemplateOut,
 )
+from app.domains.prospects.scoring import is_fk_violation
 from app.models import ApprovalLink, Batch, Company, Icp, MembershipRole, Prospect, ProspectApproval
 
 router = APIRouter(tags=["batches"])
@@ -289,10 +291,25 @@ def delete_batch(
     `ondelete="CASCADE"` on `batch_id`), all its approval records + tokenized links — so a removed
     batch leaves no live link and no decision rows behind. Allowed at any status: deleting a decided
     batch intentionally discards its append-only approval evidence too. Tenant-scoped via
-    `_load_batch` (404 cross-tenant); `approval_template` is tenant-scoped and survives."""
+    `_load_batch` (404 cross-tenant); `approval_template` is tenant-scoped and survives.
+
+    A batch whose approvals are still referenced by a live `campaign_lead`/`meeting` (the
+    `approval_id` RESTRICT — billable evidence) can't be cascade-deleted: that surfaces as an FK
+    violation, which we turn into a 409 rather than a raw 500 on a first-class console button (M10).
+    """
     batch = _load_batch(db, ctx.tenant.id, batch_id)
     db.delete(batch)
-    db.commit()
+    try:
+        db.commit()
+    except DBAPIError as exc:
+        db.rollback()
+        if is_fk_violation(exc):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "this batch has a campaign or a booked meeting referencing its approvals — "
+                "it can't be deleted",
+            ) from exc
+        raise
 
 
 # --------------------------------------------------------------------------- D3: template

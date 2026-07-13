@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { highlightBody } from "@/lib/tmpl";
 import { nameInitials } from "@/lib/initials";
+import { parseUtc } from "@/lib/dates";
 import {
   createCampaign,
   getCampaign,
@@ -63,9 +64,10 @@ const logoFor = (s: string) => LOGO[[...s].reduce((a, c) => a + c.charCodeAt(0),
 const pct = (num: number, den: number) => (den > 0 ? Math.round((num / den) * 100) : 0);
 
 function fmtWhen(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
+  // parseUtc pins a timezone-naive instant to UTC so the ledger row renders in the viewer's own
+  // zone — a bare `new Date(iso)` read the UTC digits as LOCAL (M6/R16).
+  const d = parseUtc(iso);
+  if (!d) return "";
   return d.toLocaleString(undefined, {
     month: "short",
     day: "numeric",

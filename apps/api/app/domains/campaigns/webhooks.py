@@ -174,15 +174,25 @@ def _ingest(db: Session, payload: dict) -> dict:
     if ev is None:
         return {"ok": True, "deduped": True}  # a Smartlead retry — no double-process
 
-    # Stage effects — best-effort, fresh txn; a failure here still leaves the event stored (2xx).
+    # Stage effects + side-writes — best-effort, fresh txn; a failure here still leaves the event
+    # stored (2xx). All three writes share the one commit below.
     moved = None
     try:
+        # M8 — stamp the lead's A/B/C variant the first time Smartlead reports it, so the E6
+        # scoreboard (derived from `campaign_lead.variant_key` ⋈ the ledger) shows real counts.
+        if lead is not None and lead.variant_key is None:
+            vk = svc.variant_label(payload)
+            if vk is not None:
+                lead.variant_key = vk
         if internal and lead is not None:
             target = svc.event_stage_effect(internal, svc.sequence_number(payload), lead.stage)
             if target and record_stage_move(db, lead, target, via=internal):
                 moved = target
-                if internal == svc.LEAD_UNSUBSCRIBED:
-                    _unsub_writeback(db, campaign.tenant_id, payload)
+        # M3 — the SG-PDPA honor is INDEPENDENT of the stage move: an unsubscribe from a lead
+        # already at `drop`, or one we can't resolve to a lead at all, must still land in the Brief
+        # `doNotContact` list. Resolve the email off the payload, not the lead.
+        if internal == svc.LEAD_UNSUBSCRIBED:
+            _unsub_writeback(db, campaign.tenant_id, payload)
         db.commit()
     except Exception:  # noqa: BLE001 — the event is stored; the poll recovers a missed move
         log.exception("smartlead stage effect failed (event %s)", ev.id)

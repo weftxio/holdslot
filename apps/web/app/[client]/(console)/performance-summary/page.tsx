@@ -28,16 +28,25 @@ const FUNNEL_COLOR: Record<string, string> = {
 export default function PerformanceSummary() {
   const client = useClient();
   const [summary, setSummary] = useState<PerformanceSummaryApi | null>(null);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
     let alive = true;
     getPerformanceSummary(client)
       .then((s) => alive && setSummary(s))
-      .catch(() => undefined);
+      // Don't silently strand the client-facing surface on hard zeros + a permanent "Loading
+      // funnel…" — surface a retry so a cold-start blip doesn't look like real numbers (M7).
+      .catch(() => alive && setLoadError(true));
     return () => {
       alive = false;
     };
-  }, [client]);
+  }, [client, reloadNonce]);
+
+  const retry = () => {
+    setLoadError(false);
+    setReloadNonce((n) => n + 1);
+  };
 
   const funnel = summary?.funnel ?? [];
   const funnelTop = funnel[0]?.n || 0;
@@ -64,6 +73,21 @@ export default function PerformanceSummary() {
   const awaitingWeek = summary?.awaiting_this_week ?? 0;
   const openLinks = summary?.open_booking_links ?? 0;
   const heldNoFeedback = summary?.held_without_feedback ?? 0;
+
+  // A transient load failure with nothing cached: show a retry rather than misleading zeros (M7).
+  if (loadError && !summary) {
+    return (
+      <div className="panel" style={{ margin: 24, padding: 32, textAlign: "center" }}>
+        <h3 style={{ marginBottom: 8 }}>We couldn&apos;t load your performance summary</h3>
+        <p className="muted" style={{ marginBottom: 20 }}>
+          The server may be waking up. Nothing is lost — try again in a moment.
+        </p>
+        <button className="btn btn-primary" onClick={retry}>
+          Try again
+        </button>
+      </div>
+    );
+  }
 
   return (
     <>

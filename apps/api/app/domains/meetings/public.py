@@ -56,13 +56,14 @@ def _brief_data(db: Session, tenant_id) -> dict:
     return (brief.data if brief else None) or {}
 
 
-def _read_busy(now: datetime) -> list[dict]:
-    """The host seat's free/busy over the slot horizon — a Google error means 'offer no slots',
-    never a 500 (FT3-9)."""
+def _read_busy(now: datetime) -> list[dict] | None:
+    """The host seat's free/busy over the slot horizon. A Google error returns the `None` sentinel
+    (NOT `[]` — an empty list means 'no busy intervals', i.e. every slot free), so the caller offers
+    NO slots / 503s during an outage rather than double-booking the seat (FT3-9 · M2)."""
     try:
         return g.freebusy(msvc.iso_z(now), msvc.iso_z(now + timedelta(days=_FREEBUSY_HORIZON_DAYS)))
     except g.GoogleError:
-        return []
+        return None
 
 
 def _brief_attendee(brief_data: dict) -> str | None:
@@ -96,7 +97,9 @@ def view_booking(token: str, db: Session = Depends(get_db)) -> BookingView:
     tenant = db.get(Tenant, link.tenant_id)
     brief_data = _brief_data(db, link.tenant_id)
     _tz, minutes, _windows = msvc.availability_of(brief_data)
-    slots = msvc.available_slots(brief_data, _read_busy(now), now)
+    # A free/busy outage (None sentinel) offers no slots — never the full grid (M2).
+    busy = _read_busy(now)
+    slots = [] if busy is None else msvc.available_slots(brief_data, busy, now)
     return BookingView(
         state="valid",
         client_name=tenant.name if tenant else "",
@@ -143,8 +146,18 @@ def book_meeting(token: str, body: BookIn, db: Session = Depends(get_db)) -> Boo
     # 2. Tamper check — the slot must be on the availability grid (a slot off it was never offered).
     if not msvc.is_grid_slot(brief_data, body.slot, now):
         _release(db, link.id, status.HTTP_400_BAD_REQUEST, "that time isn't available")
-    # 3. Re-check the slot is still free against a fresh free/busy read.
-    if not msvc.slot_is_free(body.slot, minutes, _read_busy(now)):
+    # 3. Re-check the slot is still free against a fresh free/busy read. A Google outage (the None
+    #    sentinel, distinct from an empty-busy list) releases + 503s — it must never fall through as
+    #    "all slots free" and confirm a booking blind (M2).
+    busy = _read_busy(now)
+    if busy is None:
+        _release(
+            db,
+            link.id,
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "couldn't confirm the time is free just now — please retry",
+        )
+    if not msvc.slot_is_free(body.slot, minutes, busy):
         _release(db, link.id, status.HTTP_409_CONFLICT, "that time was just taken — pick another")
 
     # 4. Create the event (sendUpdates=all sends the invites). A Google hard-fail releases + 503s.

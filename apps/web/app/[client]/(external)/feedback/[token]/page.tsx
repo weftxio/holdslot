@@ -3,7 +3,8 @@ import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { ExternalShell } from "@/components/external/ExternalShell";
-import { getFeedbackView, submitFeedback, type FeedbackViewApi } from "@/lib/api";
+import { RetryNotice } from "@/components/external/RetryNotice";
+import { getFeedbackView, isLinkGoneError, submitFeedback, type FeedbackViewApi } from "@/lib/api";
 import "./feedback.css";
 
 const LABELS: Record<number, string> = {
@@ -25,14 +26,29 @@ export default function Feedback() {
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   const shown = hover || rating;
 
   useEffect(() => {
+    let alive = true;
+    // Never-404: a dead link returns a 200 `state`, so a THROWN load error is transient — offer a
+    // retry, don't fake an "expired" pane on a cold-start hiccup (M5).
     getFeedbackView(token)
-      .then(setView)
-      .catch(() => setView({ state: "expired", client_name: "", expires_at: null }));
-  }, [token]);
+      .then((v) => alive && setView(v))
+      .catch(() => alive && setLoadError(true));
+    return () => {
+      alive = false;
+    };
+  }, [token, reloadNonce]);
+
+  const reload = () => {
+    setView(null);
+    setErr("");
+    setLoadError(false);
+    setReloadNonce((n) => n + 1);
+  };
 
   async function submit() {
     if (!rating) {
@@ -41,6 +57,7 @@ export default function Feedback() {
     }
     if (busy) return;
     setBusy(true);
+    setErr("");
     try {
       await submitFeedback(token, {
         rating,
@@ -48,8 +65,11 @@ export default function Feedback() {
         comment,
       });
       setDone(true);
-    } catch {
-      setView((v) => (v ? { ...v, state: "used" } : v));
+    } catch (e) {
+      // 410 → the link is truly used/expired (flip the pane); anything else is transient — keep the
+      // form and let them resubmit (M5).
+      if (isLinkGoneError(e)) setView((v) => (v ? { ...v, state: "used" } : v));
+      else setErr("We couldn't submit that just now — please try again.");
     } finally {
       setBusy(false);
     }
@@ -93,6 +113,10 @@ export default function Feedback() {
         </p>
       </div>
       <div className="ext-pad">
+        {loadError && !view ? (
+          <RetryNotice onRetry={reload} />
+        ) : (
+          <>
         <div className="rate-block">
           <div className="rate-q">Overall, how worthwhile was the meeting?</div>
           <div className="stars" onMouseLeave={() => setHover(0)}>
@@ -158,6 +182,8 @@ export default function Feedback() {
         <p className="muted" style={{ fontSize: 12, textAlign: "center", marginTop: 14 }}>
           Your rating won&apos;t be shared with anyone you&apos;d meet again.
         </p>
+          </>
+        )}
       </div>
     </ExternalShell>
   );

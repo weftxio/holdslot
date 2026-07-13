@@ -3,7 +3,14 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { Sample } from "@/components/Sample";
 import { ExternalShell } from "@/components/external/ExternalShell";
-import { getBookingView, submitBooking, type BookingViewApi } from "@/lib/api";
+import { RetryNotice } from "@/components/external/RetryNotice";
+import {
+  getBookingView,
+  isLinkGoneError,
+  isSlotTakenError,
+  submitBooking,
+  type BookingViewApi,
+} from "@/lib/api";
 import "./book.css";
 
 // Group UTC slot instants into the viewer's local days (the mock's "Times shown in your local
@@ -38,14 +45,29 @@ export default function Book() {
   const [slot, setSlot] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [submitError, setSubmitError] = useState("");
+  const [reloadNonce, setReloadNonce] = useState(0);
 
   useEffect(() => {
+    let alive = true;
+    // The booking endpoint is never-404: a dead link returns a 200 `state`, so a THROWN error here
+    // is always transient (cold-start / network). Surface a retry — never a fake "expired" (M1).
     getBookingView(token)
-      .then(setView)
-      .catch(() =>
-        setView({ state: "expired", client_name: "", duration_min: 0, slots: [], expires_at: null })
-      );
-  }, [token]);
+      .then((v) => alive && setView(v))
+      .catch(() => alive && setLoadError(true));
+    return () => {
+      alive = false;
+    };
+  }, [token, reloadNonce]);
+
+  const reload = () => {
+    setView(null);
+    setSlot(null);
+    setSubmitError("");
+    setLoadError(false);
+    setReloadNonce((n) => n + 1);
+  };
 
   const localDays = useMemo(() => groupByLocalDay(view?.slots ?? []), [view?.slots]);
   const chosenLabel = useMemo(() => {
@@ -57,12 +79,24 @@ export default function Book() {
   async function confirm() {
     if (!slot || busy) return;
     setBusy(true);
+    setSubmitError("");
     try {
       await submitBooking(token, slot);
       setDone(true);
-    } catch {
-      // The slot was just taken / the link lapsed between load and submit — reflect it.
-      setView((v) => (v ? { ...v, state: "used" } : v));
+    } catch (e) {
+      if (isLinkGoneError(e)) {
+        // 410 — the link itself lapsed/was used between load and submit → the used/expired pane.
+        setView((v) => (v ? { ...v, state: "used" } : v));
+      } else if (isSlotTakenError(e)) {
+        // 409 — that slot was just taken. The link is still good: keep the picker, refresh the
+        // times, and tell them to pick another (never a dead-end — that would lose the meeting).
+        setSlot(null);
+        setSubmitError("That time was just taken — pick another below.");
+        reload();
+      } else {
+        // 400 tampered · 503 cold-start · network — keep the picker, offer a retry inline.
+        setSubmitError("We couldn't book that just now — please try again.");
+      }
     } finally {
       setBusy(false);
     }
@@ -126,9 +160,13 @@ export default function Book() {
       </div>
       <div className="ext-pad">
         {!view ? (
-          <div className="ph" style={{ padding: "24px 4px" }}>
-            Loading available times…
-          </div>
+          loadError ? (
+            <RetryNotice onRetry={reload} />
+          ) : (
+            <div className="ph" style={{ padding: "24px 4px" }}>
+              Loading available times…
+            </div>
+          )
         ) : localDays.length === 0 ? (
           <div className="ph" style={{ padding: "24px 4px" }}>
             No times are open right now. Reply to your email and we&apos;ll send fresh options.
@@ -176,6 +214,11 @@ export default function Book() {
               </span>
             </div>
 
+            {submitError && (
+              <div style={{ color: "var(--danger)", fontSize: 13, margin: "4px 0 10px" }}>
+                {submitError}
+              </div>
+            )}
             <div className="confirm-bar">
               <span className="pick">
                 {chosenLabel ? (

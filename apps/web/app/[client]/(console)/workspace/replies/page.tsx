@@ -5,6 +5,7 @@ import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { useClient } from "@/lib/nav";
 import { nameInitials } from "@/lib/initials";
+import { parseUtc } from "@/lib/dates";
 import { respondReply, triageReply, type ReplyApi } from "@/lib/api";
 
 // Cross-campaign reply-triage inbox (Phase E — LIVE). Each row is a `lead_replied` event ⋈ its lead
@@ -23,9 +24,10 @@ const TRIAGE_META: { value: string; label: string; badge: string }[] = [
 const triageMeta = (t: string | null) => TRIAGE_META.find((m) => m.value === t);
 
 function fmtDate(iso: string | null): string {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
+  // parseUtc pins a timezone-naive instant to UTC so it renders in the viewer's own zone — a bare
+  // `new Date(iso)` read the UTC digits as LOCAL, shifting an HK reply to the wrong day (M6/R16).
+  const d = parseUtc(iso);
+  if (!d) return "";
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 

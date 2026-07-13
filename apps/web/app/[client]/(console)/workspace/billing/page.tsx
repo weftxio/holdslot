@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
+import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { PER_MEETING_USD } from "@/lib/workspace/constants";
 import {
   getBillingStatus,
@@ -38,6 +39,7 @@ function fmt(iso: string): string {
 export default function BillingPage() {
   const client = useParams<{ client: string }>().client;
   const toast = useToast();
+  const { reloadMeetings } = useWorkspace();
   const [rows, setRows] = useState<MeetingApi[] | null>(null);
   const [busy, setBusy] = useState(false);
   // GS6 — the Stripe subscription line; null until this tenant is on billing (every tenant today),
@@ -55,6 +57,9 @@ export default function BillingPage() {
     try {
       await refreshMeetings(client);
       load();
+      // The sweep can flip a meeting to Billed/qualified — invalidate the shared past-meetings
+      // query so Meeting Recaps doesn't show stale outcome/won until a manual reload (M9).
+      await reloadMeetings();
       toast("Ledger refreshed");
     } finally {
       setBusy(false);

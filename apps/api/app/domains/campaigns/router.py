@@ -63,7 +63,11 @@ log = logging.getLogger("holdslot.campaigns")
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    """UTC-pinned `…Z` serialization (mirrors the meetings domain). The Data API hands back
+    naive-UTC timestamps, so a bare `.isoformat()` (no offset) is read as LOCAL by the FE
+    `new Date(...)` — in HK (+8) that shifts a 20:00 UTC reply to the wrong calendar day (M6/R16).
+    `iso_z` attaches the `Z` so every consumer renders viewer-local from a true instant."""
+    return msvc.iso_z(dt) if dt else None
 
 
 def _uuid(raw: str, msg: str = "invalid id") -> uuid.UUID:

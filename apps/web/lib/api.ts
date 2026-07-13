@@ -99,6 +99,44 @@ async function detail(r: Response): Promise<string> {
     .catch(() => `request failed (${r.status})`);
 }
 
+/**
+ * An HTTP error that carries the response `status`, so a caller can distinguish a definitive
+ * server "no" (401 auth · 409 conflict · 410 gone) from a transient one (502/503/504 cold-start,
+ * network) and react differently — the M1/M4/M5 fixes. Extends `Error`, so every existing
+ * `catch (e) { e.message }` / `e instanceof Error` path keeps working unchanged.
+ */
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
+
+/** Throw an ApiError carrying the response status + server detail. */
+async function fail(r: Response): Promise<never> {
+  throw new ApiError(r.status, await detail(r));
+}
+
+/** A transient/cold-start status — Aurora waking (503) or a gateway hiccup (502/504). Callers keep
+ *  the session/page and retry rather than treating it as a definitive failure (M4/M1/M5). */
+export function isTransientStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
+
+/** Public-token pages are never-404: a genuinely dead link comes back as a 200 `state`, so the ONE
+ *  error that means "this link is now gone" on submit is a 410. Everything else (409 slot-taken,
+ *  503 cold-start, network) is transient — keep the page and offer a retry (M1/M5). */
+export function isLinkGoneError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 410;
+}
+
+/** A booking slot-taken race on the POST (recoverable — refresh the times, keep the picker; M1). */
+export function isSlotTakenError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409;
+}
+
 // Cold-start aware login (W6). Aurora Serverless auto-pauses to 0-ACU in dev; the first login after
 // an idle period can come back 503 (the backend's "database is waking up" signal) or fail at the
 // network/gateway layer while the cluster resumes. We retry ONLY those cold-start signals — never a
@@ -170,7 +208,7 @@ export async function reset(token: string, newPassword: string): Promise<void> {
 
 export async function getMe(): Promise<Me> {
   const r = await authFetch(`/me`);
-  if (!r.ok) throw new Error(await detail(r));
+  if (!r.ok) return fail(r); // ApiError carries the status — MeProvider clears tokens only on 401
   return r.json();
 }
 
@@ -1076,7 +1114,7 @@ export async function getApproval(token: string): Promise<ApprovalViewApi> {
   // No auth — the token is the credential. The endpoint always 200s with a `state` so the page
   // can pick its pane; it never reveals tenant existence.
   const r = await fetch(`${API_BASE}/approve/${encodeURIComponent(token)}`);
-  if (!r.ok) throw new Error(await detail(r));
+  if (!r.ok) return fail(r);
   return r.json();
 }
 export async function decideApproval(
@@ -1088,7 +1126,7 @@ export async function decideApproval(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(await detail(r)); // 410 once expired/used/decided
+  if (!r.ok) return fail(r); // 410 once expired/used/decided (ApiError carries the status)
   return r.json();
 }
 
@@ -1329,7 +1367,7 @@ export type BookingViewApi = {
 };
 export async function getBookingView(token: string): Promise<BookingViewApi> {
   const r = await fetch(`${API_BASE}/book/${encodeURIComponent(token)}`);
-  if (!r.ok) throw new Error(await detail(r));
+  if (!r.ok) return fail(r);
   return r.json();
 }
 export type BookingConfirmApi = { state: string; scheduled_at: string; meet_link: string | null };
@@ -1339,7 +1377,8 @@ export async function submitBooking(token: string, slot: string): Promise<Bookin
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ slot }),
   });
-  if (!r.ok) throw new Error(await detail(r)); // 400 tampered · 409 taken · 410 used · 503 retry
+  // ApiError.status lets the page react per-code: 400 tampered · 409 taken · 410 used · 503 retry.
+  if (!r.ok) return fail(r);
   return r.json();
 }
 
@@ -1350,7 +1389,7 @@ export type FeedbackViewApi = {
 };
 export async function getFeedbackView(token: string): Promise<FeedbackViewApi> {
   const r = await fetch(`${API_BASE}/feedback/${encodeURIComponent(token)}`);
-  if (!r.ok) throw new Error(await detail(r));
+  if (!r.ok) return fail(r);
   return r.json();
 }
 export async function submitFeedback(
@@ -1362,7 +1401,7 @@ export async function submitFeedback(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(await detail(r)); // 410 once used
+  if (!r.ok) return fail(r); // 410 once used (ApiError carries the status)
   return r.json();
 }
 

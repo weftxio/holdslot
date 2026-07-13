@@ -189,6 +189,31 @@ def sequence_number(payload: dict) -> int | None:
         return None
 
 
+# The per-lead A/B/C variant a Smartlead event reports. At launch we set `variant_label` on each
+# step-1 `seq_variant` (== our `MessageVariant.key`); Smartlead echoes the chosen one back on the
+# send event. Aliases cover the field-name drift across Smartlead's doc pages (⚠, same posture as
+# the email/id resolvers). Read priority: the explicit label fields first.
+_VARIANT_FIELDS = (
+    "variant_label",
+    "email_variant_label",
+    "seq_variant_label",
+    "sequence_variant_label",
+    "email_seq_variant_label",
+    "variant",
+    "email_variant",
+)
+
+
+def variant_label(payload: dict) -> str | None:
+    """The A/B/C variant key a Smartlead event carries for its lead, or None if absent/blank.
+    Trimmed to `MessageVariant.key`'s 8-char width so it joins the scoreboard directly (M8)."""
+    for f in _VARIANT_FIELDS:
+        v = payload.get(f)
+        if v is not None and str(v).strip():
+            return str(v).strip()[:8]
+    return None
+
+
 def provider_timestamp(payload: dict) -> str:
     """The raw provider timestamp string (for the dedupe hash) — first present of `_TS_FIELDS`."""
     for f in _TS_FIELDS:

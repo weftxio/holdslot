@@ -213,13 +213,17 @@ def test_create_launch_and_webhook_funnel(monkeypatch):
         lead0, lead1 = leads[0], leads[1]
 
         # --- E4 email_sent seq2 → followup (resolved by the real webhook field sl_email_lead_id) --
+        # M8 — the send event carries the per-lead A/B/C `variant_label`; the ingest stamps it onto
+        # the lead so the E6 scoreboard (derived from campaign_lead.variant_key) shows real counts.
         webhooks._ingest(db, {
             "event_type": "EMAIL_SENT", "campaign_id": sl_campaign_id,
             "sl_email_lead_id": lead0.smartlead_lead_id, "sequence_number": 2,
+            "variant_label": "A",
             "to_email": lead0_email(prospects, lead0), "event_timestamp": "2026-07-13T09:00:00Z",
         })
         db.refresh(lead0)
         assert lead0.stage == "followup"
+        assert lead0.variant_key == "A"  # M8 — variant stamped from the send event
 
         # --- E4 reply → queue row (triage NULL, stage unchanged) + dedupe ---
         reply = {
@@ -247,6 +251,17 @@ def test_create_launch_and_webhook_funnel(monkeypatch):
         assert lead1.stage == "drop"
         brief = db.query(Brief).filter_by(tenant_id=tenant.id).one()
         assert prospects[1].enrichment["email"] in str(brief.data.get("doNotContact"))
+
+        # --- M3 — an unsubscribe with NO resolvable lead (and hence no stage move) still writes
+        # doNotContact: the SG-PDPA honor is independent of the stage effect (the old code nested
+        # the write-back under the move, so an unresolvable/already-dropped unsub silently skipped
+        # the list). Same-campaign, an email matching no lead → campaign_lead_id NULL, DNC written.
+        webhooks._ingest(db, {
+            "event_type": "LEAD_UNSUBSCRIBED", "campaign_id": sl_campaign_id,
+            "to_email": "ghost@nowhere.example", "event_timestamp": "2026-07-13T16:00:00Z",
+        })
+        brief = db.query(Brief).filter_by(tenant_id=tenant.id).one()
+        assert "ghost@nowhere.example" in str(brief.data.get("doNotContact"))
 
         # --- E4 unknown campaign → ignored, no crash ---
         out = webhooks._ingest(db, {"event_type": "EMAIL_SENT", "campaign_id": "999999999"})

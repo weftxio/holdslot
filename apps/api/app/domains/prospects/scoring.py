@@ -50,6 +50,21 @@ def is_unique_violation(exc: BaseException) -> bool:
     text = str(orig if orig is not None else exc).lower()
     return "23505" in text or "duplicate key" in text or "unique constraint" in text
 
+
+def is_fk_violation(exc: BaseException) -> bool:
+    """True if `exc` is a Postgres foreign-key violation (SQLSTATE 23503), HOWEVER the driver
+    surfaced it — same driver-drift reasoning as `is_unique_violation` (psycopg raises
+    `IntegrityError`; the RDS Data API can wrap it as a generic `DBAPIError`). Lets a route turn a
+    RESTRICT/cascade FK failure into a 409 instead of a raw 500 (M10)."""
+    if isinstance(exc, IntegrityError):
+        return True
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "sqlstate", None) == "23503" or getattr(orig, "pgcode", None) == "23503":
+        return True
+    text = str(orig if orig is not None else exc).lower()
+    return "23503" in text or "foreign key constraint" in text or "violates foreign key" in text
+
+
 # Background-job event contract — same key as structuring; the VALUE selects the worker (see
 # app.main.handler, which routes scoring vs. structuring events).
 JOB_EVENT_KEY = "holdslot_job"

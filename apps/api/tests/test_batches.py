@@ -420,6 +420,82 @@ def test_delete_batch_cascades_isolates_and_scopes():
 
 
 @pytestmark_db
+def test_delete_batch_with_campaign_reference_409s():
+    """M10 — a batch whose approvals are still referenced by a live campaign (`Campaign.batch_id` is
+    RESTRICT) can't be cascade-deleted. The FK violation is turned into a 409 on this first-class
+    console button, not a raw 500, and the batch survives the refused delete."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.batches.router import create_batch, decide_batch, delete_batch
+    from app.domains.batches.schemas import BatchCreateIn, DecisionIn
+    from app.domains.campaigns.router import create_campaign
+    from app.domains.campaigns.schemas import CampaignCreateIn
+    from app.models import (
+        AppUser,
+        Batch,
+        Campaign,
+        Company,
+        Membership,
+        MembershipRole,
+        Prospect,
+        ProspectApproval,
+        Tenant,
+    )
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant = Tenant(slug=f"m10-{suffix}", name=f"M10 {suffix}")
+    db.add(tenant)
+    db.flush()
+    user = AppUser(email=f"m10-{suffix}@example.com", password_hash="x", full_name="Owner")
+    db.add(user)
+    db.flush()
+    membership = Membership(user_id=user.id, tenant_id=tenant.id, role=MembershipRole.owner)
+    db.add(membership)
+    company = Company(
+        tenant_id=tenant.id, domain="m10.example", source="manual",
+        name="M10 Co", industry="SaaS", size="200-500", country="US",
+    )
+    db.add(company)
+    db.flush()
+    prospect = Prospect(
+        tenant_id=tenant.id, company_id=company.id, identity_key=f"m10-{suffix}",
+        source="manual", status="scored", enrichment={"full_name": "Sam Lee", "title": "VP"},
+    )
+    db.add(prospect)
+    db.commit()
+
+    ctx = AccessContext(user=user, tenant=tenant, membership=membership)
+    try:
+        batch = create_batch(BatchCreateIn(prospect_ids=[str(prospect.id)]), ctx=ctx, db=db)
+        bid = uuid.UUID(batch.id)
+        decide_batch(batch.id, DecisionIn(removed_ids=[]), ctx=ctx, db=db)  # draft → approved
+        # A campaign now references the batch (batch_id RESTRICT).
+        create_campaign(CampaignCreateIn(batch_id=batch.id), ctx=ctx, db=db)
+
+        with pytest.raises(HTTPException) as ei:
+            delete_batch(batch.id, ctx=ctx, db=db)
+        assert ei.value.status_code == 409  # FK RESTRICT → 409, never a raw 500
+        assert db.get(Batch, bid) is not None  # batch survived the refused delete
+    finally:
+        db.rollback()
+        db.query(Campaign).filter_by(tenant_id=tenant.id).delete()  # cascades MessageVariant
+        db.commit()
+        db.query(ProspectApproval).filter_by(tenant_id=tenant.id).delete()
+        db.query(Batch).filter_by(tenant_id=tenant.id).delete()
+        db.query(Prospect).filter_by(tenant_id=tenant.id).delete()
+        db.query(Company).filter_by(tenant_id=tenant.id).delete()
+        db.commit()
+        db.delete(membership)
+        db.delete(user)
+        db.delete(tenant)
+        db.commit()
+        db.close()
+
+
+@pytestmark_db
 def test_resend_reopens_rejected_batch_but_approved_stays_final():
     """Client 'Request changes' (reject) → batch `changes_requested`, prospects still `pending`, the
     used link reads `used`. Re-sending REOPENS the batch to `sent` (decided_at cleared) so a fresh
