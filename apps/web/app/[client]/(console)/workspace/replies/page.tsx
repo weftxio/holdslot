@@ -41,8 +41,11 @@ export default function RepliesPage() {
   const [busy, setBusy] = useState<Set<string>>(new Set());
 
   const remaining = replies.filter((r) => !r.handled_at).length; // global total (matches the tab pip)
-  const inView = replies.filter((r) => !replyCamp || r.campaign_name === replyCamp);
+  // M27 — filter by campaign_id, not name: two batches can mint same-named campaigns, so a name
+  // filter would conflate them. `replyCamp` holds the id; resolve its name for the empty-state copy.
+  const inView = replies.filter((r) => !replyCamp || r.campaign_id === replyCamp);
   const remainingInView = inView.filter((r) => !r.handled_at).length;
+  const replyCampName = campaigns.find((c) => c.id === replyCamp)?.name ?? "";
 
   const setDraft = (id: string, v: string) => setDrafts((s) => ({ ...s, [id]: v }));
   const withBusy = async (id: string, fn: () => Promise<unknown>) => {
@@ -104,7 +107,9 @@ export default function RepliesPage() {
         >
           <option value="">All campaigns</option>
           {campaigns.map((c) => (
-            <option key={c.id}>{c.name}</option>
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
           ))}
         </select>
       </div>
@@ -210,7 +215,7 @@ export default function RepliesPage() {
           })}
 
           {replyCamp && inView.length === 0 && (
-            <div className="sum-empty">No replies for {replyCamp} yet.</div>
+            <div className="sum-empty">No replies for {replyCampName} yet.</div>
           )}
         </div>
       )}

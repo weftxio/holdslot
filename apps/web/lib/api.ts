@@ -172,13 +172,15 @@ export async function login(
       throw e instanceof Error ? e : new Error("login failed");
     }
     if (r.ok) return r.json();
-    if (r.status === 401) throw new Error(await detail(r)); // real auth failure — never retry
+    if (r.status === 401) throw new ApiError(401, await detail(r)); // bad credentials — never retry
     if (isColdStartStatus(r.status) && Date.now() < deadline) {
       onWaking?.();
       await coldStartBackoff(attempt, deadline);
       continue;
     }
-    throw new Error(await detail(r));
+    // Any other status (400/429/5xx past the cold-start cap) carries its status so the login page
+    // can tell "server error, try again" from "bad credentials" (M25).
+    throw new ApiError(r.status, await detail(r));
   }
 }
 
@@ -1410,6 +1412,7 @@ export type MeetingApi = {
   prospect_name: string;
   company_name: string;
   campaign_name: string;
+  campaign_id: string | null; // M27 — filters key off id, not the non-unique campaign name
   batch_name: string;
   scheduled_at: string;
   meet_link: string | null;

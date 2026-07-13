@@ -45,7 +45,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0031_stripe_subscription"]
+    assert _script_dir().get_heads() == ["0032_outreach_occurred_index"]
 
 
 def _fk_ondelete(model, target_table: str) -> str | None:
@@ -221,7 +221,9 @@ def test_0028_phase_e_models_match_migration():
         "occurred_at",
         "created_at",
     }
-    assert "ix_outreach_event_tenant_type_created" in {
+    # 0032 (M22) superseded the created_at composite with an occurred_at-sorted one (the column
+    # every consumer ORDER BYs); the model carries the post-0032 index.
+    assert "ix_outreach_event_tenant_type_occurred" in {
         i.name for i in OutreachEvent.__table__.indexes
     }
 

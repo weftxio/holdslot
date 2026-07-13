@@ -42,7 +42,7 @@ export default function BookingPage() {
   async function sendNewInvite() {
     if (!propose || busy) return;
     if (!propose.eventId) {
-      toast("No reply thread to resend into for this lead");
+      toast("No reply thread to resend into for this lead", "warn");
       return;
     }
     setBusy(true);
@@ -52,7 +52,9 @@ export default function BookingPage() {
       toast("New booking link sent");
       load();
     } catch {
-      toast("Could not send — retry after a sync");
+      // M31 — a failure toast must render as a warning (was defaulting to the green "ok" kind); the
+      // separator is a middot, per the house style.
+      toast("Could not send · retry after a sync", "warn");
     } finally {
       setBusy(false);
     }

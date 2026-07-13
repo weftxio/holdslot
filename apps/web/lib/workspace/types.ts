@@ -99,12 +99,14 @@ export type LedgerRow = {
 export type Recap = {
   id: string;
   campaign: string;
+  campaignId: string | null; // M27 — filter recaps by id, not the non-unique campaign name
   batch: string;
   prospectName: string;
   companyName: string;
   scheduledAt: string;
   outcome: string | null;
   rating: number | null;
+  disputed: boolean; // M33 — the current dispute flag (shown + toggled by the outcome-correction UI)
   // tri-state (NF-3): true = deal won · false = no deal · null = not yet decided. Kept nullable so
   // the §11 adopter-vs-churn read never conflates "explicitly no deal" with "undecided".
   won: boolean | null;

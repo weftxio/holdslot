@@ -22,7 +22,7 @@ import logging
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select, update
+from sqlalchemy import case, select, update
 from sqlalchemy.orm import Session
 
 from app.core.deps import AccessContext, get_db, require_membership
@@ -112,17 +112,32 @@ def reserve_enrichment(db: Session, tenant_id, requested: int) -> int:
     if sub is None:
         return requested
     now = datetime.now(UTC)
-    _rollover(sub, now)
+    key = bsvc.usage_month_key(now)
+    # On-read usage-month rollover (GD-2) folded into the read: a new UTC month counts from 0.
+    base = sub.current_month_usage if sub.usage_month == key else 0
     cap = bsvc.effective_cap(sub.plan, sub.admin_quota_override)
     decision = bsvc.enrichment_decision(
         cap=cap,
-        used=sub.current_month_usage,
+        used=base,
         requested=requested,
         overage_enabled=sub.overage_enabled,
     )
-    base = sub.current_month_usage
-    sub.current_month_usage = base + decision.allowed
-    db.commit()
+    # M13 — reserve atomically in ONE statement (`usage := this-month usage + allowed`) so two
+    # concurrent enrich runs can't lose an increment via read-modify-write; the rollover is folded
+    # into the same CASE so a month flip can't race it. We do NOT commit here — the caller owns the
+    # txn (a mid-flow commit used to flush the caller's half-done enrich session).
+    db.execute(
+        update(Subscription)
+        .where(Subscription.tenant_id == tenant_id)
+        .values(
+            current_month_usage=(
+                case((Subscription.usage_month == key, Subscription.current_month_usage), else_=0)
+                + decision.allowed
+            ),
+            usage_month=key,
+        )
+    )
+    db.refresh(sub)  # sync the ORM object with the atomic write (no stale flush on caller commit)
     # Overage bills as meter events with a deterministic per-unit identifier (dedupes a retry). The
     # DB `current_month_usage` counter is authoritative; a Stripe blip here DROPS that overage unit
     # (best-effort — the counter is already incremented, so a re-run won't re-emit it). If overage
@@ -167,6 +182,11 @@ def billing_status(
     """The GS6 ledger line — the tenant's subscription/plan/status, or `null` when it has none
     (every tenant today). The FE renders the line only when this is non-null (dormant-safe)."""
     sub = get_subscription(db, ctx.tenant.id)
+    if sub is not None:
+        # M12 — reflect the current UTC month even before the first enrich of the month lands (GD-2
+        # has no scheduler). Read-only: the GET session is never committed (get_db closes it)
+        # so this only fixes the displayed counter, it doesn't persist a write.
+        _rollover(sub, datetime.now(UTC))
     return BillingStatusOut(subscription=_sub_out(sub) if sub else None)
 
 
@@ -183,6 +203,13 @@ def create_subscription(
     if plan not in bsvc.PLAN_ENRICHMENT_CAP:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown plan")
     sub = get_subscription(db, ctx.tenant.id)
+    # M14 — a re-POST with a DIFFERENT plan would update the local caps but never touch the Stripe
+    # subscription's prices, silently diverging what we enforce from what Stripe bills. Refuse it
+    # until an explicit price-swap path exists (dormant — no tenant has a subscription yet).
+    if sub is not None and sub.stripe_subscription_id and plan != sub.plan:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, "plan changes on an active subscription aren't supported yet"
+        )
     if sub is None:
         sub = Subscription(tenant_id=ctx.tenant.id, plan=plan)
         db.add(sub)

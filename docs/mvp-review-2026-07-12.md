@@ -204,7 +204,7 @@ LOC only tracked for simplify. Nothing here gates a founder acceptance gate.
 | M7 | fix | P2 | FE | `performance-summary/page.tsx:32-40` · silent zero-defaults on client surface → error/retry state |
 | M9 | fix | P2 | FE | `billing/page.tsx:47-62` · refresh doesn't invalidate meetings → stale recaps → `invalidateQueries(["meetings",client,"past"])` |
 
-### Wave 2 — P3 backend sweep (M11 first: public-page 500 risk)
+### Wave 2 — P3 backend sweep (M11 first: public-page 500 risk) — ✅ BUILT + GATED 2026-07-13 (see §8; awaiting founder push + deploy)
 
 | # | Kind | P/R | Side | Where · what → fix |
 |---|---|---|---|---|
@@ -221,7 +221,7 @@ LOC only tracked for simplify. Nothing here gates a founder acceptance gate.
 | M21 | perf | P3 | BE | `list_bookings` N+1 · `list_replies` unpaginated · `performance_summary` 18 seq counts · `pause/resume` full `_detail()` discarded |
 | M22 | design | P3 | BE | Brief/ICP editing → **✅ DECIDED (keep open):** stays available to all members by design; add a code comment + plan note, **no gating change**. Remaining M22 work: 400-vs-404 helper · async route doing sync IO · index `created_at`-vs-`occurred_at` |
 
-### Wave 3 — P3 frontend sweep (cheapest-first)
+### Wave 3 — P3 frontend sweep (cheapest-first) — ✅ BUILT + GATED 2026-07-13 (see §9; awaiting founder push + deploy)
 
 | # | Kind | P/R | Side | Where · what → fix |
 |---|---|---|---|---|
@@ -347,3 +347,145 @@ prior-session doc reconciliation (§1), not this build; the build touched only `
   then the standing live smoke. Suggested first commit = the whole wave on a `hardening-m-wave`
   branch off `dev` (the §5 "start with BE, pause for sign-off" split is now moot — all 10 are built
   and green together).
+
+## 8 · Wave 2 — BUILT + GATED (2026-07-13)
+
+All 12 P3 backend items (M11–M22) shipped to the working tree, **backend-only** (zero `apps/web`
+touched — the FE gates are unaffected, still green from Wave 1). **Not yet committed/pushed** — the
+standing "commit/push only when asked · founder-authorized" gate holds. Gates re-run locally after
+the wave: **backend pytest 372✓ / 29 skipped** (was 365✓/25 — **+7 new non-Aurora units**; **+4
+Aurora-gated** flow/DB tests) · **ruff clean** · single linear Alembic head → **`0032`**.
+
+One schema change this wave: **migration `0032` (index-only, deploy-first-safe)** — it applies on the
+next founder backend deploy alongside the Wave 1+2 backend code (Aurora stays at `0031` until then).
+
+### 8.1 · What shipped, per item
+
+| # | Side | Built (file) | Test proof |
+|---|---|---|---|
+| M11 | BE | `meetings/service.py` — `availability_of` now validates every field + a new `_clean_windows` drops malformed days/windows → FD-1 defaults, so a bad Brief edit can't 500 the meetings surface / booking page (was `int("abc")`→ValueError · one-element window→IndexError) | non-Aurora `test_availability_of_*` · `test_clean_windows_drops_bad_and_keeps_good` · `test_available_slots_never_raises_on_malformed_brief` |
+| M12 | BE | `billing/router.py` — `billing_status` applies `_rollover` read-only (no commit; the GET session closes → rollback) so the GS6 line shows the CURRENT UTC month before the first enrich of the month | covered by the M13 rollover assertion (shared `_rollover`); dormant |
+| M13 | BE | `billing/router.py` — `reserve_enrichment` now reserves in ONE atomic `UPDATE … SET usage = (this-month usage else 0) + allowed` (no read-modify-write lost update; rollover folded into the CASE) and **drops the mid-flow `db.commit()`** (the caller owns the txn — it used to flush the caller's half-done enrich session) | Aurora `test_reserve_enrichment_atomic_increment_and_rollover`; decision math already unit-tested (`enrichment_decision`) |
+| M14 | BE | `billing/router.py` — `create_subscription` 409s a plan CHANGE on a live Stripe subscription rather than silently diverging local caps from Stripe prices (chose the register's simpler "409" option; dormant) | verified in-code (dormant — no tenant has a subscription) |
+| M15 | BE | `campaigns/router.py` — `triage_reply` 400s an unknown triage class (was silently stored → polluted the derived summary counts + left the pip on with no move). Makes `svc.TRIAGE_CLASSES` load-bearing (unblocks S17) | Aurora `test_triage_reply_rejects_unknown_class` |
+| M16 | BE | `meetings/schemas.py` — public `FeedbackIn.chips/comment` bounded (`max_length` 12 chips × 64 chars · comment ≤ 2000) so a token holder can't store MBs on the meeting row | non-Aurora `test_feedback_in_caps_bound_public_input` |
+| M17 | BE | `campaigns/router.py` — `respond_reply` catches `SmartleadError` → **502** (was a raw 500); the accepted post-send dead-link window (N31 persist-after-send) is documented in-code | covered by the existing `_respond_with_link` flow (Smartlead mocked); the happy path is asserted in `test_meetings_db` |
+| M18 | BE | `meetings/router.py` — `correct_outcome` 409s an unswept FUTURE meeting (`held IS NULL` and scheduled ahead) so a pre-meeting hand-mark can't become billable; a swept-or-past meeting still corrects | Aurora `test_correct_outcome_blocks_unswept_future_meeting` |
+| M19 | BE | `google/client.py` — `_request` gains `retry_transport`; `create_event` passes `False` so a timed-out `events.insert` (which may already have landed) is NOT blind-replayed → no duplicate calendar event + invites. Reads still retry transport errors | non-Aurora `test_create_event_post_does_not_retry_on_transport_error` (POST = 1 attempt; GET = bounded retries) |
+| M20 | BE | `prospects/router.py` — `add_company` reuses `_validate_icp_id` → a malformed `icp_id` is a 400 (was a raw 500; siblings already 400) | reuses the `_validate_icp_id` path (N24-tested) |
+| M21 | BE | perf: `list_bookings` N+1 → `_latest_replies` buckets the reply lookup in 2 queries for the whole page (was 2/link) · `list_replies` bounded by a `limit` (≤`REPLIES_PAGE_CAP=500`, was unbounded) · `performance_summary` — the **7 meeting count-cells collapse into ONE conditional-aggregate query** (~18 → ~11 RTs) · `pause/resume/launch` return `_campaign_summary` (light `CampaignOut`) instead of the discarded expensive `_detail` | Aurora `test_performance_summary_consolidated_counts_execute` (proves the CASE/SUM runs on the Data API); `list_bookings`/`list_replies` covered by `test_meetings_db`/`test_campaigns_db` |
+| M22 | BE + schema | design: shared `core/deps.uuid_or_404` — malformed PATH ids standardize on **404** (campaigns aligned to meetings' existing 404; body-field `icp_id` stays 400 by design) · the sole `async` webhook route **stays async** (needs `await request.body()` for HMAC; documented — no event-loop contention under one-request-per-Lambda) · **migration `0032`**: swap `ix_outreach_event_tenant_type_created` → `…_occurred` (every consumer ORDER BYs `occurred_at`) + add `ix_subscription_stripe_customer_id` | non-Aurora `test_uuid_or_404_rejects_malformed_and_parses_valid`; `test_migrations` updated (head `0032`, occurred-index) |
+
+### 8.2 · Cross-cutting additions (the shared enablers)
+
+- **`core/deps.uuid_or_404(value, detail)`** — the one malformed-path-id → 404 helper; `campaigns._uuid`
+  and `meetings._uuid` both delegate to it (was a 400/404 split across domains). M22.
+- **`_request(..., retry_transport=True)`** (`integrations/google/client.py`) — lets a non-idempotent
+  create opt out of the transport-error retry that duplicates side-effects. M19.
+- **`campaigns._latest_replies(db, tenant, lead_ids)`** — the bucketed reply-lookup that replaces the
+  per-link `_latest_reply` (deleted; zero other callers). M21.
+- **`campaigns._campaign_summary(db, tenant, campaign)`** — the light `CampaignOut` builder now shared
+  by launch/pause/resume (kills the discarded `_detail` work). M21.
+- **migration `0032_outreach_occurred_index`** + the matching `models.py` `Index` edits.
+
+### 8.3 · Deliberate deviations from the plan text (with rationale)
+
+1. **M21 `performance_summary` is PARTIALLY consolidated.** The register said "merge ~18 counts into
+   conditional aggregates." Shipped: the 7 **meeting** count-cells → one `SUM(CASE…)` query. **Left
+   as separate queries on purpose:** (a) the money `billable_this_cycle` `SUM(amount)` — untouched, so
+   the revenue figure carries zero consolidation risk; (b) the 4 OutreachEvent counts (`COUNT(DISTINCT
+   CASE…)` is more exotic, marginal RT savings). Net ~18 → ~11 RTs on this one (non-looped) read. An
+   Aurora test pins that the new aggregate executes on the Data API (the real risk was a dialect 500).
+2. **M22 async webhook is NOT converted to sync.** The register read it as "sync DB I/O in an async
+   route." But the route MUST be async — HMAC verification needs the RAW body via `await
+   request.body()`, unreachable from a sync endpoint. Under one-request-per-Lambda (SnapStart) there is
+   no concurrent request to starve, so the sync DB I/O is benign. Documented in-code instead of a
+   breaking rewrite.
+3. **M22 400-vs-404 refines "pick 404."** PATH-resource ids standardize on 404 (a bad id and a
+   missing id read the same — no leak). BODY-field validation (`icp_id` in a POST body) stays **400** —
+   that's input validation, semantically distinct from a missing path resource.
+4. **M14 chose "409 on plan change"** (the register's simpler branch) over calling Stripe's price-update
+   API, because Stripe is dormant (no subscription exists to update).
+5. **The index finding became a real migration (`0032`), not just a "(note)".** It is index-only and
+   deploy-first-safe; it makes the M21 `occurred_at`-ordered reads index-backed. Docs updated: **repo
+   head `0032`**, **Aurora applied head still `0031`** (0032 pending the next backend deploy).
+
+### 8.4 · Not in this wave / next
+
+- **Wave 3** (M23–M33 · P3 frontend sweep + the M33 outcome-correction UI) · **Wave 4** (M-D dead-code +
+  SAFE simplify) · **Wave 5** (CAREFUL simplify) — all still open, none gate-blocking.
+- **Remaining to close Wave 2:** founder-authorized `git` commit + push to `dev` (Amplify autobuild is a
+  no-op here — FE untouched), **then a founder-authorized backend deploy** (`scripts/build-and-deploy.sh`)
+  which is what makes the Wave 1 **and** Wave 2 backend fixes live AND applies migration `0032`. The
+  Aurora-gated tests (M13/M15/M18/M21) execute on that live-gate run.
+
+## 9 · Wave 3 — BUILT + GATED (2026-07-13)
+
+All 11 P3 frontend items (M23–M33) shipped to the working tree, **frontend + one small additive
+backend field** (M27 needs `campaign_id` on `MeetingOut` to filter recaps by id — that one field
+rides the already-pending Wave 1+2 backend deploy). **Not yet committed/pushed** — the standing
+"commit/push only when asked · founder-authorized" gate holds. Gates re-run locally after the wave:
+**FE `tsc` clean · `eslint` clean · `next build` clean · Playwright 26✓** · **backend pytest
+372✓/29 skipped · ruff clean** (the M27 backend field is covered; no new schema/migration).
+
+### 9.1 · What shipped, per item
+
+| # | Side | Built (file) |
+|---|---|---|
+| M23 | FE | `list/page.tsx` — `runUpdateFields` (Apollo credit spend) gets the sibling `updateFieldsCoRef` synchronous double-click guard (set at entry, cleared in `finally` + on client-switch); the async `disabled` alone left a same-tick double-spend window |
+| M24 | FE | `billing/page.tsx` — the sweep `refresh()` gains a `catch` → **warn** toast (was an unhandled rejection with zero feedback) |
+| M25 | FE + api | `login/page.tsx` + `lib/api.ts` — `login` now throws `ApiError` (status-carrying); the sign-in catch shows "invalid email or password" ONLY on a real **401**, and "couldn't reach the server — try again" on a 5xx/network failure (login already retries cold-starts to its cap) — no more accusing a server outage of being a bad password |
+| M26 | FE | `CampaignTab.tsx` — `guard` returns a success boolean; `saveVariant`/`addVariant`/`deleteVariant` toast + clear the edit buffer **only after the PUT resolves** (was optimistic → a failed save showed a false "saved" and lost the draft) |
+| M27 | FE + BE | `replies/page.tsx` + `summaries/page.tsx` filter by **`campaign_id`**, not the non-unique campaign name (same-named campaigns from different batches collided). Replies already had `campaign_id`; recaps get it via a new `MeetingOut.campaign_id` (BE `_meeting_out`) → `MeetingApi` → `Recap.campaignId` → the provider map. Dropdowns now `value={c.id}`; empty-state copy resolves the name |
+| M28 | FE | `summaries/page.tsx` — the Deal-won / No-deal toggle clears back to **undecided (null)** when you click the already-active button (`setMeetingWon` already accepted null) — now three-state end to end |
+| M29 | FE | `batches/page.tsx` — the `?batch=` deep-link is consumed **once** (a `deepLinkDone` ref); it re-fired on every `batches.length` change, so deleting another batch re-expanded the deep-linked one + scroll-jumped |
+| M30 | FE | `client-status/approval/page.tsx` — `day()` renders the viewer's **local** calendar day via `localCalendarDate` (N38), not the raw UTC `.slice(0,10)` (which disagreed with the batches tab for a late-UTC-evening event) |
+| M31 | FE | ui sweep (below) |
+| M32 | FE | `ClientSwitcher.tsx` — once `me` resolves, a slug the caller isn't a member of **redirects** to `me.clients[0]` instead of rendering as a live "current client" whose every API call 403/404-toasts |
+| M33 | FE + api | **NEW: outcome-correction / dispute UI** — a "Correct outcome" Modal on each Meeting-Recap card (summaries tab) sets outcome (Qualified/Short call/No-show) + a "disputed" checkbox via `correctOutcome`, then `reloadMeetings`. **Pairs with M18**: recaps are held (past) meetings, so the backend's 409-guard never fires here; `won` stays isolated to its own setter (NF-3) |
+
+### 9.2 · M31 ui sweep — what was done
+
+- **`window.confirm` → design-system Modal** (`list/page.tsx`): `maySelect` is now a pure verdict
+  (`"ok" | "blocked" | "confirm"`, no side effect); both selection toggles route a low_fit **add**
+  through a `lowFitPrompt` Modal (Cancel / "Add anyway") instead of the native confirm.
+- **Hardcoded "3 open" → live** (`performance-summary/page.tsx`): the Needs-attention chip now counts
+  the categories actually non-zero (`approvalsPending`/`openLinks`/`heldNoFeedback`).
+- **Failure toasts render as warnings** (`client-status/booking` + `client-status/feedback`): the
+  three failure toasts that omitted the `"warn"` kind (and so rendered green/✓) now pass `"warn"`.
+- **em-dash → middot** in the clear separator-style **new** copy (CampaignTab empty states; the
+  booking failure toast). Scoping (deliberate): the `|| "—"` empty-value glyphs are the design's
+  "no value" marker (NOT separators) and are left as-is, as are genuine mid-sentence prose
+  parentheticals and the reviewed A–D+ list/brief copy.
+- **False Brief-error copy** (`batches/page.tsx`): the send modal distinguishes Brief **loading** /
+  **load-error** from a genuinely-empty Brief, so it no longer asserts "no attendee emails on your
+  Brief" on a load blip.
+
+### 9.3 · Cross-cutting additions
+
+- **`MeetingOut.campaign_id`** (BE) → **`MeetingApi.campaign_id`** → **`Recap.campaignId`** +
+  **`Recap.disputed`** (FE) — the id-keyed recap filter (M27) + the dispute flag the M33 UI reads.
+- **`login` throws `ApiError`** (`lib/api.ts`) — status-carrying, so the login page can branch 401 vs
+  server error (M25). Backward-compatible (`ApiError extends Error`).
+- **`CampaignTab.guard` returns `Promise<boolean>`** — lets callers act only on a resolved write (M26).
+
+### 9.4 · Deliberate deviations from the plan text (with rationale)
+
+1. **Wave 3 is not pure-FE.** M27's correct fix (filter recaps by id, not name) needs `campaign_id`
+   on the meeting read — a one-field, additive `MeetingOut` change. It carries no migration and rides
+   the already-pending Wave 1+2 backend deploy, so it doesn't add a deploy step.
+2. **M31 em-dash sweep is scoped, not total.** The golden rule targets em/en dashes used as
+   *separators*; the shipped `|| "—"` empty-value glyphs are the design's no-value marker and match
+   the reviewed A–F surfaces, so they're intentionally left. Converting them would diverge from the
+   design and churn reviewed code for no correctness gain.
+3. **M33 has no design mockup** (it's a NEW build). The Modal reuses the existing design-system
+   primitives (`Modal`, `btn`, `field`, the batches decide-modal pattern) so it reads as native.
+
+### 9.5 · Not in this wave / next
+
+- **Wave 4** (M-D dead-code + SAFE simplify) · **Wave 5** (CAREFUL simplify) — still open, none
+  gate-blocking.
+- **Remaining to close Wave 3:** founder-authorized `git` commit + push to `dev` (Amplify autobuild
+  deploys the FE), and the same founder-authorized backend deploy that makes Wave 1+2 live also
+  ships the M27 `campaign_id` field (until then the summaries filter falls back to "all" for recaps,
+  since `campaign_id` is absent on the old backend — the page stays functional).

@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.deps import AccessContext, get_db, require_membership
+from app.core.deps import AccessContext, get_db, require_membership, uuid_or_404
 from app.core.email import send_email
 from app.core.security import hash_token, new_opaque_token
 from app.domains.meetings import service as m
@@ -53,13 +53,8 @@ def _iso(dt: datetime | None) -> str | None:
     return m.iso_z(dt) if dt else None
 
 
-def _uuid(value: str, detail: str):
-    import uuid
-
-    try:
-        return uuid.UUID(value)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, detail) from exc
+def _uuid(value: str, detail: str = "not found"):
+    return uuid_or_404(value, detail)  # M22 — shared malformed-id → 404 helper
 
 
 # ============================================================ F4 — the on-read sweep + qualify
@@ -232,6 +227,11 @@ def correct_outcome(
     if body.outcome not in ("qualified", "short_call", "noshow"):
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid outcome")
     now = datetime.now(UTC)
+    # M18 — a correction must never bill a meeting that hasn't happened: an unswept meeting
+    # (`held IS NULL`) still in the future can't be hand-marked qualified → billable. Once it is
+    # swept OR its scheduled time has passed, correcting it is legitimate.
+    if meeting.held is None and m.as_utc(meeting.scheduled_at) > now:
+        raise HTTPException(status.HTTP_409_CONFLICT, "meeting hasn't happened yet")
     meeting.outcome = body.outcome
     meeting.held = body.outcome != "noshow"
     if body.disputed is not None:
@@ -352,6 +352,7 @@ def _meeting_out(meeting: Meeting, maps: dict, now: datetime) -> MeetingOut:
         prospect_name=enr.get("full_name", ""),
         company_name=(company.name if company else "") or enr.get("company", ""),
         campaign_name=campaign.name if campaign else "",
+        campaign_id=str(campaign.id) if campaign else None,
         batch_name=batch.name if batch else "",
         scheduled_at=m.iso_z(meeting.scheduled_at),
         meet_link=meeting.meet_link,
@@ -449,6 +450,9 @@ def list_bookings(
         if company_ids
         else {}
     )
+    # M21 — bucket the reply-event lookup ONCE for the whole page (was 2 queries per link → 100 RTs
+    # at 50 links), mirroring the `_lead_rows` pattern.
+    replies_map = _latest_replies(db, ctx.tenant.id, lead_ids)
     out: list[BookingRowOut] = []
     for link in links:
         lead = leads.get(link.campaign_lead_id)
@@ -457,7 +461,7 @@ def list_bookings(
         campaign = camps.get(lead.campaign_id) if lead else None
         enr = (prospect.enrichment if prospect else None) or {}
         state = m.link_state(link.used_at, link.expires_at, now)
-        preview, reply_id = _latest_reply(db, ctx.tenant.id, link.campaign_lead_id)
+        preview, reply_id = replies_map.get(link.campaign_lead_id, ("", None))
         out.append(
             BookingRowOut(
                 id=str(link.id),
@@ -476,41 +480,48 @@ def list_bookings(
     return out
 
 
-def _latest_reply(db: Session, tenant_id, lead_id):
-    """The lead's most recent inbound reply — its `response_body` (invitation preview) + event id
-    (the Propose-new-time respond carrier)."""
-    if lead_id is None:
-        return "", None
+def _latest_replies(db: Session, tenant_id, lead_ids) -> dict:
+    """Per-lead (invitation_preview, latest_reply_event_id) for a whole page in two queries — the
+    bucketed replacement for the old per-link `_latest_reply` (M21). `invitation_preview` = the
+    lead's most recent `reply_sent` body; the event id = its most recent inbound `lead_replied` (the
+    Propose-new-time respond carrier). Newest-first, first-seen-per-lead wins."""
+    ids = [i for i in lead_ids if i is not None]
+    if not ids:
+        return {}
     from app.domains.campaigns import service as csvc
 
-    ev = (
+    sent_by_lead: dict = {}
+    for ev in (
         db.execute(
             select(OutreachEvent)
             .where(
                 OutreachEvent.tenant_id == tenant_id,
-                OutreachEvent.campaign_lead_id == lead_id,
+                OutreachEvent.campaign_lead_id.in_(ids),
                 OutreachEvent.event_type == csvc.REPLY_SENT,
             )
-            .order_by(OutreachEvent.occurred_at.desc())
+            .order_by(OutreachEvent.occurred_at.desc(), OutreachEvent.id.desc())
         )
         .scalars()
-        .first()
-    )
-    reply = (
-        db.execute(
-            select(OutreachEvent)
-            .where(
-                OutreachEvent.tenant_id == tenant_id,
-                OutreachEvent.campaign_lead_id == lead_id,
-                OutreachEvent.event_type == csvc.LEAD_REPLIED,
-            )
-            .order_by(OutreachEvent.occurred_at.desc())
+        .all()
+    ):
+        sent_by_lead.setdefault(ev.campaign_lead_id, ev)
+    reply_by_lead: dict = {}
+    for eid, lid in db.execute(
+        select(OutreachEvent.id, OutreachEvent.campaign_lead_id)
+        .where(
+            OutreachEvent.tenant_id == tenant_id,
+            OutreachEvent.campaign_lead_id.in_(ids),
+            OutreachEvent.event_type == csvc.LEAD_REPLIED,
         )
-        .scalars()
-        .first()
-    )
-    preview = (ev.response_body if ev else "") or ""
-    return preview, (str(reply.id) if reply else None)
+        .order_by(OutreachEvent.occurred_at.desc(), OutreachEvent.id.desc())
+    ).all():
+        reply_by_lead.setdefault(lid, eid)
+    out: dict = {}
+    for lid in ids:
+        sent = sent_by_lead.get(lid)
+        rid = reply_by_lead.get(lid)
+        out[lid] = ((sent.response_body if sent else "") or "", str(rid) if rid else None)
+    return out
 
 
 @router.get("/{client}/feedback", response_model=list[FeedbackRowOut])

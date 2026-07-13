@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import clsx from "clsx";
 import { useQuery } from "@tanstack/react-query";
@@ -34,7 +34,13 @@ export default function BatchesPage() {
   // Do-not-contact list is read live from this client's Brief (§4 Exclusions & Guardrails), not
   // mock data. Shares the ["brief", client] cache with the Business Brief tab, so it's instant
   // after that tab has loaded and reflects whatever exclusions the client most recently saved.
-  const { data: briefRes } = useQuery({ queryKey: ["brief", client], queryFn: () => getBrief(client) });
+  const { data: briefRes, isError: briefError } = useQuery({
+    queryKey: ["brief", client],
+    queryFn: () => getBrief(client),
+  });
+  // M31 — tell "the Brief is still loading / failed to load" apart from "the Brief genuinely has no
+  // attendee emails", so the send modal doesn't assert a false "none on your Brief" on a load blip.
+  const briefLoading = briefRes === undefined && !briefError;
   const { groups: exclusionGroups, count: exclusionCount } = exclusionsFromBrief(briefRes?.data);
   // Recipients for the approval link: the Meeting attendee emails saved on this client's Brief (§5).
   // Shares the ["brief", client] cache above, so the dropdown is populated the moment the brief loads.
@@ -86,11 +92,17 @@ export default function BatchesPage() {
 
   // deep-link: ?batch=<id> opens this tab with that batch expanded (and its detail loaded). Keyed by
   // id, not name — batch names aren't unique, so a name match could open the wrong batch.
+  // M29 — consume it exactly ONCE (a ref). The effect still keys on batches.length so it can fire
+  // when the list first loads, but without the guard a later delete (which changes the length)
+  // re-ran it → re-expanding the deep-linked batch and scroll-jumping the page.
+  const deepLinkDone = useRef(false);
   useEffect(() => {
+    if (deepLinkDone.current) return;
     const id = new URLSearchParams(location.search).get("batch");
     if (!id) return;
     const idx = batches.findIndex((x) => x.id === id);
     if (idx < 0) return;
+    deepLinkDone.current = true;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time ?batch= deep-link that also scrolls
     setOpenBatch(id);
     void loadDetail(id);
@@ -514,6 +526,14 @@ export default function BatchesPage() {
                 From your Brief · Meeting attendee emails.
               </div>
             </div>
+          ) : briefLoading ? (
+            <p style={{ margin: 0, lineHeight: 1.5 }} className="muted">
+              Loading your Brief…
+            </p>
+          ) : briefError ? (
+            <p style={{ margin: 0, lineHeight: 1.5 }}>
+              We couldn&apos;t load your Brief just now. Refresh and try again.
+            </p>
           ) : (
             <p style={{ margin: 0, lineHeight: 1.5 }}>
               No meeting attendee emails on your Brief yet. Add them in{" "}

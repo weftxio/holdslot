@@ -187,13 +187,17 @@ export function CampaignTab({
     await Promise.all([loadDetail(resolvedId), reloadCampaigns()]);
   }, [loadDetail, resolvedId, reloadCampaigns]);
 
-  const guard = async (label: string, fn: () => Promise<unknown>) => {
-    if (busy) return;
+  // Returns true iff `fn` resolved — so a caller can toast success / clear its edit buffer only
+  // AFTER the write lands, never optimistically (M26).
+  const guard = async (label: string, fn: () => Promise<unknown>): Promise<boolean> => {
+    if (busy) return false;
     setBusy(true);
     try {
       await fn();
+      return true;
     } catch (e) {
       toast(e instanceof Error ? e.message : label + " failed", "warn");
+      return false;
     } finally {
       setBusy(false);
     }
@@ -279,15 +283,19 @@ export function CampaignTab({
       setDetail(d);
     });
 
+  // M26 — clear the edit buffer + toast only AFTER the PUT resolves. The old code toasted "saved"
+  // and dropped the draft synchronously, so a failed save showed a false success and lost the edit.
   const saveVariant = () => {
     if (!editKey) return;
     const key = editKey;
     const cur = detail?.variants ?? [];
     void persistVariants(
       cur.map((v) => (v.key === key ? { ...v, subject: editSubject, body: editBody } : v))
-    );
-    setEditKey(null);
-    toast(`Variant ${key} saved`);
+    ).then((ok) => {
+      if (!ok) return; // keep the draft open on failure (guard already warned)
+      setEditKey(null);
+      toast(`Variant ${key} saved`);
+    });
   };
   const addVariant = () => {
     const cur = detail?.variants ?? [];
@@ -297,8 +305,7 @@ export function CampaignTab({
     void persistVariants([
       ...cur.map((v) => ({ ...v })),
       { key, subject: "", body: "New variant · write your message. Use {{first_name}} and {{company_name}} tokens.", is_winner: false, sent: 0, opens: 0, replies: 0 },
-    ]);
-    toast("Variant added");
+    ]).then((ok) => ok && toast("Variant added"));
   };
   const deleteVariant = (key: string) => {
     const cur = detail?.variants ?? [];
@@ -306,8 +313,9 @@ export function CampaignTab({
       toast("Keep at least one variant", "warn");
       return;
     }
-    void persistVariants(cur.filter((v) => v.key !== key));
-    toast(`Variant ${key} removed`, "warn");
+    void persistVariants(cur.filter((v) => v.key !== key)).then(
+      (ok) => ok && toast(`Variant ${key} removed`, "warn")
+    );
   };
 
   const toggleLog = (pid: string) =>
@@ -497,7 +505,7 @@ export function CampaignTab({
                   </span>
                 </div>
                 {outreachVariants.length === 0 ? (
-                  <div className="cmp-empty">No variants yet — the server seeds a default on create.</div>
+                  <div className="cmp-empty">No variants yet · the server seeds a default on create.</div>
                 ) : (
                   <VariantPanel
                     variants={outreachVariants}
@@ -542,7 +550,7 @@ export function CampaignTab({
               <div className="cmp-empty">
                 {leadTotal === 0
                   ? status === "draft"
-                    ? "No prospects yet — launch the campaign to push the approved batch to Smartlead."
+                    ? "No prospects yet · launch the campaign to push the approved batch to Smartlead."
                     : "No prospects in the funnel yet."
                   : "No prospects in this stage yet"}
               </div>

@@ -23,6 +23,17 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
     me?.clients.map((c) => ({ name: c.name, slug: c.slug })) ??
     (currentSlug ? [{ name: currentSlug, slug: currentSlug }] : DEFAULT_CLIENTS);
 
+  // M32 — a slug the caller isn't a member of would otherwise render as a normal "current client"
+  // while every API call under it 403/404-toasts. Once `me` resolves, bounce an unknown slug to the
+  // caller's first real client instead of stranding them on a dead workspace.
+  useEffect(() => {
+    if (!me) return;
+    const slugs = me.clients.map((c) => c.slug);
+    if (slugs.length && !slugs.includes(currentSlug)) {
+      router.replace(`/${me.clients[0].slug}/${DEFAULT_CLIENT_PAGE}`);
+    }
+  }, [me, currentSlug, router]);
+
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);

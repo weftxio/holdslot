@@ -56,6 +56,60 @@ def test_slots_windows_minus_notice_utc_weekdays():
     assert len(slots) == 10
 
 
+def test_availability_of_defaults_when_absent():
+    """No `availability` → the FD-1 default (Mon–Fri 10:00–18:00, host TZ, 30-min)."""
+    tz, minutes, windows = m.availability_of(None)
+    assert (tz, minutes) == (m.DEFAULT_TZ, m.DEFAULT_MEETING_MINUTES)
+    assert windows == m.DEFAULT_WINDOWS
+    assert m.availability_of({"availability": {}})[2] == m.DEFAULT_WINDOWS
+
+
+def test_availability_of_tolerates_malformed_fields():
+    """M11 — a bad Brief edit must degrade to the default, never raise (this runs on every
+    meetings-surface read + the public booking page)."""
+    # non-dict availability → all defaults
+    tz, minutes, windows = m.availability_of({"availability": "nope"})
+    assert (tz, minutes, windows) == (m.DEFAULT_TZ, m.DEFAULT_MEETING_MINUTES, m.DEFAULT_WINDOWS)
+    # meeting_minutes garbage / non-positive → default minutes
+    assert m.availability_of({"availability": {"meeting_minutes": "abc"}})[1] == (
+        m.DEFAULT_MEETING_MINUTES
+    )
+    assert m.availability_of({"availability": {"meeting_minutes": 0}})[1] == (
+        m.DEFAULT_MEETING_MINUTES
+    )
+    # non-string tz → default tz
+    assert m.availability_of({"availability": {"tz": 123}})[0] == m.DEFAULT_TZ
+
+
+def test_clean_windows_drops_bad_and_keeps_good():
+    """M11 — a one-element window, a non-HH:MM value, a reversed window, and a non-list day are all
+    dropped; a valid day survives. A fully-unusable value falls back to the default."""
+    av = {
+        "availability": {
+            "windows": {
+                "mon": [["10:00", "12:00"], ["bad"], ["18:00", "09:00"], ["9", "x"]],
+                "tue": "not-a-list",
+                "zzz": [["10:00", "11:00"]],  # not a weekday key
+            }
+        }
+    }
+    windows = m.availability_of(av)[2]
+    assert windows == {"mon": [["10:00", "12:00"]]}  # only the one valid window survives
+    # a windows dict with nothing usable → the Mon–Fri default
+    assert m.availability_of({"availability": {"windows": {"mon": [["bad"]]}}})[2] == (
+        m.DEFAULT_WINDOWS
+    )
+
+
+def test_available_slots_never_raises_on_malformed_brief():
+    """M11 — the slot builder + grid check stay 500-proof on a malformed Brief (they'd IndexError /
+    ValueError before the fix)."""
+    bad = {"availability": {"meeting_minutes": "oops", "windows": {"mon": [["9"]]}}}
+    slots = m.available_slots(bad, busy=[], now=NOW)  # falls back to the default grid
+    assert isinstance(slots, list) and slots
+    assert m.is_grid_slot(bad, slots[0], NOW) is True
+
+
 def test_slots_exclude_busy_blocks():
     busy = [{"start": "2026-07-14T02:00:00Z", "end": "2026-07-14T02:30:00Z"}]
     slots = m.available_slots(HK_AVAIL, busy=busy, now=NOW)
@@ -239,3 +293,25 @@ def test_read_busy_returns_none_sentinel_on_google_error(monkeypatch):
     # a healthy read still passes the busy intervals straight through (unchanged path).
     monkeypatch.setattr(g, "freebusy", lambda *a, **k: [{"start": "s", "end": "e"}])
     assert public._read_busy(NOW) == [{"start": "s", "end": "e"}]
+
+
+# ============================================================ M16 — public feedback input caps
+
+
+def test_feedback_in_caps_bound_public_input():
+    """M16 — the public token-authed FeedbackIn must bound its free fields so a link holder can't
+    store MBs on the meeting row. Normal input passes; oversize is rejected."""
+    import pytest
+    from pydantic import ValidationError
+
+    from app.domains.meetings.schemas import FeedbackIn
+
+    ok = FeedbackIn(rating=5, chips=["Relevant to me", "Good timing"], comment="Useful, thanks.")
+    assert ok.rating == 5 and len(ok.chips) == 2
+
+    with pytest.raises(ValidationError):
+        FeedbackIn(rating=5, comment="x" * 2001)  # comment cap
+    with pytest.raises(ValidationError):
+        FeedbackIn(rating=5, chips=["ok", "y" * 65])  # per-chip cap
+    with pytest.raises(ValidationError):
+        FeedbackIn(rating=5, chips=[f"c{i}" for i in range(13)])  # chip-count cap

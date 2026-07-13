@@ -13,7 +13,7 @@ import { useClient } from "@/lib/nav";
 import { Sample } from "@/components/Sample";
 import { useToast } from "@/components/Toast";
 import { highlightTokens } from "@/lib/tmpl";
-import { BATCH_STATUS_CLS, fmtShortDate, uiBatchStatus } from "@/lib/workspace/constants";
+import { BATCH_STATUS_CLS, fmtShortDate, localCalendarDate, uiBatchStatus } from "@/lib/workspace/constants";
 
 const DEFAULT_TMPL: ApprovalTemplateApi = {
   subject: "HoldSlot: your prospect list is ready to approve",
@@ -24,7 +24,12 @@ const DEFAULT_TMPL: ApprovalTemplateApi = {
   cta: "Review the list",
 };
 
-const day = (iso: string | null) => (iso ? fmtShortDate(iso.slice(0, 10)) : null);
+// M30 — the viewer's LOCAL calendar day (N38), not the raw UTC `.slice(0,10)`; otherwise a
+// late-UTC-evening event shows a day off from the batches tab (which already uses localCalendarDate).
+const day = (iso: string | null) => {
+  const local = localCalendarDate(iso);
+  return local ? fmtShortDate(local) : null;
+};
 
 export default function ApprovalPage() {
   const client = useClient();

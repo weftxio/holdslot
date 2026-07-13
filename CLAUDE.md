@@ -34,7 +34,8 @@ Web: Next.js 16 (App Router, TS) · React 19 · TanStack Query (root `app/provid
 react-big-calendar + date-fns · Playwright e2e (`apps/web/e2e`, route-mocked, no live API) ·
 pnpm workspace. Fonts: Fraunces (display) + Archivo (body).
 Backend: FastAPI on one Lambda (SnapStart) · Aurora Serverless v2 via Data API · SQLAlchemy +
-Alembic (`infra/alembic`, head `0031`) · Terraform (`infra/terraform`). LLM = OpenRouter
+Alembic (`infra/alembic`, head `0032` — `0031` applied to dev Aurora, `0032` index-only pending
+deploy) · Terraform (`infra/terraform`). LLM = OpenRouter
 (DeepSeek; HK geo-block — non-US providers only). Integrations: Apollo · Smartlead · Google
 (Calendar/Meet) · Stripe (dormant).
 

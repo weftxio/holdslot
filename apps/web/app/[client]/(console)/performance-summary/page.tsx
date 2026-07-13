@@ -73,6 +73,9 @@ export default function PerformanceSummary() {
   const awaitingWeek = summary?.awaiting_this_week ?? 0;
   const openLinks = summary?.open_booking_links ?? 0;
   const heldNoFeedback = summary?.held_without_feedback ?? 0;
+  // M31 — how many of the three needs-attention categories actually need attention right now (was a
+  // hardcoded "3 open" next to live counts).
+  const naOpen = [approvalsPending > 0, openLinks > 0, heldNoFeedback > 0].filter(Boolean).length;
 
   // A transient load failure with nothing cached: show a retry rather than misleading zeros (M7).
   if (loadError && !summary) {
@@ -121,7 +124,7 @@ export default function PerformanceSummary() {
                 Client action status that&apos;s waiting on a client or prospect
               </div>
             </div>
-            <span className="na-head-count">3 open</span>
+            <span className="na-head-count">{naOpen} open</span>
           </div>
           <div className="na-item">
             <div className="na-ico warn">①</div>

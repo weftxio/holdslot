@@ -61,6 +61,9 @@ export default function BillingPage() {
       // query so Meeting Recaps doesn't show stale outcome/won until a manual reload (M9).
       await reloadMeetings();
       toast("Ledger refreshed");
+    } catch (e) {
+      // M24 — a sweep failure was an unhandled rejection with zero feedback; surface it.
+      toast(e instanceof Error ? e.message : "Couldn't refresh the ledger — try again", "warn");
     } finally {
       setBusy(false);
     }

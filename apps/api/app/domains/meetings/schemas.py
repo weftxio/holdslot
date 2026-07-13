@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated
+
 from pydantic import BaseModel, Field
 
 # --------------------------------------------------------------------------- public booking (F3)
@@ -59,9 +61,11 @@ class FeedbackView(BaseModel):
 
 
 class FeedbackIn(BaseModel):
+    # M16 — public token-authed input: bound the free fields so a link holder can't store MBs on the
+    # meeting row (the FE only ever sends ≤5 short chips + a small comment).
     rating: int = Field(ge=1, le=5)
-    chips: list[str] = Field(default_factory=list)
-    comment: str = ""
+    chips: list[Annotated[str, Field(max_length=64)]] = Field(default_factory=list, max_length=12)
+    comment: str = Field("", max_length=2000)
 
 
 class FeedbackConfirm(BaseModel):
@@ -76,6 +80,7 @@ class MeetingOut(BaseModel):
     prospect_name: str = ""
     company_name: str = ""
     campaign_name: str = ""
+    campaign_id: str | None = None  # M27 — FE filters key off id, not the non-unique name
     batch_name: str = ""
     scheduled_at: str
     meet_link: str | None = None

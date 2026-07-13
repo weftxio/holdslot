@@ -9,6 +9,7 @@ rule lives here.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -25,6 +26,17 @@ from app.models import AppUser, Membership, MembershipRole, Tenant, TenantStatus
 
 _bearer = HTTPBearer(auto_error=False)
 log = logging.getLogger("holdslot.auth")
+
+
+def uuid_or_404(value: str, detail: str = "not found") -> uuid.UUID:
+    """Parse a path-segment id → 404 (never 400) on a malformed value (M22). A bad id and a
+    well-formed-but-missing id both read as 'not found' — same status, no leak of which it was, and
+    one convention across every domain (meetings already did this; campaigns now shares it). Body
+    FIELD validation (e.g. a bad `icp_id` in a POST body) stays a 400 — that's input, not a path."""
+    try:
+        return uuid.UUID(value)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail) from exc
 
 
 def get_db() -> Iterator[Session]:

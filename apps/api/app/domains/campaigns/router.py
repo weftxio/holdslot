@@ -12,13 +12,13 @@ import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select, update
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy import and_, case, func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.deps import AccessContext, get_db, require_membership
+from app.core.deps import AccessContext, get_db, require_membership, uuid_or_404
 from app.core.security import hash_token, new_opaque_token
 from app.domains.batches import service as bsvc
 from app.domains.campaigns import launch
@@ -70,11 +70,9 @@ def _iso(dt: datetime | None) -> str | None:
     return msvc.iso_z(dt) if dt else None
 
 
-def _uuid(raw: str, msg: str = "invalid id") -> uuid.UUID:
-    try:
-        return uuid.UUID(raw)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, msg) from e
+def _uuid(raw: str, msg: str = "not found") -> uuid.UUID:
+    # M22 — malformed path ids are 404 (not 400), the shared convention (meetings already did this).
+    return uuid_or_404(raw, msg)
 
 
 # --------------------------------------------------------------------------- derived counts
@@ -513,13 +511,7 @@ def launch_campaign(
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "could not start the launch"
         ) from exc
-    stages = _stage_counts(db, [campaign.id]).get(campaign.id, {})
-    return _campaign_out(
-        campaign,
-        batch_name=_batch_name_map(db, [campaign.batch_id]).get(campaign.batch_id, ""),
-        icp=_icp_name(db, ctx.tenant.id, campaign.icp_id),
-        stages=stages,
-    )
+    return _campaign_summary(db, ctx.tenant.id, campaign)
 
 
 def svc_has_variant(db: Session, campaign_id: uuid.UUID) -> bool:
@@ -558,16 +550,21 @@ def _reply_out(
     )
 
 
+REPLIES_PAGE_CAP = 500  # M21 — bound the inbox read (was unbounded); the newest N, never all rows
+
+
 @router.get("/{client}/replies", response_model=list[ReplyOut])
 def list_replies(
     campaign_id: str | None = None,
     state: str = "all",
+    limit: int = Query(REPLIES_PAGE_CAP, ge=1, le=REPLIES_PAGE_CAP),
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> list[ReplyOut]:
     """The cross-campaign reply-triage inbox — every `lead_replied` event ⋈ its lead + campaign,
     newest first. `state=open` restricts to unhandled (the tab pip = `handled_at IS NULL`); an
-    optional `campaign_id` filter mirrors the mock's campaign dropdown."""
+    optional `campaign_id` filter mirrors the mock's campaign dropdown. Bounded to the newest
+    `limit` (≤`REPLIES_PAGE_CAP`) so the query can't grow unbounded (M21)."""
     q = (
         select(OutreachEvent, CampaignLead, Prospect, Campaign.name)
         .join(Campaign, Campaign.id == OutreachEvent.campaign_id)
@@ -583,7 +580,9 @@ def list_replies(
         q = q.where(OutreachEvent.handled_at.is_(None))
     if campaign_id:
         q = q.where(OutreachEvent.campaign_id == _uuid(campaign_id, "no such campaign"))
-    rows = db.execute(q).all()
+    rows = db.execute(q.limit(limit)).all()
+    if len(rows) == limit:
+        log.info("list_replies: hit the %d-row cap for tenant %s", limit, ctx.tenant.id)
     return [_reply_out(ev, lead, prospect, name) for ev, lead, prospect, name in rows]
 
 
@@ -613,6 +612,10 @@ def triage_reply(
     re-triage of an already-moved lead is a no-op)."""
     ev = _load_reply(db, ctx.tenant.id, event_id)
     triage_cls = body.triage.strip()
+    # M15 — reject an unknown class: a typo'd triage would mark the reply handled with no stage move
+    # and then pollute the derived summary counts (which key off this first-class column).
+    if triage_cls not in svc.TRIAGE_CLASSES:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "unknown triage class")
     ev.triage = triage_cls
     ev.handled_at = datetime.now(UTC)
     lead = db.get(CampaignLead, ev.campaign_lead_id) if ev.campaign_lead_id else None
@@ -664,13 +667,22 @@ def respond_reply(
         url = f"{s.web_base_url}/{ctx.tenant.slug}/book/{booking_token}"
         text = msvc.inject_booking_link(text, url)
 
-    sl.reply_to_thread(
-        campaign.smartlead_campaign_id,
-        email_stats_id=stats_id,
-        email_body=text,
-        lead_id=lead.smartlead_lead_id,
-        reply_message_id=msg_id,
-    )
+    # M17 — a Smartlead failure here was escaping as a raw 500; surface it as a 502 (upstream fault)
+    # so the FE can show a real "couldn't send" instead of a generic error. Note the accepted MVP
+    # window: the booking-link row is persisted only AFTER this send (N31 — never persist what
+    # didn't send), so a DB failure in the commit below leaves an emailed URL that 410s till resend.
+    try:
+        sl.reply_to_thread(
+            campaign.smartlead_campaign_id,
+            email_stats_id=stats_id,
+            email_body=text,
+            lead_id=lead.smartlead_lead_id,
+            reply_message_id=msg_id,
+        )
+    except sl.SmartleadError as exc:
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "couldn't send the reply via Smartlead — try again"
+        ) from exc
     now = datetime.now(UTC)
     ev.response_body = text
     ev.handled_at = ev.handled_at or now
@@ -753,6 +765,19 @@ def set_variant_winner(
     return _detail(db, ctx.tenant.id, campaign)
 
 
+def _campaign_summary(db: Session, tenant_id: uuid.UUID, campaign: Campaign) -> CampaignOut:
+    """The light `CampaignOut` (stages only) — used where the response_model is `CampaignOut`, so we
+    skip the expensive `_detail` (variant metrics + per-lead cards) that would just be discarded on
+    serialization (M21)."""
+    stages = _stage_counts(db, [campaign.id]).get(campaign.id, {})
+    return _campaign_out(
+        campaign,
+        batch_name=_batch_name_map(db, [campaign.batch_id]).get(campaign.batch_id, ""),
+        icp=_icp_name(db, tenant_id, campaign.icp_id),
+        stages=stages,
+    )
+
+
 def _set_campaign_status(
     db: Session, campaign: Campaign, *, sl_status: str, new_status: str, event_type: str
 ) -> None:
@@ -790,7 +815,7 @@ def pause_campaign(
         new_status=launch.PAUSED,
         event_type=svc.CAMPAIGN_PAUSED,
     )
-    return _detail(db, ctx.tenant.id, campaign)
+    return _campaign_summary(db, ctx.tenant.id, campaign)
 
 
 @router.post("/{client}/campaigns/{campaign_id}/resume", response_model=CampaignOut)
@@ -810,7 +835,7 @@ def resume_campaign(
         new_status=launch.SENDING,
         event_type=svc.CAMPAIGN_RESUMED,
     )
-    return _detail(db, ctx.tenant.id, campaign)
+    return _campaign_summary(db, ctx.tenant.id, campaign)
 
 
 @router.post("/{client}/campaigns/{campaign_id}/sync", response_model=CampaignDetailOut)
@@ -937,24 +962,41 @@ def performance_summary(
     d30, d60 = now - timedelta(days=30), now - timedelta(days=60)
     week_ahead = now + timedelta(days=7)
 
-    def _meeting_count(*conds) -> int:
-        return _count(
-            select(func.count()).select_from(Meeting).where(Meeting.tenant_id == tid, *conds)
-        )
+    # M21 — the meeting count-cells collapse into ONE conditional-aggregate query (was 7 sequential
+    # `SELECT count(*)` round-trips). Each `_c(...)` = `SUM(CASE WHEN <conds> THEN 1 ELSE 0 END)`,
+    # identical semantics to the prior per-count `WHERE`. The money SUM (`billable_this_cycle`) is
+    # left as its own query below, untouched.
+    def _c(*conds):
+        return func.coalesce(func.sum(case((and_(*conds), 1), else_=0)), 0)
 
-    qualified_last_30d = _meeting_count(Meeting.outcome == "qualified", Meeting.scheduled_at >= d30)
-    qualified_prev_30d = _meeting_count(
-        Meeting.outcome == "qualified", Meeting.scheduled_at >= d60, Meeting.scheduled_at < d30
-    )
-    meetings_held_week = _meeting_count(
-        Meeting.held.is_(True), Meeting.scheduled_at >= now - timedelta(days=7)
-    )
-    ingested = _meeting_count(Meeting.held.is_not(None))
-    held_total = _meeting_count(Meeting.held.is_(True))
+    week_ago = now - timedelta(days=7)
+    mrow = db.execute(
+        select(
+            _c(Meeting.outcome == "qualified", Meeting.scheduled_at >= d30),
+            _c(
+                Meeting.outcome == "qualified",
+                Meeting.scheduled_at >= d60,
+                Meeting.scheduled_at < d30,
+            ),
+            _c(Meeting.held.is_(True), Meeting.scheduled_at >= week_ago),
+            _c(Meeting.held.is_not(None)),
+            _c(Meeting.held.is_(True)),
+            _c(
+                Meeting.held.is_(None),
+                Meeting.scheduled_at >= now,
+                Meeting.scheduled_at < week_ahead,
+            ),
+            _c(Meeting.held.is_(True), Meeting.feedback_at.is_(None)),
+        ).where(Meeting.tenant_id == tid)
+    ).one()
+    qualified_last_30d = int(mrow[0] or 0)
+    qualified_prev_30d = int(mrow[1] or 0)
+    meetings_held_week = int(mrow[2] or 0)
+    ingested = int(mrow[3] or 0)
+    held_total = int(mrow[4] or 0)
+    awaiting_this_week = int(mrow[5] or 0)
+    held_without_feedback = int(mrow[6] or 0)
     show_up_rate = round(held_total / ingested, 3) if ingested else None
-    awaiting_this_week = _meeting_count(
-        Meeting.held.is_(None), Meeting.scheduled_at >= now, Meeting.scheduled_at < week_ahead
-    )
     # Billable this cycle = Σ amounts of the meetings whose 48h window has passed, undisputed (the
     # is_billable rule expressed in SQL; amount is only ever stamped on a qualified+approval row).
     billable_this_cycle = float(
@@ -974,7 +1016,6 @@ def performance_summary(
         .select_from(BookingLink)
         .where(BookingLink.tenant_id == tid, BookingLink.used_at.is_(None))
     )
-    held_without_feedback = _meeting_count(Meeting.held.is_(True), Meeting.feedback_at.is_(None))
 
     # Calendar month feed — meetings scheduled within ±45 days (the react-big-calendar surface).
     cal_rows = (

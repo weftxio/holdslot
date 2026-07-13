@@ -50,7 +50,7 @@ export default function FeedbackPage() {
       toast("Feedback form sent to " + (r.prospect_name || "prospect"));
       load();
     } catch {
-      toast("Could not send the feedback form");
+      toast("Could not send the feedback form", "warn"); // M31 — failures render as warnings
     } finally {
       setBusy(null);
     }
@@ -62,7 +62,7 @@ export default function FeedbackPage() {
       await informClient(client, r.id);
       toast("Flagged low rating to the client");
     } catch {
-      toast("No client attendee email on file");
+      toast("No client attendee email on file", "warn"); // M31 — failures render as warnings
     } finally {
       setBusy(null);
     }

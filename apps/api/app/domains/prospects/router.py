@@ -1022,6 +1022,7 @@ def add_company(
         if exclusions.blocks(Candidate(domain=domain)):
             raise HTTPException(status.HTTP_409_CONFLICT, "company is on the exclusion list")
 
+    _validate_icp_id(body.icp_id)  # M20 — a malformed icp_id was a raw 500 (siblings 400)
     icp = uuid.UUID(body.icp_id) if body.icp_id else None
 
     company = db.execute(

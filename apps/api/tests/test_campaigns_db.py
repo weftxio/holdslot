@@ -365,3 +365,113 @@ def test_launch_resumes_only_the_gap(monkeypatch):
         assert n2 == 2  # exactly the missing lead added — no duplicate for dana0
     finally:
         _teardown(db, tenant, membership, user)
+
+
+def test_triage_reply_rejects_unknown_class():
+    """M15 — a triage class not in TRIAGE_CLASSES is a 400 (was silently stored → polluted the
+    derived summary counts + left the pip on with no stage move)."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.campaigns.router import triage_reply
+    from app.domains.campaigns.schemas import TriageIn
+    from app.models import Campaign, CampaignLead, OutreachEvent
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant, user, membership, batch, prospects = _seed(db, suffix)
+    ctx = AccessContext(user=user, tenant=tenant, membership=membership)
+    try:
+        camp = Campaign(
+            tenant_id=tenant.id, batch_id=batch.id, name="C", status="sending",
+            smartlead_campaign_id="900999",
+        )
+        db.add(camp)
+        db.flush()
+        lead = CampaignLead(
+            tenant_id=tenant.id, campaign_id=camp.id, prospect_id=prospects[0].id,
+            stage="contacted", smartlead_lead_id="1",
+        )
+        db.add(lead)
+        db.flush()
+        ev = OutreachEvent(
+            tenant_id=tenant.id, campaign_id=camp.id, campaign_lead_id=lead.id,
+            event_type="lead_replied", payload={"reply_body": "hi"},
+        )
+        db.add(ev)
+        db.commit()
+
+        with pytest.raises(HTTPException) as ei:
+            triage_reply(str(ev.id), TriageIn(triage="not-a-class"), ctx=ctx, db=db)
+        assert ei.value.status_code == 400
+        db.refresh(ev)
+        assert ev.triage is None and ev.handled_at is None  # nothing stored on a bad class
+    finally:
+        _teardown(db, tenant, membership, user)
+
+
+def test_performance_summary_consolidated_counts_execute():
+    """M21 — the meeting count-cells now come from ONE conditional-aggregate query. Prove the CASE/
+    SUM executes on the Data API (a broken aggregate would 500 here) and returns the funnel shape +
+    zeroed meeting cells on an empty tenant."""
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.campaigns.router import performance_summary
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant, user, membership, batch, prospects = _seed(db, suffix)
+    ctx = AccessContext(user=user, tenant=tenant, membership=membership)
+    try:
+        out = performance_summary(ctx=ctx, db=db)
+        assert [f.label for f in out.funnel] == [
+            "Sourced", "Approved", "Contacted", "Replied", "Positive", "Meeting booked",
+        ]
+        assert out.qualified_last_30d == 0 and out.meetings_held_week == 0
+        assert out.billable_this_cycle == 0 and out.held_without_feedback == 0
+        assert out.awaiting_this_week == 0 and out.show_up_rate is None
+    finally:
+        _teardown(db, tenant, membership, user)
+
+
+def test_reserve_enrichment_atomic_increment_and_rollover():
+    """M13 — reserve_enrichment increments the usage counter atomically and is persisted by the
+    CALLER's commit (it no longer commits mid-flow); a stale prior-month counter rolls over to 0
+    before the increment."""
+    from datetime import UTC, datetime
+
+    from app.core.db import get_session
+    from app.domains.billing import service as bsvc
+    from app.domains.billing.router import reserve_enrichment
+    from app.models import Subscription
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    tenant, user, membership, batch, prospects = _seed(db, suffix)
+    try:
+        key = bsvc.usage_month_key(datetime.now(UTC))
+        sub = Subscription(
+            tenant_id=tenant.id, plan="growth", stripe_customer_id="cus_x", status="active",
+            current_month_usage=5, usage_month=key, overage_enabled=True,
+        )
+        db.add(sub)
+        db.commit()
+
+        assert reserve_enrichment(db, tenant.id, 3) == 3  # within the growth cap (400)
+        db.commit()  # the caller owns the txn now
+        db.refresh(sub)
+        assert sub.current_month_usage == 8  # 5 + 3, atomic
+
+        # a stale prior-month counter rolls over to 0, then the reservation adds on top.
+        sub.usage_month = "2000-01"
+        sub.current_month_usage = 99
+        db.commit()
+        reserve_enrichment(db, tenant.id, 2)
+        db.commit()
+        db.refresh(sub)
+        assert sub.usage_month == key and sub.current_month_usage == 2
+    finally:
+        db.query(Subscription).filter_by(tenant_id=tenant.id).delete()
+        db.commit()
+        _teardown(db, tenant, membership, user)

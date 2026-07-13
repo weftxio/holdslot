@@ -35,7 +35,12 @@ log = logging.getLogger("holdslot.stripe.webhook")
 
 @router.post("/webhooks/stripe/{token}")
 async def ingest_stripe(token: str, request: Request, db: Session = Depends(get_db)) -> dict:
-    """Ingest one Stripe webhook event. Always 2xx once stored (or a benign dedupe no-op)."""
+    """Ingest one Stripe webhook event. Always 2xx once stored (or a benign dedupe no-op).
+
+    M22: this route stays `async` deliberately — HMAC verification needs the RAW body via
+    `await request.body()`, which a sync endpoint can't reach. The sync DB I/O below does not starve
+    the event loop here: one Lambda instance serves one request at a time (SnapStart), so no
+    concurrent request to block. (This is the only async route in the app.)"""
     # Read the Stripe secret first — but a MISSING secret (dormant: `holdslot/prod/stripe` not yet
     # seeded) must disable the route cleanly (404, no leak), never surface the boto3 lookup error as
     # a 500 on a public endpoint (the smartlead posture).

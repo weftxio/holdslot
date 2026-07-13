@@ -1,16 +1,24 @@
 "use client";
 import { useState } from "react";
 import clsx from "clsx";
-import { setMeetingWon } from "@/lib/api";
+import { correctOutcome, setMeetingWon } from "@/lib/api";
 import { useClient } from "@/lib/nav";
+import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
+import type { Recap } from "@/lib/workspace/types";
 
 const OUTCOME: Record<string, { label: string; badge: string }> = {
   qualified: { label: "Qualified", badge: "badge-ok" },
   short_call: { label: "Short call", badge: "badge-warn" },
   noshow: { label: "No-show", badge: "badge-danger" },
 };
+// M33 — the three states the owner can correct a held meeting to (mirrors the backend OutcomeIn).
+const CORRECTABLE: { value: "qualified" | "short_call" | "noshow"; label: string }[] = [
+  { value: "qualified", label: "Qualified" },
+  { value: "short_call", label: "Short call" },
+  { value: "noshow", label: "No-show" },
+];
 
 function fmt(iso: string): string {
   return new Date(iso).toLocaleDateString(undefined, {
@@ -26,12 +34,17 @@ export default function SummariesPage() {
   const { campaigns, recaps, reloadMeetings } = useWorkspace();
   const client = useClient();
   const toast = useToast();
+  // M27 — filter by campaign_id, not name (same-named campaigns from different batches collide).
   const [sumCamp, setSumCamp] = useState("");
-  const recapsInView = recaps.filter((rc) => !sumCamp || rc.campaign === sumCamp);
+  const recapsInView = recaps.filter((rc) => !sumCamp || rc.campaignId === sumCamp);
+  const sumCampName = campaigns.find((c) => c.id === sumCamp)?.name ?? "";
+
   // NF-3 — which recap's `won` flag is mid-save (disables its toggle). The `won`-only door writes the
   // deal outcome without touching any billing field, then reloadMeetings re-syncs the card.
   const [savingWon, setSavingWon] = useState<string | null>(null);
-  const onSetWon = async (id: string, won: boolean) => {
+  // M28 — clicking the already-active button clears the flag back to undecided (null); the API's
+  // `won` setter already accepts null, so the toggle is now three-state end to end.
+  const onSetWon = async (id: string, won: boolean | null) => {
     setSavingWon(id);
     try {
       await setMeetingWon(client, id, won);
@@ -40,6 +53,36 @@ export default function SummariesPage() {
       toast(e instanceof Error ? e.message : "Could not update the deal outcome", "warn");
     } finally {
       setSavingWon(null);
+    }
+  };
+
+  // M33 — the outcome-correction / dispute door. Recaps are held (past) meetings, so the backend's
+  // M18 guard never 409s here; correcting re-derives the amount/dispute-window before it bills, and
+  // the "disputed" flag holds a qualified meeting out of billing (the client-dispute path).
+  const [correctFor, setCorrectFor] = useState<Recap | null>(null);
+  const [correctOc, setCorrectOc] = useState<"qualified" | "short_call" | "noshow">("qualified");
+  const [correctDisputed, setCorrectDisputed] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+  const openCorrect = (rc: Recap) => {
+    setCorrectOc((rc.outcome as "qualified" | "short_call" | "noshow") || "qualified");
+    setCorrectDisputed(rc.disputed);
+    setCorrectFor(rc);
+  };
+  const onCorrect = async () => {
+    if (!correctFor || correcting) return;
+    setCorrecting(true);
+    try {
+      await correctOutcome(client, correctFor.id, {
+        outcome: correctOc,
+        disputed: correctDisputed,
+      });
+      await reloadMeetings();
+      toast("Outcome corrected");
+      setCorrectFor(null);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not correct the outcome", "warn");
+    } finally {
+      setCorrecting(false);
     }
   };
 
@@ -57,7 +100,9 @@ export default function SummariesPage() {
         >
           <option value="">All campaigns</option>
           {campaigns.map((c) => (
-            <option key={c.name}>{c.name}</option>
+            <option key={c.id} value={c.id}>
+              {c.name}
+            </option>
           ))}
         </select>
       </div>
@@ -82,9 +127,24 @@ export default function SummariesPage() {
                     {fmt(rc.scheduledAt)} · {rc.companyName || "—"}
                   </div>
                 </div>
-                <span className={clsx("badge", oc.badge)}>
-                  <span className="bdot" />
-                  {oc.label}
+                <span className="row" style={{ gap: 8, alignItems: "center" }}>
+                  <span className={clsx("badge", oc.badge)}>
+                    <span className="bdot" />
+                    {oc.label}
+                  </span>
+                  {rc.disputed && (
+                    <span className="badge badge-danger">
+                      <span className="bdot" />
+                      Disputed
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-2xs"
+                    onClick={() => openCorrect(rc)}
+                  >
+                    Correct outcome
+                  </button>
                 </span>
               </div>
               <div className="srow">
@@ -126,7 +186,7 @@ export default function SummariesPage() {
                       className={clsx("btn btn-2xs", rc.won === true ? "btn-accent" : "btn-ghost")}
                       aria-pressed={rc.won === true}
                       disabled={savingWon === rc.id}
-                      onClick={() => void onSetWon(rc.id, true)}
+                      onClick={() => void onSetWon(rc.id, rc.won === true ? null : true)}
                     >
                       Deal won
                     </button>
@@ -135,7 +195,7 @@ export default function SummariesPage() {
                       className={clsx("btn btn-2xs", rc.won === false ? "btn-danger" : "btn-ghost")}
                       aria-pressed={rc.won === false}
                       disabled={savingWon === rc.id}
-                      onClick={() => void onSetWon(rc.id, false)}
+                      onClick={() => void onSetWon(rc.id, rc.won === false ? null : false)}
                     >
                       No deal
                     </button>
@@ -147,9 +207,74 @@ export default function SummariesPage() {
           );
         })}
         {recapsInView.length === 0 && (
-          <div className="sum-empty">No meeting recaps {sumCamp ? `for ${sumCamp}` : "yet"}.</div>
+          <div className="sum-empty">
+            No meeting recaps {sumCamp ? `for ${sumCampName}` : "yet"}.
+          </div>
         )}
       </div>
+
+      {/* M33 — owner outcome-correction / dispute door (backend: POST /meetings/{id}/outcome). */}
+      <Modal
+        open={correctFor !== null}
+        onClose={() => !correcting && setCorrectFor(null)}
+        title="Correct the meeting outcome"
+        subtitle={
+          correctFor
+            ? `${correctFor.prospectName || "Prospect"} · ${fmt(correctFor.scheduledAt)}`
+            : undefined
+        }
+        footer={
+          <>
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={() => setCorrectFor(null)}
+              disabled={correcting}
+            >
+              Cancel
+            </button>
+            <button className="btn btn-accent btn-sm" onClick={() => void onCorrect()} disabled={correcting}>
+              {correcting ? "Saving…" : "Save correction"}
+            </button>
+          </>
+        }
+      >
+        {correctFor && (
+          <>
+            <p style={{ margin: "0 0 14px", lineHeight: 1.5 }}>
+              Re-classify this meeting if the automatic outcome is wrong. Marking it{" "}
+              <b>Qualified</b> re-derives the billable amount and the 48-hour dispute window; anything
+              else clears the amount. This is the correction door — the deal-won flag is separate.
+            </p>
+            <div className="field" style={{ margin: 0 }}>
+              <label>Outcome</label>
+              <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+                {CORRECTABLE.map((o) => (
+                  <button
+                    key={o.value}
+                    type="button"
+                    className={clsx("btn btn-sm", correctOc === o.value ? "btn-accent" : "btn-ghost")}
+                    aria-pressed={correctOc === o.value}
+                    onClick={() => setCorrectOc(o.value)}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label
+              className="dl"
+              style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16, cursor: "pointer" }}
+            >
+              <input
+                type="checkbox"
+                checked={correctDisputed}
+                onChange={(e) => setCorrectDisputed(e.target.checked)}
+              />
+              Mark as disputed by the client (holds it out of billing while open)
+            </label>
+          </>
+        )}
+      </Modal>
     </section>
   );
 }

@@ -42,7 +42,7 @@ def _sa_env(monkeypatch) -> dict:
 def _capture(monkeypatch, ret=None):
     calls: list[dict] = []
 
-    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT):
+    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT, retry_transport=True):
         calls.append({"method": method, "url": url, "body": body})
         return ret if ret is not None else {}
 
@@ -98,7 +98,7 @@ def test_create_event_pending_reread_until_success(monkeypatch):
     ]
     urls: list[str] = []
 
-    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT):
+    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT, retry_transport=True):
         urls.append(url)
         return seq[len(urls) - 1]
 
@@ -112,7 +112,7 @@ def test_create_event_pending_reread_until_success(monkeypatch):
 def test_create_event_still_pending_raises(monkeypatch):
     monkeypatch.setattr(g.time, "sleep", lambda *_: None)
 
-    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT):
+    def fake(method, url, *, body=None, timeout=g.DEFAULT_TIMEOUT, retry_transport=True):
         return _load("event_insert_pending.json")
 
     monkeypatch.setattr(g, "_request", fake)
@@ -303,6 +303,40 @@ def test_backoff_bounded_on_5xx(monkeypatch):
     with pytest.raises(g.GoogleError) as ei:
         g._request("GET", f"{g.MEET_BASE}/conferenceRecords")
     assert ei.value.status == 503
+    assert attempts["n"] == g._MAX_RETRIES + 1
+    g.reset_secret()
+
+
+def test_create_event_post_does_not_retry_on_transport_error(monkeypatch):
+    """M19 — a timed-out `events.insert` (POST) may already have created the event, so a blind
+    replay would duplicate the calendar event + invites. It must raise after exactly ONE attempt
+    (no transport retry), unlike a read GET which still retries the transport error."""
+    _sa_env(monkeypatch)
+    monkeypatch.setattr(g, "access_token", lambda *, force=False: "tok")
+    monkeypatch.setattr(g.time, "sleep", lambda *_: None)
+    attempts = {"n": 0}
+
+    def timing_out(req, timeout=0):
+        attempts["n"] += 1
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(g.urllib.request, "urlopen", timing_out)
+    with pytest.raises(g.GoogleError):
+        g.create_event(
+            summary="x",
+            start="2026-07-15T10:00:00Z",
+            end="2026-07-15T10:30:00Z",
+            timezone="UTC",
+            attendees=["a@b.com"],
+            request_id="req-1",
+        )
+    assert attempts["n"] == 1  # ONE attempt — no transport retry on the create POST
+
+    # Contrast: a read still retries the same transport error to the bounded cap.
+    attempts["n"] = 0
+    monkeypatch.setattr(g.urllib.request, "urlopen", timing_out)
+    with pytest.raises(g.GoogleError):
+        g._request("GET", f"{g.CALENDAR_BASE}/calendars/primary/events/x")
     assert attempts["n"] == g._MAX_RETRIES + 1
     g.reset_secret()
 

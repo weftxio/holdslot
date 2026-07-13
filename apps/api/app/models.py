@@ -850,11 +850,13 @@ class OutreachEvent(Base):
 
     __tablename__ = "outreach_event"
     __table_args__ = (
+        # 0032 — sorted on `occurred_at` (the provider event time every consumer ORDER BYs), not the
+        # ingest `created_at`, so the reply queue / timeline / summary reads are index-sorted (M22).
         Index(
-            "ix_outreach_event_tenant_type_created",
+            "ix_outreach_event_tenant_type_occurred",
             "tenant_id",
             "event_type",
-            text("created_at DESC"),
+            text("occurred_at DESC"),
         ),
         Index("ix_outreach_event_campaign", "campaign_id"),
         Index("ix_outreach_event_lead", "campaign_lead_id"),
@@ -954,7 +956,11 @@ class Subscription(Base):
     charge trigger (`meeting.billed_at`) + this state. Ships DORMANT (no rows until FR-7/FR-8)."""
 
     __tablename__ = "subscription"
-    __table_args__ = (UniqueConstraint("tenant_id", name="uq_subscription_tenant"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", name="uq_subscription_tenant"),
+        # 0032 — the Stripe webhook resolves a subscription by customer id (M22; dormant today).
+        Index("ix_subscription_stripe_customer_id", "stripe_customer_id"),
+    )
 
     id: Mapped[uuid.UUID] = _uuid_pk()
     tenant_id: Mapped[uuid.UUID] = _tenant_fk()

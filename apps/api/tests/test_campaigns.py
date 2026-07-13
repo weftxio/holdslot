@@ -476,3 +476,24 @@ def test_unsub_writeback_noop_without_email_or_brief():
     assert brief.data["doNotContact"] == []
     # no Brief row → no crash.
     webhooks._unsub_writeback(_FakeDb(None), "tenant-1", {"lead_email": "x@y.com"})
+
+
+# ------------------------------------------------------------------- M22 — malformed-id → 404
+
+
+def test_uuid_or_404_rejects_malformed_and_parses_valid():
+    """M22 — the shared path-id helper raises 404 (not 400) on a malformed id, so a bad id and a
+    well-formed-but-missing id read the same; a valid id parses to a UUID."""
+    import uuid as _uuid
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app.core.deps import uuid_or_404
+
+    good = _uuid.uuid4()
+    assert uuid_or_404(str(good)) == good
+    with pytest.raises(HTTPException) as ei:
+        uuid_or_404("not-a-uuid", "no such campaign")
+    assert ei.value.status_code == 404
+    assert ei.value.detail == "no such campaign"

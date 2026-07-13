@@ -474,6 +474,51 @@ def test_won_door_isolates_billing():
         _teardown(db, s)
 
 
+def test_correct_outcome_blocks_unswept_future_meeting():
+    """M18 — a correction must never bill a meeting that hasn't happened. An unswept future meeting
+    (held IS NULL, scheduled in the future) → 409 with nothing stamped; once it is past (or swept),
+    the same correction is allowed and stamps the amount."""
+    from fastapi import HTTPException
+
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.meetings import router
+    from app.domains.meetings.schemas import OutcomeIn
+    from app.models import Meeting
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    s = _seed(db, suffix)
+    ctx = AccessContext(user=s["user"], tenant=s["tenant"], membership=s["membership"])
+    try:
+        meeting = Meeting(
+            tenant_id=s["tenant"].id,
+            campaign_lead_id=s["lead"].id,
+            prospect_id=s["prospect"].id,
+            approval_id=s["approval"].id,
+            scheduled_at=datetime.now(UTC) + timedelta(days=2),  # future
+            held=None,  # unswept
+        )
+        db.add(meeting)
+        db.commit()
+
+        with pytest.raises(HTTPException) as ei:
+            router.correct_outcome(str(meeting.id), OutcomeIn(outcome="qualified"), ctx=ctx, db=db)
+        assert ei.value.status_code == 409
+        db.refresh(meeting)
+        assert meeting.outcome is None and meeting.amount is None  # nothing stamped
+
+        # once the meeting is in the past, the correction is legitimate and stamps the amount.
+        meeting.scheduled_at = datetime.now(UTC) - timedelta(hours=2)
+        db.commit()
+        out = router.correct_outcome(
+            str(meeting.id), OutcomeIn(outcome="qualified"), ctx=ctx, db=db
+        )
+        assert out.outcome == "qualified" and out.amount == 500
+    finally:
+        _teardown(db, s)
+
+
 def _bl_id(db, s):
     from app.models import BookingLink
 

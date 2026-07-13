@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { DEFAULT_CLIENT_SLUG, DEFAULT_CLIENT_PAGE } from "@/lib/client";
-import { login as apiLogin, forgot as apiForgot, reset as apiReset, getMe, setTokens } from "@/lib/api";
+import { ApiError, login as apiLogin, forgot as apiForgot, reset as apiReset, getMe, setTokens } from "@/lib/api";
 import { useCountUp } from "@/lib/useCountUp";
 import "./login.css";
 
@@ -112,9 +112,16 @@ export default function Login() {
       const me = await getMe().catch(() => null);
       const slug = me?.clients[0]?.slug ?? DEFAULT_CLIENT_SLUG;
       router.push(`/${slug}/${DEFAULT_CLIENT_PAGE}`);
-    } catch {
-      setPwErr("Invalid email or password.");
-      setBanner(true);
+    } catch (e) {
+      // M25 — only a real 401 is "wrong credentials". A 5xx/network failure (login already retried
+      // cold-starts to its cap) is a server problem, not a bad password — say so, don't accuse.
+      const badCreds = e instanceof ApiError && e.status === 401;
+      if (badCreds) {
+        setPwErr("Invalid email or password.");
+        setBanner(true);
+      } else {
+        setPwErr("We couldn't reach the server just now. Please try again in a moment.");
+      }
       setSigning(false);
       setWaking(false);
     }

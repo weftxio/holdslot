@@ -72,12 +72,14 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         .map((r) => ({
           id: r.id,
           campaign: r.campaign_name,
+          campaignId: r.campaign_id, // M27 — id-keyed filter
           batch: r.batch_name,
           prospectName: r.prospect_name,
           companyName: r.company_name,
           scheduledAt: r.scheduled_at,
           outcome: r.outcome,
           rating: r.feedback_rating,
+          disputed: r.disputed, // M33 — outcome-correction UI reads/writes this
           won: r.won, // tri-state passthrough (NF-3): true | false | null (undecided)
         })),
     [meetingsQ.data]

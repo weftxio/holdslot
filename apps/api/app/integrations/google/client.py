@@ -205,10 +205,15 @@ def _request(
     *,
     body: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    retry_transport: bool = True,
 ) -> dict:
     """One Bearer-authed request, retried on transient 429/5xx with exponential backoff. A 401 drops
     the cached token and replays ONCE with a fresh mint (no retry storm, FT2-4). All error paths are
-    redacted so a token never leaks into a log or exception."""
+    redacted so a token never leaks into a log or exception.
+
+    `retry_transport=False` disables the transport-error (timeout / dropped connection) retry — a
+    non-idempotent create (`events.insert`) must NOT blind-retry, since a timed-out POST may have
+    already landed and a replay would duplicate the calendar event + invites (M19)."""
     data = json.dumps(body).encode() if body is not None else None
     reminted = False
     for attempt in range(_MAX_RETRIES + 1):
@@ -235,7 +240,10 @@ def _request(
             detail = _http_error_detail(e)
             raise GoogleError(f"google HTTP {e.code}{detail}", status=e.code) from e
         except (TimeoutError, urllib.error.URLError) as e:
-            if attempt < _MAX_RETRIES:
+            # A transport error leaves the outcome UNKNOWN — the request may have landed. A blind
+            # replay is safe for reads but duplicates a non-idempotent create (M19), so create_event
+            # opts out via retry_transport=False.
+            if retry_transport and attempt < _MAX_RETRIES:
                 time.sleep(0.5 * (2**attempt))
                 continue
             raise GoogleError("google transport error") from e
@@ -287,7 +295,10 @@ def create_event(
         },
     }
     url = f"{CALENDAR_BASE}/calendars/primary/events?conferenceDataVersion=1&sendUpdates=all"
-    event = _request("POST", url, body=body)
+    # No transport retry (M19): a timed-out create may already have created the event, so a replay
+    # would double-book + double-invite. On a transport error we surface GoogleError and let the
+    # caller release the booking claim; the 429/5xx retries (Google-rejected, no side effect) stay.
+    event = _request("POST", url, body=body, retry_transport=False)
     return _resolve_pending(event)
 
 

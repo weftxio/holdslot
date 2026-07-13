@@ -97,22 +97,21 @@ import {
 // tested against strings.
 const COLLAPSED_KEYS = new Set<string>(COLLAPSED_LABELS);
 // Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection;
-// a `low_fit` row can be selected but only behind an explicit confirm. Returns whether the toggle
-// may proceed. Deselecting is always allowed; only *adding* a gated row is challenged.
+// A selection verdict for a toggle: "ok" apply now · "blocked" locked out (an excluded row in Step 1)
+// · "confirm" a low_fit ADD, challenged via the design-system Modal (M31 — was a `window.confirm`).
+// Deselecting is always "ok"; only *adding* a gated row is challenged/blocked.
 function maySelect(
   label: ScoreLabel | null,
   currentlyChecked: boolean,
   allowExcluded = false,
-): boolean {
-  if (currentlyChecked) return true; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
+): "ok" | "blocked" | "confirm" {
+  if (currentlyChecked) return "ok"; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
   // Step 2 passes allowExcluded so a staged-then-excluded company can be TICKED for removal; the
   // funnel-advancing handlers (stageForPeople / runFindPeople / reveal) each filter excluded rows out
   // themselves, and the prune effect drops them from the selection after any reload/scoring wave.
-  if (label === "excluded_by_rules") return allowExcluded;
-  if (label === "low_fit") {
-    return window.confirm("This scored Low fit. Add it to the selection anyway?");
-  }
-  return true;
+  if (label === "excluded_by_rules") return allowExcluded ? "ok" : "blocked";
+  if (label === "low_fit") return "confirm";
+  return "ok";
 }
 
 // Return `set` minus every id in `remove` — same reference when nothing changed (stable for React).
@@ -279,6 +278,13 @@ export default function ListPage() {
   // block the second click in the same tick (a paid-spend race).
   const rescoringCoRef = useRef(false);
   const rescoringPplRef = useRef(false);
+  // M23 — same synchronous double-click guard for the paid company-field update (an Apollo credit
+  // spend): the button's `disabled` only flips after a re-render, so a fast second click would fire
+  // a second spend in the same tick without this ref.
+  const updateFieldsCoRef = useRef(false);
+  // M31 — a low_fit ADD is confirmed via a design-system Modal (not window.confirm); this holds the
+  // toggle to apply if the operator confirms.
+  const [lowFitPrompt, setLowFitPrompt] = useState<{ apply: () => void } | null>(null);
   // R12 — false once this page unmounts, so a job poll loop stops (no orphan polling + toasts after
   // navigating away). Combined with the client check in the `alive` callbacks below.
   const mountedRef = useRef(true);
@@ -399,6 +405,7 @@ export default function ListPage() {
     setScoringPersonIds(new Set());
     rescoringCoRef.current = false;
     rescoringPplRef.current = false;
+    updateFieldsCoRef.current = false;
     // N13 — clear every mutation busy-flag too: each is set by a handler whose `finally` is gated on
     // the OLD client, so a switch mid-Find/Update/Lookalike/stage/remove would otherwise wedge the
     // button ("Fetching…") forever on the new client.
@@ -617,13 +624,20 @@ export default function ListPage() {
   );
 
   function toggleRow(p: ProspectApi) {
-    if (!maySelect(p.label, checked.has(p.id))) return; // excluded locked out; low_fit confirms
-    setChecked((s) => {
-      const n = new Set(s);
-      if (n.has(p.id)) n.delete(p.id);
-      else n.add(p.id);
-      return n;
-    });
+    const apply = () =>
+      setChecked((s) => {
+        const n = new Set(s);
+        if (n.has(p.id)) n.delete(p.id);
+        else n.add(p.id);
+        return n;
+      });
+    const verdict = maySelect(p.label, checked.has(p.id));
+    if (verdict === "blocked") return; // excluded locked out
+    if (verdict === "confirm") {
+      setLowFitPrompt({ apply }); // low_fit add → design-system confirm (M31)
+      return;
+    }
+    apply();
   }
 
   // U1.6 — one-time migration of the Step-1 company scope from its old per-(client, ICP) localStorage
@@ -778,12 +792,19 @@ export default function ListPage() {
   function toggleCo(c: CompanyApi, allowExcluded = false) {
     // excluded locked out of Step-1 selection; low_fit confirms; unticking always allowed. Step 2
     // passes allowExcluded so a staged-then-excluded company can be ticked for removal (R6).
-    if (!maySelect(c.label, companyChecked.has(c.id), allowExcluded)) return;
-    setCompanyChecked((s) => {
-      const n = new Set(s);
-      n.has(c.id) ? n.delete(c.id) : n.add(c.id);
-      return n;
-    });
+    const apply = () =>
+      setCompanyChecked((s) => {
+        const n = new Set(s);
+        n.has(c.id) ? n.delete(c.id) : n.add(c.id);
+        return n;
+      });
+    const verdict = maySelect(c.label, companyChecked.has(c.id), allowExcluded);
+    if (verdict === "blocked") return;
+    if (verdict === "confirm") {
+      setLowFitPrompt({ apply }); // low_fit add → design-system confirm (M31)
+      return;
+    }
+    apply();
   }
   function toggleCoCollapse(id: string) {
     setExpandedCos((s) => {
@@ -1091,11 +1112,13 @@ export default function ListPage() {
   // credits, so it is deliberate/manual (Find Companies enriches only new rows). Async (W4),
   // capped at SCORE_BATCH_MAX rows per job.
   async function runUpdateFields() {
+    if (updateFieldsCoRef.current) return; // block a double-click before the button disables (M23)
     const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to update", "warn");
     if (ids.length > SCORE_BATCH_MAX) {
       return toast(`Update at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
     }
+    updateFieldsCoRef.current = true;
     setUpdatingFields(true);
     try {
       const job = await runScoringJob(() => updateCompanyFieldsAsync(client, ids), "Update");
@@ -1108,6 +1131,7 @@ export default function ListPage() {
     } catch (e) {
       if (clientRef.current === client) toast(e instanceof Error ? e.message : "Update failed", "warn");
     } finally {
+      updateFieldsCoRef.current = false;
       if (clientRef.current === client) setUpdatingFields(false);
     }
   }
@@ -2426,6 +2450,33 @@ export default function ListPage() {
           </>
         )}
       </div>
+
+      {/* M31 — low_fit ADD confirm (design-system Modal, replacing window.confirm) */}
+      <Modal
+        open={lowFitPrompt !== null}
+        onClose={() => setLowFitPrompt(null)}
+        title="Add a Low-fit row?"
+        footer={
+          <>
+            <button className="btn btn-ghost btn-sm" onClick={() => setLowFitPrompt(null)}>
+              Cancel
+            </button>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => {
+                lowFitPrompt?.apply();
+                setLowFitPrompt(null);
+              }}
+            >
+              Add anyway
+            </button>
+          </>
+        }
+      >
+        <p style={{ margin: 0, lineHeight: 1.5 }}>
+          This row scored <b>Low fit</b>. Add it to the selection anyway?
+        </p>
+      </Modal>
 
       {/* FIT RUBRIC MODAL — the versioned scoring rubric (append-only) */}
       <Modal

@@ -6,7 +6,8 @@
 > [`backend-development-plan.md`](backend-development-plan.md).
 
 > **Status (2026-07-12): A–F SHIPPED to dev (A–D+ dev AND prod; E–F dev) + G-NF Wave 1+2 SHIPPED (Stripe
-> dormant).** Aurora **head `0031` applied** · backend Lambda **v89** on the one shared backend
+> dormant).** Aurora **head `0031` applied** (repo head `0032` — Wave-2 index-only, pending the next
+> backend deploy) · backend Lambda **v89** on the one shared backend
 > (`api.tryholdslot.com`; find-path Stages 1–4 + Scoring v2 + **V2-4 contraction** + classifier→Flash + E/F
 > domains + dormant billing) · web: **dev Amplify at `a978b36`** (autoBuild; incl. the G-NF FE) · **prod at
 > `b36b61d`** (job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
@@ -93,7 +94,7 @@
 | Thing | State |
 |---|---|
 | Backend | Lambda **v89** alias `live` (2026-07-12), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·meetings-public·billing·stripe-webhooks`) |
-| Database | Aurora Serverless v2 + Data API · **head `0031` applied** (30 tables; `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe, dormant) |
+| Database | Aurora Serverless v2 + Data API · **head `0031` applied** (30 tables; `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe, dormant) · repo head `0032` (Wave-2 index-only, pending deploy) |
 | Web | Amplify autoBuild on push: **dev at `a978b36`** (Phase E/F tabs + G-NF FE live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |

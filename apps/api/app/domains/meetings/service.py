@@ -63,7 +63,7 @@ def iso_z(dt: datetime) -> str:
 def _zone(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError):
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
         return ZoneInfo("UTC")
 
 
@@ -77,12 +77,48 @@ def _hm(s: str) -> time:
 
 def availability_of(brief_data: dict | None) -> tuple[str, int, dict]:
     """(tz, meeting_minutes, windows) from `brief.data.availability`, falling back to the FD-1
-    default (Mon–Fri 10:00–18:00 host TZ) for any missing piece."""
-    av = ((brief_data or {}).get("availability")) or {}
-    tz = av.get("tz") or DEFAULT_TZ
-    minutes = int(av.get("meeting_minutes") or DEFAULT_MEETING_MINUTES)
-    windows = av.get("windows") or DEFAULT_WINDOWS
-    return tz, minutes, windows
+    default (Mon–Fri 10:00–18:00 host TZ) for any missing OR MALFORMED piece.
+
+    The Brief is founder-authored free JSON, and this runs on every meetings-surface read + the
+    public booking page — so a bad edit (`meeting_minutes: "abc"`, a one-element window, a non-dict
+    `availability`) must degrade to the default, never 500 the whole surface (M11)."""
+    av = (brief_data or {}).get("availability")
+    if not isinstance(av, dict):
+        av = {}
+    tz = av.get("tz")
+    tz = tz if isinstance(tz, str) and tz.strip() else DEFAULT_TZ
+    try:
+        minutes = int(av.get("meeting_minutes") or DEFAULT_MEETING_MINUTES)
+    except (TypeError, ValueError):
+        minutes = DEFAULT_MEETING_MINUTES
+    if minutes <= 0:
+        minutes = DEFAULT_MEETING_MINUTES
+    return tz, minutes, _clean_windows(av.get("windows"))
+
+
+def _clean_windows(raw) -> dict[str, list[list[str]]]:
+    """Validate `availability.windows` into `{weekday: [[HH:MM, HH:MM], ...]}`, dropping any
+    malformed day/window (FD-1, M11). A fully-unusable value falls back to the Mon–Fri default so
+    one bad Brief edit can't crash the slot builder (`_hm` unpack / `time()` ValueError)."""
+    if not isinstance(raw, dict):
+        return DEFAULT_WINDOWS
+    cleaned: dict[str, list[list[str]]] = {}
+    for day, wins in raw.items():
+        if day not in _WEEKDAY_KEYS or not isinstance(wins, list):
+            continue
+        good: list[list[str]] = []
+        for win in wins:
+            if not isinstance(win, (list, tuple)) or len(win) < 2:
+                continue
+            start_s, end_s = str(win[0]), str(win[1])
+            try:
+                if _hm(start_s) < _hm(end_s):
+                    good.append([start_s, end_s])
+            except (ValueError, TypeError):
+                continue
+        if good:
+            cleaned[day] = good
+    return cleaned or DEFAULT_WINDOWS
 
 
 def _overlaps(s: datetime, e: datetime, busy: list[tuple[datetime, datetime]]) -> bool:
