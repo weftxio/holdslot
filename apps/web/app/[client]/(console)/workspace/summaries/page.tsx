@@ -25,8 +25,12 @@ export default function SummariesPage() {
   const client = useClient();
   const toast = useToast();
   // M27 — filter by campaign_id, not name (same-named campaigns from different batches collide).
+  // L15 — `campaignId == null` fallback: on a backend that doesn't yet send campaign_id, keep
+  // showing recaps rather than hiding every one when a campaign is selected (deploy-order insurance).
   const [sumCamp, setSumCamp] = useState("");
-  const recapsInView = recaps.filter((rc) => !sumCamp || rc.campaignId === sumCamp);
+  const recapsInView = recaps.filter(
+    (rc) => !sumCamp || rc.campaignId === sumCamp || rc.campaignId == null,
+  );
   const sumCampName = campaigns.find((c) => c.id === sumCamp)?.name ?? "";
 
   // NF-3 — which recap's `won` flag is mid-save (disables its toggle). The `won`-only door writes the
