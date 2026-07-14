@@ -21,6 +21,7 @@ from app.core.config import get_settings
 from app.core.deps import AccessContext, get_db, require_membership, uuid_or_404
 from app.core.email import send_email
 from app.core.security import hash_token, new_opaque_token
+from app.domains.campaigns.stage_moves import record_stage_move
 from app.domains.meetings import service as m
 from app.domains.meetings.schemas import (
     BookingRowOut,
@@ -189,15 +190,8 @@ def _finalize(db, meeting, *, held, duration, outcome, record_id, amount, window
     if stage and meeting.campaign_lead_id:
         lead = db.get(CampaignLead, meeting.campaign_lead_id)
         if lead is not None:
-            _record_stage_move(db, lead, stage, via="sweep")
+            record_stage_move(db, lead, stage, via="sweep")
     return True
-
-
-def _record_stage_move(db: Session, lead: CampaignLead, target: str, *, via: str) -> None:
-    """Lazy import of the shared stage-move writer (avoids a campaigns↔meetings module cycle)."""
-    from app.domains.campaigns.router import record_stage_move
-
-    record_stage_move(db, lead, target, via=via)
 
 
 @router.post("/{client}/meetings/refresh", response_model=SweepResult)
@@ -250,7 +244,7 @@ def correct_outcome(
     if target and meeting.campaign_lead_id:
         lead = db.get(CampaignLead, meeting.campaign_lead_id)
         if lead is not None:
-            _record_stage_move(db, lead, target, via="correction")
+            record_stage_move(db, lead, target, via="correction")
     db.commit()
     return _meeting_out(meeting, _name_maps(db, [meeting]), now)
 

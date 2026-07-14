@@ -20,6 +20,8 @@ from sqlalchemy.orm import Session
 
 from app.core.deps import get_db
 from app.core.security import hash_token
+from app.domains.campaigns.service import MEETING
+from app.domains.campaigns.stage_moves import record_stage_move
 from app.domains.meetings import service as msvc
 from app.domains.meetings.schemas import (
     BookIn,
@@ -215,10 +217,7 @@ def _attendees(prospect: Prospect | None, brief_data: dict) -> list[str]:
 def _advance_to_meeting(db: Session, lead: CampaignLead) -> None:
     """Move the lead to `meeting` via the shared allowed-moves writer — but a lead the operator
     deliberately sent a link to from a non-bookable stage still books; the move is just skipped +
-    logged (FT3-14). Lazy import avoids a campaigns↔meetings module cycle."""
-    from app.domains.campaigns.router import record_stage_move
-    from app.domains.campaigns.service import MEETING
-
+    logged (FT3-14). The writer lives in the leaf `campaigns.stage_moves` module (no cycle)."""
     moved = record_stage_move(db, lead, MEETING, via="booking")
     if not moved:
         log.info("book: lead=%s stage=%s not advanced to meeting (deliberate)", lead.id, lead.stage)
