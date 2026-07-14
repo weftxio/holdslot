@@ -203,6 +203,16 @@ def test_state_used_when_batch_decided_even_if_link_live():
     assert _state(live_link, None) == "expired"
 
 
+def test_iso_normalizes_naive_datetime_to_utc_z():
+    """M6-class — the Data API returns timestamptz as NAIVE; a bare .isoformat() drops the zone, so
+    the FE reads it as viewer-local (wrong date near midnight). _iso stamps a trailing Z (UTC)."""
+    from app.domains.batches.router import _iso
+
+    assert _iso(datetime(2026, 7, 10, 23, 30)) == "2026-07-10T23:30:00Z"  # naive → UTC Z
+    assert _iso(datetime(2026, 7, 10, 23, 30, tzinfo=UTC)) == "2026-07-10T23:30:00Z"  # aware → Z
+    assert _iso(None) is None
+
+
 # --------------------------------------------------------------------------- DB-gated: end-to-end
 
 pytestmark_db = pytest.mark.skipif(

@@ -251,7 +251,7 @@ def _build_schedule(settings: dict) -> dict:
     """The Smartlead schedule body — EF-Q3 daily cap (40) + EF-Q4 prospect-local window, from the
     campaign's stored settings merged over safe defaults."""
     sched = dict(settings.get("schedule") or {})
-    sched.setdefault("timezone", settings.get("timezone", "Asia/Singapore"))
+    sched.setdefault("timezone", settings.get("timezone", "Asia/Hong_Kong"))  # TZ-1 (D6)
     sched.setdefault("days_of_the_week", [1, 2, 3, 4, 5])
     sched.setdefault("start_hour", "09:00")
     sched.setdefault("end_hour", "18:00")

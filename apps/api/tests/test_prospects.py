@@ -77,6 +77,36 @@ def test_dnc_entries_tokenizes_string_and_list():
     assert "son@x.com" not in dnc_entries("jason@x.com")
 
 
+def test_validate_icp_id_parses_owns_or_404():
+    """L8 — the shared ICP door-guard: None passes; a malformed id, a well-formed-but-unknown id,
+    and a cross-tenant id all 404; an owned id returns its UUID (no raw 500, no foreign id)."""
+    import uuid as _uuid
+    from unittest.mock import MagicMock
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app.domains.prospects import router as pr
+
+    tenant = _uuid.uuid4()
+    assert pr._validate_icp_id(MagicMock(), tenant, None) is None  # optional → passes
+
+    with pytest.raises(HTTPException) as ei:
+        pr._validate_icp_id(MagicMock(), tenant, "not-a-uuid")  # malformed → 404
+    assert ei.value.status_code == 404
+
+    good = str(_uuid.uuid4())
+    db_unowned = MagicMock()
+    db_unowned.execute.return_value.scalar_one_or_none.return_value = None  # not this tenant's
+    with pytest.raises(HTTPException) as ei2:
+        pr._validate_icp_id(db_unowned, tenant, good)
+    assert ei2.value.status_code == 404
+
+    db_owned = MagicMock()
+    db_owned.execute.return_value.scalar_one_or_none.return_value = _uuid.uuid4()  # a row exists
+    assert pr._validate_icp_id(db_owned, tenant, good) == _uuid.UUID(good)
+
+
 # --------------------------------------------------------------- stage-0 business-model classifier
 
 

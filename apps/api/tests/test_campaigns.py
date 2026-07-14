@@ -548,3 +548,39 @@ def test_unsub_writeback_matches_whole_entry_not_substring(monkeypatch):
 
     entries = {e.lower() for e in wh.dnc_entries(brief.data["doNotContact"])}
     assert "son@x.com" in entries and "jason@x.com" in entries  # both listed, no substring skip
+
+
+# ------------------------------------------------------------------- L9 — variant-key collision
+
+
+def test_seed_variants_rejects_duplicate_normalized_keys():
+    """L9 — two variants that collide after `strip()[:8] or 'A'` normalization are a clean 400, not
+    an uncaught uq_message_variant_campaign_key 500 on the variants editor."""
+    import pytest
+    from fastapi import HTTPException
+
+    from app.domains.campaigns.router import _seed_variants
+    from app.domains.campaigns.schemas import VariantIn
+
+    # "" normalizes to "A", colliding with a literal "A".
+    dupes = [VariantIn(key="", subject="s", body="b"), VariantIn(key="A", subject="s2", body="b2")]
+    with pytest.raises(HTTPException) as ei:
+        _seed_variants(dupes)
+    assert ei.value.status_code == 400
+    # distinct keys pass through unchanged.
+    ok = _seed_variants(
+        [VariantIn(key="A", subject="s", body="b"), VariantIn(key="B", subject="s2", body="b2")]
+    )
+    assert [v.key for v in ok] == ["A", "B"]
+
+
+# ------------------------------------------------------------------- TZ-1 (D6) — HK default
+
+
+def test_build_schedule_defaults_timezone_to_hong_kong():
+    """TZ-1 (D6) — the Smartlead schedule defaults to Asia/Hong_Kong when the campaign has no tz; an
+    explicit timezone still wins."""
+    from app.domains.campaigns.launch import _build_schedule
+
+    assert _build_schedule({})["timezone"] == "Asia/Hong_Kong"
+    assert _build_schedule({"timezone": "America/New_York"})["timezone"] == "America/New_York"

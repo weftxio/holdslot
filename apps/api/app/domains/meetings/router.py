@@ -654,10 +654,14 @@ def inform_client(
     if not to:
         raise HTTPException(status.HTTP_409_CONFLICT, "no client attendee email on file")
     rating = meeting.feedback_rating
-    send_email(
+    # L11 — honor send_email's result: a swallowed SES failure returned 204, so the operator thought
+    # the client was informed. Mirror the sibling send_feedback (:605) and 502 on failure.
+    sent = send_email(
         to,
         f"Meeting feedback follow-up — {ctx.tenant.name}",
         f"A recent meeting received a rating of {rating}/5"
         + (f': "{meeting.feedback_comment}"' if meeting.feedback_comment else "")
         + ".\n\nWorth a quick look.\n",
     )
+    if not sent:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "the follow-up email could not be sent")

@@ -41,7 +41,7 @@ SLOT_WEEKDAYS = 5  # offer the next 5 configured weekdays
 # TZ.
 _WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")  # date.weekday(): 0=mon
 DEFAULT_TZ = (
-    "Asia/Singapore"  # host TZ default (UTC+8); the founder overrides it in the Brief at F0
+    "Asia/Hong_Kong"  # TZ-1 (D6) — host TZ default (UTC+8); founder can override in the Brief at F0
 )
 DEFAULT_MEETING_MINUTES = 30
 DEFAULT_WINDOWS: dict[str, list[list[str]]] = {d: [["10:00", "18:00"]] for d in _WEEKDAY_KEYS[:5]}

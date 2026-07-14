@@ -21,7 +21,7 @@ from app.core.config import get_settings
 from app.core.db import is_fk_violation
 from app.core.deps import AccessContext, get_db, require_membership
 from app.core.email import send_email
-from app.core.security import hash_token, new_opaque_token
+from app.core.security import as_utc, hash_token, new_opaque_token
 from app.domains.batches import service as svc
 from app.domains.batches.schemas import (
     BatchCompanyGroup,
@@ -41,7 +41,9 @@ log = logging.getLogger("holdslot.batches")
 
 
 def _iso(dt: datetime | None) -> str | None:
-    return dt.isoformat() if dt else None
+    # M6-class — the Data API returns timestamptz as NAIVE, so a bare .isoformat() drops the zone
+    # and the FE reads it as viewer-local (wrong date near midnight). Normalize to UTC + `…Z`.
+    return as_utc(dt).isoformat().replace("+00:00", "Z") if dt else None
 
 
 def _parse_ids(raw: list[str]) -> list[uuid.UUID]:

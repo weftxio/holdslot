@@ -26,7 +26,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.cache import TTLCache
-from app.core.deps import AccessContext, get_db, require_membership
+from app.core.deps import AccessContext, get_db, require_membership, uuid_or_404
 from app.core.pagination import DEFAULT_PAGE, MAX_PAGE, decode_cursor, encode_cursor
 from app.domains.briefs.research_spec import (
     DEPARTMENT_TAXONOMY,
@@ -82,6 +82,7 @@ from app.integrations.openrouter.client import LlmError
 from app.models import (
     Brief,
     Company,
+    Icp,
     MembershipRole,
     Prompt,
     Prospect,
@@ -1018,8 +1019,7 @@ def add_company(
         if exclusions.blocks(Candidate(domain=domain)):
             raise HTTPException(status.HTTP_409_CONFLICT, "company is on the exclusion list")
 
-    _validate_icp_id(body.icp_id)  # M20 — a malformed icp_id was a raw 500 (siblings 400)
-    icp = uuid.UUID(body.icp_id) if body.icp_id else None
+    icp = _validate_icp_id(db, ctx.tenant.id, body.icp_id)  # L8 — parse + tenant-owned-or-404
 
     company = db.execute(
         select(Company).where(Company.tenant_id == ctx.tenant.id, Company.domain == domain)
@@ -2174,15 +2174,22 @@ def enrich_score_prospects_async(
     return _scoring_job_out(job)
 
 
-def _validate_icp_id(raw: str | None) -> None:
-    """N24 — reject a malformed icp_id at the async ENQUEUE door, so the worker (which does
-    `uuid.UUID(params['icp_id'])`) never crashes on a bad value AFTER the job is already queued —
-    which would strand the job in `error` with an opaque traceback instead of a clean 400."""
-    if raw:
-        try:
-            uuid.UUID(raw)
-        except ValueError:
-            raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid icp_id") from None
+def _validate_icp_id(db: Session, tenant_id, raw: str | None) -> uuid.UUID | None:
+    """The ONE ICP door-guard (L8, extends M20/N24). Parse `raw` and confirm it belongs to this
+    tenant, or 404 — returning the parsed UUID (None passes through; the ICP is optional). A
+    malformed id, a well-formed-but-unknown id, and a cross-tenant id all read the same 404: never a
+    raw 500 (add_prospect/find_people used a bare `uuid.UUID`), a worker crash after the job was
+    queued (N24), or a silently-stored foreign id. `create_batch` already 404s non-owned ICPs — this
+    brings find/add into line."""
+    if not raw:
+        return None
+    icp_id = uuid_or_404(raw, "no such ICP")
+    owned = db.execute(
+        select(Icp.id).where(Icp.id == icp_id, Icp.tenant_id == tenant_id)
+    ).scalar_one_or_none()
+    if owned is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such ICP")
+    return icp_id
 
 
 @router.post(
@@ -2197,7 +2204,7 @@ def find_company_async(
 ) -> ScoringJobOut:
     """Kick off an Apollo Flow-A company find **asynchronously** (W4). Rows land UNSCORED; the
     worker surfaces deeper errors (e.g. no research scope) as the job's `error`."""
-    _validate_icp_id(body.icp_id)
+    _validate_icp_id(db, ctx.tenant.id, body.icp_id)
     job = scoring.enqueue_scoring(
         db, ctx.tenant.id, scoring.KIND_FIND_COMPANY, body.model_dump()
     )
@@ -2217,7 +2224,7 @@ def find_lookalikes_async(
     """Kick off an Apollo lookalike find **asynchronously** (W4). Rows land UNSCORED."""
     if not body.company_ids:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "select companies first")
-    _validate_icp_id(body.icp_id)
+    _validate_icp_id(db, ctx.tenant.id, body.icp_id)
     job = scoring.enqueue_scoring(
         db, ctx.tenant.id, scoring.KIND_FIND_LOOKALIKES, body.model_dump()
     )
@@ -2256,10 +2263,7 @@ def scoring_job_status(
 ) -> ScoringJobOut:
     """Poll one async scoring job (W4) — `status` runs `queued`→`running`→`done`/`error`; `result`
     holds the run counts once `done`. 404 if the id isn't this client's job."""
-    try:
-        jid = uuid.UUID(job_id)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid job id") from exc
+    jid = uuid_or_404(job_id, "no such job")  # L12 — malformed path id → 404 (M22 standard)
     job = scoring.job_by_id(db, ctx.tenant.id, jid)
     if job is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such job")
@@ -2416,7 +2420,7 @@ def add_prospect(
     if reason := exclusions.blocks(cand):
         raise HTTPException(status.HTTP_409_CONFLICT, f"person is excluded ({reason})")
 
-    icp = uuid.UUID(body.icp_id) if body.icp_id else None
+    icp = _validate_icp_id(db, ctx.tenant.id, body.icp_id)  # L8 — parse + tenant-owned-or-404
     domain = normalize_domain(body.domain)
     enrichment = {
         "full_name": body.full_name,
@@ -2563,7 +2567,7 @@ def find_people(
     # personas never clobbers another's) → the AI spec block for that ICP. `_clean` drops empty
     # filters, so a cleared field widens; `organization_ids` is never taken from here (the loop sets
     # it).
-    call_icp = uuid.UUID(body.icp_id) if body.icp_id else None
+    call_icp = _validate_icp_id(db, ctx.tenant.id, body.icp_id)  # L8 — parse + tenant-owned-or-404
     saved_row = (
         None
         if body.people_search_params is not None

@@ -199,9 +199,19 @@ def _load_campaign(db: Session, tenant_id: uuid.UUID, campaign_id: str) -> Campa
 
 
 def _seed_variants(variants: list[VariantIn]) -> list[VariantIn]:
-    """The variant set to persist — the operator's, or one seeded `A` placeholder if none given."""
+    """The variant set to persist — the operator's, or one seeded `A` placeholder if none given.
+    L9 — reject duplicate NORMALIZED keys (`strip()[:8] or "A"`, the exact form the callers persist)
+    with a 400 before the DB sees them, so a collision (`""`→`A` vs a literal `A`, or two keys equal
+    after the 8-char trim) is a clean error on the variants editor rather than an uncaught
+    uq_message_variant_campaign_key 500."""
     clean = [v for v in variants if (v.subject.strip() or v.body.strip())]
     if clean:
+        seen: set[str] = set()
+        for v in clean:
+            nk = v.key.strip()[:8] or "A"
+            if nk in seen:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, f"duplicate variant key: {nk!r}")
+            seen.add(nk)
         return clean
     return [
         VariantIn(

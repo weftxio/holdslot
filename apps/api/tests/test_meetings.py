@@ -305,3 +305,30 @@ def test_feedback_in_caps_bound_public_input():
         FeedbackIn(rating=5, chips=["ok", "y" * 65])  # per-chip cap
     with pytest.raises(ValidationError):
         FeedbackIn(rating=5, chips=[f"c{i}" for i in range(13)])  # chip-count cap
+
+
+def test_default_tz_is_hong_kong():
+    """TZ-1 (D6) — the host TZ default is Asia/Hong_Kong for all timezone-derived scheduling."""
+    assert m.DEFAULT_TZ == "Asia/Hong_Kong"
+
+
+def test_inform_client_502_when_send_fails(monkeypatch):
+    """L11 — inform_client honors send_email's result: a swallowed SES failure returned 204 (the
+    operator believed the client was informed). It now 502s, mirroring send_feedback (:605)."""
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from app.domains.meetings import public as mpub
+    from app.domains.meetings import router as mr
+
+    meeting = MagicMock(feedback_rating=2, feedback_comment="")
+    monkeypatch.setattr(mr, "_load_meeting", lambda db, tid, mid: meeting)
+    monkeypatch.setattr(mr, "_brief_data", lambda db, tid: {})
+    monkeypatch.setattr(mpub, "brief_attendee", lambda data: "client@x.com")
+    monkeypatch.setattr(mr, "send_email", lambda *a, **k: False)  # SES refused
+    ctx = MagicMock()
+    ctx.tenant.name = "Acme"
+    with pytest.raises(mr.HTTPException) as ei:
+        mr.inform_client("m1", ctx=ctx, db=MagicMock())
+    assert ei.value.status_code == 502
