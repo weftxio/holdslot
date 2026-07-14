@@ -237,9 +237,11 @@ def run_scoring_job(tenant_id, job_id, session_factory=None) -> None:
                         job_id)
             return
 
-        # The per-kind handlers live in the router (they own the scoring helpers); import lazily so
-        # this module never imports the router at load time (the router imports this one).
-        from app.domains.prospects.router import SCORING_HANDLERS
+        # The per-kind handlers + dispatch table live in the `jobs` leaf module. Imported lazily:
+        # `jobs` builds SCORING_HANDLERS keyed by this module's KIND_* constants, so it imports
+        # `scoring` at load time — a lazy import here keeps that one-way (no load-time cycle), and
+        # the 2.2 split means we no longer pull in the whole prospects router to reach it.
+        from app.domains.prospects.jobs import SCORING_HANDLERS
 
         handler = SCORING_HANDLERS.get(kind)
         if handler is None:

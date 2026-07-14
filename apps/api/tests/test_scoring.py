@@ -69,8 +69,6 @@ def test_enrich_score_skips_excluded_parents(monkeypatch):
     # (no credit), while ALL rows still reach the free scoring gate.
     import uuid
 
-    from app.domains.prospects import router
-
     excluded_co = uuid.uuid4()
     kept_co = uuid.uuid4()
 
@@ -109,10 +107,14 @@ def test_enrich_score_skips_excluded_parents(monkeypatch):
         captured["scored_rows"] = all_rows
         return {"scored": len(all_rows), "failed": 0, "cost_usd": 0.0}
 
-    monkeypatch.setattr(router, "_enrich_prospects", _fake_enrich)
-    monkeypatch.setattr(router, "_score_prospects_v2", _fake_score)
+    # 2.2 split: run_enrich_score_prospects now lives in `jobs` and calls `_enrich_prospects` /
+    # `_score_prospects_v2` from ITS namespace — patch there, not on the router re-export facade.
+    from app.domains.prospects import jobs
 
-    out = router.run_enrich_score_prospects(
+    monkeypatch.setattr(jobs, "_enrich_prospects", _fake_enrich)
+    monkeypatch.setattr(jobs, "_score_prospects_v2", _fake_score)
+
+    out = jobs.run_enrich_score_prospects(
         _Db(), "tenant-1", {"identity_keys": ["k1", "k2", "k3"]}
     )
 
