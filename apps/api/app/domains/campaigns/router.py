@@ -781,7 +781,16 @@ def _set_campaign_status(
     """Shared pause/resume: call Smartlead, flip our status, write the control event. The DB flip
     happens only after the Smartlead call succeeds (a failed call must not lie about the state)."""
     if campaign.smartlead_campaign_id:
-        sl.set_status(campaign.smartlead_campaign_id, sl_status)
+        # L4 — a Smartlead outage here was escaping as a raw 500 on the first-class Pause/Resume
+        # console buttons (the M17 class, unfixed on these siblings). Surface it as a 502 so the FE
+        # shows a real "try again"; the DB flip below stays gated on the call succeeding.
+        try:
+            sl.set_status(campaign.smartlead_campaign_id, sl_status)
+        except sl.SmartleadError as exc:
+            raise HTTPException(
+                status.HTTP_502_BAD_GATEWAY,
+                "couldn't update the campaign in Smartlead — try again",
+            ) from exc
     campaign.status = new_status
     db.add(
         OutreachEvent(
@@ -996,6 +1005,10 @@ def performance_summary(
     show_up_rate = round(held_total / ingested, 3) if ingested else None
     # Billable this cycle = Σ amounts of the meetings whose 48h window has passed, undisputed (the
     # is_billable rule expressed in SQL; amount is only ever stamped on a qualified+approval row).
+    # L10 — accrued-UNBILLED only: `billed_at IS NULL`. Without it the sum was all-time, so once
+    # Stripe activates every already-invoiced meeting would inflate the console figure forever,
+    # diverging from the Stripe invoice. `billed_at` is NULL for every meeting until FR-7/FR-8, so
+    # this is a no-op today and correct the day billing goes live (mirrors the charge path's claim).
     billable_this_cycle = float(
         db.execute(
             select(func.coalesce(func.sum(Meeting.amount), 0)).where(
@@ -1004,6 +1017,7 @@ def performance_summary(
                 Meeting.amount.is_not(None),
                 Meeting.disputed.is_(False),
                 Meeting.dispute_window_ends_at < now,
+                Meeting.billed_at.is_(None),
             )
         ).scalar_one()
         or 0

@@ -389,6 +389,10 @@ def check_stripe(sec: dict) -> None:
         ("price_launch", "Launch $800 price id"),
         ("price_growth", "Growth $1,600 price id"),
         ("price_activation", "$400 activation price id"),
+        # L3 — the metered per-meeting price. Was absent from the seeding contract, so create_subscription
+        # (which reads `price_qualified_meeting`) would mint a subscription that bills $0 per meeting if
+        # the founder didn't know to seed it. Listing it here makes it part of the --strict GS0 gate.
+        ("price_qualified_meeting", "qualified_meeting $500 metered price id"),
     ):
         if sec.get(field):
             record("stripe", label, True, "stored")

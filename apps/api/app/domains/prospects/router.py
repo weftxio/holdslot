@@ -2948,6 +2948,15 @@ def _enrich_prospects(db: Session, rows: list[Prospect], slug: str) -> dict:
             from app.domains.billing.router import reserve_enrichment
 
             allowed = reserve_enrichment(db, rows[0].tenant_id, len(to_match))
+            # L2 — commit the reservation NOW, before the slow Apollo fan-out. reserve_enrichment
+            # deliberately doesn't commit (M13: helpers don't own the txn), and nothing else is
+            # dirty here (R10 already committed the no-spend rows). Two reasons it must land first:
+            #  · reserve-before-spend — a Lambda timeout mid-fan-out would otherwise spend the
+            #    Apollo credits but roll back the reservation, leaking cap (spend uncounted).
+            #    Over-reserving (reserve N, match <N on crash) is the safe direction.
+            #  · the atomic UPDATE holds the tenant's `subscription` row lock; leaving it open for
+            #    the fan-out's duration blocks create_subscription / the Stripe webhook _apply.
+            db.commit()
         except Exception:  # noqa: BLE001 — a cap-guard hiccup must NEVER break the paid enrich loop
             db.rollback()  # restore a usable session (R10 already committed the no-spend rows)
             log.warning("enrich[%s]: cap guard failed — proceeding uncapped", slug)

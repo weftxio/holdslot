@@ -74,8 +74,10 @@ def _redact(text: str) -> str:
 def _secret() -> dict:
     """Read `{prefix}/stripe` once and cache it (GD-3 envelope):
     `{api_key, webhook_signing_secret, price_launch, price_growth, price_activation,
-    meter_qualified_meeting, meter_enrichment_overage}`. `HOLDSLOT_STRIPE_KEY` env wins for local /
-    tests (JSON or a bare key), so a swap needs no Secrets Manager round-trip."""
+    price_qualified_meeting, meter_qualified_meeting, meter_enrichment_overage}`.
+    `price_qualified_meeting` is the metered $500/meeting price (L3 — a paid subscription with it
+    missing bills $0/meeting, so it is part of the seeding contract). `HOLDSLOT_STRIPE_KEY` env wins
+    for local / tests (JSON or a bare key), so a swap needs no Secrets Manager round-trip."""
     if env := os.environ.get("HOLDSLOT_STRIPE_KEY"):
         try:
             parsed = json.loads(env)

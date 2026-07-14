@@ -32,8 +32,13 @@ def _load(name: str) -> dict:
 def _capture(monkeypatch, ret=None):
     calls: list[dict] = []
 
-    def fake(method, path, *, body=None, query=None, timeout=sl.DEFAULT_TIMEOUT):
-        calls.append({"method": method, "path": path, "body": body, "query": query})
+    def fake(
+        method, path, *, body=None, query=None, timeout=sl.DEFAULT_TIMEOUT, retry_transport=True
+    ):
+        calls.append(
+            {"method": method, "path": path, "body": body, "query": query,
+             "retry_transport": retry_transport}
+        )
         return ret if ret is not None else {"ok": True, "id": 900001}
 
     monkeypatch.setattr(sl, "_request", fake)
@@ -289,6 +294,65 @@ def test_retries_transient_5xx_then_raises(monkeypatch):
         sl._get("campaigns")
     assert ei.value.status == 429
     assert n["c"] == sl._MAX_RETRIES + 1  # initial + retries
+    sl.reset_secret()
+
+
+def test_reply_to_thread_does_not_retry_transport_errors(monkeypatch):
+    """L5 (M19) — a non-idempotent reply must NOT blind-retry a transport error: a timed-out POST
+    may already have sent, and a replay would deliver the reply + booking link to the prospect
+    twice. Exactly one attempt, then raise."""
+    monkeypatch.setenv("HOLDSLOT_SMARTLEAD_KEY", "k")
+    sl.reset_secret()
+    monkeypatch.setattr(sl.time, "sleep", lambda *_: None)
+    n = {"c": 0}
+
+    def dropped(req, timeout=0):
+        n["c"] += 1
+        raise urllib.error.URLError("connection reset")
+
+    monkeypatch.setattr(sl.urllib.request, "urlopen", dropped)
+    with pytest.raises(sl.SmartleadError):
+        sl.reply_to_thread(
+            1, email_stats_id="s1", email_body="hi", lead_id=2, reply_message_id="m1"
+        )
+    assert n["c"] == 1  # no replay
+    sl.reset_secret()
+
+
+def test_create_campaign_does_not_retry_transport_errors(monkeypatch):
+    """L5 (M19) — create_campaign is non-idempotent: a transport replay would orphan a duplicate."""
+    monkeypatch.setenv("HOLDSLOT_SMARTLEAD_KEY", "k")
+    sl.reset_secret()
+    monkeypatch.setattr(sl.time, "sleep", lambda *_: None)
+    n = {"c": 0}
+
+    def dropped(req, timeout=0):
+        n["c"] += 1
+        raise TimeoutError("read timed out")
+
+    monkeypatch.setattr(sl.urllib.request, "urlopen", dropped)
+    with pytest.raises(sl.SmartleadError):
+        sl.create_campaign("Q3 outbound")
+    assert n["c"] == 1
+    sl.reset_secret()
+
+
+def test_get_still_retries_transport_errors(monkeypatch):
+    """Contrast to L5: reads keep the transport retry (retry_transport defaults True), so the
+    opt-out is selective to the non-idempotent POSTs."""
+    monkeypatch.setenv("HOLDSLOT_SMARTLEAD_KEY", "k")
+    sl.reset_secret()
+    monkeypatch.setattr(sl.time, "sleep", lambda *_: None)
+    n = {"c": 0}
+
+    def dropped(req, timeout=0):
+        n["c"] += 1
+        raise urllib.error.URLError("blip")
+
+    monkeypatch.setattr(sl.urllib.request, "urlopen", dropped)
+    with pytest.raises(sl.SmartleadError):
+        sl._get("campaigns")
+    assert n["c"] == sl._MAX_RETRIES + 1
     sl.reset_secret()
 
 

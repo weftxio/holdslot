@@ -525,3 +525,45 @@ def _bl_id(db, s):
     from app.models import BookingLink
 
     return db.query(BookingLink).filter_by(tenant_id=s["tenant"].id).one().id
+
+
+def test_billable_this_cycle_excludes_already_billed():
+    """L10 — the console `billable_this_cycle` counts accrued-UNBILLED meetings only
+    (`billed_at IS NULL`). Once Stripe stamps `billed_at`, the meeting must leave the figure so it
+    can't inflate all-time and diverge from the Stripe invoice. Pre-fix this stayed at 500."""
+    from app.core.db import get_session
+    from app.core.deps import AccessContext
+    from app.domains.campaigns.router import performance_summary
+    from app.models import Meeting
+
+    db = get_session()
+    suffix = uuid.uuid4().hex[:8]
+    s = _seed(db, suffix)
+    ctx = AccessContext(user=s["user"], tenant=s["tenant"], membership=s["membership"])
+    try:
+        # Qualified, undisputed, 48h dispute window already passed, not yet invoiced → billable.
+        meeting = Meeting(
+            tenant_id=s["tenant"].id,
+            campaign_lead_id=s["lead"].id,
+            prospect_id=s["prospect"].id,
+            approval_id=s["approval"].id,
+            scheduled_at=datetime.now(UTC) - timedelta(days=3),
+            held=True,
+            duration_min=30,
+            outcome="qualified",
+            amount=500,
+            dispute_window_ends_at=datetime.now(UTC) - timedelta(hours=1),  # window PASSED
+            disputed=False,
+            billed_at=None,  # accrued, not yet invoiced
+            won=None,
+        )
+        db.add(meeting)
+        db.commit()
+        assert performance_summary(ctx=ctx, db=db).billable_this_cycle == 500  # unbilled → counts
+
+        meeting.billed_at = datetime.now(UTC)  # Stripe invoices it
+        db.commit()
+        # billed → excluded (L10; pre-fix this stayed at 500)
+        assert performance_summary(ctx=ctx, db=db).billable_this_cycle == 0
+    finally:
+        _teardown(db, s)  # bulk-deletes the tenant's meetings

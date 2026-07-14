@@ -225,7 +225,25 @@ def create_subscription(
         )
         sub.stripe_customer_id = cust.get("id")
     if not sub.stripe_subscription_id and plan != "free":
-        prices = [p for p in (stripe.price_id(plan), stripe.price_id("qualified_meeting")) if p]
+        # L3 — a paid plan MUST carry BOTH the flat plan price and the metered qualified-meeting
+        # price. The old `[... if p]` filter silently dropped a missing metered price, minting a
+        # subscription that bills $0 per meeting with no signal — the founder seeds per checklist,
+        # sees all green, and loses the core revenue line undetectably. Hard-fail instead, so a
+        # misconfigured Stripe secret surfaces at setup rather than as vanished revenue.
+        flat_price = stripe.price_id(plan)
+        meter_price = stripe.price_id("qualified_meeting")
+        missing = [
+            name
+            for name, pid in (("plan", flat_price), ("qualified_meeting", meter_price))
+            if not pid
+        ]
+        if missing:
+            log.error("create_subscription: plan=%s missing Stripe price(s): %s", plan, missing)
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                f"Stripe price not configured for: {', '.join(missing)}",
+            )
+        prices = [flat_price, meter_price]
         created = stripe.create_subscription(
             customer=sub.stripe_customer_id,
             prices=prices,

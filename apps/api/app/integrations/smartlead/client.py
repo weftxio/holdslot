@@ -128,10 +128,16 @@ def _request(
     body: dict | None = None,
     query: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    retry_transport: bool = True,
 ) -> dict | list:
     """One request (POST/GET with `?api_key=`), throttled + retried on transient 429/5xx with
     exponential backoff. Auth errors (401/403) drop the cached secret and raise immediately. All
-    error paths go through `_redact` so the key never leaks into a log or exception."""
+    error paths go through `_redact` so the key never leaks into a log or exception.
+
+    `retry_transport=False` disables the transport-error (timeout / dropped connection) retry — a
+    non-idempotent POST (`reply_to_thread`, `create_campaign`) must NOT blind-retry, since a
+    timed-out request may have already landed and a replay would send the reply/booking link twice
+    or mint a duplicate campaign (M19 — the fix the Google client carries for events.insert)."""
     data = json.dumps(body).encode() if body is not None else None
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
     if data is not None:
@@ -153,15 +159,19 @@ def _request(
                 continue
             raise SmartleadError(f"smartlead HTTP {e.code} on {path}", status=e.code) from e
         except (TimeoutError, urllib.error.URLError) as e:
-            if attempt < _MAX_RETRIES:
+            # A transport error leaves the outcome UNKNOWN — the request may have landed. A blind
+            # replay is safe for reads but duplicates a non-idempotent POST (M19), so those opt out.
+            if retry_transport and attempt < _MAX_RETRIES:
                 time.sleep(0.5 * (2**attempt))
                 continue
             raise SmartleadError(f"smartlead transport error on {path}: {e}") from e
     raise SmartleadError(f"smartlead exhausted retries on {path}")  # unreachable
 
 
-def _post(path: str, body: dict, *, timeout: int = DEFAULT_TIMEOUT) -> dict | list:
-    return _request("POST", path, body=body, timeout=timeout)
+def _post(
+    path: str, body: dict, *, timeout: int = DEFAULT_TIMEOUT, retry_transport: bool = True
+) -> dict | list:
+    return _request("POST", path, body=body, timeout=timeout, retry_transport=retry_transport)
 
 
 def _get(path: str, query: dict | None = None, *, timeout: int = DEFAULT_TIMEOUT) -> dict | list:
@@ -177,7 +187,9 @@ def create_campaign(name: str, client_id: int | None = None) -> dict:
     body: dict = {"name": name}
     if client_id is not None:
         body["client_id"] = client_id
-    return _post("campaigns/create", body)  # type: ignore[return-value]
+    # M19 — no transport retry: a timed-out create may already have minted the campaign; a replay
+    # would orphan a duplicate.
+    return _post("campaigns/create", body, retry_transport=False)  # type: ignore[return-value]
 
 
 def update_schedule(campaign_id: str | int, schedule: dict) -> dict:
@@ -308,7 +320,11 @@ def reply_to_thread(
         body["cc"] = cc
     if bcc:
         body["bcc"] = bcc
-    return _post(f"campaigns/{campaign_id}/reply-email-thread", body)  # type: ignore[return-value]
+    # M19 — no transport retry: a timed-out reply may already have sent; a replay would deliver the
+    # reply + booking link twice to the prospect.
+    return _post(  # type: ignore[return-value]
+        f"campaigns/{campaign_id}/reply-email-thread", body, retry_transport=False
+    )
 
 
 def fetch_statistics(campaign_id: str | int, *, offset: int = 0, limit: int = 100) -> dict:

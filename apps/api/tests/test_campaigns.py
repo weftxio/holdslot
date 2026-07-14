@@ -497,3 +497,31 @@ def test_uuid_or_404_rejects_malformed_and_parses_valid():
         uuid_or_404("not-a-uuid", "no such campaign")
     assert ei.value.status_code == 404
     assert ei.value.detail == "no such campaign"
+
+
+# ------------------------------------------------------------------- L4 — Smartlead outage → 502
+
+
+def test_set_campaign_status_maps_smartlead_error_to_502(monkeypatch):
+    """L4 — a Smartlead outage on Pause/Resume must surface as 502 (upstream fault), not a raw 500,
+    and the DB status flip + control event must NOT happen when the Smartlead call failed."""
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from app.domains.campaigns import router as cr
+
+    def boom(*_a, **_k):
+        raise cr.sl.SmartleadError("smartlead down")
+
+    monkeypatch.setattr(cr.sl, "set_status", boom)
+    camp = MagicMock()
+    camp.smartlead_campaign_id = "900123"
+    db = MagicMock()
+    with pytest.raises(cr.HTTPException) as ei:
+        cr._set_campaign_status(
+            db, camp, sl_status="PAUSED", new_status="paused", event_type="campaign_paused"
+        )
+    assert ei.value.status_code == 502
+    db.add.assert_not_called()  # no control event
+    db.commit.assert_not_called()  # DB never lied about the state

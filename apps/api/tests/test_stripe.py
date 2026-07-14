@@ -300,3 +300,39 @@ def test_meeting_identifier_and_month_key():
     from datetime import UTC, datetime
 
     assert bsvc.usage_month_key(datetime(2026, 7, 13, 23, 30, tzinfo=UTC)) == "2026-07"
+
+
+# ---------------------------------------------------------- L3 — no silent $0/meeting subscription
+
+
+def test_create_subscription_hard_fails_when_metered_price_missing(monkeypatch):
+    """L3 — a paid plan created while the metered `qualified_meeting` price is absent must 409, not
+    silently mint a subscription that bills $0 per meeting. The Stripe subscription is never
+    created. (Unit: get_subscription/customer/prices mocked; no DB, no network.)"""
+    from unittest.mock import MagicMock
+
+    from app.domains.billing import router as br
+    from app.domains.billing.schemas import SubscriptionIn
+
+    monkeypatch.setattr(br, "get_subscription", lambda db, tid: None)  # fresh tenant
+    monkeypatch.setattr(br.stripe, "create_customer", lambda **k: {"id": "cus_x"})
+    # flat plan price present; the metered per-meeting price MISSING (the L3 gap).
+    monkeypatch.setattr(
+        br.stripe, "price_id", lambda plan: None if plan == "qualified_meeting" else "price_flat"
+    )
+    created = {"sub": False}
+    monkeypatch.setattr(
+        br.stripe,
+        "create_subscription",
+        lambda **k: created.__setitem__("sub", True) or {"id": "sub_x", "status": "active"},
+    )
+    ctx = MagicMock()
+    ctx.tenant.name = "Acme"
+    ctx.tenant.slug = "acme"
+    ctx.user.email = "owner@acme.com"
+
+    with pytest.raises(br.HTTPException) as ei:
+        br.create_subscription(SubscriptionIn(plan="growth"), ctx=ctx, db=MagicMock())
+    assert ei.value.status_code == 409
+    assert "qualified_meeting" in ei.value.detail
+    assert created["sub"] is False  # never created a $0/meeting subscription
