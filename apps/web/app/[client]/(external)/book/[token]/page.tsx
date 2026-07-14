@@ -1,7 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
-import { Sample } from "@/components/Sample";
 import { ExternalShell } from "@/components/external/ExternalShell";
 import { RetryNotice } from "@/components/external/RetryNotice";
 import {

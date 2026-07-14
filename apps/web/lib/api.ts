@@ -303,7 +303,7 @@ export type ResearchSpecResult = {
   llm_call_id: string | null;
   created_at: string | null;
 };
-export type ResearchSpecList = { latest: ResearchSpecResult | null; versions: number[] };
+export type ResearchSpecList = { latest: ResearchSpecResult | null };
 
 // One find run's scope lineage (D+ Stage 1) — the Find-history drawer's row shape. `filter_body` is
 // the EXACTLY-executed Apollo body (override-proof, post-relax); `result_meta` carries the search
@@ -313,9 +313,7 @@ export type ResearchRunApi = {
   run_id: string;
   source: string; // apollo · lookalike · rescore · enrich
   prompt_version: string | null;
-  rubric_version: string | null;
   rows_pushed: number;
-  rows_accepted: number;
   cost_usd: number | null;
   icp_id: string | null;
   scope_source: string | null; // ai · custom · lookalike · null (non-Apollo run)
@@ -564,7 +562,6 @@ export type CompanyApi = {
   subscores: Subscores;
   flags: string[];
   icp: string | null;
-  trigger_line: string; // the email hook shown on an expanded contact_* row (spec §11)
   enrichment: CompanyEnrichment;
   source: string; // "apollo" | "manual"
   status: string; // "discovered" | "people_found" | ...
@@ -682,7 +679,6 @@ export async function addCompany(client: string, body: CompanyManual): Promise<C
 // until terminal, then reloads the affected list. Replaces the old client-driven chunk loops.
 export type ScoringJobApi = {
   job_id: string | null;
-  kind: string | null;
   status: string; // idle | queued | running | done | error
   result: Record<string, unknown>;
   error: string | null;
@@ -751,7 +747,7 @@ export async function awaitScoringJob(
   } catch {
     return lastJob
       ? { ...lastJob, status: "running" }
-      : { job_id: jobId, kind: null, status: "running", result: {}, error: null };
+      : { job_id: jobId, status: "running", result: {}, error: null };
   }
 }
 
@@ -1002,17 +998,12 @@ type BatchProspectApi = {
   prospect_id: string;
   full_name: string;
   title: string;
-  seniority: string;
-  fit_reason: string;
   decision: string; // pending | approved | removed
 };
 type BatchCompanyGroupApi = {
   company: string;
   domain: string;
   industry: string;
-  size: string;
-  country: string;
-  fit_reason: string;
   prospects: BatchProspectApi[];
 };
 export type BatchDetailApi = BatchApi & { companies: BatchCompanyGroupApi[] };
@@ -1098,16 +1089,12 @@ type ApprovalProspectApi = {
   name: string; // "Sarah K."
   company_descriptor: string; // "SaaS · 200–500 · US" (not the exact company)
   title: string;
-  seniority: string;
   fit_reason: string;
-  decision: string;
 };
 export type ApprovalViewApi = {
   state: "valid" | "expired" | "used";
   batch_name: string;
   client_name: string;
-  count: number;
-  expires_at: string | null;
   prospects: ApprovalProspectApi[];
 };
 export type ApprovalDecisionApi = { status: string; approved: number; removed: number };
@@ -1152,11 +1139,9 @@ export type CampaignApi = {
   name: string;
   icp: string;
   status: string; // draft | launching | sending | paused | completed | error
-  smartlead_campaign_id: string | null;
   lead_total: number;
   stages: Record<string, number>; // current stage → lead count
   created_at: string | null;
-  updated_at: string | null;
 };
 // One row in a lead's per-card timeline — derived server-side from the outreach_event ledger.
 export type LeadEventApi = {
@@ -1272,7 +1257,6 @@ export type ReplyApi = {
   id: string;
   campaign_id: string;
   campaign_name: string;
-  campaign_lead_id: string | null;
   prospect_name: string;
   prospect_role: string;
   stage: string;
@@ -1326,7 +1310,7 @@ export async function respondReply(
 
 // Performance-summary (EF-Q9) — derived on read. The Leads funnel + reply stats + needs-attention ①
 // go live at E7; the meeting cells (headline, held, billable, calendar, ②③) go live at F5.
-export type FunnelStageApi = { label: string; n: number };
+type FunnelStageApi = { label: string; n: number };
 export type MeetingCalendarItemApi = {
   id: string;
   scheduled_at: string; // UTC …Z; render viewer-local
@@ -1338,7 +1322,6 @@ export type PerformanceSummaryApi = {
   new_positive_replies: number;
   replies_awaiting_review: number;
   approvals_pending: number;
-  meetings_booked: number;
   qualified_last_30d: number;
   qualified_delta: number;
   meetings_held_week: number;
@@ -1372,7 +1355,7 @@ export async function getBookingView(token: string): Promise<BookingViewApi> {
   if (!r.ok) return fail(r);
   return r.json();
 }
-export type BookingConfirmApi = { state: string; scheduled_at: string; meet_link: string | null };
+export type BookingConfirmApi = { state: string };
 export async function submitBooking(token: string, slot: string): Promise<BookingConfirmApi> {
   const r = await fetch(`${API_BASE}/book/${encodeURIComponent(token)}`, {
     method: "POST",
@@ -1415,13 +1398,10 @@ export type MeetingApi = {
   campaign_id: string | null; // M27 — filters key off id, not the non-unique campaign name
   batch_name: string;
   scheduled_at: string;
-  meet_link: string | null;
   held: boolean | null;
-  duration_min: number | null;
   outcome: string | null; // qualified · short_call · noshow
   amount: number | null;
   billing_chip: string; // Held · Billed · Not billable
-  dispute_window_ends_at: string | null;
   disputed: boolean;
   feedback_state: string; // Received · None
   feedback_rating: number | null;
@@ -1493,7 +1473,6 @@ export type FeedbackRowApi = {
   state: string; // Received · Pending · None
   overdue: boolean;
   rating: number | null;
-  chips: string[];
   comment: string;
   feedback_at: string | null;
   scheduled_at: string;

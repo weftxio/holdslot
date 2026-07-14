@@ -47,11 +47,9 @@ class CampaignOut(BaseModel):
     name: str
     icp: str = ""
     status: str
-    smartlead_campaign_id: str | None = None
     lead_total: int = 0
     stages: dict[str, int] = Field(default_factory=dict)  # current stage → lead count
     created_at: str | None = None
-    updated_at: str | None = None
 
 
 class LeadEventOut(BaseModel):
@@ -108,7 +106,6 @@ class ReplyOut(BaseModel):
     id: str
     campaign_id: str
     campaign_name: str = ""
-    campaign_lead_id: str | None = None
     prospect_name: str = ""
     prospect_role: str = ""
     stage: str = ""
@@ -167,7 +164,6 @@ class PerformanceSummaryOut(BaseModel):
     new_positive_replies: int = 0
     replies_awaiting_review: int = 0
     approvals_pending: int = 0  # needs-attention ① (batches sent, undecided — D data, live today)
-    meetings_booked: int = 0  # ever-reached meeting (funnel + headline)
     # Phase-F meeting cells (live at F5).
     qualified_last_30d: int = 0
     qualified_delta: int = 0  # vs the prior 30-day window

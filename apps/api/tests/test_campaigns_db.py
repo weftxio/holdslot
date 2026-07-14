@@ -208,7 +208,10 @@ def test_create_launch_and_webhook_funnel(monkeypatch):
             .all()
         )
         assert all(lead.smartlead_lead_id for lead in leads)
-        sl_campaign_id = detail.smartlead_campaign_id
+        # S9 — smartlead_campaign_id no longer serialized on CampaignOut; read it off the row.
+        from app.models import Campaign
+
+        sl_campaign_id = db.get(Campaign, uuid.UUID(created.id)).smartlead_campaign_id
         assert "status:START" in fake.calls
         lead0, lead1 = leads[0], leads[1]
 

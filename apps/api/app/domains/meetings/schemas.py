@@ -47,8 +47,6 @@ class SweepResult(BaseModel):
 
 class BookingConfirm(BaseModel):
     state: str = "confirmed"
-    scheduled_at: str
-    meet_link: str | None = None
 
 
 # --------------------------------------------------------------------------- public feedback (F5)
@@ -83,13 +81,10 @@ class MeetingOut(BaseModel):
     campaign_id: str | None = None  # M27 — FE filters key off id, not the non-unique name
     batch_name: str = ""
     scheduled_at: str
-    meet_link: str | None = None
     held: bool | None = None
-    duration_min: int | None = None
     outcome: str | None = None
     amount: float | None = None
     billing_chip: str = "Not billable"
-    dispute_window_ends_at: str | None = None
     disputed: bool = False
     feedback_state: str = "None"
     feedback_rating: int | None = None
@@ -115,7 +110,6 @@ class FeedbackRowOut(BaseModel):
     state: str  # Received · Pending · None
     overdue: bool = False
     rating: int | None = None
-    chips: list[str] = Field(default_factory=list)
     comment: str = ""
     feedback_at: str | None = None
     scheduled_at: str

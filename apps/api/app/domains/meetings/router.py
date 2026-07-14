@@ -355,15 +355,12 @@ def _meeting_out(meeting: Meeting, maps: dict, now: datetime) -> MeetingOut:
         campaign_id=str(campaign.id) if campaign else None,
         batch_name=batch.name if batch else "",
         scheduled_at=m.iso_z(meeting.scheduled_at),
-        meet_link=meeting.meet_link,
         held=meeting.held,
-        duration_min=meeting.duration_min,
         outcome=meeting.outcome,
         amount=float(meeting.amount) if meeting.amount is not None else None,
         billing_chip=m.billing_chip(
             meeting.outcome, meeting.amount, meeting.dispute_window_ends_at, meeting.disputed, now
         ),
-        dispute_window_ends_at=_iso(meeting.dispute_window_ends_at),
         disputed=meeting.disputed,
         feedback_state="Received" if meeting.feedback_at else "None",
         feedback_rating=meeting.feedback_rating,
@@ -560,7 +557,6 @@ def list_feedback(
                 state=m.feedback_state(has_live, meeting.feedback_at),
                 overdue=m.feedback_overdue(meeting.scheduled_at, meeting.feedback_at, now),
                 rating=meeting.feedback_rating,
-                chips=list(meeting.feedback_chips or []),
                 comment=meeting.feedback_comment or "",
                 feedback_at=_iso(meeting.feedback_at),
                 scheduled_at=m.iso_z(meeting.scheduled_at),
@@ -636,7 +632,6 @@ def send_feedback(
         state="Pending",
         overdue=m.feedback_overdue(meeting.scheduled_at, meeting.feedback_at, now),
         rating=meeting.feedback_rating,
-        chips=list(meeting.feedback_chips or []),
         comment=meeting.feedback_comment or "",
         feedback_at=_iso(meeting.feedback_at),
         scheduled_at=m.iso_z(meeting.scheduled_at),
@@ -653,9 +648,9 @@ def inform_client(
 ) -> None:
     """Email the Brief attendee about a low-rated meeting (context only; no state change)."""
     meeting = _load_meeting(db, ctx.tenant.id, meeting_id)
-    from app.domains.meetings.public import _brief_attendee
+    from app.domains.meetings.public import brief_attendee
 
-    to = _brief_attendee(_brief_data(db, ctx.tenant.id))
+    to = brief_attendee(_brief_data(db, ctx.tenant.id))
     if not to:
         raise HTTPException(status.HTTP_409_CONFLICT, "no client attendee email on file")
     rating = meeting.feedback_rating

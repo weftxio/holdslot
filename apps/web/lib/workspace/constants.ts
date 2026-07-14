@@ -193,10 +193,14 @@ export function clearScoring(setScoring: ScoringSetter, ids: string[]) {
 // HKD 6,000 + HKD 4,000 model. The rate is a fixed business rule, not per-client data.
 export const PER_MEETING_USD = 500;
 
-// The mock reply fixtures are dated relative to this fixed "today"; pass it to daysAgoLabel for
-// those. Live data (e.g. Phase D batches) leaves the arg off and gets the real current date.
-const TODAY_ISO = "2026-06-03";
-export const MOCK_TODAY = new Date(TODAY_ISO + "T00:00:00Z");
+// S27 — meeting-outcome → display label + badge class. One source for the billing ledger, the
+// meeting recaps, and the performance-summary calendar (which reads `.label` only).
+export const OUTCOME_BADGE: Record<string, { label: string; badge: string }> = {
+  qualified: { label: "Qualified", badge: "badge-ok" },
+  short_call: { label: "Short call", badge: "badge-warn" },
+  noshow: { label: "No-show", badge: "badge-danger" },
+};
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 export function fmtShortDate(iso: string) {
   const [, m, d] = iso.split("-").map(Number);
@@ -350,9 +354,9 @@ export const LABEL_META: Record<ScoreLabel, { text: string; cls: string; rank: n
   low_fit: { text: "Low fit", cls: "label-chip--low", rank: 2 },
   excluded_by_rules: { text: "Excluded", cls: "label-chip--excluded", rank: 3 },
 };
-export const UNSCORED_RANK = 1.5; // null label sits between contact_soon and low_fit
+const UNSCORED_RANK = 1.5; // null label sits between contact_soon and low_fit
 
-export function labelRank(label: ScoreLabel | null): number {
+function labelRank(label: ScoreLabel | null): number {
   return label ? LABEL_META[label].rank : UNSCORED_RANK;
 }
 
@@ -375,7 +379,7 @@ export const PROSPECT_AXES = ["persona_fit", "authority", "trigger", "reachabili
 // higher score_total first within a bucket, then newest. Replaces the v1 fit_score comparator.
 export function compareByLabel(
   a: { label: ScoreLabel | null; score_total: number | null; created_at: string | null },
-  b: { label: ScoreLabel | null; score_total: number | null; created_at: string | null },
+  b: { label: ScoreLabel | null; score_total: number | null; created_at: string | null }
 ): number {
   const r = labelRank(a.label) - labelRank(b.label);
   if (r !== 0) return r;
@@ -408,7 +412,7 @@ export const BUCKET_HEAD: Record<ScoreLabel | "unscored", string> = {
 
 // Group a set of rows by label (null → the "unscored" key), preserving per-bucket order.
 export function groupByLabel<T extends { label: ScoreLabel | null }>(
-  rows: T[],
+  rows: T[]
 ): Map<ScoreLabel | "unscored", T[]> {
   const out = new Map<ScoreLabel | "unscored", T[]>();
   for (const r of rows) {
@@ -447,42 +451,9 @@ export const MAX_CSV_BYTES = 1_000_000; // 1 MB
 export const MAX_CSV_ROWS = 5000;
 
 // The Step-1 manual scope override lives server-side now (per (tenant, ICP)); the old localStorage
-// `loadScopeOverride`/`saveScopeOverride` pair + its `SCOPE_KEY` were retired in D+.5/R25 — only the
-// one-time migration helpers below remain, to lift any leftover local entry to the server.
-// U1.6 — one-time migration of the Step-1 company scope from its old localStorage home (per
-// (client, ICP)) to the server, so a find reads the operator's tuning server-side instead of
-// silently falling back to the broad AI scope. `pendingLocalScopeMigrations` returns each stored
-// entry (with its ICP + storage key); the caller PUTs it, then calls `clearMigratedScope(key)`. A
-// per-client done-flag keeps it idempotent.
-const SCOPE_MIGRATED_KEY = (client: string) => `holdslot_scope_migrated_${client}`;
-export function pendingLocalScopeMigrations(
-  client: string
-): { key: string; icpId?: string; override: ScopeOverride }[] {
-  if (typeof window === "undefined") return [];
-  if (localStorage.getItem(SCOPE_MIGRATED_KEY(client))) return [];
-  const base = `holdslot_scope_${client}`;
-  const out: { key: string; icpId?: string; override: ScopeOverride }[] = [];
-  for (let i = 0; i < localStorage.length; i++) {
-    const key = localStorage.key(i);
-    // exact base (legacy ICP-less) or `${base}:${icpId}` — never another client whose slug extends
-    // this one, and never the done-flag itself.
-    if (!key || (key !== base && !key.startsWith(`${base}:`))) continue;
-    const icpId = key === base ? undefined : key.slice(base.length + 1);
-    try {
-      const v = JSON.parse(localStorage.getItem(key) || "null");
-      if (v && typeof v === "object") out.push({ key, icpId, override: v as ScopeOverride });
-    } catch {
-      /* skip a corrupt entry */
-    }
-  }
-  return out;
-}
-export function clearMigratedScope(key: string) {
-  if (typeof window !== "undefined") localStorage.removeItem(key);
-}
-export function markScopeMigrationDone(client: string) {
-  if (typeof window !== "undefined") localStorage.setItem(SCOPE_MIGRATED_KEY(client), "1");
-}
+// `loadScopeOverride`/`saveScopeOverride` pair + its `SCOPE_KEY` were retired in D+.5/R25, and the
+// one-time U1.6 migration shim that lifted any leftover local entry to the server was removed in
+// Wave 5 (S2) once every operator browser carried the done-flag (pre-flight-confirmed, 2026-07-13).
 const csvToArr = (s: string) =>
   s
     .split(",")
@@ -497,15 +468,15 @@ const arrToCsv = (a: unknown) => (Array.isArray(a) ? (a as string[]).join(", ") 
 
 // Resolve the AI spec's targeting block for display/settings seeding. A v4 spec carries one block
 // per ICP (`icp_targeting`) — `icpId` picks it, falling back to the first block so a summary is
-// never blank; a v3 spec's single top-level block passes through unchanged. Display-side only:
-// the server's strict per-ICP resolution (400 on ambiguity) lives in targeting_for_icp.
+// never blank; a spec with no blocks yields {}. Display-side only: the server's strict per-ICP
+// resolution (400 on ambiguity) lives in targeting_for_icp.
 function specTargetingBlock(
   spec: ResearchSpecResult | null,
   icpId?: string
 ): Record<string, unknown> {
   const sp = (spec?.spec ?? {}) as Record<string, unknown>;
   const blocks = sp.icp_targeting as Record<string, unknown>[] | undefined;
-  if (!blocks?.length) return sp; // v3 (or no spec) — top-level block shape
+  if (!blocks?.length) return {}; // no blocks (or no spec) → nothing to seed
   if (icpId) {
     const hit = blocks.find((b) => b.icp_id === icpId);
     if (hit) return hit;

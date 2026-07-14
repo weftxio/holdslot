@@ -66,7 +66,7 @@ def _read_busy(now: datetime) -> list[dict] | None:
         return None
 
 
-def _brief_attendee(brief_data: dict) -> str | None:
+def brief_attendee(brief_data: dict) -> str | None:
     """The client-side attendee to invite alongside the prospect (from the Brief). Checked in the
     availability block first, then a top-level key — an opaque JSONB field the founder authors."""
     av = brief_data.get("availability") or {}
@@ -198,7 +198,7 @@ def book_meeting(token: str, body: BookIn, db: Session = Depends(get_db)) -> Boo
     db.flush()
     _advance_to_meeting(db, lead)
     db.commit()
-    return BookingConfirm(scheduled_at=start, meet_link=meet_link)
+    return BookingConfirm()
 
 
 def _attendees(prospect: Prospect | None, brief_data: dict) -> list[str]:
@@ -206,7 +206,7 @@ def _attendees(prospect: Prospect | None, brief_data: dict) -> list[str]:
     email = (prospect.enrichment if prospect else None) or {}
     if email.get("email"):
         out.append(email["email"])
-    attendee = _brief_attendee(brief_data)
+    attendee = brief_attendee(brief_data)
     if attendee and attendee not in out:
         out.append(attendee)
     return out

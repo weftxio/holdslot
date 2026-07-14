@@ -71,9 +71,7 @@ def _masked(
         name=svc.mask_name(e.get("full_name")),
         company_descriptor=descriptor,
         title=e.get("title", ""),
-        seniority=e.get("seniority", ""),
         fit_reason=fit_reason,
-        decision=approval.decision,
     )
 
 
@@ -90,10 +88,7 @@ def view_approval(token: str, db: Session = Depends(get_db)) -> ApprovalView:
     # Non-valid links reveal nothing but the state — a forwarded/expired link must not leak the
     # client's company name, the batch name, or its size (tenant existence stays hidden).
     if state != "valid" or batch is None:
-        return ApprovalView(
-            state=state,
-            expires_at=link.expires_at.isoformat() if link.expires_at else None,
-        )
+        return ApprovalView(state=state)
 
     tenant = db.get(Tenant, link.tenant_id)
     client_name = tenant.name if tenant else ""
@@ -109,8 +104,6 @@ def view_approval(token: str, db: Session = Depends(get_db)) -> ApprovalView:
         state="valid",
         batch_name=batch.name,
         client_name=client_name,
-        count=len(prospects),
-        expires_at=link.expires_at.isoformat() if link.expires_at else None,
         prospects=prospects,
     )
 

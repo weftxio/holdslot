@@ -42,6 +42,16 @@ def _get_secret_json(name: str, region: str) -> dict:
     return json.loads(raw)
 
 
+def fetch_secret_json(name: str) -> dict:
+    """Read + parse `{HOLDSLOT_SECRETS_PREFIX}/{name}` from Secrets Manager — the raw SM-read half
+    shared by every integration's `_secret()`/`_api_key()`/`_config()`. Each integration keeps its
+    own env-override and envelope shaping on top; this factors only the region/prefix/read/parse
+    boilerplate (never cached here — the callers own their `@lru_cache`)."""
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
+    prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
+    return _get_secret_json(f"{prefix}/{name}", region)
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"

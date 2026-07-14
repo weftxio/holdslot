@@ -31,10 +31,10 @@ class ResearchSpecOut(BaseModel):
 
 
 class ResearchSpecList(BaseModel):
-    """The latest spec plus the version history (newest first) for the review panel."""
+    """The latest spec for the review panel (S10 — the version-history list was never read by the
+    FE, so the endpoint now fetches only the latest row instead of every spec's full JSONB)."""
 
     latest: ResearchSpecOut | None = None
-    versions: list[int] = []
 
 
 class ResearchJobOut(BaseModel):

@@ -15,9 +15,7 @@ class ApprovalProspect(BaseModel):
     name: str  # "Sarah K." — first name + last initial
     company_descriptor: str  # "SaaS · 200–500 · US" — firmographics, NOT the exact company
     title: str = ""
-    seniority: str = ""
     fit_reason: str = ""
-    decision: str
 
 
 class ApprovalView(BaseModel):
@@ -27,8 +25,6 @@ class ApprovalView(BaseModel):
     state: str  # valid · expired · used
     batch_name: str = ""
     client_name: str = ""
-    count: int = 0  # live (non-removed) prospect count
-    expires_at: str | None = None
     prospects: list[ApprovalProspect] = Field(default_factory=list)
 
 

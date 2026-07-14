@@ -40,13 +40,6 @@
   align-items: baseline;
   gap: 10px;
 }
-.hl-main .big .ph-inline {
-  display: inline-block;
-  width: 120px;
-  height: 62px;
-  border-radius: 7px;
-  position: relative;
-}
 .hl-main .delta {
   font-size: 13.5px;
   color: rgba(255, 255, 255, 0.7);
@@ -87,13 +80,6 @@
   display: flex;
   align-items: baseline;
   gap: 3px;
-}
-.hl-cell .n .ph-inline {
-  display: inline-block;
-  width: 54px;
-  height: 30px;
-  border-radius: 5px;
-  position: relative;
 }
 .hl-cell .l {
   font-size: 13px;

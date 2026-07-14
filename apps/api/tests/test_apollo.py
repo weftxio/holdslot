@@ -190,7 +190,7 @@ def test_paginate_requests_full_pages_and_trims_client_side(monkeypatch):
         return {"organizations": rows, "pagination": {"page": page, "total_pages": 5}}
 
     monkeypatch.setattr(apollo, "_post", fake_post)
-    out = apollo.search_companies({"q": "x"}, max_results=150)
+    out, _ = apollo.search_companies_meta({"q": "x"}, max_results=150)
     assert len(out) == 150  # trimmed to max_results
     assert [c["page"] for c in calls] == [1, 2]  # stopped once ≥150 collected
     assert calls[0]["per_page"] == 100 and calls[1]["per_page"] == 100  # CONSTANT page size
@@ -324,15 +324,17 @@ def test_search_companies_meta_captures_first_page_signal(monkeypatch):
     assert meta["pages_fetched"] == 2
 
 
-def test_search_companies_still_returns_bare_rows(monkeypatch):
-    """The rows-only wrapper is unchanged for callers (e.g. tests) that don't want meta."""
+def test_search_companies_meta_returns_rows_and_meta(monkeypatch):
+    """`search_companies_meta` returns `(rows, meta)`; the rows half is the plain organizations."""
     monkeypatch.setattr(
         apollo, "_post",
         lambda path, body, timeout=apollo.DEFAULT_TIMEOUT: {
             "organizations": [{"id": "a"}], "pagination": {"page": 1, "total_pages": 1}
         },
     )
-    assert apollo.search_companies({"q": "x"}, max_results=10) == [{"id": "a"}]
+    rows, meta = apollo.search_companies_meta({"q": "x"}, max_results=10)
+    assert rows == [{"id": "a"}]
+    assert meta["total_pages"] == 1
 
 
 def test_match_person_extracts_person(monkeypatch):

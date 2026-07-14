@@ -24,8 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from app.core.db import is_unique_violation
 from app.core.deps import get_db
-from app.domains.prospects.scoring import is_unique_violation
 from app.integrations.stripe import client as stripe
 from app.models import BillingEvent, Subscription
 

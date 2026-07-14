@@ -48,7 +48,6 @@ DRAFT = "draft"
 LAUNCHING = "launching"
 SENDING = "sending"
 PAUSED = "paused"
-COMPLETED = "completed"
 ERROR = "error"
 # A launch (or re-launch/resume) may start from any of these; `launching` is in-flight (409).
 LAUNCHABLE = (DRAFT, ERROR, SENDING)
@@ -65,8 +64,8 @@ DEFAULT_UNSUBSCRIBE_TEXT = "Prefer not to hear from us? Unsubscribe."
 
 
 def active_sending_account_ids(db: Session, tenant_id) -> list[int]:
-    """The tenant's `active` Smartlead sending-inbox ids — the per-tenant DB replacement for the
-    secret's global `sl.sending_account_ids()`. Ordered for a stable `add_email_accounts` call;
+    """The tenant's `active` Smartlead sending-inbox ids — the per-tenant DB (0029) replacement for
+    the old secret-global sending-account pool. Ordered for a stable `add_email_accounts` call;
     coerces to `int` (the RDS Data API can hand BigInteger back as a string)."""
     rows = (
         db.execute(
@@ -183,7 +182,7 @@ def handle_job_event(event: dict) -> dict:
     return {"ok": True}
 
 
-def _fail(db: Session, campaign_id, message: str) -> None:
+def fail(db: Session, campaign_id, message: str) -> None:
     """Guarded terminal write to `error` — only if the worker still owns the launch (launching)."""
     db.execute(
         update(Campaign)
@@ -226,12 +225,12 @@ def run_launch_job(tenant_id, campaign_id, session_factory=None) -> None:
             _do_launch(db, campaign)
         except sl.SmartleadError as e:
             db.rollback()
-            _fail(db, cid, f"smartlead error: {e}")
+            fail(db, cid, f"smartlead error: {e}")
             return
         except Exception:
             log.exception("launch worker crashed id=%s", campaign_id)
             db.rollback()
-            _fail(db, cid, "internal error during launch")
+            fail(db, cid, "internal error during launch")
             return
         # Success — flip sending, guarded on still owning the launch (not reaped/superseded).
         wrote = db.execute(

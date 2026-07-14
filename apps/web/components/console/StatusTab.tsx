@@ -9,11 +9,8 @@ export const STATUS_TABS: [StatusTabKey, string][] = [
   ["booking", "Booking Status"],
   ["feedback", "Meeting Feedback"],
 ];
-export const STATUS_LABEL: Record<StatusTabKey, string> = {
-  approval: "List Approval",
-  booking: "Booking Status",
-  feedback: "Meeting Feedback",
-};
+// S25 — derived from STATUS_TABS so the label strings live in exactly one place.
+export const STATUS_LABEL = Object.fromEntries(STATUS_TABS) as Record<StatusTabKey, string>;
 // Per-tab "back to <workspace tab>" target, rendered in the topbar-right by ConsoleShell.
 export const STATUS_BACK: Record<StatusTabKey, [string, string]> = {
   approval: ["workspace/batches", "Back to Approval Batches"],

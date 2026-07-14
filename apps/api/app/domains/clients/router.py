@@ -57,13 +57,6 @@ def me(user: AppUser = Depends(get_current_user), db: Session = Depends(get_db))
     )
 
 
-@router.get("/clients", response_model=list[ClientOut])
-def list_clients(
-    user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)
-) -> list[ClientOut]:
-    return _clients_for(db, user)
-
-
 @router.post("/clients", response_model=ClientOut, status_code=status.HTTP_201_CREATED)
 def create_client(
     body: ClientCreateIn,

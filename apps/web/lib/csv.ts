@@ -173,7 +173,9 @@ export function parseExclusionCsv(text: string): ExclParseResult {
 // --- text <-> rows, for merge/dedupe against the textarea -------------------
 // Quote any cell containing a comma/quote/newline so the textarea stays valid CSV that
 // re-parses to the same three columns (company names often contain commas).
-function csvCell(s: string): string {
+// S29 — also used by the billing-ledger export. Quotes only cells that need it (comma/quote/
+// newline); the result is valid RFC-4180 CSV that re-parses to the same columns.
+export function csvCell(s: string): string {
   return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
 }
 function rowsToText(rows: ExclRow[]): string {

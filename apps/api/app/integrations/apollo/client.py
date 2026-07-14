@@ -4,8 +4,9 @@ Mirrors the B3 OpenRouter discipline: **lazy / SnapStart-safe** (no secret read,
 import — the `X-Api-Key` loads on first use and is cached), stdlib `urllib` (no runtime HTTP dep),
 bounded 429/5xx backoff. Three calls, exactly the C0-verified contract:
 
-  * `search_companies` — `POST mixed_companies/search` (**consumes plan credits**; confirm the per-
-    call cost on the dashboard). Paginates to `max_results`.
+  * `search_companies_meta` — `POST mixed_companies/search` (**0 credits** — company search is
+    free). Paginates to `max_results`, also returning the first-page scope `meta` (total /
+    breadcrumbs).
   * `search_people`    — `POST mixed_people/api_search` (**0 credits**, no email/phone; **master
     key**). NEVER the legacy `mixed_people/search` (422). One org per call (Flow B loops).
   * `match_person`     — `POST people/match` (**the enrich spend**; `reveal_personal_emails` = 1 cr;
@@ -30,7 +31,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
-import boto3
+from app.core.config import fetch_secret_json
 
 log = logging.getLogger("holdslot.apollo")
 
@@ -56,11 +57,7 @@ def _api_key() -> str:
     (local dev / a rotation) so a key change needs no Secrets Manager round-trip."""
     if env := os.environ.get("HOLDSLOT_APOLLO_KEY"):
         return env
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
-    sm = boto3.client("secretsmanager", region_name=region)
-    raw = sm.get_secret_value(SecretId=f"{prefix}/apollo")["SecretString"]
-    return json.loads(raw)["key"]
+    return fetch_secret_json("apollo")["key"]
 
 
 def reset_key() -> None:
@@ -165,17 +162,6 @@ def _paginate(
     return rows[:max_results], meta
 
 
-def search_companies(filter_body: dict, *, max_results: int = 100) -> list[dict]:
-    """`mixed_companies/search` (FREE — no credits) → `organizations` rows, capped at max_results.
-
-    Rows-only wrapper over `search_companies_meta` for callers that don't need the telemetry.
-    """
-    rows, _ = _paginate(
-        "mixed_companies/search", filter_body, key="organizations", max_results=max_results
-    )
-    return rows
-
-
 def search_companies_meta(
     filter_body: dict, *, max_results: int = 100, start_page: int = 1
 ) -> tuple[list[dict], dict]:
@@ -278,7 +264,6 @@ def reset_tech_vocab() -> None:
 
 
 __all__ = [
-    "search_companies",
     "search_companies_meta",
     "count_companies",
     "search_people",

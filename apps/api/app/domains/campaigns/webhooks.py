@@ -25,10 +25,10 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from app.core.db import is_unique_violation
 from app.core.deps import get_db
 from app.domains.campaigns import service as svc
 from app.domains.campaigns.router import record_stage_move
-from app.domains.prospects.scoring import is_unique_violation
 from app.integrations.smartlead import client as sl
 from app.models import Brief, Campaign, CampaignLead, OutreachEvent, Prospect
 

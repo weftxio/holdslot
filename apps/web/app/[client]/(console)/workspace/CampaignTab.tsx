@@ -5,6 +5,7 @@ import { useToast } from "@/components/Toast";
 import { highlightBody } from "@/lib/tmpl";
 import { nameInitials } from "@/lib/initials";
 import { parseUtc } from "@/lib/dates";
+import { toggleInSet } from "@/lib/sets";
 import {
   createCampaign,
   getCampaign,
@@ -35,16 +36,74 @@ type StageKind = "wip" | "bill" | "exit" | "stop";
 // Static presentation for the seven stages — the design's copy. Live counts + prospects overlay it.
 // Only the outreach step (`contacted`) carries the campaign's A/B/C message variants (the backend
 // holds one campaign-level variant set = the outreach sequence; later stages are same-thread sends).
-const STAGE_META: { id: string; kind: StageKind; title: string; step: string; obj: string; hasVariants: boolean }[] = [
-  { id: "contacted", kind: "wip", title: "Initial outreach", step: "S3", obj: "Get the email opened and earn a first reply.", hasVariants: true },
-  { id: "followup", kind: "wip", title: "Follow-up", step: "S4", obj: "Re-engage non-responders before the sequence ends.", hasVariants: false },
-  { id: "replied", kind: "wip", title: "Positive reply", step: "S4→S5", obj: "Convert a positive reply into a booked meeting.", hasVariants: false },
-  { id: "meeting", kind: "wip", title: "Meeting schedule", step: "S5", obj: "Prospect shows up and passes the fit check.", hasVariants: false },
-  { id: "noshow", kind: "exit", title: "No show", step: "S5", obj: "Booked but did not attend · re-book or park.", hasVariants: false },
-  { id: "billable", kind: "bill", title: "Qualified billable", step: "S6", obj: "Held meeting confirmed · pushed to Stripe.", hasVariants: false },
-  { id: "drop", kind: "stop", title: "Drop / DNC", step: "S4", obj: "Graceful exit on negative or do-not-contact replies.", hasVariants: false },
+const STAGE_META: {
+  id: string;
+  kind: StageKind;
+  title: string;
+  step: string;
+  obj: string;
+  hasVariants: boolean;
+}[] = [
+  {
+    id: "contacted",
+    kind: "wip",
+    title: "Initial outreach",
+    step: "S3",
+    obj: "Get the email opened and earn a first reply.",
+    hasVariants: true,
+  },
+  {
+    id: "followup",
+    kind: "wip",
+    title: "Follow-up",
+    step: "S4",
+    obj: "Re-engage non-responders before the sequence ends.",
+    hasVariants: false,
+  },
+  {
+    id: "replied",
+    kind: "wip",
+    title: "Positive reply",
+    step: "S4→S5",
+    obj: "Convert a positive reply into a booked meeting.",
+    hasVariants: false,
+  },
+  {
+    id: "meeting",
+    kind: "wip",
+    title: "Meeting schedule",
+    step: "S5",
+    obj: "Prospect shows up and passes the fit check.",
+    hasVariants: false,
+  },
+  {
+    id: "noshow",
+    kind: "exit",
+    title: "No show",
+    step: "S5",
+    obj: "Booked but did not attend · re-book or park.",
+    hasVariants: false,
+  },
+  {
+    id: "billable",
+    kind: "bill",
+    title: "Qualified billable",
+    step: "S6",
+    obj: "Held meeting confirmed · pushed to Stripe.",
+    hasVariants: false,
+  },
+  {
+    id: "drop",
+    kind: "stop",
+    title: "Drop / DNC",
+    step: "S4",
+    obj: "Graceful exit on negative or do-not-contact replies.",
+    hasVariants: false,
+  },
 ];
-const STAGE_TITLE: Record<string, string> = Object.fromEntries(STAGE_META.map((s) => [s.id, s.title]));
+const STAGE_TITLE: Record<string, string> = Object.fromEntries(
+  STAGE_META.map((s) => [s.id, s.title])
+);
 
 // Allowed stage moves — mirrors the server allowed-moves map (an illegal move is a 409). Note the
 // `contacted → replied` rung (a first-email reply is legitimate before any follow-up); it is the one
@@ -124,7 +183,7 @@ export function CampaignTab({
   // (derived during render, so no reconciling set-state effect). Empty when the client has none.
   const resolvedId = campaigns.some((c) => c.id === selectedId)
     ? selectedId
-    : campaigns[0]?.id ?? "";
+    : (campaigns[0]?.id ?? "");
 
   const loadDetail = useCallback(
     async (id: string) => {
@@ -180,7 +239,10 @@ export function CampaignTab({
   );
 
   // Leads in the selected stage, grouped into company cards.
-  const cards = useMemo(() => groupByCompany((detail?.leads ?? []).filter((l) => l.stage === stageId)), [detail, stageId]);
+  const cards = useMemo(
+    () => groupByCompany((detail?.leads ?? []).filter((l) => l.stage === stageId)),
+    [detail, stageId]
+  );
 
   // ── actions ──
   const refresh = useCallback(async () => {
@@ -304,7 +366,15 @@ export function CampaignTab({
     const key = String.fromCharCode(code);
     void persistVariants([
       ...cur.map((v) => ({ ...v })),
-      { key, subject: "", body: "New variant · write your message. Use {{first_name}} and {{company_name}} tokens.", is_winner: false, sent: 0, opens: 0, replies: 0 },
+      {
+        key,
+        subject: "",
+        body: "New variant · write your message. Use {{first_name}} and {{company_name}} tokens.",
+        is_winner: false,
+        sent: 0,
+        opens: 0,
+        replies: 0,
+      },
     ]).then((ok) => ok && toast("Variant added"));
   };
   const deleteVariant = (key: string) => {
@@ -318,12 +388,7 @@ export function CampaignTab({
     );
   };
 
-  const toggleLog = (pid: string) =>
-    setOpenLogs((s) => {
-      const next = new Set(s);
-      next.has(pid) ? next.delete(pid) : next.add(pid);
-      return next;
-    });
+  const toggleLog = (pid: string) => setOpenLogs((s) => toggleInSet(s, pid));
 
   const showCreate = creating || campaigns.length === 0;
   const outreachVariants = detail?.variants ?? [];
@@ -353,7 +418,10 @@ export function CampaignTab({
           </label>
         )}
         {detail && !showCreate && (
-          <span className={clsx("badge", STATUS_BADGE[status] ?? "badge-neutral")} title="Campaign status">
+          <span
+            className={clsx("badge", STATUS_BADGE[status] ?? "badge-neutral")}
+            title="Campaign status"
+          >
             <span className="bdot" />
             {STATUS_LABEL[status] ?? status}
           </span>
@@ -398,14 +466,26 @@ export function CampaignTab({
                 Create campaign
               </button>
               {campaigns.length > 0 && (
-                <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreating(false)}>
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setCreating(false)}
+                >
                   Cancel
                 </button>
               )}
             </div>
           ) : (
             <div className="cmp-batch" title="Sendout batch · locked to this campaign">
-              <svg className="cmp-batch-lock" width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg
+                className="cmp-batch-lock"
+                width="12"
+                height="12"
+                viewBox="0 0 14 14"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              >
                 <rect x="3" y="6.2" width="8" height="5.5" rx="1.2" />
                 <path d="M4.6 6.2V4.6a2.4 2.4 0 0 1 4.8 0v1.6" />
               </svg>
@@ -418,22 +498,42 @@ export function CampaignTab({
           {!showCreate && detail && (
             <>
               {(status === "draft" || status === "error") && (
-                <button type="button" className="btn btn-accent btn-sm" onClick={handleLaunch} disabled={busy}>
+                <button
+                  type="button"
+                  className="btn btn-accent btn-sm"
+                  onClick={handleLaunch}
+                  disabled={busy}
+                >
                   {status === "error" ? "Retry launch" : "Launch"}
                 </button>
               )}
               {status === "sending" && (
                 <>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={handleSync} disabled={busy}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleSync}
+                    disabled={busy}
+                  >
                     Sync
                   </button>
-                  <button type="button" className="btn btn-ghost btn-sm" onClick={handlePause} disabled={busy}>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={handlePause}
+                    disabled={busy}
+                  >
                     Pause
                   </button>
                 </>
               )}
               {status === "paused" && (
-                <button type="button" className="btn btn-accent btn-sm" onClick={handleResume} disabled={busy}>
+                <button
+                  type="button"
+                  className="btn btn-accent btn-sm"
+                  onClick={handleResume}
+                  disabled={busy}
+                >
                   Resume
                 </button>
               )}
@@ -441,7 +541,11 @@ export function CampaignTab({
           )}
 
           {!showCreate && (
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setCreating(true)}>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={() => setCreating(true)}
+            >
               ＋ New campaign
             </button>
           )}
@@ -500,12 +604,15 @@ export function CampaignTab({
                 <div className="cmp-sec">
                   A/B variant testing
                   <span className="cmp-pill">
-                    {outreachVariants.length} {outreachVariants.length === 1 ? "variant" : "variants"}
+                    {outreachVariants.length}{" "}
+                    {outreachVariants.length === 1 ? "variant" : "variants"}
                     {!canEditVariants && " · locked"}
                   </span>
                 </div>
                 {outreachVariants.length === 0 ? (
-                  <div className="cmp-empty">No variants yet · the server seeds a default on create.</div>
+                  <div className="cmp-empty">
+                    No variants yet · the server seeds a default on create.
+                  </div>
                 ) : (
                   <VariantPanel
                     variants={outreachVariants}
@@ -644,7 +751,11 @@ function VariantPanel({
                     onChange={(e) => onEditSubject(e.target.value)}
                     style={{ marginBottom: 8 }}
                   />
-                  <textarea className="textarea cmp-vedit" value={editBody} onChange={(e) => onEditBody(e.target.value)} />
+                  <textarea
+                    className="textarea cmp-vedit"
+                    value={editBody}
+                    onChange={(e) => onEditBody(e.target.value)}
+                  />
                 </>
               ) : (
                 <div className="cmp-vcopy">
@@ -675,12 +786,36 @@ function VariantPanel({
                       onClick={onSave}
                       disabled={busy}
                     >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
                         <path d="M3.5 8.5l3 3 6-7" />
                       </svg>
                     </button>
-                    <button type="button" className="cmp-vbtn del" title="Cancel" aria-label="Cancel edit" onClick={onCancelEdit}>
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                    <button
+                      type="button"
+                      className="cmp-vbtn del"
+                      title="Cancel"
+                      aria-label="Cancel edit"
+                      onClick={onCancelEdit}
+                    >
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
                         <path d="M4 4l8 8M12 4l-8 8" />
                       </svg>
                     </button>
@@ -695,7 +830,16 @@ function VariantPanel({
                       onClick={() => onStartEdit(v)}
                       disabled={busy}
                     >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
                         <path d="M11.5 2.5l2 2L6 12l-2.5.5L4 10z" />
                         <path d="M10 4l2 2" />
                       </svg>
@@ -708,7 +852,16 @@ function VariantPanel({
                       onClick={() => onDelete(v.key)}
                       disabled={busy}
                     >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 16 16"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      >
                         <path d="M3 4.5h10M6.5 4.5V3h3v1.5M5 4.5l.5 8h5l.5-8" />
                       </svg>
                     </button>
@@ -787,7 +940,12 @@ function CompanyCard({
                 {personStatus(p)}
                 <span className="cmp-spacer" />
                 {log.length > 0 && (
-                  <button type="button" className="cmp-logtoggle" aria-expanded={open} onClick={() => onToggleLog(p.id)}>
+                  <button
+                    type="button"
+                    className="cmp-logtoggle"
+                    aria-expanded={open}
+                    onClick={() => onToggleLog(p.id)}
+                  >
                     Log
                     <span className="cmp-logcount">{log.length}</span>
                     <span className="cmp-chev" aria-hidden>

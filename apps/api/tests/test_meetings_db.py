@@ -301,8 +301,10 @@ def test_full_booking_sweep_reads_feedback(monkeypatch):
         slot = view.slots[0]
 
         confirm = public.book_meeting(token, BookIn(slot=slot), db=db)
-        assert confirm.state == "confirmed" and confirm.meet_link.endswith("abc-defg-hij")
+        assert confirm.state == "confirmed"
         meeting = db.query(Meeting).filter_by(tenant_id=s["tenant"].id).one()
+        # S3 — meet_link is no longer echoed in the confirm body; it's persisted on the row.
+        assert meeting.meet_link.endswith("abc-defg-hij")
         # FT3-13 — the approval snapshot + the ids off the response.
         assert meeting.approval_id == s["approval"].id
         assert meeting.google_event_id == "evt_test"

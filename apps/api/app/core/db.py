@@ -16,7 +16,7 @@ from functools import lru_cache
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 log = logging.getLogger("holdslot.db")
@@ -24,6 +24,34 @@ log = logging.getLogger("holdslot.db")
 
 class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
+
+
+def is_unique_violation(exc: BaseException) -> bool:
+    """True if `exc` is a Postgres unique-violation (SQLSTATE 23505), HOWEVER the driver surfaced it
+    (N29). Over psycopg SQLAlchemy raises `IntegrityError`, but the RDS Data API driver
+    (aurora-data-api) can wrap it as a generic `DBAPIError`/`DatabaseError` — so match the SQLSTATE
+    or the message text too, or the enqueue race would 500 on the live driver, not coalesce."""
+    if isinstance(exc, IntegrityError):
+        return True
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "sqlstate", None) == "23505" or getattr(orig, "pgcode", None) == "23505":
+        return True
+    msg = str(orig if orig is not None else exc).lower()
+    return "23505" in msg or "duplicate key" in msg or "unique constraint" in msg
+
+
+def is_fk_violation(exc: BaseException) -> bool:
+    """True if `exc` is a Postgres foreign-key violation (SQLSTATE 23503), HOWEVER the driver
+    surfaced it — same driver-drift reasoning as `is_unique_violation` (psycopg raises
+    `IntegrityError`; the RDS Data API can wrap it as a generic `DBAPIError`). Lets a route turn a
+    RESTRICT/cascade FK failure into a 409 instead of a raw 500 (M10)."""
+    if isinstance(exc, IntegrityError):
+        return True
+    orig = getattr(exc, "orig", None)
+    if getattr(orig, "sqlstate", None) == "23503" or getattr(orig, "pgcode", None) == "23503":
+        return True
+    msg = str(orig if orig is not None else exc).lower()
+    return "23503" in msg or "foreign key constraint" in msg or "violates foreign key" in msg
 
 
 def _engine_url_and_args() -> tuple[str, dict]:

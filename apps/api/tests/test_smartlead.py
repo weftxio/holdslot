@@ -312,7 +312,6 @@ def test_secret_env_override_json_and_bare(monkeypatch):
     )
     sl.reset_secret()
     assert sl._api_key() == "kk"
-    assert sl.sending_account_ids() == [1, 2]
     monkeypatch.setenv("HOLDSLOT_SMARTLEAD_KEY", "bare-key")
     sl.reset_secret()
     assert sl._api_key() == "bare-key"

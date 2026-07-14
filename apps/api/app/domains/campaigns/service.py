@@ -30,8 +30,6 @@ NOSHOW = "noshow"
 BILLABLE = "billable"
 DROP = "drop"
 
-STAGES = [CONTACTED, FOLLOWUP, REPLIED, MEETING, NOSHOW, BILLABLE, DROP]
-
 # The server allowed-moves map — the mirror of the FE `MOVES` table (CampaignTab.tsx), with ONE
 # deliberate addition: `contacted → replied`. A prospect can reply to the FIRST email (still at
 # `contacted`, before any follow-up), and triaging that positive must be legal; the FE `MOVES` is
@@ -45,10 +43,6 @@ MOVES: dict[str, list[str]] = {
     BILLABLE: [MEETING, DROP],
     DROP: [CONTACTED],
 }
-
-
-class IllegalMove(ValueError):
-    """A stage transition not permitted by `MOVES` (the console maps this to a 409)."""
 
 
 def is_legal_move(src: str, dst: str) -> bool:
@@ -65,7 +59,6 @@ LEAD_REPLIED = "lead_replied"
 LEAD_BOUNCED = "lead_bounced"
 LEAD_UNSUBSCRIBED = "lead_unsubscribed"
 # Internal (never from a webhook): the ledger's own workflow rows.
-CAMPAIGN_STARTED = "campaign_started"
 CAMPAIGN_PAUSED = "campaign_paused"
 CAMPAIGN_RESUMED = "campaign_resumed"
 STAGE_MOVED = "stage_moved"
@@ -114,7 +107,6 @@ _EVENT_DIRECTION: dict[str, str] = {
     LEAD_BOUNCED: "in",
     LEAD_UNSUBSCRIBED: "in",
     STAGE_MOVED: "sys",
-    CAMPAIGN_STARTED: "sys",
     CAMPAIGN_PAUSED: "sys",
     CAMPAIGN_RESUMED: "sys",
 }
@@ -127,7 +119,6 @@ _EVENT_TITLE: dict[str, str] = {
     LEAD_BOUNCED: "Bounced",
     LEAD_UNSUBSCRIBED: "Unsubscribed",
     STAGE_MOVED: "Stage moved",
-    CAMPAIGN_STARTED: "Campaign started",
     CAMPAIGN_PAUSED: "Campaign paused",
     CAMPAIGN_RESUMED: "Campaign resumed",
 }

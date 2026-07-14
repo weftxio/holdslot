@@ -24,3 +24,19 @@ export function whenLabel(iso?: string | null): string {
     timeZoneName: "short",
   });
 }
+
+// "Jul 9" — month + day, in the VIEWER's own zone; "" when unusable. (S26 — the shared home for the
+// day-only formatter the billing / booking / feedback views each repeated via a bare `new Date`.)
+export function fmtDay(iso?: string | null): string {
+  const d = parseUtc(iso);
+  if (!d) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+// "Jul 9, 2026" — month + day + year, in the VIEWER's own zone; "" when unusable. (S26 — shared by
+// the reply queue and the meeting-recap views.)
+export function fmtDayYear(iso?: string | null): string {
+  const d = parseUtc(iso);
+  if (!d) return "";
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}

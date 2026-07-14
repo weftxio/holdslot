@@ -2,6 +2,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
+import { toggleInSet } from "@/lib/sets";
 import clsx from "clsx";
 import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
@@ -45,7 +46,7 @@ import {
   selectCompanies,
   updateCompanyFieldsAsync,
 } from "@/lib/api";
-import type { ScoreLabel, ScoringJobApi } from "@/lib/api";
+import type { ScoreLabel, ScoringJobApi, Subscores } from "@/lib/api";
 import type {
   Icp,
   PeopleScopeForm,
@@ -73,11 +74,8 @@ import {
   effectiveScope,
   formToOverride,
   formToPeopleOverride,
-  clearMigratedScope,
   groupByLabel,
   humanizeFacet,
-  markScopeMigrationDone,
-  pendingLocalScopeMigrations,
   peopleScopeSummary,
   peopleScopeToForm,
   scopeSummary,
@@ -85,8 +83,10 @@ import {
 } from "@/lib/workspace/constants";
 import {
   CompanyStudy,
+  ConfirmFooter,
   LabelChip,
   LinkedInLink,
+  PromptEditorShell,
   SpecHead,
   SubscoreList,
   WebLink,
@@ -103,7 +103,7 @@ const COLLAPSED_KEYS = new Set<string>(COLLAPSED_LABELS);
 function maySelect(
   label: ScoreLabel | null,
   currentlyChecked: boolean,
-  allowExcluded = false,
+  allowExcluded = false
 ): "ok" | "blocked" | "confirm" {
   if (currentlyChecked) return "ok"; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
   // Step 2 passes allowExcluded so a staged-then-excluded company can be TICKED for removal; the
@@ -126,6 +126,157 @@ function dropIds(set: Set<string>, remove: Set<string>): Set<string> {
 }
 // The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
 const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
+// The Step-1 company / Step-2 person score cell — one of three states: fit-scoring in progress, a
+// resolved label (chip + subscores, plus an optional grey reason line the company table shows for
+// non-contact buckets), or Pending. Extracted (S18) so both tables emit byte-identical markup.
+function FitCell({
+  scoring,
+  label,
+  score,
+  subscores,
+  axes,
+  reason,
+}: {
+  scoring: boolean;
+  label: ScoreLabel | null;
+  score: number | null;
+  subscores: Subscores;
+  axes: readonly string[];
+  reason?: string | null;
+}) {
+  if (scoring)
+    return (
+      <span className="fit-scoring" title="AI fit-scoring in progress">
+        <span className="hs-spinner" aria-hidden="true" />
+        Scoring…
+      </span>
+    );
+  if (!label) return <span className="muted">Pending</span>;
+  return (
+    <div className="ai-score-cell">
+      <span className="label-line">
+        <LabelChip label={label} score={score} />
+      </span>
+      {hasSubs(subscores) ? <SubscoreList subscores={subscores} axes={axes} /> : null}
+      {reason ? (
+        <span className="score-reason" title={reason}>
+          {reason}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+// The "Fetching…" spinner overlaid on a list body while a fetch is in flight (Step-1 + Step-2,
+// S18) — renders nothing when idle so the caller can drop it in unconditionally.
+function ListOverlay({ busy }: { busy: boolean }) {
+  if (!busy) return null;
+  return (
+    <div className="list-overlay" role="status" aria-live="polite">
+      <span className="hs-spinner" aria-hidden="true" />
+      <span>Fetching…</span>
+    </div>
+  );
+}
+// One checkbox row in the Personas facet sidebar (seniority + departments, probed or not, S19) —
+// label + optional live count. `key` stays on the call site, per the .map contract.
+function FacetRow({
+  label,
+  checked,
+  count,
+  onToggle,
+}: {
+  label: string;
+  checked: boolean;
+  count?: number;
+  onToggle: () => void;
+}) {
+  return (
+    <label className="facet-row">
+      <input type="checkbox" className="tbl-check" checked={checked} onChange={onToggle} />
+      <span className="facet-label">{label}</span>
+      {count != null && <span className="facet-count">{count}</span>}
+    </label>
+  );
+}
+// The by-ICP list filter above Step-1 and Step-2 (S19) — identical bar the title and the Step-1
+// "pick an ICP" warn-highlight. Renders nothing when there's ≤1 ICP (nothing to filter by).
+function IcpFilterSelect({
+  options,
+  value,
+  onChange,
+  title,
+  highlight,
+}: {
+  options: { id: string; label: string }[];
+  value: string;
+  onChange: (v: string) => void;
+  title: string;
+  highlight?: boolean;
+}) {
+  if (options.length <= 1) return null;
+  return (
+    <select
+      className="select"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      title={title}
+      style={
+        highlight
+          ? {
+              borderColor: "var(--warn)",
+              boxShadow: "0 0 0 3px var(--warn-wash)",
+              transition: "box-shadow 0.2s",
+            }
+          : undefined
+      }
+    >
+      <option value="">All ICPs</option>
+      {options.map((o) => (
+        <option key={o.id} value={o.id}>
+          {o.label}
+        </option>
+      ))}
+    </select>
+  );
+}
+// A labelled text/number input in the scope / add-company / add-person modals (S4) — the
+// `div.field > label + input.input` block repeated 17× with only label/value/placeholder/type
+// varying. `onChange` receives the raw string value.
+function Field({
+  label,
+  value,
+  onChange,
+  type = "text",
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  type?: "text" | "number";
+  placeholder?: string;
+}) {
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <input
+        className="input"
+        type={type}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </div>
+  );
+}
+// The badge pair atop the add-company / add-person modals (S21 — was duplicated inline in both).
+function ManualBadges() {
+  return (
+    <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
+      <span className="badge badge-neutral">source · manual</span>
+      <span className="badge badge-info">fit-scored on add</span>
+    </div>
+  );
+}
 // Find People searches one Apollo call per org; the server caps a single request at MAX_ORGS_PER_FIND
 // (8) orgs, so the FE chunks a larger selection into 8-org calls threaded by one group_id.
 const FIND_ORGS_CHUNK = 8;
@@ -136,7 +287,10 @@ const FIND_ORGS_CHUNK = 8;
 // was actually SCORED low (a real score_total, free-text reason) has no canonical tag, so all such
 // rows fold into one "Low score" group instead of fragmenting into one-off reasons.
 function prettyReason(reason: string): string {
-  const s = (reason || "").trim().replace(/^rule:\s*/i, "").replace(/_/g, " ");
+  const s = (reason || "")
+    .trim()
+    .replace(/^rule:\s*/i, "")
+    .replace(/_/g, " ");
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
 }
 type SubGroup = { key: string; label: string; rows: CompanyApi[] };
@@ -200,16 +354,12 @@ export default function ListPage() {
         .map((i) => ({ id: i.id as string, label: i.short || i.tag || "ICP" })),
     [icps]
   );
-  const icpNameById = useMemo(
-    () => new Map(icpOptions.map((o) => [o.id, o.label])),
-    [icpOptions]
-  );
+  const icpNameById = useMemo(() => new Map(icpOptions.map((o) => [o.id, o.label])), [icpOptions]);
   // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
   // are loaded from the API; selection is by prospect id. Batch creation stays client-side until
   // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
   const [prospects, setProspects] = useState<ProspectApi[]>(
-    () =>
-      qc.getQueryData<{ items: ProspectApi[] }>(["prospects", client])?.items ?? []
+    () => qc.getQueryData<{ items: ProspectApi[] }>(["prospects", client])?.items ?? []
   );
   const [prospectsLoading, setProspectsLoading] = useState(
     () => !qc.getQueryData(["prospects", client])
@@ -243,8 +393,7 @@ export default function ListPage() {
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
   const [companies, setCompanies] = useState<CompanyApi[]>(
-    () =>
-      qc.getQueryData<{ items: CompanyApi[] }>(["companies", client])?.items ?? []
+    () => qc.getQueryData<{ items: CompanyApi[] }>(["companies", client])?.items ?? []
   );
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
@@ -490,13 +639,13 @@ export default function ListPage() {
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     const excluded = new Set(
-      companies.filter((c) => c.label === "excluded_by_rules").map((c) => c.id),
+      companies.filter((c) => c.label === "excluded_by_rules").map((c) => c.id)
     );
     if (excluded.size) setCompanyChecked((s) => dropIds(s, excluded));
   }, [companies]);
   useEffect(() => {
     const excluded = new Set(
-      prospects.filter((p) => p.label === "excluded_by_rules").map((p) => p.id),
+      prospects.filter((p) => p.label === "excluded_by_rules").map((p) => p.id)
     );
     if (excluded.size) setChecked((s) => dropIds(s, excluded));
   }, [prospects]);
@@ -564,9 +713,7 @@ export default function ListPage() {
   // since the backend resolves the person's company by domain). Drives the Add-person dropdown.
   const step2Companies = useMemo(
     () =>
-      companies.filter(
-        (c) => (c.status === "selected" || c.status === "people_found") && c.domain
-      ),
+      companies.filter((c) => (c.status === "selected" || c.status === "people_found") && c.domain),
     [companies]
   );
   // Header count for the Step-2 tab — people whose company is CURRENTLY in Step 2 (selected |
@@ -640,57 +787,6 @@ export default function ListPage() {
     apply();
   }
 
-  // U1.6 — one-time migration of the Step-1 company scope from its old per-(client, ICP) localStorage
-  // home to the server, so a find reads the operator's saved tuning server-side instead of silently
-  // falling back to the broad AI scope (the regression that dumped a page of new "Needs score" rows).
-  // Idempotent (per-client done-flag); a failed PUT keeps its local key for a later retry.
-  useEffect(() => {
-    const pending = pendingLocalScopeMigrations(client);
-    if (!pending.length) {
-      markScopeMigrationDone(client);
-      return;
-    }
-    let alive = true;
-    (async () => {
-      let reconciled = 0; // local keys cleared (gates the done-flag)
-      let restored = 0; // actually PUT to the server (drives the toast)
-      for (const { key, icpId, override } of pending) {
-        try {
-          // R15 — don't let a stale pre-U1 browser clobber a NEWER server-side override: if the
-          // server already has this ICP's override, drop the local copy WITHOUT PUTting; else PUT.
-          const existing = await getScopeOverride(client, "company", icpId || undefined);
-          if (!existing) {
-            await putScopeOverride(client, "company", override as Record<string, unknown>, icpId);
-            restored += 1;
-          }
-          clearMigratedScope(key);
-          reconciled += 1;
-        } catch {
-          /* leave the local key; the next load retries the remaining entries */
-        }
-      }
-      if (reconciled === pending.length) markScopeMigrationDone(client);
-      if (!alive || clientRef.current !== client) return;
-      if (restored) {
-        try {
-          const b = await getScopeOverride(client, "company", fIcp || undefined);
-          if (clientRef.current === client) setScopeOverride(b ? (b as ScopeOverride) : null);
-        } catch {
-          /* the hydration effect below will resolve it */
-        }
-        toast(
-          `Restored your saved company search filters (${restored} ICP${restored === 1 ? "" : "s"}) ` +
-            "to your account · finds now use them, not the AI scope"
-        );
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-    // fIcp is only read for the post-migration refresh; the done-flag prevents re-running per ICP.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, toast]);
-
   // The Step-1 manual scope override is persisted server-side per (tenant, ICP) — re-fetch it
   // whenever the client or the selected ICP changes (covers mount + client switch too) so the
   // active-filters summary + "Custom" badge reflect that ICP's own tuning, following the operator
@@ -721,14 +817,9 @@ export default function ListPage() {
         .filter((c) => {
           const text = `${c.name} ${c.domain} ${c.industry}`.toLowerCase();
           const accepted = c.status === "people_found";
-          const statusOk =
-            !coStatus || (coStatus === "accepted" ? accepted : !accepted);
+          const statusOk = !coStatus || (coStatus === "accepted" ? accepted : !accepted);
           const icpOk = !fIcp || c.icp_id === fIcp;
-          return (
-            (!coSearch || text.includes(coSearch.toLowerCase())) &&
-            statusOk &&
-            icpOk
-          );
+          return (!coSearch || text.includes(coSearch.toLowerCase())) && statusOk && icpOk;
         })
         .sort(compareCompanyRows),
     [companies, coSearch, coStatus, fIcp]
@@ -792,12 +883,7 @@ export default function ListPage() {
   function toggleCo(c: CompanyApi, allowExcluded = false) {
     // excluded locked out of Step-1 selection; low_fit confirms; unticking always allowed. Step 2
     // passes allowExcluded so a staged-then-excluded company can be ticked for removal (R6).
-    const apply = () =>
-      setCompanyChecked((s) => {
-        const n = new Set(s);
-        n.has(c.id) ? n.delete(c.id) : n.add(c.id);
-        return n;
-      });
+    const apply = () => setCompanyChecked((s) => toggleInSet(s, c.id));
     const verdict = maySelect(c.label, companyChecked.has(c.id), allowExcluded);
     if (verdict === "blocked") return;
     if (verdict === "confirm") {
@@ -807,27 +893,15 @@ export default function ListPage() {
     apply();
   }
   function toggleCoCollapse(id: string) {
-    setExpandedCos((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
+    setExpandedCos((s) => toggleInSet(s, id));
   }
   // Expand/collapse a Step-1 footnote bucket (low_fit / excluded_by_rules) — keyed by the label.
   function toggleBucket(key: string) {
-    setExpandedBuckets((s) => {
-      const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
+    setExpandedBuckets((s) => toggleInSet(s, key));
   }
   // Expand/collapse one reason sub-group inside a footnote bucket — keyed `${bucket}::${reasonKey}`.
   function toggleSub(key: string) {
-    setExpandedSubs((s) => {
-      const n = new Set(s);
-      n.has(key) ? n.delete(key) : n.add(key);
-      return n;
-    });
+    setExpandedSubs((s) => toggleInSet(s, key));
   }
 
   // One Step-1 company row (the v2 call-sheet cell: label chip + score, the four subscores as a text
@@ -868,34 +942,15 @@ export default function ListPage() {
           </div>
         </td>
         <td>
-          {scoringCoIds.has(c.id) ? (
-            <span className="fit-scoring" title="AI fit-scoring in progress">
-              <span className="hs-spinner" aria-hidden="true" />
-              Scoring…
-            </span>
-          ) : (
-            <div className="ai-score-cell">
-              {c.label ? (
-                <>
-                  <span className="label-line">
-                    <LabelChip label={c.label} score={c.score_total} />
-                  </span>
-                  {hasSubs(c.subscores) ? (
-                    <SubscoreList subscores={c.subscores} axes={COMPANY_AXES} />
-                  ) : null}
-                  {/* The grey reason line is hidden for the two contact buckets (kept for
-                      low_fit / excluded, where "why" is the whole point). */}
-                  {c.reason && !contact ? (
-                    <span className="score-reason" title={c.reason}>
-                      {c.reason}
-                    </span>
-                  ) : null}
-                </>
-              ) : (
-                <span className="muted">Pending</span>
-              )}
-            </div>
-          )}
+          {/* reason line: hidden for the two contact buckets (kept for low_fit / excluded). */}
+          <FitCell
+            scoring={scoringCoIds.has(c.id)}
+            label={c.label}
+            score={c.score_total}
+            subscores={c.subscores}
+            axes={COMPANY_AXES}
+            reason={contact ? null : c.reason}
+          />
         </td>
         <td>
           <WebLink website={c.website} domain={c.domain} />
@@ -1080,7 +1135,10 @@ export default function ListPage() {
     const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to re-score", "warn");
     if (ids.length > SCORE_BATCH_MAX) {
-      return toast(`Score at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
+      return toast(
+        `Score at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`,
+        "warn"
+      );
     }
     toast(`Scoring ${ids.length} ${ids.length === 1 ? "company" : "companies"} in the background…`);
     rescoringCoRef.current = true;
@@ -1101,7 +1159,9 @@ export default function ListPage() {
     if (rescoringCoRef.current) return; // block a double-click before the button disables
     const wave = (coBuckets.get("unscored") ?? []).slice(0, SCORE_BATCH_MAX).map((c) => c.id);
     if (!wave.length) return;
-    toast(`Scoring ${wave.length} ${wave.length === 1 ? "company" : "companies"} in the background…`);
+    toast(
+      `Scoring ${wave.length} ${wave.length === 1 ? "company" : "companies"} in the background…`
+    );
     rescoringCoRef.current = true;
     void scoreCompaniesJob(wave).finally(() => {
       rescoringCoRef.current = false;
@@ -1116,7 +1176,10 @@ export default function ListPage() {
     const ids = coSel.map((c) => c.id);
     if (!ids.length) return toast("Select companies to update", "warn");
     if (ids.length > SCORE_BATCH_MAX) {
-      return toast(`Update at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`, "warn");
+      return toast(
+        `Update at most ${SCORE_BATCH_MAX} companies at a time — narrow your selection.`,
+        "warn"
+      );
     }
     updateFieldsCoRef.current = true;
     setUpdatingFields(true);
@@ -1129,7 +1192,8 @@ export default function ListPage() {
         toast(`Updated ${updated} ${updated === 1 ? "company" : "companies"}`);
       }
     } catch (e) {
-      if (clientRef.current === client) toast(e instanceof Error ? e.message : "Update failed", "warn");
+      if (clientRef.current === client)
+        toast(e instanceof Error ? e.message : "Update failed", "warn");
     } finally {
       updateFieldsCoRef.current = false;
       if (clientRef.current === client) setUpdatingFields(false);
@@ -1336,6 +1400,22 @@ export default function ListPage() {
   // selected) so they appear in the Step-2 table, switch to Step 2, THEN immediately find people at
   // them — chunked 8-orgs-per-call under one group_id — so sourcing people is one click, not two.
   // People land UNSCORED ("Pending"); the operator reveals + scores them via Reveal & score.
+  // S20 — the shared "find people at these company ids" phase; stageForPeople and runFindPeople
+  // differ only in the failure-toast copy.
+  async function runPeopleFind(ids: string[], failMsg: string) {
+    setFindingPpl(true);
+    setFindingPplIds(new Set(ids));
+    try {
+      const { found, dropped } = await findPeopleFor(ids, crypto.randomUUID());
+      reportFindPeople(found, dropped);
+    } catch (e) {
+      toast(e instanceof Error ? e.message : failMsg, "warn");
+    } finally {
+      setFindingPpl(false);
+      setFindingPplIds(new Set());
+    }
+  }
+
   async function stageForPeople() {
     // Drop any `excluded_by_rules` row before staging — the LOCKED invariant (an excluded company is
     // never staged into Step 2 / never has people found at it). Mirrors `runFindPeople`; belt-and-
@@ -1355,17 +1435,7 @@ export default function ListPage() {
     setStaging(false);
     // The find is a second phase: if staging succeeded but the find fails, the rows are already in
     // Step 2 (re-runnable via the Find People button) — so surface the find error without undoing.
-    setFindingPpl(true);
-    setFindingPplIds(new Set(ids));
-    try {
-      const { found, dropped } = await findPeopleFor(ids, crypto.randomUUID());
-      reportFindPeople(found, dropped);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Find people failed — retry with Find People", "warn");
-    } finally {
-      setFindingPpl(false);
-      setFindingPplIds(new Set());
-    }
+    await runPeopleFind(ids, "Find people failed — retry with Find People");
   }
 
   // Step 2 → Step 1: remove the ticked companies from Step 2 (selected | people_found → discovered),
@@ -1457,17 +1527,7 @@ export default function ListPage() {
     // find-people: drop excluded from the funnel-advancing target.
     const ids = pplCoSel.filter((c) => c.label !== "excluded_by_rules").map((c) => c.id);
     if (!ids.length) return toast("Select companies in the list to find people", "warn");
-    setFindingPpl(true);
-    setFindingPplIds(new Set(ids));
-    try {
-      const { found, dropped } = await findPeopleFor(ids, crypto.randomUUID());
-      reportFindPeople(found, dropped);
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Find people failed", "warn");
-    } finally {
-      setFindingPpl(false);
-      setFindingPplIds(new Set());
-    }
+    await runPeopleFind(ids, "Find people failed");
   }
 
   // Step-2 'Reveal & score' — the merged people action (W4, per-row "Scoring…"). Reveals verified
@@ -1510,7 +1570,11 @@ export default function ListPage() {
     return runJob({
       ids: rows.map((r) => r.id),
       setScoring: setScoringPersonIds,
-      kick: () => enrichScoreProspectsAsync(client, rows.map((r) => r.key)),
+      kick: () =>
+        enrichScoreProspectsAsync(
+          client,
+          rows.map((r) => r.key)
+        ),
       label: "Reveal & score",
       reload: reloadProspects,
       onDone: (result) => {
@@ -1537,7 +1601,11 @@ export default function ListPage() {
     return runJob({
       ids: rows.map((r) => r.id),
       setScoring: setScoringPersonIds,
-      kick: () => rescoreProspectsAsync(client, rows.map((r) => r.key)),
+      kick: () =>
+        rescoreProspectsAsync(
+          client,
+          rows.map((r) => r.key)
+        ),
       label: "Scoring",
       reload: reloadProspects,
       onDone: (r) => {
@@ -1601,7 +1669,11 @@ export default function ListPage() {
     try {
       // The server reflects what it stored: null when an all-empty selection was treated as a revert
       // to the AI scope, else the saved params. Mirror that exactly so the UI never disagrees.
-      const saved = await putPeopleScopeOverride(client, ov.people_search_params, fIcp || undefined);
+      const saved = await putPeopleScopeOverride(
+        client,
+        ov.people_search_params,
+        fIcp || undefined
+      );
       if (clientRef.current !== client) return; // client switched mid-save — drop the stale write
       setPeopleScopeOverride(saved ? { people_search_params: saved } : null);
       setPeopleScopeOpen(false);
@@ -1627,9 +1699,7 @@ export default function ListPage() {
       await deletePeopleScopeOverride(client, fIcp || undefined);
       if (clientRef.current !== client) return; // client switched mid-reset — drop the stale write
       setPeopleScopeOverride(null);
-      setPeopleScopeForm(
-        peopleScopeToForm(effectivePeopleScope(null, spec, fIcp || undefined))
-      );
+      setPeopleScopeForm(peopleScopeToForm(effectivePeopleScope(null, spec, fIcp || undefined)));
       toast("Reverted to the AI-generated person scope");
     } catch (e) {
       if (clientRef.current === client)
@@ -1856,8 +1926,8 @@ export default function ListPage() {
                 <style>{SE_CSS}</style>
                 <div className="se-body">
                   <strong>You&apos;ve reviewed every company Apollo has for this scope.</strong>{" "}
-                  Find resumes at the next page each run, and this one reached the end — there are no
-                  new companies left under these exact filters. To open up more:
+                  Find resumes at the next page each run, and this one reached the end — there are
+                  no new companies left under these exact filters. To open up more:
                 </div>
                 <div className="se-actions">
                   <button
@@ -1895,30 +1965,13 @@ export default function ListPage() {
                   onChange={(e) => setCoSearch(e.target.value)}
                 />
               </div>
-              {icpOptions.length > 1 && (
-                <select
-                  className="select"
-                  value={fIcp}
-                  onChange={(e) => setFIcp(e.target.value)}
-                  title="Filter the list by ICP · Find Company searches the picked ICP's scope"
-                  style={
-                    icpNeedsPick
-                      ? {
-                          borderColor: "var(--warn)",
-                          boxShadow: "0 0 0 3px var(--warn-wash)",
-                          transition: "box-shadow 0.2s",
-                        }
-                      : undefined
-                  }
-                >
-                  <option value="">All ICPs</option>
-                  {icpOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <IcpFilterSelect
+                options={icpOptions}
+                value={fIcp}
+                onChange={setFIcp}
+                title="Filter the list by ICP · Find Company searches the picked ICP's scope"
+                highlight={icpNeedsPick}
+              />
               <select
                 className="select"
                 value={coStatus}
@@ -1936,108 +1989,104 @@ export default function ListPage() {
               <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
             </div>
             <div className="list-body">
-              {coBusy && (
-                <div className="list-overlay" role="status" aria-live="polite">
-                  <span className="hs-spinner" aria-hidden="true" />
-                  <span>Fetching…</span>
-                </div>
-              )}
+              <ListOverlay busy={coBusy} />
               <div className="list-scroll">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th style={{ width: 34 }} />
-                    <th>Company</th>
-                    <th>Fit</th>
-                    <th>Domain</th>
-                    <th>Industry</th>
-                    <th>Size</th>
-                    <th>Source</th>
-                    <th>Enrichment</th>
-                  </tr>
-                </thead>
-                {coVisible.length > 0 && (
-                  <tbody>
-                    {/* Call sheet (spec §11): one group per label bucket. EVERY bucket header is a
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: 34 }} />
+                      <th>Company</th>
+                      <th>Fit</th>
+                      <th>Domain</th>
+                      <th>Industry</th>
+                      <th>Size</th>
+                      <th>Source</th>
+                      <th>Enrichment</th>
+                    </tr>
+                  </thead>
+                  {coVisible.length > 0 && (
+                    <tbody>
+                      {/* Call sheet (spec §11): one group per label bucket. EVERY bucket header is a
                         collapse toggle, and ALL buckets default CLOSED to a one-line count — the
                         operator expands the bucket they want to work. `expandedBuckets` holds the
                         expanded keys. Footnotes (low_fit / excluded) expand to a per-reason
                         breakdown; the rest expand to a flat row list. */}
-                    {BUCKET_ORDER.map((key) => {
-                      const rows = coBuckets.get(key) ?? [];
-                      if (!rows.length) return null;
-                      const footnote = COLLAPSED_KEYS.has(key); // low_fit / excluded_by_rules
-                      const open = expandedBuckets.has(key);
-                      return (
-                        <Fragment key={key}>
-                          <tr
-                            className="bucket-head bucket-head--btn"
-                            onClick={() => toggleBucket(key)}
-                          >
-                            <td colSpan={8}>
-                              <span className="bucket-head-in">
-                                <span
-                                  className={clsx("bucket-caret", open && "open")}
-                                  aria-hidden="true"
-                                >
-                                  ▸
-                                </span>
-                                <span
-                                  className={clsx("bucket-dot", `bucket-dot--${key}`)}
-                                  aria-hidden="true"
-                                />
-                                <span className="bucket-name">{BUCKET_HEAD[key]}</span>
-                                <span className="bucket-ct">{rows.length}</span>
-                                <span className="bucket-hint">
-                                  {open ? "hide" : footnote ? "review" : "show"}
-                                </span>
-                                {key === "unscored" && (
-                                  <button
-                                    className="btn btn-accent btn-xs"
-                                    style={{ marginLeft: "auto" }}
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      scoreUnscoredWave();
-                                    }}
-                                    disabled={scoringActive || findingPpl}
-                                    title="Run the paid AI fit score for the next batch of unscored companies (≤15 per run)"
+                      {BUCKET_ORDER.map((key) => {
+                        const rows = coBuckets.get(key) ?? [];
+                        if (!rows.length) return null;
+                        const footnote = COLLAPSED_KEYS.has(key); // low_fit / excluded_by_rules
+                        const open = expandedBuckets.has(key);
+                        return (
+                          <Fragment key={key}>
+                            <tr
+                              className="bucket-head bucket-head--btn"
+                              onClick={() => toggleBucket(key)}
+                            >
+                              <td colSpan={8}>
+                                <span className="bucket-head-in">
+                                  <span
+                                    className={clsx("bucket-caret", open && "open")}
+                                    aria-hidden="true"
                                   >
-                                    {scoringActive
-                                      ? "Scoring…"
-                                      : `Score next ${Math.min(rows.length, SCORE_BATCH_MAX)} →`}
-                                  </button>
-                                )}
-                              </span>
-                            </td>
-                          </tr>
-                          {open
-                            ? footnote
-                              ? renderSubGroups(key, rows)
-                              : rows.map(renderCompanyRow)
-                            : null}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                )}
-              </table>
-              {coVisible.length === 0 && (
-                <div className="list-empty muted">
-                  No companies match the current scope yet · click Find Companies to search Apollo.
-                  <br />
-                  {coScopeSummary ? (
-                    <>
-                      Active filters{scopeOverride ? " (custom)" : ""}
-                      {fIcp && icpNameById.get(fIcp) ? ` · ${icpNameById.get(fIcp)}` : ""} ·{" "}
-                      {coScopeSummary}.
-                      <br />
-                      Too few results? Widen them in ⚙ Scope, or + Add company manually.
-                    </>
-                  ) : (
-                    <>Set your filters in ⚙ Scope, or + Add company manually. Finding is free.</>
+                                    ▸
+                                  </span>
+                                  <span
+                                    className={clsx("bucket-dot", `bucket-dot--${key}`)}
+                                    aria-hidden="true"
+                                  />
+                                  <span className="bucket-name">{BUCKET_HEAD[key]}</span>
+                                  <span className="bucket-ct">{rows.length}</span>
+                                  <span className="bucket-hint">
+                                    {open ? "hide" : footnote ? "review" : "show"}
+                                  </span>
+                                  {key === "unscored" && (
+                                    <button
+                                      className="btn btn-accent btn-xs"
+                                      style={{ marginLeft: "auto" }}
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        scoreUnscoredWave();
+                                      }}
+                                      disabled={scoringActive || findingPpl}
+                                      title="Run the paid AI fit score for the next batch of unscored companies (≤15 per run)"
+                                    >
+                                      {scoringActive
+                                        ? "Scoring…"
+                                        : `Score next ${Math.min(rows.length, SCORE_BATCH_MAX)} →`}
+                                    </button>
+                                  )}
+                                </span>
+                              </td>
+                            </tr>
+                            {open
+                              ? footnote
+                                ? renderSubGroups(key, rows)
+                                : rows.map(renderCompanyRow)
+                              : null}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
                   )}
-                </div>
-              )}
+                </table>
+                {coVisible.length === 0 && (
+                  <div className="list-empty muted">
+                    No companies match the current scope yet · click Find Companies to search
+                    Apollo.
+                    <br />
+                    {coScopeSummary ? (
+                      <>
+                        Active filters{scopeOverride ? " (custom)" : ""}
+                        {fIcp && icpNameById.get(fIcp) ? ` · ${icpNameById.get(fIcp)}` : ""} ·{" "}
+                        {coScopeSummary}.
+                        <br />
+                        Too few results? Widen them in ⚙ Scope, or + Add company manually.
+                      </>
+                    ) : (
+                      <>Set your filters in ⚙ Scope, or + Add company manually. Finding is free.</>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <div className="list-dock">
@@ -2116,21 +2165,12 @@ export default function ListPage() {
                   onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
-              {icpOptions.length > 1 && (
-                <select
-                  className="select"
-                  value={fIcp}
-                  onChange={(e) => setFIcp(e.target.value)}
-                  title="Filter the Step-2 companies (and their people) by ICP"
-                >
-                  <option value="">All ICPs</option>
-                  {icpOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      {o.label}
-                    </option>
-                  ))}
-                </select>
-              )}
+              <IcpFilterSelect
+                options={icpOptions}
+                value={fIcp}
+                onChange={setFIcp}
+                title="Filter the Step-2 companies (and their people) by ICP"
+              />
               <select
                 className="select"
                 value={fStatus}
@@ -2145,241 +2185,230 @@ export default function ListPage() {
               </button>
             </div>
             <div className="countrow">
-              <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>&nbsp;people&nbsp;·&nbsp;
+              <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>
+              &nbsp;people&nbsp;·&nbsp;
               {/* R13 — the "selected" count reads the WHOLE selection (what Reveal & score acts on),
                   mirroring Step 1's `coSelCount`, so the countrow and the dock never disagree. */}
               <b>{selectedProspects.length}</b>&nbsp;selected
             </div>
             <div className="list-body">
-              {pplBusy && (
-                <div className="list-overlay" role="status" aria-live="polite">
-                  <span className="hs-spinner" aria-hidden="true" />
-                  <span>Fetching…</span>
-                </div>
-              )}
+              <ListOverlay busy={pplBusy} />
               <div className="list-scroll">
-              <table className="tbl">
-                <thead>
-                  <tr>
-                    <th>Company</th>
-                    <th style={{ width: 34 }} />
-                    <th>Prospect</th>
-                    <th>Title</th>
-                    <th>Status</th>
-                    <th>LinkedIn</th>
-                    <th>Fit</th>
-                  </tr>
-                </thead>
-                {pursued.length > 0 && (
-                  <tbody>
-                    {pursued.map((c) => {
-                      const rows = rowsForCompany(c.id);
-                      const finding = findingPplIds.has(c.id);
-                      const searched = c.status === "people_found";
-                      // The per-company count/status indicator — sits on top of the company name.
-                      const countBadge = finding ? (
-                        <span className="fit-scoring">
-                          <span className="hs-spinner" aria-hidden="true" />
-                          Finding…
-                        </span>
-                      ) : !searched ? (
-                        <span className="badge badge-warn">
-                          <span className="bdot" />
-                          Pending
-                        </span>
-                      ) : rows.length === 0 ? (
-                        <span className="badge badge-neutral">
-                          <span className="bdot" />0 people
-                        </span>
-                      ) : (
-                        <span className="badge badge-info">
-                          <span className="bdot" />
-                          {rows.length} {rows.length === 1 ? "person" : "people"}
-                        </span>
-                      );
-                      const collapsed = !expandedCos.has(c.id);
-                      const expandable = rows.length > 0;
-                      const enrichedCount = rows.filter(
-                        (p) => p.status === ENRICHED_STATUS
-                      ).length;
-                      // Company cell — count badge atop the name; spans the company's people rows.
-                      // When the company has people, clicking the cell collapses/expands that list
-                      // (the select checkbox stops propagation so ticking doesn't toggle it).
-                      const companyCell = (rowSpan: number) => (
-                        <td
-                          className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
-                          rowSpan={rowSpan}
-                          onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
-                          title={
-                            expandable
-                              ? collapsed
-                                ? "Expand people"
-                                : "Collapse people"
-                              : undefined
-                          }
-                        >
-                          <div className="grp-co">
-                            <span className="grp-co-top">
-                              <input
-                                type="checkbox"
-                                className="tbl-check"
-                                checked={companyChecked.has(c.id)}
-                                // R6 — allowExcluded: a staged company later re-scored excluded can
-                                // still be ticked here to Remove it (the funnel actions skip excluded).
-                                onChange={() => toggleCo(c, true)}
-                                onClick={(e) => e.stopPropagation()}
-                                title="Select this company to find people"
-                              />
-                              {countBadge}
-                            </span>
-                            <span className="nm">{c.name || c.domain}</span>
-                            {c.domain ? <span className="domain">{c.domain}</span> : null}
-                            {c.icp_id && icpNameById.get(c.icp_id) ? (
-                              <span className="badge badge-neutral">
-                                {icpNameById.get(c.icp_id)}
+                <table className="tbl">
+                  <thead>
+                    <tr>
+                      <th>Company</th>
+                      <th style={{ width: 34 }} />
+                      <th>Prospect</th>
+                      <th>Title</th>
+                      <th>Status</th>
+                      <th>LinkedIn</th>
+                      <th>Fit</th>
+                    </tr>
+                  </thead>
+                  {pursued.length > 0 && (
+                    <tbody>
+                      {pursued.map((c) => {
+                        const rows = rowsForCompany(c.id);
+                        const finding = findingPplIds.has(c.id);
+                        const searched = c.status === "people_found";
+                        // The per-company count/status indicator — sits on top of the company name.
+                        const countBadge = finding ? (
+                          <span className="fit-scoring">
+                            <span className="hs-spinner" aria-hidden="true" />
+                            Finding…
+                          </span>
+                        ) : !searched ? (
+                          <span className="badge badge-warn">
+                            <span className="bdot" />
+                            Pending
+                          </span>
+                        ) : rows.length === 0 ? (
+                          <span className="badge badge-neutral">
+                            <span className="bdot" />0 people
+                          </span>
+                        ) : (
+                          <span className="badge badge-info">
+                            <span className="bdot" />
+                            {rows.length} {rows.length === 1 ? "person" : "people"}
+                          </span>
+                        );
+                        const collapsed = !expandedCos.has(c.id);
+                        const expandable = rows.length > 0;
+                        const enrichedCount = rows.filter(
+                          (p) => p.status === ENRICHED_STATUS
+                        ).length;
+                        // Company cell — count badge atop the name; spans the company's people rows.
+                        // When the company has people, clicking the cell collapses/expands that list
+                        // (the select checkbox stops propagation so ticking doesn't toggle it).
+                        const companyCell = (rowSpan: number) => (
+                          <td
+                            className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
+                            rowSpan={rowSpan}
+                            onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
+                            title={
+                              expandable
+                                ? collapsed
+                                  ? "Expand people"
+                                  : "Collapse people"
+                                : undefined
+                            }
+                          >
+                            <div className="grp-co">
+                              <span className="grp-co-top">
+                                <input
+                                  type="checkbox"
+                                  className="tbl-check"
+                                  checked={companyChecked.has(c.id)}
+                                  // R6 — allowExcluded: a staged company later re-scored excluded can
+                                  // still be ticked here to Remove it (the funnel actions skip excluded).
+                                  onChange={() => toggleCo(c, true)}
+                                  onClick={(e) => e.stopPropagation()}
+                                  title="Select this company to find people"
+                                />
+                                {countBadge}
                               </span>
-                            ) : null}
-                          </div>
-                        </td>
-                      );
-                      // No people yet (pending · finding · searched-empty) — a single standalone row.
-                      if (rows.length === 0) {
-                        return (
-                          <tr key={c.id} className="co-start">
-                            {companyCell(1)}
-                            <td />
-                            <td className="muted grp-hint" colSpan={5}>
-                              {finding
-                                ? "Finding people…"
-                                : !searched
-                                  ? "Tick this company, then Find People"
-                                  : "No people found · loosen Find Settings, then Find People again"}
-                            </td>
-                          </tr>
+                              <span className="nm">{c.name || c.domain}</span>
+                              {c.domain ? <span className="domain">{c.domain}</span> : null}
+                              {c.icp_id && icpNameById.get(c.icp_id) ? (
+                                <span className="badge badge-neutral">
+                                  {icpNameById.get(c.icp_id)}
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
                         );
-                      }
-                      // Collapsed — hide the people rows, keep one company row with a count hint.
-                      if (collapsed) {
+                        // No people yet (pending · finding · searched-empty) — a single standalone row.
+                        if (rows.length === 0) {
+                          return (
+                            <tr key={c.id} className="co-start">
+                              {companyCell(1)}
+                              <td />
+                              <td className="muted grp-hint" colSpan={5}>
+                                {finding
+                                  ? "Finding people…"
+                                  : !searched
+                                    ? "Tick this company, then Find People"
+                                    : "No people found · loosen Find Settings, then Find People again"}
+                              </td>
+                            </tr>
+                          );
+                        }
+                        // Collapsed — hide the people rows, keep one company row with a count hint.
+                        if (collapsed) {
+                          return (
+                            <tr key={c.id} className="co-start">
+                              {companyCell(1)}
+                              <td />
+                              <td className="muted grp-hint" colSpan={5}>
+                                {enrichedCount} enriched · {rows.length}{" "}
+                                {rows.length === 1 ? "person" : "people"} hidden · click company
+                                cell to expand viewing
+                              </td>
+                            </tr>
+                          );
+                        }
                         return (
-                          <tr key={c.id} className="co-start">
-                            {companyCell(1)}
-                            <td />
-                            <td className="muted grp-hint" colSpan={5}>
-                              {enrichedCount} enriched · {rows.length}{" "}
-                              {rows.length === 1 ? "person" : "people"} hidden · click company cell
-                              to expand viewing
-                            </td>
-                          </tr>
-                        );
-                      }
-                      return (
-                        <Fragment key={c.id}>
-                          {rows.map((p, i) => {
-                            const enriched = p.status === ENRICHED_STATUS;
-                            const stClass = enriched
-                              ? "st--enriched"
-                              : p.status === "score_error" || p.status === "enrich_failed"
-                                ? "st--error"
-                                : "st--found";
-                            const stMeta = enriched
-                              ? p.email_valid
-                                ? "email verified"
-                                : "email · unverified"
-                              : p.status === "confirmed"
-                                ? "awaiting enrichment"
-                                : p.status === "score_error"
-                                  ? "scoring failed"
-                                  : p.status === "enrich_failed"
-                                    ? "no Apollo match"
-                                    : "no email yet";
-                            return (
-                              <tr
-                                key={p.id}
-                                className={clsx(i === 0 && "co-start", checked.has(p.id) && "row-sel")}
-                              >
-                                {i === 0 ? companyCell(rows.length) : null}
-                                <td>
-                                  <input
-                                    type="checkbox"
-                                    className="tbl-check"
-                                    checked={checked.has(p.id)}
-                                    disabled={p.label === "excluded_by_rules"}
-                                    title={
-                                      p.label === "excluded_by_rules"
-                                        ? "Excluded by rules — can't be selected"
-                                        : undefined
-                                    }
-                                    onChange={() => toggleRow(p)}
-                                  />
-                                </td>
-                                <td>
-                                  <div className="who-cell">
-                                    <div>
-                                      <div className="nm">{p.full_name || "—"}</div>
-                                      <div className="sub">{p.email || "no email yet"}</div>
-                                    </div>
-                                  </div>
-                                </td>
-                                <td className="muted">{p.title || "—"}</td>
-                                <td>
-                                  <div className="st2">
-                                    <span className={clsx("st", stClass)}>
-                                      <span className="st-dot" />
-                                      {STATUS_LABEL[p.status] ?? p.status}
-                                    </span>
-                                    <span className="st-meta">{stMeta}</span>
-                                  </div>
-                                </td>
-                                <td>
-                                  <LinkedInLink url={p.linkedin_url} />
-                                </td>
-                                <td>
-                                  {scoringPersonIds.has(p.id) ? (
-                                    <span className="fit-scoring" title="AI fit-scoring in progress">
-                                      <span className="hs-spinner" aria-hidden="true" />
-                                      Scoring…
-                                    </span>
-                                  ) : p.label ? (
-                                    <div className="ai-score-cell">
-                                      <span className="label-line">
-                                        <LabelChip label={p.label} score={p.score_total} />
-                                      </span>
-                                      {hasSubs(p.subscores) ? (
-                                        <SubscoreList subscores={p.subscores} axes={PROSPECT_AXES} />
-                                      ) : null}
-                                    </div>
-                                  ) : (
-                                    <span className="muted">Pending</span>
+                          <Fragment key={c.id}>
+                            {rows.map((p, i) => {
+                              const enriched = p.status === ENRICHED_STATUS;
+                              const stClass = enriched
+                                ? "st--enriched"
+                                : p.status === "score_error" || p.status === "enrich_failed"
+                                  ? "st--error"
+                                  : "st--found";
+                              const stMeta = enriched
+                                ? p.email_valid
+                                  ? "email verified"
+                                  : "email · unverified"
+                                : p.status === "confirmed"
+                                  ? "awaiting enrichment"
+                                  : p.status === "score_error"
+                                    ? "scoring failed"
+                                    : p.status === "enrich_failed"
+                                      ? "no Apollo match"
+                                      : "no email yet";
+                              return (
+                                <tr
+                                  key={p.id}
+                                  className={clsx(
+                                    i === 0 && "co-start",
+                                    checked.has(p.id) && "row-sel"
                                   )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </Fragment>
-                      );
-                    })}
-                  </tbody>
-                )}
-              </table>
-              {pursued.length === 0 && (
-                <div className="list-empty muted">
-                  {prospectsLoading || companiesLoading ? (
-                    "Loading…"
-                  ) : (
-                    <>
-                      No companies in Step 2 yet · go to Step 1, tick companies, and click
-                      “Find people for N →”.
-                      {pplScopeSummary ? (
-                        <>
-                          <br />
-                          Person filters{peopleScopeOverride ? " (custom)" : ""} · {pplScopeSummary}
-                          . Adjust them in ⚙ Personas.
-                        </>
-                      ) : null}
-                    </>
+                                >
+                                  {i === 0 ? companyCell(rows.length) : null}
+                                  <td>
+                                    <input
+                                      type="checkbox"
+                                      className="tbl-check"
+                                      checked={checked.has(p.id)}
+                                      disabled={p.label === "excluded_by_rules"}
+                                      title={
+                                        p.label === "excluded_by_rules"
+                                          ? "Excluded by rules — can't be selected"
+                                          : undefined
+                                      }
+                                      onChange={() => toggleRow(p)}
+                                    />
+                                  </td>
+                                  <td>
+                                    <div className="who-cell">
+                                      <div>
+                                        <div className="nm">{p.full_name || "—"}</div>
+                                        <div className="sub">{p.email || "no email yet"}</div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                  <td className="muted">{p.title || "—"}</td>
+                                  <td>
+                                    <div className="st2">
+                                      <span className={clsx("st", stClass)}>
+                                        <span className="st-dot" />
+                                        {STATUS_LABEL[p.status] ?? p.status}
+                                      </span>
+                                      <span className="st-meta">{stMeta}</span>
+                                    </div>
+                                  </td>
+                                  <td>
+                                    <LinkedInLink url={p.linkedin_url} />
+                                  </td>
+                                  <td>
+                                    <FitCell
+                                      scoring={scoringPersonIds.has(p.id)}
+                                      label={p.label}
+                                      score={p.score_total}
+                                      subscores={p.subscores}
+                                      axes={PROSPECT_AXES}
+                                    />
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </Fragment>
+                        );
+                      })}
+                    </tbody>
                   )}
-                </div>
-              )}
+                </table>
+                {pursued.length === 0 && (
+                  <div className="list-empty muted">
+                    {prospectsLoading || companiesLoading ? (
+                      "Loading…"
+                    ) : (
+                      <>
+                        No companies in Step 2 yet · go to Step 1, tick companies, and click “Find
+                        people for N →”.
+                        {pplScopeSummary ? (
+                          <>
+                            <br />
+                            Person filters{peopleScopeOverride ? " (custom)" : ""} ·{" "}
+                            {pplScopeSummary}. Adjust them in ⚙ Personas.
+                          </>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
             <div className="list-dock">
@@ -2498,68 +2527,53 @@ export default function ListPage() {
             <span className="badge badge-info">model · {fitPrompt.model.join(" → ")}</span>
           )}
           <span className="badge badge-neutral">purpose · {fitPrompt?.purpose ?? rubricStage}</span>
-          <span className="badge badge-neutral">
-            rubric v{docs?.[rubricStage]?.version ?? "—"}
-          </span>
+          <span className="badge badge-neutral">rubric v{docs?.[rubricStage]?.version ?? "—"}</span>
         </div>
-        <div className="prompt-cols">
-          {/* LEFT — System prompt: the active stage's rubric, editable + saved as the next version. */}
-          <div className="prompt-col">
-            <div className="prompt-col-head">
-              <label>
-                System prompt{" "}
-                <span className="badge badge-neutral">v{docs?.[rubricStage]?.version ?? "—"}</span>
-              </label>
-              <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                <button
-                  type="button"
-                  className="btn btn-accent btn-xs"
-                  onClick={() => saveDoc(rubricStage)}
-                  disabled={savingDoc === rubricStage}
-                >
-                  {savingDoc === rubricStage ? "Saving…" : "Save as new version"}
-                </button>
-              </div>
-            </div>
-            <textarea
-              className="prompt-edit"
-              value={rubricDraft}
-              spellCheck={false}
-              onChange={(e) => setRubricDraft(e.target.value)}
-            />
-          </div>
-          {/* RIGHT — Input prompt: the REAL message the model receives, fetched from the API
-              (targeting context = this client's brief + research spec + ICP docs + sample row). */}
-          <div className="prompt-col">
-            <div className="prompt-col-head">
-              <label>Input prompt</label>
-              <span className="ph-sub">
-                {fitPromptLoading
-                  ? "loading…"
-                  : fitPrompt?.company
-                    ? `read-only · sample: ${fitPrompt.company}`
-                    : `read-only · no ${rubricStage === "prospect_fit" ? "prospect" : "company"} yet`}
-              </span>
-            </div>
-            <pre className="prompt-pre">
+        <PromptEditorShell
+          systemBadge={
+            <span className="badge badge-neutral">v{docs?.[rubricStage]?.version ?? "—"}</span>
+          }
+          systemActions={
+            <button
+              type="button"
+              className="btn btn-accent btn-xs"
+              onClick={() => saveDoc(rubricStage)}
+              disabled={savingDoc === rubricStage}
+            >
+              {savingDoc === rubricStage ? "Saving…" : "Save as new version"}
+            </button>
+          }
+          systemValue={rubricDraft}
+          onSystemChange={setRubricDraft}
+          inputMeta={
+            <span className="ph-sub">
               {fitPromptLoading
-                ? "Loading the input prompt…"
-                : fitPromptErr
-                  ? fitPromptErr
-                  : fitPrompt?.user ||
-                    `${
-                      rubricStage === "prospect_fit"
-                        ? "Find people first to preview a prospect's"
-                        : "Find a company first to preview its"
-                    } input prompt.`}
-            </pre>
-          </div>
-        </div>
-        <div className="ph-sub prompt-hint">
-          Edits are saved for this client and used on the next re-score. Each{" "}
-          {rubricStage === "prospect_fit" ? "prospect" : "company"} is scored against this rubric
-          with the input prompt shown on the right.
-        </div>
+                ? "loading…"
+                : fitPrompt?.company
+                  ? `read-only · sample: ${fitPrompt.company}`
+                  : `read-only · no ${rubricStage === "prospect_fit" ? "prospect" : "company"} yet`}
+            </span>
+          }
+          inputContent={
+            fitPromptLoading
+              ? "Loading the input prompt…"
+              : fitPromptErr
+                ? fitPromptErr
+                : fitPrompt?.user ||
+                  `${
+                    rubricStage === "prospect_fit"
+                      ? "Find people first to preview a prospect's"
+                      : "Find a company first to preview its"
+                  } input prompt.`
+          }
+          hint={
+            <>
+              Edits are saved for this client and used on the next re-score. Each{" "}
+              {rubricStage === "prospect_fit" ? "prospect" : "company"} is scored against this
+              rubric with the input prompt shown on the right.
+            </>
+          }
+        />
       </Modal>
 
       {/* FIND-COMPANY SCOPE SETTINGS — edit the Apollo company-search filters Phase B produced.
@@ -2620,70 +2634,48 @@ export default function ListPage() {
             </div>
             <SpecHead>Company search · firmographics</SpecHead>
             <div className="sourcing-cols">
-              <div className="field">
-                <label>Keywords · industry / market tags (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="Insurtech, Insurance"
-                  value={scopeForm.keywords}
-                  onChange={(e) => setScopeForm({ ...scopeForm, keywords: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Locations · HQ country / region (comma-separated)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="hong kong, singapore, thailand"
-                  value={scopeForm.locations}
-                  onChange={(e) => setScopeForm({ ...scopeForm, locations: e.target.value })}
-                />
-              </div>
-            </div>
-            <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-              <div className="field">
-                <label>Employee size ranges · min,max (; for more)</label>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="10,100 ; 101,500"
-                  value={scopeForm.sizes}
-                  onChange={(e) => setScopeForm({ ...scopeForm, sizes: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Revenue min (USD)</label>
-                <input
-                  className="input"
-                  type="number"
-                  placeholder="(any)"
-                  value={scopeForm.revenueMin}
-                  onChange={(e) => setScopeForm({ ...scopeForm, revenueMin: e.target.value })}
-                />
-              </div>
-              <div className="field">
-                <label>Revenue max (USD)</label>
-                <input
-                  className="input"
-                  type="number"
-                  placeholder="(any)"
-                  value={scopeForm.revenueMax}
-                  onChange={(e) => setScopeForm({ ...scopeForm, revenueMax: e.target.value })}
-                />
-              </div>
-            </div>
-            <SpecHead>Buying signals (intent) · optional, narrows hard</SpecHead>
-            <div className="field">
-              <label>Hiring for job titles (comma-separated)</label>
-              <input
-                className="input"
-                type="text"
-                placeholder="sales, growth, commercial"
-                value={scopeForm.hiringTitles}
-                onChange={(e) => setScopeForm({ ...scopeForm, hiringTitles: e.target.value })}
+              <Field
+                label="Keywords · industry / market tags (comma-separated)"
+                placeholder="Insurtech, Insurance"
+                value={scopeForm.keywords}
+                onChange={(v) => setScopeForm({ ...scopeForm, keywords: v })}
+              />
+              <Field
+                label="Locations · HQ country / region (comma-separated)"
+                placeholder="hong kong, singapore, thailand"
+                value={scopeForm.locations}
+                onChange={(v) => setScopeForm({ ...scopeForm, locations: v })}
               />
             </div>
+            <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+              <Field
+                label="Employee size ranges · min,max (; for more)"
+                placeholder="10,100 ; 101,500"
+                value={scopeForm.sizes}
+                onChange={(v) => setScopeForm({ ...scopeForm, sizes: v })}
+              />
+              <Field
+                label="Revenue min (USD)"
+                type="number"
+                placeholder="(any)"
+                value={scopeForm.revenueMin}
+                onChange={(v) => setScopeForm({ ...scopeForm, revenueMin: v })}
+              />
+              <Field
+                label="Revenue max (USD)"
+                type="number"
+                placeholder="(any)"
+                value={scopeForm.revenueMax}
+                onChange={(v) => setScopeForm({ ...scopeForm, revenueMax: v })}
+              />
+            </div>
+            <SpecHead>Buying signals (intent) · optional, narrows hard</SpecHead>
+            <Field
+              label="Hiring for job titles (comma-separated)"
+              placeholder="sales, growth, commercial"
+              value={scopeForm.hiringTitles}
+              onChange={(v) => setScopeForm({ ...scopeForm, hiringTitles: v })}
+            />
           </>
         )}
       </Modal>
@@ -2740,8 +2732,8 @@ export default function ListPage() {
             </p>
             {pplCoSel.length === 0 && (
               <p className="ph-sub" style={{ color: "var(--warn)" }}>
-                Tick one or more companies in the Step-2 list to load live counts and the
-                department options.
+                Tick one or more companies in the Step-2 list to load live counts and the department
+                options.
               </p>
             )}
 
@@ -2750,16 +2742,13 @@ export default function ListPage() {
               {SENIORITY_OPTIONS.map((o) => {
                 const count = pplFacets?.seniorities.find((s) => s.value === o.value)?.count;
                 return (
-                  <label key={o.value} className="facet-row">
-                    <input
-                      type="checkbox"
-                      className="tbl-check"
-                      checked={peopleScopeForm.seniorities.includes(o.value)}
-                      onChange={() => toggleFacet("seniorities", o.value)}
-                    />
-                    <span className="facet-label">{o.label}</span>
-                    {count != null && <span className="facet-count">{count}</span>}
-                  </label>
+                  <FacetRow
+                    key={o.value}
+                    label={o.label}
+                    checked={peopleScopeForm.seniorities.includes(o.value)}
+                    count={count}
+                    onToggle={() => toggleFacet("seniorities", o.value)}
+                  />
                 );
               })}
             </div>
@@ -2780,16 +2769,13 @@ export default function ListPage() {
                     .filter((v) => !pplFacets.departments.some((d) => d.value === v))
                     .map((value) => ({ value, label: humanizeFacet(value), count: undefined })),
                 ].map((d) => (
-                  <label key={d.value} className="facet-row">
-                    <input
-                      type="checkbox"
-                      className="tbl-check"
-                      checked={peopleScopeForm.departments.includes(d.value)}
-                      onChange={() => toggleFacet("departments", d.value)}
-                    />
-                    <span className="facet-label">{d.label}</span>
-                    {d.count != null && <span className="facet-count">{d.count}</span>}
-                  </label>
+                  <FacetRow
+                    key={d.value}
+                    label={d.label}
+                    checked={peopleScopeForm.departments.includes(d.value)}
+                    count={d.count}
+                    onToggle={() => toggleFacet("departments", d.value)}
+                  />
                 ))}
               </div>
             ) : (
@@ -2804,15 +2790,12 @@ export default function ListPage() {
                       .filter((v) => !masterDepts.some((o) => o.value === v))
                       .map((value) => ({ value, label: humanizeFacet(value) })),
                   ].map((o) => (
-                    <label key={o.value} className="facet-row">
-                      <input
-                        type="checkbox"
-                        className="tbl-check"
-                        checked={peopleScopeForm.departments.includes(o.value)}
-                        onChange={() => toggleFacet("departments", o.value)}
-                      />
-                      <span className="facet-label">{o.label}</span>
-                    </label>
+                    <FacetRow
+                      key={o.value}
+                      label={o.label}
+                      checked={peopleScopeForm.departments.includes(o.value)}
+                      onToggle={() => toggleFacet("departments", o.value)}
+                    />
                   ))}
                 </div>
                 <p className="ph-sub" style={{ marginTop: 8 }}>
@@ -2833,95 +2816,60 @@ export default function ListPage() {
         title="Add company"
         subtitle="Add one company by hand · suppression-checked, then fit-scored against your rubric on save."
         footer={
-          <>
-            <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={submitAddCompany}
-              disabled={savingCo || !coForm.domain.trim()}
-            >
-              {savingCo ? "Scoring…" : "Add + score"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setAddCoOpen(false)}
+            onConfirm={submitAddCompany}
+            busy={savingCo}
+            confirmDisabled={!coForm.domain.trim()}
+            busyLabel="Scoring…"
+            confirmLabel="Add + score"
+          />
         }
       >
-        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-          <span className="badge badge-neutral">source · manual</span>
-          <span className="badge badge-info">fit-scored on add</span>
-        </div>
-        <div className="field">
-          <label>Company domain *</label>
-          <input
-            className="input"
-            type="text"
-            placeholder="acme.com"
-            value={coForm.domain}
-            onChange={(e) => setCoForm({ ...coForm, domain: e.target.value })}
+        <ManualBadges />
+        <Field
+          label="Company domain *"
+          placeholder="acme.com"
+          value={coForm.domain}
+          onChange={(v) => setCoForm({ ...coForm, domain: v })}
+        />
+        <Field
+          label="Name"
+          placeholder="Acme Robotics"
+          value={coForm.name}
+          onChange={(v) => setCoForm({ ...coForm, name: v })}
+        />
+        <Field
+          label="Website"
+          placeholder="https://acme.com"
+          value={coForm.website}
+          onChange={(v) => setCoForm({ ...coForm, website: v })}
+        />
+        <div className="sourcing-cols">
+          <Field
+            label="Industry"
+            value={coForm.industry}
+            onChange={(v) => setCoForm({ ...coForm, industry: v })}
           />
-        </div>
-        <div className="field">
-          <label>Name</label>
-          <input
-            className="input"
-            type="text"
-            placeholder="Acme Robotics"
-            value={coForm.name}
-            onChange={(e) => setCoForm({ ...coForm, name: e.target.value })}
-          />
-        </div>
-        <div className="field">
-          <label>Website</label>
-          <input
-            className="input"
-            type="text"
-            placeholder="https://acme.com"
-            value={coForm.website}
-            onChange={(e) => setCoForm({ ...coForm, website: e.target.value })}
+          <Field
+            label="Size"
+            placeholder="201-500"
+            value={coForm.size}
+            onChange={(v) => setCoForm({ ...coForm, size: v })}
           />
         </div>
         <div className="sourcing-cols">
-          <div className="field">
-            <label>Industry</label>
-            <input
-              className="input"
-              type="text"
-              value={coForm.industry}
-              onChange={(e) => setCoForm({ ...coForm, industry: e.target.value })}
-            />
-          </div>
-          <div className="field">
-            <label>Size</label>
-            <input
-              className="input"
-              type="text"
-              placeholder="201-500"
-              value={coForm.size}
-              onChange={(e) => setCoForm({ ...coForm, size: e.target.value })}
-            />
-          </div>
-        </div>
-        <div className="sourcing-cols">
-          <div className="field">
-            <label>Country</label>
-            <input
-              className="input"
-              type="text"
-              value={coForm.country}
-              onChange={(e) => setCoForm({ ...coForm, country: e.target.value })}
-            />
-          </div>
-          <div className="field">
-            <label>Company LinkedIn</label>
-            <input
-              className="input"
-              type="text"
-              placeholder="linkedin.com/company/…"
-              value={coForm.linkedin_url}
-              onChange={(e) => setCoForm({ ...coForm, linkedin_url: e.target.value })}
-            />
-          </div>
+          <Field
+            label="Country"
+            value={coForm.country}
+            onChange={(v) => setCoForm({ ...coForm, country: v })}
+          />
+          <Field
+            label="Company LinkedIn"
+            placeholder="linkedin.com/company/…"
+            value={coForm.linkedin_url}
+            onChange={(v) => setCoForm({ ...coForm, linkedin_url: v })}
+          />
         </div>
         <div className="ph-sub" style={{ marginTop: 16 }}>
           Domain required · rest optional · scored on save.
@@ -2935,44 +2883,28 @@ export default function ListPage() {
         title="Add person"
         subtitle="Add one person by hand · suppression-checked, then fit-scored against your rubric on save."
         footer={
-          <>
-            <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={submitAddPerson}
-              disabled={savingPerson}
-            >
-              {savingPerson ? "Scoring…" : "Add + score"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setAddPersonOpen(false)}
+            onConfirm={submitAddPerson}
+            busy={savingPerson}
+            busyLabel="Scoring…"
+            confirmLabel="Add + score"
+          />
         }
       >
-        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-          <span className="badge badge-neutral">source · manual</span>
-          <span className="badge badge-info">fit-scored on add</span>
-        </div>
+        <ManualBadges />
         <div className="sourcing-cols">
-          <div className="field">
-            <label>Full name</label>
-            <input
-              className="input"
-              type="text"
-              value={personForm.full_name}
-              onChange={(e) => setPersonForm({ ...personForm, full_name: e.target.value })}
-            />
-          </div>
-          <div className="field">
-            <label>Title</label>
-            <input
-              className="input"
-              type="text"
-              placeholder="VP Engineering"
-              value={personForm.title}
-              onChange={(e) => setPersonForm({ ...personForm, title: e.target.value })}
-            />
-          </div>
+          <Field
+            label="Full name"
+            value={personForm.full_name}
+            onChange={(v) => setPersonForm({ ...personForm, full_name: v })}
+          />
+          <Field
+            label="Title"
+            placeholder="VP Engineering"
+            value={personForm.title}
+            onChange={(v) => setPersonForm({ ...personForm, title: v })}
+          />
         </div>
         <div className="field">
           <label>Company</label>
@@ -2999,25 +2931,17 @@ export default function ListPage() {
             ))}
           </select>
         </div>
-        <div className="field">
-          <label>LinkedIn URL</label>
-          <input
-            className="input"
-            type="text"
-            placeholder="linkedin.com/in/…"
-            value={personForm.linkedin_url}
-            onChange={(e) => setPersonForm({ ...personForm, linkedin_url: e.target.value })}
-          />
-        </div>
-        <div className="field">
-          <label>Email (optional — leave blank to enrich later)</label>
-          <input
-            className="input"
-            type="text"
-            value={personForm.email}
-            onChange={(e) => setPersonForm({ ...personForm, email: e.target.value })}
-          />
-        </div>
+        <Field
+          label="LinkedIn URL"
+          placeholder="linkedin.com/in/…"
+          value={personForm.linkedin_url}
+          onChange={(v) => setPersonForm({ ...personForm, linkedin_url: v })}
+        />
+        <Field
+          label="Email (optional — leave blank to enrich later)"
+          value={personForm.email}
+          onChange={(v) => setPersonForm({ ...personForm, email: v })}
+        />
         <div className="ph-sub" style={{ marginTop: 16 }}>
           LinkedIn URL, name + company domain, or email · rest optional · scored on save.
         </div>

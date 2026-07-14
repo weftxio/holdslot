@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
+from app.core.db import is_fk_violation, is_unique_violation
 from app.domains.prospects import scoring
 from app.domains.prospects.router import SCORING_HANDLERS, _scoring_job_out
 
@@ -363,20 +364,20 @@ def test_is_fk_violation_detects_across_drivers():
     """M10 — a RESTRICT/cascade FK failure is recognized however the driver surfaces it, so
     delete_batch can 409 instead of 500 (same driver-drift reasoning as is_unique_violation)."""
     # psycopg path — SQLAlchemy raises IntegrityError.
-    assert scoring.is_fk_violation(IntegrityError("stmt", {}, Exception("fk")))
+    assert is_fk_violation(IntegrityError("stmt", {}, Exception("fk")))
     # Data API path — a generic wrapper carrying the SQLSTATE.
-    assert scoring.is_fk_violation(_Wrapped(_Orig(pgcode="23503")))
-    assert scoring.is_fk_violation(_Wrapped(_Orig(sqlstate="23503")))
+    assert is_fk_violation(_Wrapped(_Orig(pgcode="23503")))
+    assert is_fk_violation(_Wrapped(_Orig(sqlstate="23503")))
     # message-text fallback.
-    assert scoring.is_fk_violation(_Wrapped(_Orig(msg="update violates foreign key constraint")))
-    assert scoring.is_fk_violation(_Wrapped(_Orig(msg="ERROR: 23503 restrict")))
+    assert is_fk_violation(_Wrapped(_Orig(msg="update violates foreign key constraint")))
+    assert is_fk_violation(_Wrapped(_Orig(msg="ERROR: 23503 restrict")))
 
 
 def test_is_fk_violation_ignores_other_errors():
     # a unique violation (23505) is NOT an FK violation — the two guards stay disjoint on the driver
     # path, so delete_batch never mislabels a duplicate-key error as "has a campaign".
-    assert not scoring.is_fk_violation(_Wrapped(_Orig(pgcode="23505", msg="duplicate key")))
-    assert not scoring.is_fk_violation(_Wrapped(_Orig(msg="some unrelated error")))
-    assert not scoring.is_fk_violation(RuntimeError("boom"))
+    assert not is_fk_violation(_Wrapped(_Orig(pgcode="23505", msg="duplicate key")))
+    assert not is_fk_violation(_Wrapped(_Orig(msg="some unrelated error")))
+    assert not is_fk_violation(RuntimeError("boom"))
     # and the converse: an FK-only wrapper is not a unique violation.
-    assert not scoring.is_unique_violation(_Wrapped(_Orig(pgcode="23503", msg="foreign key")))
+    assert not is_unique_violation(_Wrapped(_Orig(pgcode="23503", msg="foreign key")))

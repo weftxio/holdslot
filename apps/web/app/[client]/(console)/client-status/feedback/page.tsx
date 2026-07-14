@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
+import { fmtDay } from "@/lib/dates";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { informClient, listFeedback, sendFeedbackForm, type FeedbackRowApi } from "@/lib/api";
@@ -28,18 +29,19 @@ function Stars({ n }: { n: number }) {
 }
 
 function fmt(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return iso ? fmtDay(iso) : "—";
 }
 
 export default function FeedbackPage() {
-  const client = useParams<{ client: string }>().client;
+  const client = useClient();
   const toast = useToast();
   const [rows, setRows] = useState<FeedbackRowApi[] | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    listFeedback(client).then(setRows).catch(() => setRows([]));
+    listFeedback(client)
+      .then(setRows)
+      .catch(() => setRows([]));
   }, [client]);
   useEffect(() => load(), [load]);
 

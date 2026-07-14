@@ -171,7 +171,6 @@ export function Section({
   onContinue,
   last,
   hideFoot,
-  extra,
   gaps,
   children,
 }: {
@@ -185,7 +184,6 @@ export function Section({
   onContinue: () => void;
   last?: boolean;
   hideFoot?: boolean;
-  extra?: React.ReactNode;
   // AI-scoping "gaps" routed to this section (missing/weak inputs to sharpen targeting). A header
   // chip flags them even while the section is collapsed; the body lists them when it's open.
   gaps?: { ask: string; icp_name?: string }[];
@@ -234,7 +232,6 @@ export function Section({
           <span className="bdot" />
           {complete ? "Complete" : "Pending"}
         </span>
-        {extra}
         <span className="brief-chev" aria-hidden>
           ⌄
         </span>

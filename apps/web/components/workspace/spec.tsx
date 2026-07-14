@@ -3,6 +3,7 @@ import { type ReactNode, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
 import { Modal } from "@/components/Modal";
+import { PromptEditorShell } from "./PromptEditorShell";
 import {
   type CompanyEnrichment,
   type IcpSuggestion,
@@ -31,12 +32,12 @@ import {
 function Dash() {
   return <span className="muted">—</span>;
 }
-function SpecChips({ items, warn }: { items?: string[]; warn?: boolean }) {
+function SpecChips({ items }: { items?: string[] }) {
   if (!items || !items.length) return <Dash />;
   return (
     <div className="icp-chips">
       {items.map((v, i) => (
-        <span key={i} className={"icp-chip" + (warn ? " warn" : "")}>
+        <span key={i} className="icp-chip">
           {v}
         </span>
       ))}
@@ -213,7 +214,7 @@ export function CompanyStudy({ e }: { e: CompanyEnrichment }) {
                 </div>
               ) : null}
             </div>,
-            document.body,
+            document.body
           )
         : null}
     </div>
@@ -240,7 +241,13 @@ export function LinkedInLink({ url }: { url?: string }) {
   if (!url) return <span className="muted">—</span>;
   const href = /^https?:\/\//i.test(url) ? url : `https://${url.replace(/^\/+/, "")}`;
   return (
-    <a className="li-ico" href={href} target="_blank" rel="noopener noreferrer" aria-label="LinkedIn">
+    <a
+      className="li-ico"
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      aria-label="LinkedIn"
+    >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
         <path d="M20.45 20.45h-3.56v-5.57c0-1.33-.02-3.04-1.85-3.04-1.85 0-2.13 1.45-2.13 2.94v5.67H9.35V9h3.41v1.56h.05c.48-.9 1.64-1.85 3.37-1.85 3.6 0 4.27 2.37 4.27 5.45v6.29zM5.34 7.43a2.06 2.06 0 1 1 0-4.13 2.06 2.06 0 0 1 0 4.13zM7.12 20.45H3.56V9h3.56v11.45zM22.22 0H1.77C.79 0 0 .77 0 1.73v20.54C0 23.23.79 24 1.77 24h20.45c.98 0 1.78-.77 1.78-1.73V1.73C24 .77 23.2 0 22.22 0z" />
       </svg>
@@ -313,9 +320,7 @@ function TargetingSections({ b, hideName }: { b: SpecTargetingBlock; hideName?: 
           <SpecChips items={(ppl.person_seniorities ?? []).map(humanizeFacet)} />
         </SpecCell>
         <SpecCell label="Departments &amp; job function">
-          <SpecChips
-            items={(ppl.person_department_or_subdepartments ?? []).map(humanizeFacet)}
-          />
+          <SpecChips items={(ppl.person_department_or_subdepartments ?? []).map(humanizeFacet)} />
         </SpecCell>
         <SpecCell label="Industry keywords">
           <Val>{ppl.q_keywords}</Val>
@@ -456,9 +461,7 @@ export function SpecReview({
       .filter((b) => b.icp_id && b.icp_name)
       .map((b) => [b.icp_id as string, b.icp_name as string])
   );
-  const icpOptions = icps.length
-    ? icps
-    : [...blockNames].map(([id, name]) => ({ id, name }));
+  const icpOptions = icps.length ? icps : [...blockNames].map(([id, name]) => ({ id, name }));
   // Every block is rendered; each ICP's detail is individually collapsible (default collapsed —
   // `openScopes` starts empty, so the scope opens with every ICP's targeting folded away).
   const shownBlocks = blocks;
@@ -496,287 +499,294 @@ export function SpecReview({
   const runScoping = () => onStructure(selectedList);
   return (
     <>
-    <div className="panel" style={{ marginTop: 18 }}>
-      <div className="panel-head">
-        <div>
-          <h3>Prospect Scope</h3>
-          <div className="ph-sub">
-            Complete all 6 sections of the brief first. We summarize the full brief to source
-            prospects.
+      <div className="panel" style={{ marginTop: 18 }}>
+        <div className="panel-head">
+          <div>
+            <h3>Prospect Scope</h3>
+            <div className="ph-sub">
+              Complete all 6 sections of the brief first. We summarize the full brief to source
+              prospects.
+            </div>
           </div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
-          <div className="row" style={{ gap: 8 }}>
-            <button
-              type="button"
-              className="btn btn-ghost btn-sm"
-              title="Show the exact system + input prompt sent to the AI to generate this scope."
-              onClick={openPrompt}
-            >
-              View prompt
-            </button>
-            {/* The span carries the tooltip; the disabled button gets pointer-events:none so the
-                hover falls through to the span and the title shows (disabled buttons swallow it). */}
-            <span
-              style={{ display: "inline-flex" }}
-              title={
-                !ready
-                  ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
-                  : selectedList.length
-                    ? "Regenerate the AI scope for only the selected ICP(s)."
-                    : "Summarize this brief with AI into a prospect scope for every ICP."
-              }
-            >
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 5 }}>
+            <div className="row" style={{ gap: 8 }}>
               <button
                 type="button"
-                className="btn btn-accent btn-sm"
-                disabled={blocked}
-                style={blocked ? { pointerEvents: "none" } : undefined}
-                onClick={runScoping}
+                className="btn btn-ghost btn-sm"
+                title="Show the exact system + input prompt sent to the AI to generate this scope."
+                onClick={openPrompt}
               >
-                {structuring ? "Generating…" : "AI Scoping"}
+                View prompt
               </button>
-            </span>
-          </div>
-          {/* Time-demand note while running; otherwise a one-line reminder of what the next run
-              covers — the selected ICP(s), or every ICP when none are ticked. */}
-          {structuring ? (
-            <div
-              className="ph-sub"
-              style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
-            >
-              {selectedList.length > 1
-                ? `⏱ Generating… ~1 min per ICP · runs in the background, keep working`
-                : `⏱ Generating… ~1 min · runs in the background, keep working`}
-            </div>
-          ) : showPerIcp ? (
-            <div
-              className="ph-sub"
-              style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
-            >
-              {selectedList.length
-                ? `Scopes ${selectedList.length} selected ICP${
-                    selectedList.length > 1 ? "s, one at a time" : ""
-                  }`
-                : "Scopes every ICP · tick ICPs below to scope only those"}
-            </div>
-          ) : null}
-        </div>
-      </div>
-      <div className="panel-pad">
-        {showPerIcp ? (
-          // One collapsible per ICP profile: the name + an AI-scope status badge head each row, and
-          // a checkbox ticks it for the next AI Scoping run. Rows WITH a generated block expand to
-          // the targeting detail (folded by default); rows without read "No AI scope yet".
-          perIcpRows.map((row) => {
-            const open = openScopes.has(row.id);
-            const has = Boolean(row.block);
-            const checked = selectedIcps.has(row.id);
-            // This ICP block's OWN build time — never a shared fallback, so a re-scope of one ICP
-            // can't make an untouched ICP look re-stamped. A block with no stamp (old pre-stamp
-            // spec) shows no time until it's individually scoped.
-            const when = has ? whenLabel(row.block?.generated_at) : "";
-            return (
-              <div className={clsx("scope-acc", open && has && "open")} key={row.id}>
-                <div className="scope-acc-head">
-                  <input
-                    type="checkbox"
-                    className="tbl-check"
-                    checked={checked}
-                    onChange={() => toggleSelect(row.id)}
-                    title="Select this ICP for the next AI Scoping run"
-                  />
-                  <button
-                    type="button"
-                    className="scope-acc-toggle"
-                    aria-expanded={open && has}
-                    disabled={!has}
-                    onClick={() => has && toggleScope(row.id)}
-                  >
-                    <span
-                      className={clsx("scope-acc-caret", open && has && "open")}
-                      aria-hidden="true"
-                      style={{ visibility: has ? undefined : "hidden" }}
-                    >
-                      ▸
-                    </span>
-                    <span className="scope-acc-title">{row.name}</span>
-                    <span className={"badge badge-" + (has ? "ok" : "warn")}>
-                      {has ? "AI scope ✓" : "No AI scope yet"}
-                    </span>
-                    {has && (
-                      <span className="scope-acc-hint">
-                        {open ? "Hide targeting" : "Show targeting"}
-                      </span>
-                    )}
-                  </button>
-                  {when && (
-                    <span className="scope-acc-when" title="When this ICP's scope was generated">
-                      Generated {when}
-                    </span>
-                  )}
-                </div>
-                {open && has && (
-                  <div className="scope-acc-body">
-                    <TargetingSections b={row.block!} hideName />
-                  </div>
-                )}
-              </div>
-            );
-          })
-        ) : !spec ? (
-          <div className="sum-empty">
-            Not generated yet · fill in the brief, then generate your Apollo-ready scope.
-          </div>
-        ) : (
-          // Legacy v3 (merged) or brief-only spec: the single unnamed block reads as one group.
-          shownBlocks.map((b, i) => {
-            const key = b.icp_id || `blk-${i}`;
-            const open = openScopes.has(key);
-            const title = b.icp_name || "Merged scope · applies to all ICPs";
-            const when = whenLabel(b.generated_at);
-            return (
-              <div className={clsx("scope-acc", open && "open")} key={key}>
-                <div className="scope-acc-head">
-                  <button
-                    type="button"
-                    className="scope-acc-toggle"
-                    aria-expanded={open}
-                    onClick={() => toggleScope(key)}
-                  >
-                    <span className={clsx("scope-acc-caret", open && "open")} aria-hidden="true">
-                      ▸
-                    </span>
-                    <span className="scope-acc-title">{title}</span>
-                    <span className="scope-acc-hint">
-                      {open ? "Hide targeting" : "Show targeting"}
-                    </span>
-                  </button>
-                  {when && (
-                    <span className="scope-acc-when" title="When this scope was generated">
-                      Generated {when}
-                    </span>
-                  )}
-                </div>
-                {open && (
-                  <div className="scope-acc-body">
-                    <TargetingSections b={b} hideName />
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-
-        {spec && (
-          <>
-          <SpecHead>ICP validation · who actually pays</SpecHead>
-          <div className="icp-grid">
-            <SpecCell label="Paying-customer summary">
-              <Val>{val.paying_customer_summary}</Val>
-            </SpecCell>
-          </div>
-          {profiles.map((c, i) => (
-            <div className="icp-grid" key={i} style={{ marginTop: 8 }}>
-              <SpecCell label="Customer">
-                <Val>{c.name || c.domain}</Val>
-              </SpecCell>
-              <SpecCell label="Industry">
-                <Val>{c.industry}</Val>
-              </SpecCell>
-              <SpecCell label="Size">
-                <Val>{c.employee_band}</Val>
-              </SpecCell>
-              <SpecCell label="HQ">
-                <Val>{c.hq_country}</Val>
-              </SpecCell>
-              <SpecCell label="Model">
-                <Val>{c.business_model}</Val>
-              </SpecCell>
-              <SpecCell label="Source">
-                {c.source ? (
-                  <span className={"badge badge-" + (c.source === "web" ? "info" : "neutral")}>
-                    {c.source}
-                    {c.confidence ? ` · ${c.confidence}` : ""}
-                  </span>
-                ) : (
-                  <Dash />
-                )}
-              </SpecCell>
-            </div>
-          ))}
-
-          <SpecHead>Credit policy · server-set (not AI)</SpecHead>
-          <div className="icp-grid">
-            <SpecCell label="Email status">
-              <SpecChips items={cp.email_status_filter} />
-            </SpecCell>
-            <SpecCell label="Phone enrich">{cp.phone ? "On" : "Off"}</SpecCell>
-            <SpecCell label="Max companies">
-              <Val>{cp.max_companies}</Val>
-            </SpecCell>
-            <SpecCell label="Max people">
-              <Val>{cp.max_people}</Val>
-            </SpecCell>
-          </div>
-
-          {/* Scoping gaps are NOT shown here — each is routed to the brief section that owns the
-              missing input (see gapSection in brief/page.tsx) so the operator fixes it in place. */}
-          {(spec.icp_suggestions ?? []).map((sug, i) => (
-            <div className="icp-suggest" key={i}>
-              <div className="is-head">
-                <div className="is-title">
-                  <span className="badge badge-info">Suggested ICP</span>
-                  <strong>{sug.name}</strong>
-                  <span className={"badge badge-" + (sug.confidence === "high" ? "ok" : "neutral")}>
-                    {sug.confidence} confidence
-                  </span>
-                </div>
+              {/* The span carries the tooltip; the disabled button gets pointer-events:none so the
+                hover falls through to the span and the title shows (disabled buttons swallow it). */}
+              <span
+                style={{ display: "inline-flex" }}
+                title={
+                  !ready
+                    ? "Complete all 6 sections of the brief first. We summarize the full brief to source prospects."
+                    : selectedList.length
+                      ? "Regenerate the AI scope for only the selected ICP(s)."
+                      : "Summarize this brief with AI into a prospect scope for every ICP."
+                }
+              >
                 <button
                   type="button"
                   className="btn btn-accent btn-sm"
-                  onClick={() => onAcceptIcp(sug)}
+                  disabled={blocked}
+                  style={blocked ? { pointerEvents: "none" } : undefined}
+                  onClick={runScoping}
                 >
-                  Add as ICP
+                  {structuring ? "Generating…" : "AI Scoping"}
                 </button>
-              </div>
-              <div className="is-why">{sug.rationale}</div>
-              {(sug.evidencing_customers?.length ?? 0) > 0 && (
-                <div className="is-row">
-                  <span className="k">Based on</span>
-                  <SpecChips items={sug.evidencing_customers ?? []} />
-                </div>
-              )}
-              {(sug.company_search_params?.q_organization_keyword_tags?.length ?? 0) > 0 && (
-                <div className="is-row">
-                  <span className="k">Industries</span>
-                  <SpecChips items={sug.company_search_params?.q_organization_keyword_tags ?? []} />
-                </div>
-              )}
-              {(sug.people_search_params?.person_seniorities?.length ?? 0) > 0 && (
-                <div className="is-row">
-                  <span className="k">Management level</span>
-                  <SpecChips
-                    items={(sug.people_search_params?.person_seniorities ?? []).map(humanizeFacet)}
-                  />
-                </div>
-              )}
-              {(sug.people_search_params?.person_department_or_subdepartments?.length ?? 0) > 0 && (
-                <div className="is-row">
-                  <span className="k">Departments</span>
-                  <SpecChips
-                    items={(
-                      sug.people_search_params?.person_department_or_subdepartments ?? []
-                    ).map(humanizeFacet)}
-                  />
-                </div>
-              )}
+              </span>
             </div>
-          ))}
-          </>
-        )}
+            {/* Time-demand note while running; otherwise a one-line reminder of what the next run
+              covers — the selected ICP(s), or every ICP when none are ticked. */}
+            {structuring ? (
+              <div
+                className="ph-sub"
+                style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
+              >
+                {selectedList.length > 1
+                  ? `⏱ Generating… ~1 min per ICP · runs in the background, keep working`
+                  : `⏱ Generating… ~1 min · runs in the background, keep working`}
+              </div>
+            ) : showPerIcp ? (
+              <div
+                className="ph-sub"
+                style={{ fontSize: 11.5, textAlign: "right", whiteSpace: "nowrap" }}
+              >
+                {selectedList.length
+                  ? `Scopes ${selectedList.length} selected ICP${
+                      selectedList.length > 1 ? "s, one at a time" : ""
+                    }`
+                  : "Scopes every ICP · tick ICPs below to scope only those"}
+              </div>
+            ) : null}
+          </div>
+        </div>
+        <div className="panel-pad">
+          {showPerIcp ? (
+            // One collapsible per ICP profile: the name + an AI-scope status badge head each row, and
+            // a checkbox ticks it for the next AI Scoping run. Rows WITH a generated block expand to
+            // the targeting detail (folded by default); rows without read "No AI scope yet".
+            perIcpRows.map((row) => {
+              const open = openScopes.has(row.id);
+              const has = Boolean(row.block);
+              const checked = selectedIcps.has(row.id);
+              // This ICP block's OWN build time — never a shared fallback, so a re-scope of one ICP
+              // can't make an untouched ICP look re-stamped. A block with no stamp (old pre-stamp
+              // spec) shows no time until it's individually scoped.
+              const when = has ? whenLabel(row.block?.generated_at) : "";
+              return (
+                <div className={clsx("scope-acc", open && has && "open")} key={row.id}>
+                  <div className="scope-acc-head">
+                    <input
+                      type="checkbox"
+                      className="tbl-check"
+                      checked={checked}
+                      onChange={() => toggleSelect(row.id)}
+                      title="Select this ICP for the next AI Scoping run"
+                    />
+                    <button
+                      type="button"
+                      className="scope-acc-toggle"
+                      aria-expanded={open && has}
+                      disabled={!has}
+                      onClick={() => has && toggleScope(row.id)}
+                    >
+                      <span
+                        className={clsx("scope-acc-caret", open && has && "open")}
+                        aria-hidden="true"
+                        style={{ visibility: has ? undefined : "hidden" }}
+                      >
+                        ▸
+                      </span>
+                      <span className="scope-acc-title">{row.name}</span>
+                      <span className={"badge badge-" + (has ? "ok" : "warn")}>
+                        {has ? "AI scope ✓" : "No AI scope yet"}
+                      </span>
+                      {has && (
+                        <span className="scope-acc-hint">
+                          {open ? "Hide targeting" : "Show targeting"}
+                        </span>
+                      )}
+                    </button>
+                    {when && (
+                      <span className="scope-acc-when" title="When this ICP's scope was generated">
+                        Generated {when}
+                      </span>
+                    )}
+                  </div>
+                  {open && has && (
+                    <div className="scope-acc-body">
+                      <TargetingSections b={row.block!} hideName />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          ) : !spec ? (
+            <div className="sum-empty">
+              Not generated yet · fill in the brief, then generate your Apollo-ready scope.
+            </div>
+          ) : (
+            // Legacy v3 (merged) or brief-only spec: the single unnamed block reads as one group.
+            shownBlocks.map((b, i) => {
+              const key = b.icp_id || `blk-${i}`;
+              const open = openScopes.has(key);
+              const title = b.icp_name || "Merged scope · applies to all ICPs";
+              const when = whenLabel(b.generated_at);
+              return (
+                <div className={clsx("scope-acc", open && "open")} key={key}>
+                  <div className="scope-acc-head">
+                    <button
+                      type="button"
+                      className="scope-acc-toggle"
+                      aria-expanded={open}
+                      onClick={() => toggleScope(key)}
+                    >
+                      <span className={clsx("scope-acc-caret", open && "open")} aria-hidden="true">
+                        ▸
+                      </span>
+                      <span className="scope-acc-title">{title}</span>
+                      <span className="scope-acc-hint">
+                        {open ? "Hide targeting" : "Show targeting"}
+                      </span>
+                    </button>
+                    {when && (
+                      <span className="scope-acc-when" title="When this scope was generated">
+                        Generated {when}
+                      </span>
+                    )}
+                  </div>
+                  {open && (
+                    <div className="scope-acc-body">
+                      <TargetingSections b={b} hideName />
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+
+          {spec && (
+            <>
+              <SpecHead>ICP validation · who actually pays</SpecHead>
+              <div className="icp-grid">
+                <SpecCell label="Paying-customer summary">
+                  <Val>{val.paying_customer_summary}</Val>
+                </SpecCell>
+              </div>
+              {profiles.map((c, i) => (
+                <div className="icp-grid" key={i} style={{ marginTop: 8 }}>
+                  <SpecCell label="Customer">
+                    <Val>{c.name || c.domain}</Val>
+                  </SpecCell>
+                  <SpecCell label="Industry">
+                    <Val>{c.industry}</Val>
+                  </SpecCell>
+                  <SpecCell label="Size">
+                    <Val>{c.employee_band}</Val>
+                  </SpecCell>
+                  <SpecCell label="HQ">
+                    <Val>{c.hq_country}</Val>
+                  </SpecCell>
+                  <SpecCell label="Model">
+                    <Val>{c.business_model}</Val>
+                  </SpecCell>
+                  <SpecCell label="Source">
+                    {c.source ? (
+                      <span className={"badge badge-" + (c.source === "web" ? "info" : "neutral")}>
+                        {c.source}
+                        {c.confidence ? ` · ${c.confidence}` : ""}
+                      </span>
+                    ) : (
+                      <Dash />
+                    )}
+                  </SpecCell>
+                </div>
+              ))}
+
+              <SpecHead>Credit policy · server-set (not AI)</SpecHead>
+              <div className="icp-grid">
+                <SpecCell label="Email status">
+                  <SpecChips items={cp.email_status_filter} />
+                </SpecCell>
+                <SpecCell label="Phone enrich">{cp.phone ? "On" : "Off"}</SpecCell>
+                <SpecCell label="Max companies">
+                  <Val>{cp.max_companies}</Val>
+                </SpecCell>
+                <SpecCell label="Max people">
+                  <Val>{cp.max_people}</Val>
+                </SpecCell>
+              </div>
+
+              {/* Scoping gaps are NOT shown here — each is routed to the brief section that owns the
+              missing input (see gapSection in brief/page.tsx) so the operator fixes it in place. */}
+              {(spec.icp_suggestions ?? []).map((sug, i) => (
+                <div className="icp-suggest" key={i}>
+                  <div className="is-head">
+                    <div className="is-title">
+                      <span className="badge badge-info">Suggested ICP</span>
+                      <strong>{sug.name}</strong>
+                      <span
+                        className={"badge badge-" + (sug.confidence === "high" ? "ok" : "neutral")}
+                      >
+                        {sug.confidence} confidence
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn btn-accent btn-sm"
+                      onClick={() => onAcceptIcp(sug)}
+                    >
+                      Add as ICP
+                    </button>
+                  </div>
+                  <div className="is-why">{sug.rationale}</div>
+                  {(sug.evidencing_customers?.length ?? 0) > 0 && (
+                    <div className="is-row">
+                      <span className="k">Based on</span>
+                      <SpecChips items={sug.evidencing_customers ?? []} />
+                    </div>
+                  )}
+                  {(sug.company_search_params?.q_organization_keyword_tags?.length ?? 0) > 0 && (
+                    <div className="is-row">
+                      <span className="k">Industries</span>
+                      <SpecChips
+                        items={sug.company_search_params?.q_organization_keyword_tags ?? []}
+                      />
+                    </div>
+                  )}
+                  {(sug.people_search_params?.person_seniorities?.length ?? 0) > 0 && (
+                    <div className="is-row">
+                      <span className="k">Management level</span>
+                      <SpecChips
+                        items={(sug.people_search_params?.person_seniorities ?? []).map(
+                          humanizeFacet
+                        )}
+                      />
+                    </div>
+                  )}
+                  {(sug.people_search_params?.person_department_or_subdepartments?.length ?? 0) >
+                    0 && (
+                    <div className="is-row">
+                      <span className="k">Departments</span>
+                      <SpecChips
+                        items={(
+                          sug.people_search_params?.person_department_or_subdepartments ?? []
+                        ).map(humanizeFacet)}
+                      />
+                    </div>
+                  )}
+                </div>
+              ))}
+            </>
+          )}
+        </div>
       </div>
-    </div>
 
       <Modal
         open={promptOpen}
@@ -802,49 +812,36 @@ export function SpecReview({
               <span className="badge badge-neutral">{prompt.prompt_version}</span>
               <span className="badge badge-neutral">input · all ICPs</span>
             </div>
-            <div className="prompt-cols">
-              {/* LEFT — System prompt: editable + Save (adjust for testing; saved per client). */}
-              <div className="prompt-col">
-                <div className="prompt-col-head">
-                  <label>
-                    System prompt{" "}
-                    <span className={"badge badge-" + (isCustom ? "warn" : "neutral")}>
-                      {isCustom ? "custom" : "default"}
-                    </span>
-                  </label>
-                  <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                    {saveMsg && <span className="ph-sub">{saveMsg}</span>}
-                    <button
-                      type="button"
-                      className="btn btn-accent btn-xs"
-                      disabled={savingPrompt || systemDraft === prompt.system}
-                      onClick={saveSystemPrompt}
-                    >
-                      {savingPrompt ? "Saving…" : "Save"}
-                    </button>
-                  </div>
-                </div>
-                <textarea
-                  className="prompt-edit"
-                  value={systemDraft}
-                  spellCheck={false}
-                  onChange={(e) => setSystemDraft(e.target.value)}
-                />
-              </div>
-              {/* RIGHT — Input prompt: read-only, the client brief + the ICP set selected in the
-                  panel's ICP filter (narrowed = review lens; the live run sends every ICP). */}
-              <div className="prompt-col">
-                <div className="prompt-col-head">
-                  <label>Input prompt</label>
-                  <span className="ph-sub">read-only · brief + all ICPs</span>
-                </div>
-                <pre className="prompt-pre">{prompt.user}</pre>
-              </div>
-            </div>
-            <div className="ph-sub prompt-hint">
-              Edits are saved for this client and used on the next Generate Scope. Save the default
-              text to reset.
-            </div>
+            <PromptEditorShell
+              systemBadge={
+                <span className={"badge badge-" + (isCustom ? "warn" : "neutral")}>
+                  {isCustom ? "custom" : "default"}
+                </span>
+              }
+              systemActions={
+                <>
+                  {saveMsg && <span className="ph-sub">{saveMsg}</span>}
+                  <button
+                    type="button"
+                    className="btn btn-accent btn-xs"
+                    disabled={savingPrompt || systemDraft === prompt.system}
+                    onClick={saveSystemPrompt}
+                  >
+                    {savingPrompt ? "Saving…" : "Save"}
+                  </button>
+                </>
+              }
+              systemValue={systemDraft}
+              onSystemChange={setSystemDraft}
+              inputMeta={<span className="ph-sub">read-only · brief + all ICPs</span>}
+              inputContent={prompt.user}
+              hint={
+                <>
+                  Edits are saved for this client and used on the next Generate Scope. Save the
+                  default text to reset.
+                </>
+              }
+            />
           </>
         ) : null}
       </Modal>

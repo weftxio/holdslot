@@ -23,8 +23,8 @@ import type { Batch, Recap } from "@/lib/workspace/types";
 // Brief tab already uses), keyed per client. A tab-return within `staleTime` is a pure cache hit —
 // no refetch storm — and keying by `client` structurally retires the old N14 in-flight-switch guard
 // (a client switch changes the query key, so a stale fetch can never overwrite the new client's
-// rows). The provider's exposed shape is UNCHANGED — `reload*` are thin `invalidateQueries`
-// wrappers and `setReplies` a `setQueryData` wrapper — so every consumer keeps working verbatim.
+// rows). The provider exposes `reload*` as thin `invalidateQueries` wrappers, so every consumer
+// keeps working verbatim.
 type WorkspaceCtx = {
   // batches / campaigns are read-only to consumers — mutated only via their live reload (the
   // create/send/launch flows refresh through it), so there's no setter escape hatch.
@@ -32,10 +32,9 @@ type WorkspaceCtx = {
   reloadBatches: () => Promise<void>;
   campaigns: CampaignApi[];
   reloadCampaigns: () => Promise<void>;
-  // Replies keep a setter for optimistic triage/respond updates; reloadReplies re-syncs from server.
+  // Replies are loaded on mount + refreshable; reloadReplies re-syncs from server.
   replies: ReplyApi[];
   reloadReplies: () => Promise<void>;
-  setReplies: React.Dispatch<React.SetStateAction<ReplyApi[]>>;
   // Recaps are derived from the held `meeting` rows (F5) — loaded on mount + refreshable.
   recaps: Recap[];
   reloadMeetings: () => Promise<void>;
@@ -105,20 +104,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     [queryClient, client]
   );
 
-  // Optimistic triage/respond writes go straight to the replies cache — same `useState` setter
-  // signature (value or updater), now backed by setQueryData so a later reloadReplies re-syncs.
-  const setReplies = useCallback<React.Dispatch<React.SetStateAction<ReplyApi[]>>>(
-    (update) => {
-      queryClient.setQueryData<ReplyApi[]>(["replies", client], (prev) => {
-        const base = prev ?? [];
-        return typeof update === "function"
-          ? (update as (p: ReplyApi[]) => ReplyApi[])(base)
-          : update;
-      });
-    },
-    [queryClient, client]
-  );
-
   return (
     <Ctx.Provider
       value={{
@@ -128,7 +113,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         reloadCampaigns,
         replies,
         reloadReplies,
-        setReplies,
         recaps,
         reloadMeetings,
       }}

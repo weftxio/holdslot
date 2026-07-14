@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from app.core.db import is_unique_violation
 from app.core.deps import AccessContext, get_db, require_membership
 from app.domains.briefs.completeness import completeness, missing_fields
 from app.domains.briefs.research_spec import (
@@ -43,7 +44,6 @@ from app.domains.briefs.structuring import (
     latest_system_prompt,
 )
 from app.domains.icps import icp_docs
-from app.domains.prospects.scoring import is_unique_violation
 from app.models import Brief, Prompt, ResearchJob, ResearchSpec
 
 router = APIRouter(tags=["briefs"])
@@ -237,16 +237,16 @@ def get_research_spec(
     ctx: AccessContext = Depends(require_membership()),
     db: Session = Depends(get_db),
 ) -> ResearchSpecList:
-    """Latest ResearchSpec + version history for the Workspace review panel."""
-    rows = (
+    """Latest ResearchSpec for the Workspace review panel (S10 — LIMIT 1: the version history was
+    never read, so we no longer pull every spec row's full JSONB)."""
+    spec = (
         db.execute(
             select(ResearchSpec)
             .where(ResearchSpec.tenant_id == ctx.tenant.id)
             .order_by(ResearchSpec.version.desc())
+            .limit(1)
         )
         .scalars()
-        .all()
+        .first()
     )
-    if not rows:
-        return ResearchSpecList(latest=None, versions=[])
-    return ResearchSpecList(latest=_spec_out(rows[0]), versions=[r.version for r in rows])
+    return ResearchSpecList(latest=_spec_out(spec) if spec else None)

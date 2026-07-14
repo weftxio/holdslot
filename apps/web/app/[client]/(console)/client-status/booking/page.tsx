@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
+import { fmtDay } from "@/lib/dates";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { listBookings, respondReply, type BookingRowApi } from "@/lib/api";
@@ -12,21 +13,24 @@ const BADGE: Record<string, string> = {
 };
 
 function fmt(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return iso ? fmtDay(iso) : "—";
 }
 
 export default function BookingPage() {
-  const client = useParams<{ client: string }>().client;
+  const client = useClient();
   const toast = useToast();
   const [rows, setRows] = useState<BookingRowApi[] | null>(null);
-  const [propose, setPropose] = useState<{ id: string; eventId: string | null; msg: string } | null>(
-    null
-  );
+  const [propose, setPropose] = useState<{
+    id: string;
+    eventId: string | null;
+    msg: string;
+  } | null>(null);
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
-    listBookings(client).then(setRows).catch(() => setRows([]));
+    listBookings(client)
+      .then(setRows)
+      .catch(() => setRows([]));
   }, [client]);
   useEffect(() => load(), [load]);
 
@@ -85,14 +89,18 @@ export default function BookingPage() {
           <div>
             <h3>Status log</h3>
             <div className="ph-sub">
-              Each prospect&apos;s suggested meeting time, the status, and the invitation email under
-              every row
+              Each prospect&apos;s suggested meeting time, the status, and the invitation email
+              under every row
             </div>
           </div>
         </div>
         <div className="panel-pad">
           <div>
-            {rows === null && <div className="ph" style={{ padding: "18px 4px" }}>Loading…</div>}
+            {rows === null && (
+              <div className="ph" style={{ padding: "18px 4px" }}>
+                Loading…
+              </div>
+            )}
             {rows !== null && list.length === 0 && (
               <div className="ph" style={{ padding: "18px 4px" }}>
                 No booking links sent yet. Send one from a reply in the Workspace.
@@ -136,7 +144,11 @@ export default function BookingPage() {
                       <button className="btn btn-ghost btn-sm" onClick={() => setPropose(null)}>
                         Cancel
                       </button>
-                      <button className="btn btn-accent btn-sm" onClick={sendNewInvite} disabled={busy}>
+                      <button
+                        className="btn btn-accent btn-sm"
+                        onClick={sendNewInvite}
+                        disabled={busy}
+                      >
                         {busy ? "Sending…" : "Send new invite"}
                       </button>
                     </div>

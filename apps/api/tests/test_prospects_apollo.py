@@ -164,7 +164,6 @@ def _patch_apollo_and_fit(monkeypatch, *, orgs, people, match):
         seen_targeting.append(k.get("targeting") or {})
         return dict(_V2_COMPANY_SIGNALS)
 
-    monkeypatch.setattr(apollo, "search_companies", lambda body, *, max_results=100: orgs)
     # D+ Stage 4 tech resolver — the find only calls this when an ICP carries `technologies` or a
     # bad-tech correlation exists (neither in these fixtures), but stub it so the flow stays
     # network-free regardless.

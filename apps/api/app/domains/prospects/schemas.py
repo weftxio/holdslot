@@ -43,14 +43,13 @@ class CompanyOut(BaseModel):
     # Scoring v2 (build plan §D+.2) — the 4-label contract (the v1 0–100 fit_* fields
     # were retired in V2-4). `label` is null until (re)scored ("needs re-score"); `reason`
     # is the always-populated one-liner; `subscores` is the 4-axis 1–5 map; `flags` non-blocking
-    # markers; `icp` the A/B badge; `trigger_line` the email hook (spec §11).
+    # markers; `icp` the A/B badge.
     label: str | None = None
     score_total: int | None = None
     reason: str = ""
     subscores: dict = Field(default_factory=dict)
     flags: list[str] = []
     icp: str | None = None
-    trigger_line: str = ""
     enrichment: CompanyEnrichment = Field(default_factory=CompanyEnrichment)
     source: str = ""
     status: str = ""
@@ -260,7 +259,6 @@ class ScoringJobOut(BaseModel):
     """
 
     job_id: str | None = None
-    kind: str | None = None
     status: str  # idle | queued | running | done | error
     result: dict = Field(default_factory=dict)
     error: str | None = None
@@ -301,14 +299,13 @@ class FindResult(BaseModel):
 class ResearchRunOut(BaseModel):
     """One research run. The `scope_source` / `filter_body` / `result_meta` fields (D+ Stage 1,
     migration 0019) feed the Find-history drawer — they are None for runs recorded before 0019.
-    (N26 — `cost_per_accepted` was dropped: `rows_accepted` is never written, so it was null.)"""
+    (N26/S16 — `cost_per_accepted` + `rows_accepted` + `rubric_version` dropped from the Out shape:
+    `rows_accepted` was never written; the underlying columns stay for DB lineage.)"""
 
     run_id: str
     source: str
     prompt_version: str | None = None
-    rubric_version: str | None = None
     rows_pushed: int
-    rows_accepted: int
     cost_usd: float | None = None
     icp_id: str | None = None
     scope_source: str | None = None

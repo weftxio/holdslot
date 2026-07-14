@@ -24,16 +24,6 @@
   outline-offset: 2px;
   background: repeating-linear-gradient(45deg, #fafbfd, #fafbfd 6px, #eef2f7 6px, #eef2f7 12px);
 }
-.ph-tag {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  font-size: 9px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #9aa3b2;
-  font-weight: 700;
-}
 
 /* nav */
 .home header {

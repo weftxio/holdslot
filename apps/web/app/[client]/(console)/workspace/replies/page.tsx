@@ -5,7 +5,7 @@ import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { useClient } from "@/lib/nav";
 import { nameInitials } from "@/lib/initials";
-import { parseUtc } from "@/lib/dates";
+import { fmtDayYear } from "@/lib/dates";
 import { respondReply, triageReply, type ReplyApi } from "@/lib/api";
 
 // Cross-campaign reply-triage inbox (Phase E — LIVE). Each row is a `lead_replied` event ⋈ its lead
@@ -22,14 +22,6 @@ const TRIAGE_META: { value: string; label: string; badge: string }[] = [
   { value: "negative", label: "Not interested", badge: "badge-danger" },
 ];
 const triageMeta = (t: string | null) => TRIAGE_META.find((m) => m.value === t);
-
-function fmtDate(iso: string | null): string {
-  // parseUtc pins a timezone-naive instant to UTC so it renders in the viewer's own zone — a bare
-  // `new Date(iso)` read the UTC digits as LOCAL, shifting an HK reply to the wrong day (M6/R16).
-  const d = parseUtc(iso);
-  if (!d) return "";
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
-}
 
 export default function RepliesPage() {
   const toast = useToast();
@@ -87,7 +79,10 @@ export default function RepliesPage() {
 
   return (
     <section className="tabpane active">
-      <div className="row" style={{ marginBottom: 18, justifyContent: "flex-end", flexWrap: "wrap", gap: 12 }}>
+      <div
+        className="row"
+        style={{ marginBottom: 18, justifyContent: "flex-end", flexWrap: "wrap", gap: 12 }}
+      >
         {remaining > 0 ? (
           <span className="badge badge-warn">
             <span className="bdot" />
@@ -115,7 +110,9 @@ export default function RepliesPage() {
       </div>
 
       {replies.length === 0 ? (
-        <div className="sum-empty">No replies yet. Inbound replies appear here as Smartlead reports them.</div>
+        <div className="sum-empty">
+          No replies yet. Inbound replies appear here as Smartlead reports them.
+        </div>
       ) : (
         <div>
           {inView.map((r) => {
@@ -145,7 +142,7 @@ export default function RepliesPage() {
                 <div className="reply-quote">
                   <div className="reply-qhead">
                     <span className="ql">Prospect replied</span>
-                    <span className="reply-date">{fmtDate(r.occurred_at)}</span>
+                    <span className="reply-date">{fmtDayYear(r.occurred_at)}</span>
                   </div>
                   {r.subject && <div style={{ fontWeight: 600, marginBottom: 4 }}>{r.subject}</div>}
                   {r.reply_body || <span style={{ opacity: 0.6 }}>(no reply body captured)</span>}
@@ -153,7 +150,10 @@ export default function RepliesPage() {
 
                 {/* Triage — the human classification step (no auto-draft at MVP) */}
                 {!r.triage && (
-                  <div className="reply-triage" style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                  <div
+                    className="reply-triage"
+                    style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}
+                  >
                     <span className="dl" style={{ marginRight: 4 }}>
                       Classify:
                     </span>
@@ -175,7 +175,7 @@ export default function RepliesPage() {
                 <div className="reply-draft">
                   <div className="dl">Your reply</div>
                   <textarea
-                    value={sent ? r.response_body ?? "" : draft}
+                    value={sent ? (r.response_body ?? "") : draft}
                     readOnly={sent}
                     placeholder="Write a threaded reply to send via Smartlead…"
                     onChange={(e) => setDraft(r.id, e.target.value)}
@@ -189,9 +189,7 @@ export default function RepliesPage() {
                         <input
                           type="checkbox"
                           checked={!!bookLink[r.id]}
-                          onChange={(e) =>
-                            setBookLink((s) => ({ ...s, [r.id]: e.target.checked }))
-                          }
+                          onChange={(e) => setBookLink((s) => ({ ...s, [r.id]: e.target.checked }))}
                         />
                         Include booking link
                       </label>
@@ -208,7 +206,9 @@ export default function RepliesPage() {
 
                 <div className="reply-sent-banner">
                   <span>✓</span>
-                  <span>{sent ? "Reply sent" : meta ? `Classified · ${meta.label}` : "Handled"}</span>
+                  <span>
+                    {sent ? "Reply sent" : meta ? `Classified · ${meta.label}` : "Handled"}
+                  </span>
                 </div>
               </div>
             );
@@ -224,7 +224,8 @@ export default function RepliesPage() {
         <div className="ee">✓</div>
         <h3 style={{ fontSize: 20, color: "var(--ink)", marginBottom: 6 }}>Queue clear</h3>
         <p style={{ fontSize: 14 }}>
-          Every reply in view has been handled. New replies will appear here as they&apos;re reported.
+          Every reply in view has been handled. New replies will appear here as they&apos;re
+          reported.
         </p>
       </div>
     </section>

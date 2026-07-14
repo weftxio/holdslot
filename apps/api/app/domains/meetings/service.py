@@ -234,13 +234,6 @@ def meeting_code(meet_link: str | None) -> str | None:
     return tail or None
 
 
-def event_meeting_code(event: dict) -> str | None:
-    """The Meet code off a Calendar event — `conferenceData.conferenceId`, else the hangoutLink
-    tail."""
-    code = (event.get("conferenceData") or {}).get("conferenceId")
-    return code or meeting_code(event.get("hangoutLink"))
-
-
 def record_ended(record: dict) -> bool:
     """A conference record with `endTime` set has finished; unset = ongoing (the sweep skips it)."""
     return bool(record.get("endTime"))
@@ -264,20 +257,6 @@ def record_duration_min(record: dict) -> int:
     """ceil((endTime − startTime) / 60) — the FD-2 base measure (whole minutes, rounding up)."""
     span = parse_iso(record["endTime"]) - parse_iso(record["startTime"])
     return math.ceil(span.total_seconds() / 60)
-
-
-def participant_duration_min(participants: list[dict], *, host_user: str | None = None) -> int:
-    """The non-host presence measure (FD-2's money-safe refinement when the host is identifiable via
-    `signedinUser`): latest end − earliest start across the NON-host participants."""
-    spans = []
-    for p in participants:
-        if host_user and (p.get("signedinUser") or {}).get("user") == host_user:
-            continue
-        if p.get("earliestStartTime") and p.get("latestEndTime"):
-            spans.append((parse_iso(p["earliestStartTime"]), parse_iso(p["latestEndTime"])))
-    if not spans:
-        return 0
-    return math.ceil((max(e for _, e in spans) - min(s for s, _ in spans)).total_seconds() / 60)
 
 
 def is_held(record: dict | None, participants: list[dict]) -> bool:

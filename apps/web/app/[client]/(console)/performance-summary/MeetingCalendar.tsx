@@ -4,6 +4,7 @@ import { Calendar, dateFnsLocalizer } from "react-big-calendar";
 import { format, parse, startOfWeek, getDay } from "date-fns";
 import { enUS } from "date-fns/locale";
 import type { MeetingCalendarItemApi } from "@/lib/api";
+import { OUTCOME_BADGE } from "@/lib/workspace/constants";
 import "react-big-calendar/lib/css/react-big-calendar.css";
 
 const localizer = dateFnsLocalizer({
@@ -15,11 +16,6 @@ const localizer = dateFnsLocalizer({
 });
 
 const VIEWS: "month"[] = ["month"];
-const OUTCOME_LABEL: Record<string, string> = {
-  qualified: "Qualified",
-  short_call: "Short call",
-  noshow: "No-show",
-};
 
 // The month feed comes from `meeting.scheduled_at` (UTC …Z ISO). Parsing with `new Date(iso)` renders
 // each event in the viewer's local zone (the R16/N18 UTC lesson: the Z suffix makes this correct).
@@ -28,7 +24,7 @@ export default function MeetingCalendar({ items = [] }: { items?: MeetingCalenda
     () =>
       items.map((m) => {
         const start = new Date(m.scheduled_at);
-        const label = m.outcome ? OUTCOME_LABEL[m.outcome] || m.outcome : "Meeting";
+        const label = m.outcome ? OUTCOME_BADGE[m.outcome]?.label || m.outcome : "Meeting";
         return {
           title: `${m.prospect_name || "Prospect"} · ${label}`,
           start,

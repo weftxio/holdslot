@@ -860,15 +860,6 @@
   font-weight: 600;
   font-size: 12px;
 }
-.sum-card .sv .rec-link {
-  color: var(--cerulean-deep);
-  font-weight: 600;
-  text-decoration: none;
-  word-break: break-all;
-}
-.sum-card .sv .rec-link:hover {
-  text-decoration: underline;
-}
 
 /* ICP section — flex-wrap (not a fixed grid) so every row fills edge-to-edge: cells grow to take
    the leftover width, so a partial last row never leaves a grey empty track. Each cell holds a
@@ -1037,17 +1028,6 @@
   gap: 14px;
   margin-top: 16px;
   flex-wrap: wrap;
-}
-.icp-foot .est {
-  font-size: 13px;
-  color: var(--ink-soft);
-}
-.icp-foot .est b {
-  font-family: var(--display);
-  font-size: 18px;
-  font-weight: 500;
-  color: var(--cerulean-deep);
-  margin-right: 4px;
 }
 
 /* Accent buttons drop their border globally (.btn-accent { border:none }), which
@@ -1418,12 +1398,6 @@
   align-items: center;
   gap: 8px;
 }
-.cmp-name-input {
-  width: 180px;
-  /* match .select-sm / .btn-sm metrics so the row aligns */
-  padding: 9px 12px;
-  font-size: 13.5px;
-}
 /* KPIs + locked batch + New campaign, kept together and pushed right so New campaign is the
    last control on the top row (wraps as one unit on narrow screens, button still last). */
 .cmp-top-actions {
@@ -1624,11 +1598,6 @@
 .cmp-conv b {
   color: var(--ink-soft);
   font-weight: 600;
-}
-.cmp-drop {
-  color: var(--danger);
-  font-weight: 600;
-  flex: none;
 }
 
 /* detail panel — bounded so it scrolls internally while the rail stays put */
@@ -1974,27 +1943,6 @@
 .cmp-spacer {
   flex: 1;
 }
-.cmp-chip {
-  display: inline-flex;
-  align-items: center;
-  font-size: 10px;
-  font-weight: 600;
-  padding: 3px 8px;
-  border-radius: 6px;
-}
-.cmp-chip.time {
-  background: var(--line-soft);
-  color: var(--ink-soft);
-}
-.cmp-chip.amount {
-  background: var(--ok-wash);
-  color: var(--ok);
-  font-weight: 700;
-}
-.cmp-chip.warn {
-  background: var(--danger-wash);
-  color: var(--danger);
-}
 .cmp-rate {
   font-size: 10px;
   color: var(--ink-faint);
@@ -2042,24 +1990,6 @@
 }
 .cmp-person.log-open .cmp-logtoggle .cmp-chev {
   transform: rotate(180deg);
-}
-.cmp-send {
-  display: inline-flex;
-  align-items: center;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  color: #fff;
-  background: var(--cerulean);
-  border: 1px solid var(--cerulean);
-  border-radius: 7px;
-  padding: 5px 11px;
-  cursor: pointer;
-  transition: 0.12s ease;
-}
-.cmp-send:hover {
-  background: var(--cerulean-deep);
-  border-color: var(--cerulean-deep);
 }
 
 /* conversation log timeline */
@@ -2145,14 +2075,6 @@
   background: var(--cerulean-wash);
   color: var(--cerulean-deep);
 }
-.cmp-logch.calendar {
-  background: var(--info-wash);
-  color: var(--info);
-}
-.cmp-logch.stripe {
-  background: var(--ok-wash);
-  color: var(--ok);
-}
 .cmp-logtitle {
   font-size: 11px;
   font-weight: 700;
@@ -2173,14 +2095,6 @@
 .cmp-logrow.in .cmp-logmsg {
   color: var(--ink);
   font-style: italic;
-}
-.cmp-logmeta {
-  font-size: 9.5px;
-  font-weight: 600;
-  color: var(--ink-faint);
-  margin-top: 3px;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
 }
 
 /* move-to-stage row */

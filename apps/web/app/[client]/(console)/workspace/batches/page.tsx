@@ -13,6 +13,7 @@ import {
 } from "@/lib/api";
 import { useClient } from "@/lib/nav";
 import { Modal } from "@/components/Modal";
+import { ConfirmFooter } from "@/components/workspace";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { Batch } from "@/lib/workspace/types";
@@ -84,7 +85,8 @@ export default function BatchesPage() {
     if (!open) {
       void loadDetail(b.id);
       setTimeout(
-        () => document.getElementById(domId)?.scrollIntoView({ behavior: "smooth", block: "start" }),
+        () =>
+          document.getElementById(domId)?.scrollIntoView({ behavior: "smooth", block: "start" }),
         60
       );
     }
@@ -293,8 +295,8 @@ export default function BatchesPage() {
                 </table>
               </div>
               <div className="sob-more">
-                Sourced from your Brief exclusions · no prospect in any sendout batch overlaps
-                this list.
+                Sourced from your Brief exclusions · no prospect in any sendout batch overlaps this
+                list.
               </div>
             </div>
           )}
@@ -327,8 +329,8 @@ export default function BatchesPage() {
                   <div className="sob-name">{b.name}</div>
                   <div className="sob-meta">
                     <b style={{ color: "var(--ink)" }}>{b.approved}</b> approved ·{" "}
-                    <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced
-                    from {b.icp}
+                    <b style={{ color: "var(--ink)" }}>{b.count}</b> total prospects · sourced from{" "}
+                    {b.icp}
                   </div>
                   <div className="sob-dates">
                     {(
@@ -477,34 +479,27 @@ export default function BatchesPage() {
         }
         subtitle={sendFor ? `Batch "${sendFor.name}" · ${sendFor.count} prospects` : undefined}
         footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setSendFor(null)}
-              disabled={sending}
-            >
-              Cancel
-            </button>
-            <button
-              className="btn btn-accent btn-sm"
-              onClick={() => void onSend()}
-              disabled={sending || !sendEmail}
-            >
-              {sending
-                ? "Sending…"
-                : sendFor?.status === "Rejected"
-                  ? "Re-send for approval"
-                  : sendFor?.sentAt
-                    ? "Send follow-up"
-                    : "Send approval email"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setSendFor(null)}
+            onConfirm={() => void onSend()}
+            busy={sending}
+            variant="accent"
+            confirmDisabled={!sendEmail}
+            busyLabel="Sending…"
+            confirmLabel={
+              sendFor?.status === "Rejected"
+                ? "Re-send for approval"
+                : sendFor?.sentAt
+                  ? "Send follow-up"
+                  : "Send approval email"
+            }
+          />
         }
       >
         {sendFor?.status === "Rejected" && (
           <p style={{ margin: "0 0 14px", lineHeight: 1.5 }}>
-            This batch was rejected. Re-sending <b>reopens</b> it and emails a fresh approval link so
-            the client can review the revised list.
+            This batch was rejected. Re-sending <b>reopens</b> it and emails a fresh approval link
+            so the client can review the revised list.
           </p>
         )}
         {sendFor &&
@@ -537,7 +532,9 @@ export default function BatchesPage() {
           ) : (
             <p style={{ margin: 0, lineHeight: 1.5 }}>
               No meeting attendee emails on your Brief yet. Add them in{" "}
-              <Link href={`/${client}/workspace/brief`}>Business Brief · Meeting attendee emails</Link>
+              <Link href={`/${client}/workspace/brief`}>
+                Business Brief · Meeting attendee emails
+              </Link>
               , then send.
             </p>
           ))}
@@ -548,29 +545,21 @@ export default function BatchesPage() {
         onClose={() => !deleting && setPendingDelete(null)}
         title={pendingDelete ? `Delete batch "${pendingDelete.name}"?` : ""}
         footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setPendingDelete(null)}
-              disabled={deleting}
-            >
-              Cancel
-            </button>
-            <button
-              className="btn btn-danger btn-sm"
-              onClick={() => pendingDelete && void onDelete(pendingDelete)}
-              disabled={deleting}
-            >
-              {deleting ? "Deleting…" : "Delete batch"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setPendingDelete(null)}
+            onConfirm={() => pendingDelete && void onDelete(pendingDelete)}
+            busy={deleting}
+            variant="danger"
+            busyLabel="Deleting…"
+            confirmLabel="Delete batch"
+          />
         }
       >
         {pendingDelete && (
           <p style={{ margin: 0, lineHeight: 1.5 }}>
-            This permanently deletes <b>{pendingDelete.name}</b>, its{" "}
-            <b>{pendingDelete.count}</b> approval record{pendingDelete.count === 1 ? "" : "s"}, and
-            any approval links. This can&apos;t be undone.
+            This permanently deletes <b>{pendingDelete.name}</b>, its <b>{pendingDelete.count}</b>{" "}
+            approval record{pendingDelete.count === 1 ? "" : "s"}, and any approval links. This
+            can&apos;t be undone.
             {pendingDelete.status !== "Pending" && (
               <>
                 {" "}
@@ -586,24 +575,19 @@ export default function BatchesPage() {
         open={decideFor !== null}
         onClose={() => !deciding && setDecideFor(null)}
         title="Record the client's decision"
-        subtitle={decideFor ? `Batch "${decideFor.name}" · ${decideFor.count} prospects` : undefined}
+        subtitle={
+          decideFor ? `Batch "${decideFor.name}" · ${decideFor.count} prospects` : undefined
+        }
         footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setDecideFor(null)}
-              disabled={deciding}
-            >
-              Cancel
-            </button>
-            <button
-              className="btn btn-accent btn-sm"
-              onClick={() => void onDecide()}
-              disabled={deciding || !decideChoice}
-            >
-              {deciding ? "Recording…" : "Record decision"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setDecideFor(null)}
+            onConfirm={() => void onDecide()}
+            busy={deciding}
+            variant="accent"
+            confirmDisabled={!decideChoice}
+            busyLabel="Recording…"
+            confirmLabel="Record decision"
+          />
         }
       >
         {decideFor && (
@@ -616,7 +600,10 @@ export default function BatchesPage() {
             <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
               <button
                 type="button"
-                className={clsx("btn btn-sm", decideChoice === "approve" ? "btn-accent" : "btn-ghost")}
+                className={clsx(
+                  "btn btn-sm",
+                  decideChoice === "approve" ? "btn-accent" : "btn-ghost"
+                )}
                 aria-pressed={decideChoice === "approve"}
                 onClick={() => setDecideChoice("approve")}
               >
@@ -624,7 +611,10 @@ export default function BatchesPage() {
               </button>
               <button
                 type="button"
-                className={clsx("btn btn-sm", decideChoice === "changes" ? "btn-danger" : "btn-ghost")}
+                className={clsx(
+                  "btn btn-sm",
+                  decideChoice === "changes" ? "btn-danger" : "btn-ghost"
+                )}
                 aria-pressed={decideChoice === "changes"}
                 onClick={() => setDecideChoice("changes")}
               >

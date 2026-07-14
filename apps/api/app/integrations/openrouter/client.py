@@ -36,7 +36,7 @@ import urllib.request
 from dataclasses import dataclass
 from functools import lru_cache
 
-import boto3
+from app.core.config import fetch_secret_json
 
 log = logging.getLogger("holdslot.openrouter")
 
@@ -73,11 +73,7 @@ def _config() -> OpenRouterConfig:
     env (comma-separated) → secret `models`/`default_model` → the locked code fallback. The env
     override lets ops repoint the model list (e.g. away from a geo-blocked provider) via a Lambda
     env var or local dev, without a Secrets Manager write."""
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
-    sm = boto3.client("secretsmanager", region_name=region)
-    raw = sm.get_secret_value(SecretId=f"{prefix}/openrouter")["SecretString"]
-    sec = json.loads(raw)
+    sec = fetch_secret_json("openrouter")
     env_models = os.environ.get("HOLDSLOT_OPENROUTER_MODELS")
     if env_models:
         models: list[str] | None = [m.strip() for m in env_models.split(",") if m.strip()]

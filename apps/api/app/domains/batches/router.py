@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.db import is_fk_violation
 from app.core.deps import AccessContext, get_db, require_membership
 from app.core.email import send_email
 from app.core.security import hash_token, new_opaque_token
@@ -33,7 +34,6 @@ from app.domains.batches.schemas import (
     TemplateIn,
     TemplateOut,
 )
-from app.domains.prospects.scoring import is_fk_violation
 from app.models import ApprovalLink, Batch, Company, Icp, MembershipRole, Prospect, ProspectApproval
 
 router = APIRouter(tags=["batches"])
@@ -211,7 +211,6 @@ def get_batch(
     groups: dict[str, BatchCompanyGroup] = {}
     for approval, prospect, company in rows:
         e = prospect.enrichment or {}
-        comps = prospect.fit_components or {}
         key = str(company.id) if company else (e.get("company") or e.get("domain") or "—")
         group = groups.get(key)
         if group is None:
@@ -219,9 +218,6 @@ def get_batch(
                 company=(company.name if company else None) or e.get("company", ""),
                 domain=(company.domain if company else None) or e.get("domain", ""),
                 industry=(company.industry if company else None) or e.get("company_industry", ""),
-                size=(company.size if company else None) or e.get("company_size", ""),
-                country=(company.country if company else "") or "",
-                fit_reason=(company.fit_reason if company else "") or "",
             )
             groups[key] = group
         group.prospects.append(
@@ -230,8 +226,6 @@ def get_batch(
                 prospect_id=str(prospect.id),
                 full_name=e.get("full_name", ""),
                 title=e.get("title", ""),
-                seniority=e.get("seniority", ""),
-                fit_reason=prospect.fit_reason or comps.get("fit_reason", ""),
                 decision=approval.decision,
             )
         )

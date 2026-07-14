@@ -1,7 +1,7 @@
 """B4/B6 tests — Brief → ResearchSpec structuring.
 
 Unit tests validate the v4 (per-ICP Apollo-native) contract + the assemble/credit-policy split,
-the `targeting_for_icp` resolver (v4 match + v3 fallback), and `reconcile_icp_targeting` (the
+the `targeting_for_icp` resolver (v4 per-ICP match), and `reconcile_icp_targeting` (the
 coverage guard that makes the original "second ICP silently dropped" bug impossible). No I/O.
 Gated integration tests run real structuring against dev: a filled brief yields a schema-valid,
 versioned spec with gaps and resolvable telemetry, and the credit policy is server-set.
@@ -193,7 +193,7 @@ def test_json_schema_is_strict():
     }
 
 
-# --- targeting_for_icp — the one spec reader (v4 match + v3 fallback) -----------------
+# --- targeting_for_icp — the one spec reader (v4 per-ICP match) -----------------
 
 
 def _v4_blob(*blocks: dict) -> dict:
@@ -224,7 +224,10 @@ def test_targeting_for_icp_single_block_resolves_without_icp():
     assert got is not None and got["icp_id"] == ICP_A
 
 
-def test_targeting_for_icp_v3_fallback_answers_any_icp():
+def test_targeting_for_icp_no_blocks_returns_none():
+    # The v3 fallback (single top-level block) was removed in Wave 5 (S22) — pre-flight confirmed no
+    # live spec's latest version is pre-v4. A blob without `icp_targeting` now resolves to None for
+    # any icp_id, and the caller 400s ("regenerate").
     v3 = {
         "spec_version": 3,
         "company_search_params": _company_params(),
@@ -234,10 +237,7 @@ def test_targeting_for_icp_v3_fallback_answers_any_icp():
         "credit_policy": RS.CREDIT_POLICY,
     }
     for icp in (None, ICP_A):
-        got = RS.targeting_for_icp(v3, icp)
-        assert got is not None
-        assert got["company_search_params"] == _company_params()
-        assert got["people_search_params"] == _people_params()
+        assert RS.targeting_for_icp(v3, icp) is None
     assert RS.targeting_for_icp({}, None) is None
     assert RS.targeting_for_icp(None, ICP_A) is None
     assert RS.targeting_for_icp(_v4_blob(), ICP_A) is None  # v4 with zero blocks
@@ -501,7 +501,7 @@ def test_structure_endpoint_versions_and_links_telemetry():
         assert j2["spec_version"] == 2
         latest = client.get(f"/{slug}/research-spec", headers=auth).json()
         assert latest["latest"]["version"] == 2
-        assert latest["versions"] == [2, 1]
+        # S10 — the endpoint no longer returns the full version list; assert history via the DB.
         versions = db.execute(
             ResearchSpec.__table__.select().where(ResearchSpec.tenant_id == tenant.id)
         ).fetchall()

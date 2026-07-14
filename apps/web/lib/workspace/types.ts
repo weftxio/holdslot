@@ -59,40 +59,9 @@ export type Batch = {
   sentAt?: string;
   approvedAt?: string;
 };
-// `locked` = the sendout batch has been confirmed for this campaign. A freshly created
-// campaign is an unlocked draft until the operator picks a batch and confirms it.
-export type Campaign = {
-  name: string;
-  batch: string;
-  locked: boolean;
-};
-export type Reply = {
-  n: string;
-  role: string;
-  campaign: string;
-  batch: string;
-  repliedAt: string;
-  cls: string;
-  badge: string;
-  quote: string;
-  draft: string;
-  done?: string;
-  editing?: boolean;
-  nudge?: boolean;
-  text: string;
-};
-
 // A `Set<string>` state updater (the "Scoring…" row sets). Typed loosely so the reconcile helpers
 // below can live at module scope and serve both the company and people scorers.
 export type ScoringSetter = (updater: (prev: Set<string>) => Set<string>) => void;
-
-export type LedgerRow = {
-  outcome: string;
-  outcomeBadge: string;
-  feedback: string;
-  billing: string;
-  billingBadge: string;
-};
 
 // A meeting-summary card. Derived from a held `meeting` row (F5); the detail fields
 // (Attendees/Discussed/Next step/Sentiment/Recording) stay pending until the LLM summary lands (FD-8).

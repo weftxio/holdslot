@@ -163,8 +163,6 @@ def test_meeting_code_extraction():
     assert m.meeting_code("https://meet.google.com/abc-defg-hij") == "abc-defg-hij"
     assert m.meeting_code("https://meet.google.com/abc-defg-hij/") == "abc-defg-hij"
     assert m.meeting_code(None) is None
-    ev = _load("event_insert_response.json")
-    assert m.event_meeting_code(ev) == "abc-defg-hij"  # off conferenceData.conferenceId
 
 
 def test_held_requires_record_and_two_participants():
@@ -235,14 +233,6 @@ def test_is_billable_and_chip_matrix():
 def test_dispute_window_end_is_48h():
     end = _dt("2026-07-15T10:47:00Z")
     assert m.dispute_window_end(end) == end + timedelta(hours=48)
-
-
-def test_participant_duration_excludes_host():
-    """FD-2 refinement (verdict ②) — non-host presence when the host is identifiable."""
-    parts = _load("participants_response.json")["participants"]
-    host = parts[0]["signedinUser"]["user"]  # users/host123
-    # non-host (buyer) span 10:01:10 → 10:45:00 ≈ 44 min.
-    assert m.participant_duration_min(parts, host_user=host) == 44
 
 
 # ============================================================ F5 — read derivations

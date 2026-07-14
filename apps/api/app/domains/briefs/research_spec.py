@@ -590,20 +590,11 @@ def targeting_for_icp(spec_blob: dict | None, icp_id) -> dict | None:
     the spec has exactly one block (single-ICP convenience); a multi-block spec with no/unknown
     `icp_id` returns None and the caller decides the 400 ("pick an ICP" / "regenerate"). An id
     that matches no block also returns None — never silently hand back another ICP's targeting.
-    v3 and earlier (single top-level block): always returns that block, whatever the `icp_id`, so
-    pre-multi-ICP specs keep working until the next regenerate.
+    A spec with no `icp_targeting` (absent or empty) also returns None — the caller regenerates.
     """
     blob = spec_blob or {}
     blocks = blob.get("icp_targeting")
-    if blocks is None:  # v3 fallback — the legacy single merged block
-        if not blob:
-            return None
-        return {
-            "company_search_params": blob.get("company_search_params") or {},
-            "people_search_params": blob.get("people_search_params") or {},
-            "intent_filters": blob.get("intent_filters") or {},
-        }
-    if not blocks:
+    if not blocks:  # absent (pre-v4) or empty → nothing to resolve
         return None
     if icp_id is None:
         return blocks[0] if len(blocks) == 1 else None

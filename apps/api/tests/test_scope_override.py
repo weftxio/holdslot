@@ -59,11 +59,12 @@ def test_block_per_icp_wins_over_global():
     assert _scope_override_block(row, B) == PSP
 
 
-def test_block_legacy_flat_is_global_fallback():
-    # A payload saved before per-ICP keying (no `by_icp`) applies to ANY ICP until re-saved.
+def test_block_legacy_flat_is_ignored():
+    # The legacy-flat fallback was removed in Wave 5 (S23) — pre-flight confirmed no live override
+    # lacks a `by_icp` map. A payload without `by_icp` now yields None (→ AI scope), not a global.
     row = _row(PSP)
-    assert _scope_override_block(row, A) == PSP
-    assert _scope_override_block(row, B) == PSP
+    assert _scope_override_block(row, A) is None
+    assert _scope_override_block(row, B) is None
 
 
 # --------------------------------------------------------------- _merge_scope_map (write)

@@ -36,8 +36,9 @@ import urllib.request
 import uuid
 from functools import lru_cache
 
-import boto3
 import jwt
+
+from app.core.config import fetch_secret_json
 
 log = logging.getLogger("holdslot.google")
 
@@ -102,11 +103,7 @@ def _secret() -> dict:
     """
     if env := os.environ.get("HOLDSLOT_GOOGLE_SA"):
         return json.loads(env)
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
-    sm = boto3.client("secretsmanager", region_name=region)
-    raw = sm.get_secret_value(SecretId=f"{prefix}/google")["SecretString"]
-    return json.loads(raw)
+    return fetch_secret_json("google")
 
 
 def _resolve_auth() -> tuple[dict, str, list[str]]:

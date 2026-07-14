@@ -285,7 +285,8 @@ def test_batch_end_to_end_create_send_view_decide():
         db.commit()
 
         view = view_approval(token, db=db)
-        assert view.state == "valid" and view.count == 2
+        # S12 — `count` dropped from the external view; assert on the masked prospect list itself.
+        assert view.state == "valid" and len(view.prospects) == 2
         blob = json.dumps([p.model_dump() for p in view.prospects])
         assert "northwind.example" not in blob and "linkedin.com" not in blob
         assert view.prospects[0].name.endswith(".")  # masked

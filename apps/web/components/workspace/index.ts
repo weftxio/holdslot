@@ -8,3 +8,5 @@ export {
   SpecReview,
 } from "./spec";
 export { TagInput, PillGroup, Lbl, ExclFormat, CsvErrors, Section } from "./brief";
+export { ConfirmFooter } from "./ConfirmFooter";
+export { PromptEditorShell } from "./PromptEditorShell";

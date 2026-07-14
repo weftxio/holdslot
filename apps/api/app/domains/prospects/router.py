@@ -192,15 +192,12 @@ def _scope_override_block(row: ScopeOverride | None, icp_id) -> dict | None:
     """The saved manual override block for ONE ICP (`{people_search_params}` for people;
     `{company_search_params, intent_filters}` for company), or None → use the AI scope.
 
-    Reads the per-ICP map (`params.by_icp`, keyed by ICP id string). A legacy FLAT payload — one
-    saved before per-ICP keying — is treated as a global fallback that applies to any ICP until it
-    is re-saved per-ICP (the first per-ICP save supersedes it)."""
+    Reads the per-ICP map (`params.by_icp`, keyed by ICP id string). A row with no `by_icp` map
+    (absent or empty) yields None → the caller falls back to the AI scope."""
     if row is None:
         return None
     params = row.params or {}
-    by_icp = params.get("by_icp")
-    if by_icp is None:
-        return params or None  # legacy flat payload → global fallback
+    by_icp = params.get("by_icp") or {}
     if icp_id is not None:
         hit = by_icp.get(str(icp_id))
         if hit is not None:
@@ -514,7 +511,6 @@ def _company_out(c: Company) -> CompanyOut:
         subscores=comps.get("subscores", {}),
         flags=comps.get("flags", []),
         icp=comps.get("icp"),
-        trigger_line=comps.get("trigger_line", ""),
         enrichment=_company_enrichment(c.evidence),
         source=c.source,
         status=c.status,
@@ -2084,7 +2080,6 @@ def _scoring_job_out(job: ScoringJob | None) -> ScoringJobOut:
         return ScoringJobOut(status="idle")
     return ScoringJobOut(
         job_id=str(job.id),
-        kind=job.kind,
         status=job.status,
         result=job.result or {},
         error=job.error,
@@ -2330,9 +2325,7 @@ def list_research_runs(
                 run_id=r.run_id,
                 source=r.source,
                 prompt_version=r.prompt_version,
-                rubric_version=r.rubric_version,
                 rows_pushed=r.rows_pushed,
-                rows_accepted=r.rows_accepted,
                 cost_usd=cost,
                 icp_id=str(r.icp_id) if r.icp_id else None,
                 scope_source=r.scope_source,

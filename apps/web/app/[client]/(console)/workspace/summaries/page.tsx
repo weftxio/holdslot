@@ -3,30 +3,20 @@ import { useState } from "react";
 import clsx from "clsx";
 import { correctOutcome, setMeetingWon } from "@/lib/api";
 import { useClient } from "@/lib/nav";
+import { fmtDayYear } from "@/lib/dates";
 import { Modal } from "@/components/Modal";
+import { ConfirmFooter } from "@/components/workspace";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import type { Recap } from "@/lib/workspace/types";
+import { OUTCOME_BADGE as OUTCOME } from "@/lib/workspace/constants";
 
-const OUTCOME: Record<string, { label: string; badge: string }> = {
-  qualified: { label: "Qualified", badge: "badge-ok" },
-  short_call: { label: "Short call", badge: "badge-warn" },
-  noshow: { label: "No-show", badge: "badge-danger" },
-};
 // M33 — the three states the owner can correct a held meeting to (mirrors the backend OutcomeIn).
 const CORRECTABLE: { value: "qualified" | "short_call" | "noshow"; label: string }[] = [
   { value: "qualified", label: "Qualified" },
   { value: "short_call", label: "Short call" },
   { value: "noshow", label: "No-show" },
 ];
-
-function fmt(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
 
 export default function SummariesPage() {
   // N47 — recaps come from the shared provider (not a static import) so a campaign rename remaps
@@ -124,7 +114,7 @@ export default function SummariesPage() {
                     Meeting {sx + 1} · {rc.prospectName || "Prospect"}
                   </div>
                   <div className="smeta">
-                    {fmt(rc.scheduledAt)} · {rc.companyName || "—"}
+                    {fmtDayYear(rc.scheduledAt)} · {rc.companyName || "—"}
                   </div>
                 </div>
                 <span className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -220,30 +210,27 @@ export default function SummariesPage() {
         title="Correct the meeting outcome"
         subtitle={
           correctFor
-            ? `${correctFor.prospectName || "Prospect"} · ${fmt(correctFor.scheduledAt)}`
+            ? `${correctFor.prospectName || "Prospect"} · ${fmtDayYear(correctFor.scheduledAt)}`
             : undefined
         }
         footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setCorrectFor(null)}
-              disabled={correcting}
-            >
-              Cancel
-            </button>
-            <button className="btn btn-accent btn-sm" onClick={() => void onCorrect()} disabled={correcting}>
-              {correcting ? "Saving…" : "Save correction"}
-            </button>
-          </>
+          <ConfirmFooter
+            onCancel={() => setCorrectFor(null)}
+            onConfirm={() => void onCorrect()}
+            busy={correcting}
+            variant="accent"
+            busyLabel="Saving…"
+            confirmLabel="Save correction"
+          />
         }
       >
         {correctFor && (
           <>
             <p style={{ margin: "0 0 14px", lineHeight: 1.5 }}>
               Re-classify this meeting if the automatic outcome is wrong. Marking it{" "}
-              <b>Qualified</b> re-derives the billable amount and the 48-hour dispute window; anything
-              else clears the amount. This is the correction door — the deal-won flag is separate.
+              <b>Qualified</b> re-derives the billable amount and the 48-hour dispute window;
+              anything else clears the amount. This is the correction door — the deal-won flag is
+              separate.
             </p>
             <div className="field" style={{ margin: 0 }}>
               <label>Outcome</label>
@@ -252,7 +239,10 @@ export default function SummariesPage() {
                   <button
                     key={o.value}
                     type="button"
-                    className={clsx("btn btn-sm", correctOc === o.value ? "btn-accent" : "btn-ghost")}
+                    className={clsx(
+                      "btn btn-sm",
+                      correctOc === o.value ? "btn-accent" : "btn-ghost"
+                    )}
                     aria-pressed={correctOc === o.value}
                     onClick={() => setCorrectOc(o.value)}
                   >
@@ -263,7 +253,13 @@ export default function SummariesPage() {
             </div>
             <label
               className="dl"
-              style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16, cursor: "pointer" }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                marginTop: 16,
+                cursor: "pointer",
+              }}
             >
               <input
                 type="checkbox"

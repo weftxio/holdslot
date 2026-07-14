@@ -1,10 +1,12 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useClient } from "@/lib/nav";
+import { csvCell } from "@/lib/csv";
+import { fmtDay } from "@/lib/dates";
 import clsx from "clsx";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
-import { PER_MEETING_USD } from "@/lib/workspace/constants";
+import { OUTCOME_BADGE as OUTCOME, PER_MEETING_USD } from "@/lib/workspace/constants";
 import {
   getBillingStatus,
   listMeetings,
@@ -21,23 +23,14 @@ const SUB_STATUS_BADGE: Record<string, string> = {
   incomplete: "badge-warn",
 };
 
-const OUTCOME: Record<string, { label: string; badge: string }> = {
-  qualified: { label: "Qualified", badge: "badge-ok" },
-  short_call: { label: "Short call", badge: "badge-warn" },
-  noshow: { label: "No-show", badge: "badge-danger" },
-};
 const BILLING_BADGE: Record<string, string> = {
   Billed: "badge-ok",
   Held: "badge-warn",
   "Not billable": "badge-neutral",
 };
 
-function fmt(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
 export default function BillingPage() {
-  const client = useParams<{ client: string }>().client;
+  const client = useClient();
   const toast = useToast();
   const { reloadMeetings } = useWorkspace();
   const [rows, setRows] = useState<MeetingApi[] | null>(null);
@@ -47,7 +40,9 @@ export default function BillingPage() {
   const [sub, setSub] = useState<BillingSubscriptionApi | null>(null);
 
   const load = useCallback(() => {
-    listMeetings(client, "past").then(setRows).catch(() => setRows([]));
+    listMeetings(client, "past")
+      .then(setRows)
+      .catch(() => setRows([]));
     getBillingStatus(client).then((s) => setSub(s.subscription));
   }, [client]);
   useEffect(() => load(), [load]);
@@ -75,11 +70,18 @@ export default function BillingPage() {
 
   function exportLedgerCsv() {
     const headers = [
-      "Date", "Meeting with", "Company", "Campaign", "Batch", "Outcome", "Feedback", "Status",
+      "Date",
+      "Meeting with",
+      "Company",
+      "Campaign",
+      "Batch",
+      "Outcome",
+      "Feedback",
+      "Status",
       "Amount (USD)",
     ];
     const csvRows = list.map((r) => [
-      fmt(r.scheduled_at),
+      fmtDay(r.scheduled_at),
       r.prospect_name,
       r.company_name,
       r.campaign_name,
@@ -90,7 +92,7 @@ export default function BillingPage() {
       r.billing_chip === "Billed" && r.amount != null ? String(r.amount) : "",
     ]);
     const csv = [headers, ...csvRows]
-      .map((row) => row.map((c) => `"${String(c).replace(/"/g, '""')}"`).join(","))
+      .map((row) => row.map((c) => csvCell(String(c))).join(","))
       .join("\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
@@ -124,11 +126,24 @@ export default function BillingPage() {
             <h3>Billing Ledger</h3>
             <div className="ph-sub">Only completed, qualified meetings are billable</div>
             {sub && (
-              <div className="ph-sub" style={{ marginTop: 6, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <div
+                className="ph-sub"
+                style={{
+                  marginTop: 6,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                }}
+              >
                 <span>{PLAN_LABEL[sub.plan] || sub.plan} plan</span>
                 <span className={clsx("badge", SUB_STATUS_BADGE[sub.status] || "badge-neutral")}>
                   <span className="bdot" />
-                  {sub.status === "past_due" ? "Payment due" : sub.status === "active" ? "Active" : sub.status}
+                  {sub.status === "past_due"
+                    ? "Payment due"
+                    : sub.status === "active"
+                      ? "Active"
+                      : sub.status}
                 </span>
                 <span>
                   · {sub.current_month_usage}/{sub.enrichment_cap} enrichments this month
@@ -174,10 +189,13 @@ export default function BillingPage() {
                 </tr>
               )}
               {list.map((r) => {
-                const oc = OUTCOME[r.outcome || ""] || { label: r.outcome || "—", badge: "badge-neutral" };
+                const oc = OUTCOME[r.outcome || ""] || {
+                  label: r.outcome || "—",
+                  badge: "badge-neutral",
+                };
                 return (
                   <tr key={r.id}>
-                    <td className="muted">{fmt(r.scheduled_at)}</td>
+                    <td className="muted">{fmtDay(r.scheduled_at)}</td>
                     <td>
                       <div className="nm">{r.prospect_name || "Prospect"}</div>
                       <div className="sub">{r.company_name}</div>
@@ -196,7 +214,9 @@ export default function BillingPage() {
                     </td>
                     <td className="muted">{r.feedback_state === "Received" ? "Received" : "—"}</td>
                     <td>
-                      <span className={clsx("badge", BILLING_BADGE[r.billing_chip] || "badge-neutral")}>
+                      <span
+                        className={clsx("badge", BILLING_BADGE[r.billing_chip] || "badge-neutral")}
+                      >
                         <span className="bdot" />
                         {r.billing_chip}
                       </span>

@@ -39,8 +39,6 @@ class BatchProspect(BaseModel):
     prospect_id: str
     full_name: str = ""
     title: str = ""
-    seniority: str = ""
-    fit_reason: str = ""
     decision: str
 
 
@@ -48,9 +46,6 @@ class BatchCompanyGroup(BaseModel):
     company: str = ""
     domain: str = ""
     industry: str = ""
-    size: str = ""
-    country: str = ""
-    fit_reason: str = ""
     prospects: list[BatchProspect] = Field(default_factory=list)
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.db import is_unique_violation
 from app.core.deps import AccessContext, get_db, require_membership, uuid_or_404
 from app.core.security import hash_token, new_opaque_token
 from app.domains.batches import service as bsvc
@@ -42,7 +43,6 @@ from app.domains.campaigns.schemas import (
     WinnerIn,
 )
 from app.domains.meetings import service as msvc
-from app.domains.prospects.scoring import is_unique_violation
 from app.integrations.smartlead import client as sl
 from app.models import (
     Batch,
@@ -138,11 +138,9 @@ def _campaign_out(
         name=campaign.name or "",
         icp=icp,
         status=campaign.status,
-        smartlead_campaign_id=campaign.smartlead_campaign_id,
         lead_total=sum(stages.values()),
         stages=stages,
         created_at=_iso(campaign.created_at),
-        updated_at=_iso(campaign.updated_at),
     )
 
 
@@ -507,7 +505,7 @@ def launch_campaign(
     try:
         launch.dispatch(ctx.tenant.id, campaign.id)
     except Exception as exc:
-        launch._fail(db, campaign.id, f"dispatch failed: {exc!r}")
+        launch.fail(db, campaign.id, f"dispatch failed: {exc!r}")
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE, "could not start the launch"
         ) from exc
@@ -537,7 +535,6 @@ def _reply_out(
         id=str(event.id),
         campaign_id=str(event.campaign_id),
         campaign_name=campaign_name,
-        campaign_lead_id=str(event.campaign_lead_id) if event.campaign_lead_id else None,
         prospect_name=enr.get("full_name", ""),
         prospect_role=enr.get("title", ""),
         stage=lead.stage if lead else "",
@@ -1062,7 +1059,6 @@ def performance_summary(
         new_positive_replies=new_positive,
         replies_awaiting_review=awaiting,
         approvals_pending=approvals_pending,
-        meetings_booked=meetings_booked,
         qualified_last_30d=qualified_last_30d,
         qualified_delta=qualified_last_30d - qualified_prev_30d,
         meetings_held_week=meetings_held_week,

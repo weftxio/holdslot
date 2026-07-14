@@ -15,7 +15,7 @@ Rate limit is ~10 requests / 2 s → a client-side sliding-window throttle gates
 (docs/initial-build-plan.md → Phase E → Smartlead API contract):
 
   create_campaign · update_schedule · update_settings · save_sequences · add_email_accounts ·
-  add_leads · set_status · register_webhook · reply_to_thread · fetch_analytics/fetch_statistics ·
+  add_leads · set_status · register_webhook · reply_to_thread · fetch_statistics ·
   fetch_inbox_replies  (+ list_email_accounts, the one-shot lookup resolving sending-account ids).
 """
 
@@ -33,7 +33,7 @@ import urllib.request
 from collections import deque
 from functools import lru_cache
 
-import boto3
+from app.core.config import fetch_secret_json
 
 log = logging.getLogger("holdslot.smartlead")
 
@@ -81,11 +81,7 @@ def _secret() -> dict:
             return parsed if isinstance(parsed, dict) else {"api_key": env}
         except json.JSONDecodeError:
             return {"api_key": env}
-    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION") or "us-east-1"
-    prefix = os.environ.get("HOLDSLOT_SECRETS_PREFIX", "holdslot/prod")
-    sm = boto3.client("secretsmanager", region_name=region)
-    raw = sm.get_secret_value(SecretId=f"{prefix}/smartlead")["SecretString"]
-    return json.loads(raw)
+    return fetch_secret_json("smartlead")
 
 
 def _api_key() -> str:
@@ -93,14 +89,6 @@ def _api_key() -> str:
     if not key:
         raise SmartleadError("smartlead secret missing api_key")
     return str(key)
-
-
-def sending_account_ids() -> list[int]:
-    """The numeric sending-inbox ids the launch worker adds to a campaign (from the secret)."""
-    raw = _secret().get("sending_account_ids") or []
-    if not isinstance(raw, list):
-        raw = [raw]
-    return [int(x) for x in raw]
 
 
 def webhook_path_token() -> str | None:
@@ -323,11 +311,6 @@ def reply_to_thread(
     return _post(f"campaigns/{campaign_id}/reply-email-thread", body)  # type: ignore[return-value]
 
 
-def fetch_analytics(campaign_id: str | int) -> dict:
-    """`GET /campaigns/{id}/analytics` — top-level campaign metrics (the E6 on-read poll)."""
-    return _get(f"campaigns/{campaign_id}/analytics")  # type: ignore[return-value]
-
-
 def fetch_statistics(campaign_id: str | int, *, offset: int = 0, limit: int = 100) -> dict:
     """`GET /campaigns/{id}/statistics` — per-lead rows (the followup fallback + webhook-drift
     check)."""
@@ -369,12 +352,10 @@ __all__ = [
     "set_status",
     "register_webhook",
     "reply_to_thread",
-    "fetch_analytics",
     "fetch_statistics",
     "fetch_inbox_replies",
     "fetch_campaign_leads",
     "list_email_accounts",
-    "sending_account_ids",
     "webhook_path_token",
     "reset_secret",
     "SmartleadError",

@@ -30,6 +30,9 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+# R3/R27 — the zombie-reap window is defined once in prospects/scoring (see MAX_JOB_AGE_SECONDS use
+# below); importing it kills the drifting `= 360` copy that sat below the worst-case worker life.
+from app.core.db import is_unique_violation
 from app.domains.briefs import anchors
 from app.domains.briefs.completeness import completeness
 from app.domains.briefs.research_spec import (
@@ -47,10 +50,7 @@ from app.domains.briefs.research_spec import (
 )
 from app.domains.icps import icp_docs
 from app.domains.prospects.feedback import keyword_yield
-
-# R3/R27 — the zombie-reap window is defined once in prospects/scoring (see MAX_JOB_AGE_SECONDS use
-# below); importing it kills the drifting `= 360` copy that sat below the worst-case worker life.
-from app.domains.prospects.scoring import MAX_JOB_AGE_SECONDS, is_unique_violation
+from app.domains.prospects.scoring import MAX_JOB_AGE_SECONDS
 from app.integrations.openrouter.client import LlmError, structured_completion
 from app.models import Brief, Company, Prompt, ResearchJob, ResearchRun, ResearchSpec
 
