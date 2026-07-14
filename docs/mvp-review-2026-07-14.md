@@ -39,10 +39,11 @@ every L-item is in **Part B §3**; for every FR/NF item in `initial-build-plan.m
 | 0.3 | **Backend deploy** → applied `0032` to dev Aurora, shipped Lambda **v89→v90** | ✅ `/health` ok · `MeetingOut.campaign_id` live in OpenAPI |
 | 0.4 | Push `dev` → Amplify FE build (followed 0.3 per D1) | ✅ `origin/dev`=`215ef4d` · Amplify build #60 SUCCEED |
 
-### Phase 1 · L-wave code fixes — ✅ COMMITTED 2026-07-14 (local; awaiting BE-deploy+push authorization)
+### Phase 1 · L-wave code fixes — ✅ SHIPPED 2026-07-14 (backend v91 + pushed + Amplify #61)
 
-All committed to local `dev` (unpushed); gate green at each step. Deploy sequence when authorized:
-**backend deploy (L2–L12/TZ-1/`_iso`) → push (per D1)** — same as Phase 0.
+Committed to local `dev`, then deployed backend-first per D1: **Lambda v90→v91** shipped (no
+migration — head `0032` already applied in Phase 0; `/health` ok · OpenAPI 69 paths), then `dev`
+pushed → **Amplify build #61 SUCCEED**. Gate was green at each commit.
 
 | Group | Items | Commit | Test |
 |---|---|---|---|
@@ -77,6 +78,20 @@ All committed to local `dev` (unpushed); gate green at each step. Deploy sequenc
 | 2.3 | `campaigns/router.py`: extract `stage_moves.py` (30 min, un-lazies 3 imports) | S | before meeting-summary/billing-evidence work; `replies.py`/`performance.py` stay churn-gated |
 | 2.4 | `list/page.tsx` staged: modals → `useListData` hook → `Step1Companies`/`Step2People` | L | **hard prereq before any new list-page feature**; one PR each + manual find/score QA |
 | — | **Deferred churn-gated (D4):** 2.5 `CampaignTab` motion · 2.6 `spec.tsx`/`brief/page.tsx`/`constants.ts` · 2.7 `meetings/sweep.py` | — | touch only when those files next change (2.5 is mandatory before carryover S8) |
+
+**Execution status — 2026-07-14 (committed to local `dev`, UNPUSHED; deploy-neutral):**
+
+| # | State | Commit | Verification |
+|---|---|---|---|
+| **2.1** | ✅ DONE | `40c6f41` | `lib/api.ts` (1540) → `lib/api/` pkg (core + 7 phase modules) + 22-line barrel; all 24 importers unchanged · tsc/eslint/next-build clean · Playwright 27/27 |
+| **2.3** | ✅ DONE | `511741f` | `campaigns/stage_moves.py` leaf extracted; 3 callers (webhooks · meetings/router · meetings/public) un-lazied to eager imports (import-identity smoke: all share the one impl) · ruff · pytest 385/30 |
+| **2.2** | ✅ DONE (deploy + push pending) | `f7bf969` | `prospects/router.py` 3051 → 108-line aggregator + 6 modules (scope/serializers/label_engine/company_find/people_find/jobs); `_apollo_run_id`→scope breaks the label⇄cfind cycle; `SCORING_HANDLERS`→jobs shrinks scoring.py's lazy import; router re-exports all moved helpers (external importers unchanged). **Byte-identical bodies · 22 route decorators diff-clean · ruff · pytest 385/30 · find→select→find-people→reveal-and-score e2e 8/8 vs live dev Aurora** (the money-path live smoke) |
+| **2.4** | ⏳ NOT STARTED — **founder-QA-gated** | — | `list/page.tsx` (3020) staged split (modals → `useListData` → step tables). Each stage's own plan (§4.2) requires **one manual find + one reveal-and-score QA** in the live browser — which the route-mocked Playwright harness cannot observe. Handed off for a founder-driven staged session; **no new list-page feature lands before it** |
+
+> **Backend-deploy note (D1):** 2.2 + 2.3 are backend refactors committed but **not deployed**. They
+> are deploy-neutral (no route/schema change), so they ship on the next authorized backend deploy;
+> 2.1 ships on the next authorized push (Amplify FE). 2.2's own live smoke is already green (above),
+> so the post-deploy check is just `/health` + one find/score smoke.
 
 ### Phase 3 · Founder acceptance → DoD start (parallel track; live dev, founder-gated)
 
