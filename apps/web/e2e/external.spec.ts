@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { CLIENT, setupApp } from "./_mock";
+import { API_BASE, CLIENT, setupApp } from "./_mock";
 
 // Route-smoke for the 3 external (token) pages — approve / book / feedback. Each renders a valid
 // card and an expired state (driven by ?state=expired, read by ExternalShell). The
@@ -45,4 +45,37 @@ test.describe("external token routes", () => {
       expectNoExternalRequests();
     });
   }
+
+  // L1 — a 409 (slot just taken) on submit must keep the picker AND surface the "pick another"
+  // message. Regression: the 409 branch set the message then called reload(), which itself cleared
+  // submitError — so the message never rendered and the selection silently vanished on the page that
+  // mints revenue. This locks the message in after the fix (reload no longer wipes it).
+  test("book · 409 slot-taken keeps the picker and shows the 'pick another' message", async ({
+    page,
+  }) => {
+    await setupApp(page);
+    // Force only the submit POST to 409; the GET view falls through to the valid mock so the picker
+    // re-renders after reload().
+    await page.route(`${API_BASE}/book/**`, (route) => {
+      if (route.request().method() === "POST") {
+        return route.fulfill({
+          status: 409,
+          contentType: "application/json",
+          body: JSON.stringify({ detail: "slot taken" }),
+        });
+      }
+      return route.fallback();
+    });
+
+    await page.goto(`/${CLIENT}/book/${TOKEN}`);
+    await expect(page.getByText("Choose a day")).toBeVisible();
+    await page.locator(".slot").first().click();
+    await page.getByRole("button", { name: "Confirm booking" }).click();
+
+    await expect(page.getByText("That time was just taken — pick another below.")).toBeVisible();
+    // The link is still good — the used/expired pane must NOT appear.
+    await expect(
+      page.getByRole("heading", { name: "This booking link has expired" })
+    ).toHaveCount(0);
+  });
 });

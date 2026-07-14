@@ -61,9 +61,13 @@ export default function Book() {
   }, [token, reloadNonce]);
 
   const reload = () => {
+    // L1 — do NOT clear submitError here: the 409 branch sets the "pick another" message and then
+    // calls reload(), and wiping it would make the message never render (setters batch, last write
+    // wins). confirm() already clears it at the start of each attempt. Reset `day` too, so a stale
+    // index can't point past the refreshed day list and show an empty times pane.
     setView(null);
     setSlot(null);
-    setSubmitError("");
+    setDay(0);
     setLoadError(false);
     setReloadNonce((n) => n + 1);
   };
