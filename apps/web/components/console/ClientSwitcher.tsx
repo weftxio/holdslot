@@ -16,6 +16,10 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
+  // L16 — a slug we just created but that a failed /me refetch hasn't surfaced yet must NOT be
+  // bounced by the M32 effect below; and the zero-membership notice should fire at most once.
+  const createdSlugRef = useRef<string | null>(null);
+  const zeroNotifiedRef = useRef(false);
 
   // N45 — the client list is the caller's real memberships from /me (the single source of truth),
   // not a localStorage cache. Before /me resolves, show the current slug so the switcher never blanks.
@@ -29,10 +33,22 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
   useEffect(() => {
     if (!me) return;
     const slugs = me.clients.map((c) => c.slug);
-    if (slugs.length && !slugs.includes(currentSlug)) {
+    if (!slugs.length) {
+      // L16 — a zero-membership user would otherwise sit on a dead workspace with no explanation
+      // (M32 promised a notice). Surface it once; the account has no client to bounce to.
+      if (!zeroNotifiedRef.current) {
+        zeroNotifiedRef.current = true;
+        toast("Your account has no client workspaces yet — create one to get started.", "warn");
+      }
+      return;
+    }
+    // L16 — don't bounce a slug we just created but that a failed /me refetch hasn't surfaced yet;
+    // createClient already enrolled the caller as owner, so /me will catch up.
+    if (currentSlug === createdSlugRef.current) return;
+    if (!slugs.includes(currentSlug)) {
       router.replace(`/${me.clients[0].slug}/${DEFAULT_CLIENT_PAGE}`);
     }
-  }, [me, currentSlug, router]);
+  }, [me, currentSlug, router, toast]);
 
   useEffect(() => {
     const onDoc = (e: MouseEvent) => {
@@ -65,10 +81,14 @@ export function ClientSwitcher({ currentSlug }: { currentSlug: string }) {
       // server-assigned slug. Refetch /me first so the new client is in the list the target route
       // authorizes against — the old local-only create navigated to a slug with no membership → 404.
       const created = await createClient(name);
-      await refetch();
+      // L16 — mark the new slug before navigating so the M32 bounce effect can't strand us on it if
+      // the /me refetch blips; then refetch (which now reports success) to surface it in the list.
+      createdSlugRef.current = created.slug;
+      const refreshed = await refetch();
       setNewName("");
       setCreateOpen(false);
       select(created.slug);
+      if (!refreshed) toast("Client created — your list will refresh shortly.", "ok");
     } catch (e) {
       toast(e instanceof Error ? e.message : "Couldn’t create the client", "warn");
     } finally {

@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import { toggleInSet } from "@/lib/sets";
@@ -242,6 +242,17 @@ function IcpFilterSelect({
 // A labelled text/number input in the scope / add-company / add-person modals (S4) — the
 // `div.field > label + input.input` block repeated 17× with only label/value/placeholder/type
 // varying. `onChange` receives the raw string value.
+// L20 (a11y) — Enter/Space activates a clickable non-button element (role="button"), matching a
+// native button, so the expand/collapse rows are reachable without a mouse.
+const activateOnKey =
+  (fn: () => void) =>
+  (e: { key: string; preventDefault: () => void }) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn();
+    }
+  };
+
 function Field({
   label,
   value,
@@ -255,10 +266,14 @@ function Field({
   type?: "text" | "number";
   placeholder?: string;
 }) {
+  // L20 (a11y) — associate the caption with the input via htmlFor/id so all modal inputs have an
+  // accessible name (the bare <label> gave none). useId keeps it unique across the ~17 reuses.
+  const id = useId();
   return (
     <div className="field">
-      <label>{label}</label>
+      <label htmlFor={id}>{label}</label>
       <input
+        id={id}
         className="input"
         type={type}
         placeholder={placeholder}
@@ -431,6 +446,10 @@ export default function ListPage() {
   // spend): the button's `disabled` only flips after a re-render, so a fast second click would fire
   // a second spend in the same tick without this ref.
   const updateFieldsCoRef = useRef(false);
+  // L13 — same synchronous double-click guard for Create Batch: two fast clicks during the POST
+  // round-trip otherwise mint two identical batches, both sendable for approval and mintable into
+  // campaigns. `disabled` only flips after a re-render, so the ref blocks the second click in-tick.
+  const creatingBatchRef = useRef(false);
   // M31 — a low_fit ADD is confirmed via a design-system Modal (not window.confirm); this holds the
   // toggle to apply if the operator confirms.
   const [lowFitPrompt, setLowFitPrompt] = useState<{ apply: () => void } | null>(null);
@@ -458,6 +477,7 @@ export default function ListPage() {
   const [addCoOpen, setAddCoOpen] = useState(false);
   const [coForm, setCoForm] = useState({ ...blankCo });
   const [savingCo, setSavingCo] = useState(false);
+  const [creatingBatch, setCreatingBatch] = useState(false); // L13 — disables Create Batch in-flight
   // Manual override of the AI scope's Apollo company-search filters (Settings modal). Stored per
   // (client, ICP); this state mirrors the CURRENT ICP filter's entry (see the sync effect below).
   const [scopeOverride, setScopeOverride] = useState<ScopeOverride | null>(null);
@@ -555,6 +575,8 @@ export default function ListPage() {
     rescoringCoRef.current = false;
     rescoringPplRef.current = false;
     updateFieldsCoRef.current = false;
+    creatingBatchRef.current = false;
+    setCreatingBatch(false);
     // N13 — clear every mutation busy-flag too: each is set by a handler whose `finally` is gated on
     // the OLD client, so a switch mid-Find/Update/Lookalike/stage/remove would otherwise wedge the
     // button ("Fetching…") forever on the new client.
@@ -988,7 +1010,13 @@ export default function ListPage() {
       const open = expandedSubs.has(subKey);
       return (
         <Fragment key={subKey}>
-          <tr className="bucket-sub bucket-head--btn" onClick={() => toggleSub(subKey)}>
+          <tr
+            className="bucket-sub bucket-head--btn"
+            role="button"
+            tabIndex={0}
+            onClick={() => toggleSub(subKey)}
+            onKeyDown={activateOnKey(() => toggleSub(subKey))}
+          >
             <td colSpan={8}>
               <span className="bucket-head-in bucket-sub-in">
                 <span className={clsx("bucket-caret", open && "open")} aria-hidden="true">
@@ -1780,6 +1808,7 @@ export default function ListPage() {
   }
 
   async function createBatch() {
+    if (creatingBatchRef.current) return; // L13 — block a double-click before the button disables
     // Only enriched people can be batched — enforce enrich-before-batch (the dock already gates
     // the button; re-check here so a stale click can't slip unenriched rows through).
     const picked = enrichedSel;
@@ -1790,6 +1819,8 @@ export default function ListPage() {
     // Pass the shared ICP when the whole selection agrees; else the server leaves it unset.
     const icpIds = new Set(picked.map((p) => p.icp_id).filter(Boolean));
     const icp_id = icpIds.size === 1 ? ([...icpIds][0] as string) : undefined;
+    creatingBatchRef.current = true;
+    setCreatingBatch(true);
     try {
       const b = await apiCreateBatch(client, {
         prospect_ids: picked.map((p) => p.id),
@@ -1802,6 +1833,9 @@ export default function ListPage() {
       toast(`${b.name} created with ${b.total} prospects, pending client approval`);
     } catch (e) {
       toast(e instanceof Error ? e.message : "Create batch failed", "warn");
+    } finally {
+      creatingBatchRef.current = false;
+      setCreatingBatch(false);
     }
   }
 
@@ -2020,6 +2054,9 @@ export default function ListPage() {
                           <Fragment key={key}>
                             <tr
                               className="bucket-head bucket-head--btn"
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={activateOnKey(() => toggleBucket(key))}
                               onClick={() => toggleBucket(key)}
                             >
                               <td colSpan={8}>
@@ -2245,7 +2282,10 @@ export default function ListPage() {
                           <td
                             className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
                             rowSpan={rowSpan}
+                            role={expandable ? "button" : undefined}
+                            tabIndex={expandable ? 0 : undefined}
                             onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
+                            onKeyDown={expandable ? activateOnKey(() => toggleCoCollapse(c.id)) : undefined}
                             title={
                               expandable
                                 ? collapsed
@@ -2463,7 +2503,7 @@ export default function ListPage() {
                 <button
                   className="btn btn-primary"
                   onClick={createBatch}
-                  disabled={!canBatch}
+                  disabled={!canBatch || creatingBatch}
                   title={
                     canBatch
                       ? ""
@@ -2472,7 +2512,7 @@ export default function ListPage() {
                         : "Select people with a revealed email to batch them."
                   }
                 >
-                  Create batch →
+                  {creatingBatch ? "Creating…" : "Create batch →"}
                 </button>
               </div>
             </div>

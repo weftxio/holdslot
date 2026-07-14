@@ -403,6 +403,10 @@ export function SpecReview({
       const r = await saveScopingSystemPrompt(client, systemDraft);
       setSystemDraft(r.system);
       setIsCustom(r.is_custom);
+      // L22 — advance the compare baseline to the just-saved text. Without this, `systemDraft ===
+      // prompt.system` stays false (prompt.system is the stale pre-save value), so the Save button
+      // re-enables for already-saved text and each further click appends another spec version.
+      setPrompt((prev) => (prev ? { ...prev, system: r.system, system_is_custom: r.is_custom } : prev));
       setSaveMsg(r.is_custom ? "Saved" : "Reset to default");
       setTimeout(() => setSaveMsg(null), 1600);
     } catch (e) {

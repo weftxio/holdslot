@@ -45,7 +45,23 @@ export default function BillingPage() {
       .catch(() => setRows([]));
     getBillingStatus(client).then((s) => setSub(s.subscription));
   }, [client]);
-  useEffect(() => load(), [load]);
+  // L18 — reset the previous tenant's rows + guard the in-flight fetch on client change, so
+  // tenant A's ledger can't render under tenant B's URL (a slow A response landing after B's switch).
+  // The synchronous reset is the intentional per-client-switch pattern (see list/page.tsx).
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    setSub(null);
+    listMeetings(client, "past")
+      .then((r) => alive && setRows(r))
+      .catch(() => alive && setRows([]));
+    getBillingStatus(client).then((s) => alive && setSub(s.subscription));
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function refresh() {
     setBusy(true);

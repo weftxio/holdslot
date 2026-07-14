@@ -670,14 +670,14 @@ export function CampaignTab({
 }
 
 // ── grouping ──────────────────────────────────────────────────────────────────
-type ViewCompany = { co: string; meta: string; people: LeadApi[] };
+type ViewCompany = { co: string; people: LeadApi[] };
 function groupByCompany(leads: LeadApi[]): ViewCompany[] {
   const map = new Map<string, ViewCompany>();
   for (const l of leads) {
     const co = l.company || "Unknown company";
     let group = map.get(co);
     if (!group) {
-      group = { co, meta: "", people: [] };
+      group = { co, people: [] };
       map.set(co, group);
     }
     group.people.push(l);
@@ -916,7 +916,6 @@ function CompanyCard({
         </div>
         <div className="cmp-co">
           <div className="cmp-cname">{company.co}</div>
-          {company.meta && <div className="cmp-cmeta">{company.meta}</div>}
         </div>
         <span className="cmp-pcount">
           {company.people.length} {company.people.length === 1 ? "contact" : "contacts"}

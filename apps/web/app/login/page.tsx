@@ -79,12 +79,21 @@ export default function Login() {
       return;
     }
     setResetting(true);
+    setWaking(false);
     try {
-      await apiReset(resetToken, newPw);
+      await apiReset(resetToken, newPw, () => setWaking(true));
       setView("reset-done");
-    } catch {
-      setNewPwErr("This reset link is invalid or has expired. Request a new one.");
+    } catch (e) {
+      // L14 — only a genuinely dead link (400/410) is "invalid or expired". A 503/network blip on
+      // auto-pausing dev Aurora is transient (reset() retries it), so don't mislabel it.
+      const status = e instanceof ApiError ? e.status : 0;
+      setNewPwErr(
+        status === 400 || status === 410
+          ? "This reset link is invalid or has expired. Request a new one."
+          : "Something went wrong — please try again in a moment."
+      );
       setResetting(false);
+      setWaking(false);
     }
   }
 
@@ -400,7 +409,7 @@ export default function Login() {
                 disabled={resetting || !resetToken}
                 onClick={submitNewPassword}
               >
-                {resetting ? "Updating…" : "Set new password"}
+                {waking ? "Waking the database…" : resetting ? "Updating…" : "Set new password"}
               </button>
               <p className="alt">
                 <a href="#" onClick={(e) => (e.preventDefault(), setView("signin"))}>

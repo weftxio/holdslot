@@ -119,12 +119,6 @@ async function fail(r: Response): Promise<never> {
   throw new ApiError(r.status, await detail(r));
 }
 
-/** A transient/cold-start status — Aurora waking (503) or a gateway hiccup (502/504). Callers keep
- *  the session/page and retry rather than treating it as a definitive failure (M4/M1/M5). */
-export function isTransientStatus(status: number): boolean {
-  return status === 502 || status === 503 || status === 504;
-}
-
 /** Public-token pages are never-404: a genuinely dead link comes back as a 200 `state`, so the ONE
  *  error that means "this link is now gone" on submit is a 410. Everything else (409 slot-taken,
  *  503 cold-start, network) is transient — keep the page and offer a retry (M1/M5). */
@@ -199,13 +193,40 @@ export async function forgot(email: string): Promise<void> {
   }).catch(() => undefined);
 }
 
-export async function reset(token: string, newPassword: string): Promise<void> {
-  const r = await fetch(`${API_BASE}/auth/reset`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token, new_password: newPassword }),
-  });
-  if (!r.ok) throw new Error(await detail(r));
+// L14 — cold-start aware + status-carrying, mirroring login(). The old version threw a bare Error on
+// any non-2xx, so the page showed "invalid or expired" even on a 503/network blip (routine on
+// auto-pausing dev Aurora). Retry the cold-start signals within the cap; otherwise throw an ApiError
+// so the page can tell a genuinely dead link (400/410) from a transient backend hiccup.
+export async function reset(
+  token: string,
+  newPassword: string,
+  onWaking?: () => void
+): Promise<void> {
+  const deadline = Date.now() + LOGIN_COLD_START_CAP_MS;
+  for (let attempt = 1; ; attempt++) {
+    let r: Response;
+    try {
+      r = await fetch(`${API_BASE}/auth/reset`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token, new_password: newPassword }),
+      });
+    } catch (e) {
+      if (Date.now() < deadline) {
+        onWaking?.();
+        await coldStartBackoff(attempt, deadline);
+        continue;
+      }
+      throw e instanceof Error ? e : new Error("reset failed");
+    }
+    if (r.ok) return;
+    if (isColdStartStatus(r.status) && Date.now() < deadline) {
+      onWaking?.();
+      await coldStartBackoff(attempt, deadline);
+      continue;
+    }
+    throw new ApiError(r.status, await detail(r));
+  }
 }
 
 export async function getMe(): Promise<Me> {

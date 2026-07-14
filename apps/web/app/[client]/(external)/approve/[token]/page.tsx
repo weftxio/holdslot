@@ -133,16 +133,20 @@ export default function Approve() {
         </p>
       </div>
       <div className="ext-pad">
-        <div className="summary-strip">
-          <span>
-            <b>{view?.batch_name || "Your batch"}</b> · {live} prospect{live === 1 ? "" : "s"} ·
-            matched to your brief
-          </span>
-          <span className="badge badge-warn">
-            <span className="bdot" />
-            Awaiting approval
-          </span>
-        </div>
+        {/* L21 — gate the summary strip on `view`: during the cold-start load it otherwise showed
+            "Your batch · 0 prospects" before the real batch + count arrived. */}
+        {view && (
+          <div className="summary-strip">
+            <span>
+              <b>{view.batch_name || "Your batch"}</b> · {live} prospect{live === 1 ? "" : "s"} ·
+              matched to your brief
+            </span>
+            <span className="badge badge-warn">
+              <span className="bdot" />
+              Awaiting approval
+            </span>
+          </div>
+        )}
 
         {!view ? (
           loadError ? (
@@ -180,32 +184,39 @@ export default function Approve() {
           </div>
         )}
 
-        <div className="consent" style={{ marginBottom: 20 }}>
-          <span className="ci">✓</span>
-          <span>
-            Every prospect was verified against your exclusion rules. By approving, you authorise
-            HoldSlot to begin outreach to this list on your behalf. You can pause anytime.
-          </span>
-        </div>
+        {/* L21 — the consent + action row only make sense once the list has loaded. Gating them on
+            `view` stops the red disabled "Reject the list" CTA (live === 0 during load) from
+            flashing for the whole cold-start. */}
+        {view && (
+          <>
+            <div className="consent" style={{ marginBottom: 20 }}>
+              <span className="ci">✓</span>
+              <span>
+                Every prospect was verified against your exclusion rules. By approving, you authorise
+                HoldSlot to begin outreach to this list on your behalf. You can pause anytime.
+              </span>
+            </div>
 
-        {submitError && (
-          <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
-            {submitError}
-          </div>
+            {submitError && (
+              <div style={{ color: "var(--danger)", fontSize: 13, marginBottom: 12 }}>
+                {submitError}
+              </div>
+            )}
+            <div className="cta-row">
+              {live > 0 ? (
+                <button className="btn btn-primary" onClick={approve} disabled={busy}>
+                  {`Approve ${live} prospect${live === 1 ? "" : "s"} & start outreach`}
+                </button>
+              ) : (
+                // Every prospect removed → the one action left is to bounce the whole list back.
+                // Submits request_changes → the batch goes Rejected (reopenable via Re-send).
+                <button className="btn btn-danger" onClick={requestChanges} disabled={busy}>
+                  Reject the list
+                </button>
+              )}
+            </div>
+          </>
         )}
-        <div className="cta-row">
-          {live > 0 ? (
-            <button className="btn btn-primary" onClick={approve} disabled={busy || !view}>
-              {`Approve ${live} prospect${live === 1 ? "" : "s"} & start outreach`}
-            </button>
-          ) : (
-            // Every prospect removed → the one action left is to bounce the whole list back. Submits
-            // request_changes, so the batch goes Rejected (reopenable via the operator's Re-send).
-            <button className="btn btn-danger" onClick={requestChanges} disabled={busy || !view}>
-              Reject the list
-            </button>
-          )}
-        </div>
       </div>
     </ExternalShell>
   );

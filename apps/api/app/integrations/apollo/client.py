@@ -165,9 +165,10 @@ def _paginate(
 def search_companies_meta(
     filter_body: dict, *, max_results: int = 100, start_page: int = 1
 ) -> tuple[list[dict], dict]:
-    """As `search_companies`, but also returns the first-fetched-page `meta` (`total_entries` /
-    `breadcrumbs` / `total_pages` / `pages_fetched` / `end_page`) for D+ scope lineage — off the
-    same response, no extra call. `start_page` resumes an unchanged scope at its cursor."""
+    """`POST mixed_companies/search` (0 credits) → the matched organizations AND the first-fetched-
+    page `meta` (`total_entries` / `breadcrumbs` / `total_pages` / `pages_fetched` / `end_page`) for
+    D+ scope lineage — off the same response, no extra call. `start_page` resumes an unchanged scope
+    at its cursor."""
     return _paginate(
         "mixed_companies/search",
         filter_body,

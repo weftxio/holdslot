@@ -4,9 +4,9 @@ import { useRouter } from "next/navigation";
 import { ApiError, clearTokens, getAccess, getMe, type Me } from "@/lib/api";
 import { nameInitials } from "@/lib/initials";
 
-type MeState = { me: Me | null; loading: boolean; refetch: () => Promise<void> };
+type MeState = { me: Me | null; loading: boolean; refetch: () => Promise<boolean> };
 
-const MeCtx = createContext<MeState>({ me: null, loading: true, refetch: async () => {} });
+const MeCtx = createContext<MeState>({ me: null, loading: true, refetch: async () => false });
 
 /**
  * Loads the signed-in user from the live API once on mount and shares it with the console
@@ -51,12 +51,15 @@ export function MeProvider({ children }: { children: React.ReactNode }) {
   // N45 — refresh /me on demand (e.g. after creating a client) so consumers like the client switcher
   // reflect the new tenant without a full reload. A failure here is non-fatal — keep the current me.
   const refetch = useCallback(async () => {
-    if (!getAccess()) return;
+    if (!getAccess()) return false;
     try {
       setMe(await getMe());
       setLoadError(false);
+      return true;
     } catch {
-      /* keep the last-known me; the console guard handles a truly dead session */
+      // L16 — report the failure (keep the last-known me) so a caller like client-create can defer
+      // the "unknown slug" bounce instead of stranding the user on a client they just made.
+      return false;
     }
   }, []);
 

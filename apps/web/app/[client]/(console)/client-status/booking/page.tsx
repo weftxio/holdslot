@@ -32,7 +32,21 @@ export default function BookingPage() {
       .then(setRows)
       .catch(() => setRows([]));
   }, [client]);
-  useEffect(() => load(), [load]);
+  // L18 — reset the previous tenant's rows + guard the in-flight fetch on client change, so
+  // tenant A's booking rows can't render under tenant B's URL (a slow A response after B's switch).
+  // The synchronous reset is the intentional per-client-switch pattern (see list/page.tsx).
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    listBookings(client)
+      .then((r) => alive && setRows(r))
+      .catch(() => alive && setRows([]));
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const openPropose = (r: BookingRowApi) =>
     setPropose({

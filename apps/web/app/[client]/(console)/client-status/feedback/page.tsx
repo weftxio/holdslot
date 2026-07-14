@@ -43,7 +43,22 @@ export default function FeedbackPage() {
       .then(setRows)
       .catch(() => setRows([]));
   }, [client]);
-  useEffect(() => load(), [load]);
+  // L18 — on client change, clear the previous tenant's rows and guard the in-flight fetch, so
+  // tenant A's feedback can't render under tenant B's URL (a slow A response landing after B's
+  // switch). The post-action refresh reuses `load` (same client, no switch mid-action). The
+  // synchronous reset is the intentional per-client-switch pattern (see list/page.tsx).
+  /* eslint-disable react-hooks/set-state-in-effect */
+  useEffect(() => {
+    let alive = true;
+    setRows(null);
+    listFeedback(client)
+      .then((r) => alive && setRows(r))
+      .catch(() => alive && setRows([]));
+    return () => {
+      alive = false;
+    };
+  }, [client]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   async function follow(r: FeedbackRowApi) {
     setBusy(r.id);
@@ -63,14 +78,19 @@ export default function FeedbackPage() {
     try {
       await informClient(client, r.id);
       toast("Flagged low rating to the client");
-    } catch {
-      toast("No client attendee email on file", "warn"); // M31 — failures render as warnings
+    } catch (e) {
+      // L17 — surface the actual reason (no attendee email → 409, or a send failure → 502 from L11)
+      // rather than always asserting "no attendee email on file" for any failure.
+      toast(e instanceof Error ? e.message : "Could not inform the client", "warn");
     } finally {
       setBusy(null);
     }
   }
 
   const list = rows ?? [];
+  // L19 — "Forms sent" counts meetings whose form was actually sent (state !== "None"), not every
+  // held meeting (list.length counted meetings whose form was never sent).
+  const formsSent = list.filter((r) => r.state !== "None").length;
   const responses = list.filter((r) => r.state === "Received").length;
   const rated = list.filter((r) => r.rating);
   const avg = rated.length
@@ -82,7 +102,7 @@ export default function FeedbackPage() {
       <div className="es-summary">
         <div className="esc">
           <div className="ecap">Forms sent</div>
-          <div className="en">{list.length}</div>
+          <div className="en">{formsSent}</div>
         </div>
         <div className="esc accent">
           <div className="ecap">Responses</div>
