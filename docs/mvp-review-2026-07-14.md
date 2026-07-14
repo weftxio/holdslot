@@ -53,13 +53,15 @@ All committed to local `dev` (unpushed); gate green at each step. Deploy sequenc
 | 1e · FE sweep | **L13** · **L14** · **L16** · **L17** · **L18** · **L19** · **L21** · **L22** · **L20** (a11y) | ✅ `b58adfd` | tsc/eslint/build + Playwright 27✓ (harness = route-mock; per-fix e2e not added, see note) |
 | 1f · Dead residue | **L-D** (`isTransientStatus` · `groupByCompany().meta` + consumer + type · apollo docstring) | ✅ `b58adfd` | — |
 
-> **Discovered during 1b (NEW, not fixed — out of L-wave scope):** the Aurora-gated enrich e2e tests
-> (`test_find_select_find_enrich_end_to_end` + siblings) are **red on live dev** — their base
-> `owner_member` fixture ships a **pre-v4 spec** (`company_search_params`, no `icp_targeting`), but
-> `find-company` now requires a v4 `icp_targeting` block (`targeting_for_icp`), and the `/companies`
-> read returns `{items,next_cursor}` where the helper expects a bare list. Independent of the L-wave
-> (my L10 Aurora test passes live; the L2 probe was dropped for this reason). **→ add task: refresh the
-> enrich e2e fixtures to v4** before relying on that suite at the founder's gate.
+> **Discovered during 1b, ✅ RESOLVED 2026-07-14 (`e80ed56`, test-only):** the Aurora-gated enrich
+> e2e tests (`test_find_select_find_enrich_end_to_end` + siblings) were **red on live dev** — stale
+> scaffolding, not product bugs. Fixed to the current contract, verified **8/8 vs dev Aurora**:
+> `owner_member` spec → v4 `icp_targeting` (find-company resolves per-ICP targeting; all live specs
+> are v4 per the S22 pre-flight) · helper reads cursor-paginated `/companies` + `/prospects`
+> `["items"]` · `test_multi_icp` item 4 split to respect **L8** (unowned icp → 404 at the door;
+> owned-but-unscoped → "regenerate") · `test_refind` mock meta carries `per_page` (real `_paginate`
+> R1 contract) · autouse fixture clears the module-level W8 search caches between tests (they're
+> keyed by scope+page with no tenant scoping → cross-test pollution). No product code changed.
 >
 > **1e test-coverage note:** the FE harness is route-mocked Playwright only (no component-test rig).
 > The 9 sweep fixes are surgical (toast copy, loader reset/guard, cold-start branching, a11y
