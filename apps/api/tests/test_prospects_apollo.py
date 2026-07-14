@@ -22,6 +22,19 @@ pytestmark = pytest.mark.skipif(
 BUILD_PW = "tryholdslot1!"
 
 
+@pytest.fixture(autouse=True)
+def _clear_search_caches():
+    """The W8 search memos are module-level warm-container caches (correct for one prod Lambda) but
+    are keyed by (scope, page) with NO tenant scoping, so a prior test's cached page for the SAME
+    scope suppresses this test's fetch (the cursor-resume test shares the `software` scope with the
+    enrich e2e test). Clear before each test so cross-test runs match isolated runs."""
+    from app.domains.prospects import router as _pr
+
+    _pr._COMPANY_SEARCH_CACHE.clear()
+    _pr._PEOPLE_FACETS_CACHE.clear()
+    yield
+
+
 def _auth(token: str) -> dict[str, str]:
     return {"authorization": f"Bearer {token}"}
 
@@ -44,7 +57,7 @@ def _find_company(client, slug, token, body):
     out = dict(job.get("result") or {})
     out["status"] = job["status"]
     out["error"] = job.get("error")
-    out["companies"] = client.get(f"/{slug}/companies", headers=_auth(token)).json()
+    out["companies"] = client.get(f"/{slug}/companies", headers=_auth(token)).json()["items"]
     return out
 
 
@@ -97,19 +110,28 @@ def owner_member():
     db.add(icp)
     db.flush()
     icp_id = str(icp.id)
-    # A minimal ResearchSpec so find-company/find-people have params to map.
+    # A minimal v4 ResearchSpec so find-company/find-people resolve a per-ICP targeting block.
+    # (Production specs are all v4 — `targeting_for_icp` returns None for a pre-v4 spec, so the old
+    # top-level `company_search_params` shape 400'd "regenerate the scope".)
     db.add(
         ResearchSpec(
             tenant_id=tenant.id,
             version=1,
             spec={
-                "spec_version": 3,
-                "company_search_params": {"q_organization_keyword_tags": ["software"]},
-                "people_search_params": {
-                    "person_seniorities": ["head", "vp"],
-                    "person_department_or_subdepartments": ["master_sales"],
-                },
-                "intent_filters": {},
+                "spec_version": 4,
+                "icp_targeting": [
+                    {
+                        "icp_id": icp_id,
+                        "icp_name": "Primary",
+                        "company_search_params": {"q_organization_keyword_tags": ["software"]},
+                        "people_search_params": {
+                            "person_seniorities": ["head", "vp"],
+                            "person_department_or_subdepartments": ["master_sales"],
+                        },
+                        "intent_filters": {},
+                    }
+                ],
+                "icp_validation": {},
                 "credit_policy": {"max_companies": 500},
             },
         )
@@ -272,7 +294,7 @@ def test_find_select_find_enrich_end_to_end(owner_member, monkeypatch):
     # Reveal & score the found person via the async door → 1 credit, email revealed, status scored.
     res = _enrich_score(client, slug, token, [person["identity_key"]])
     assert res["enriched"] == 1 and res["credits_spent"] == 1
-    enriched = client.get(f"/{slug}/prospects", headers=_auth(token)).json()[0]
+    enriched = client.get(f"/{slug}/prospects", headers=_auth(token)).json()["items"][0]
     assert enriched["email"] == "sam@alpha.com" and enriched["email_valid"] is True
     assert enriched["status"] == "scored"
 
@@ -460,8 +482,11 @@ def test_refind_advances_cursor_and_skips_known(owner_member, monkeypatch):
                 {"id": "org-1", "name": "One", "primary_domain": "one.com"},
                 {"id": "org-2", "name": "Two", "primary_domain": "two.com"},
             ]
+        # per_page mirrors the real _paginate meta (R1) — without it the stored cursor reads as an
+        # unknown page size and run 2 restarts at page 1 (served from the warm cache) instead of
+        # resuming at page 2.
         meta = {"total_entries": 5, "breadcrumbs": [], "pages_fetched": 1,
-                "end_page": start_page, "total_pages": 5}
+                "end_page": start_page, "total_pages": 5, "per_page": apollo.PER_PAGE_MAX}
         return rows, meta
 
     classified: list[dict] = []
@@ -650,8 +675,32 @@ def test_multi_icp_find_runs_icp_by_icp(owner_member_v4, monkeypatch):
     assert company_bodies[-1]["q_organization_keyword_tags"] == ["brokerage"]
     assert b_rows and all(c["icp_id"] == icp_b for c in b_rows)
 
-    # 4) An unknown ICP under a v4 spec is a named error (regenerate), not another ICP's block.
-    res = _find_company(client, slug, token, {"limit": 5, "icp_id": str(uuid.uuid4())})
+    # 4a) An UNOWNED icp_id is rejected at the door (L8 — parse + tenant-owned-or-404), never routed
+    #     to another ICP's block or enqueued.
+    r = client.post(
+        f"/{slug}/companies/find-company-async",
+        json={"limit": 5, "icp_id": str(uuid.uuid4())},
+        headers=_auth(token),
+    )
+    assert r.status_code == 404 and "no such ICP" in r.text
+
+    # 4b) An OWNED icp with no targeting block in the v4 spec is a named "regenerate" error (the
+    #     worker resolves no block — never silently borrows another ICP's params).
+    from sqlalchemy import select as _select
+
+    from app.core.db import get_session
+    from app.models import Icp as _Icp
+    from app.models import Tenant as _Tenant
+
+    _db = get_session()
+    _tid = _db.execute(_select(_Tenant.id).where(_Tenant.slug == slug)).scalar_one()
+    _extra = _Icp(tenant_id=_tid, name="Unscoped", tag="tertiary", data={})
+    _db.add(_extra)
+    _db.flush()
+    _extra_id = str(_extra.id)
+    _db.commit()
+    _db.close()
+    res = _find_company(client, slug, token, {"limit": 5, "icp_id": _extra_id})
     assert res["status"] == "error" and "regenerate" in (res["error"] or "")
 
     # 5) Find-people across BOTH companies in one call: each org is searched with its OWN ICP's
