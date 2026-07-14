@@ -29,6 +29,7 @@ from app.core.db import is_unique_violation
 from app.core.deps import get_db
 from app.domains.campaigns import service as svc
 from app.domains.campaigns.router import record_stage_move
+from app.domains.prospects.suppression import dnc_entries
 from app.integrations.smartlead import client as sl
 from app.models import Brief, Campaign, CampaignLead, OutreachEvent, Prospect
 
@@ -153,7 +154,9 @@ def _unsub_writeback(db: Session, tenant_id, payload: dict) -> None:
             data["doNotContact"] = [*dnc, email]
     else:
         existing = dnc or ""
-        if email not in existing.lower():
+        # L7 — compare whole entries, not a substring: `email not in existing.lower()` skipped a new
+        # unsubscriber whose address is a substring of a listed one (`son@x.com` vs `jason@x.com`).
+        if email not in {e.lower() for e in dnc_entries(existing)}:
             data["doNotContact"] = f"{existing}\n{email}".strip() if existing else email
     brief.data = data
 

@@ -69,3 +69,18 @@ def test_rubric_is_data_adding_a_key_lowers_a_full_brief(monkeypatch):
     monkeypatch.setattr(C, "REQUIRED_BRIEF_FIELDS", C.REQUIRED_BRIEF_FIELDS + ("brandNewField",))
     assert C.completeness(data) < 100
     assert "brandNewField" in C.missing_fields(data)
+
+
+def test_merged_dnc_unions_and_preserves_shape():
+    """L6 — a Brief save unions doNotContact with entries already stored, so the unsub webhook's
+    appends survive a stale-form save. Output keeps the incoming shape."""
+    from app.domains.briefs.router import _merged_dnc
+
+    # string shape: incoming dropped an entry the webhook appended → it's preserved.
+    out = _merged_dnc({"doNotContact": "a@x.com\nb@x.com"}, {"doNotContact": "a@x.com"})
+    assert isinstance(out, str) and set(out.split("\n")) == {"a@x.com", "b@x.com"}
+    # list shape preserved; an empty incoming list still can't erase a stored suppression.
+    out2 = _merged_dnc({"doNotContact": ["a@x.com"]}, {"doNotContact": []})
+    assert out2 == ["a@x.com"]
+    # no duplicate when incoming already carries the entry.
+    assert _merged_dnc({"doNotContact": "a@x.com"}, {"doNotContact": "a@x.com"}) == "a@x.com"

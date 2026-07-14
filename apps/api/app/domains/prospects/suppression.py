@@ -104,6 +104,24 @@ def _parse_exclusion_line(line: str, ex: ExclusionSet) -> None:
             ex.domains.add(dom)
 
 
+def dnc_entries(value) -> list[str]:
+    """Split a `doNotContact` value into trimmed, non-empty entries — the SAME tokenization the
+    ExclusionSet build uses (splitlines → tab→comma → comma-split), so a membership check (L7) or a
+    union-merge (L6) agrees with what the gate will actually suppress. A list is treated as one
+    line per element (each still comma/tab-split, matching `extract_exclusions`)."""
+    if isinstance(value, (list, tuple)):
+        lines = [str(v) for v in value]
+    else:
+        lines = str(value or "").splitlines()
+    out: list[str] = []
+    for line in lines:
+        for raw in line.replace("\t", ",").split(","):
+            tok = raw.strip()
+            if tok:
+                out.append(tok)
+    return out
+
+
 def extract_exclusions(brief_data: dict, spec: dict | None = None) -> ExclusionSet:
     """C0.4 — build the validated ExclusionSet from the Brief (+ optional ResearchSpec).
 

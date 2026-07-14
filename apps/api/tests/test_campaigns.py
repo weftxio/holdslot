@@ -525,3 +525,26 @@ def test_set_campaign_status_maps_smartlead_error_to_502(monkeypatch):
     assert ei.value.status_code == 502
     db.add.assert_not_called()  # no control event
     db.commit.assert_not_called()  # DB never lied about the state
+
+
+# ------------------------------------------------------------------- L7 — DNC substring false-skip
+
+
+def test_unsub_writeback_matches_whole_entry_not_substring(monkeypatch):
+    """L7 — a new unsubscriber whose address is a SUBSTRING of a listed entry must still be appended
+    (`son@x.com` when `jason@x.com` is already listed). The old `email not in existing.lower()`
+    substring test silently skipped it, leaving the address contactable."""
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.domains.campaigns import webhooks as wh
+
+    monkeypatch.setattr(wh.svc, "lead_emails", lambda payload: ["son@x.com"])
+    brief = SimpleNamespace(data={"doNotContact": "jason@x.com"})
+    db = MagicMock()
+    db.execute.return_value.scalar_one_or_none.return_value = brief
+
+    wh._unsub_writeback(db, "tenant-1", {})
+
+    entries = {e.lower() for e in wh.dnc_entries(brief.data["doNotContact"])}
+    assert "son@x.com" in entries and "jason@x.com" in entries  # both listed, no substring skip

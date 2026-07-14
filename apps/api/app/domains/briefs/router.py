@@ -44,6 +44,7 @@ from app.domains.briefs.structuring import (
     latest_system_prompt,
 )
 from app.domains.icps import icp_docs
+from app.domains.prospects.suppression import dnc_entries
 from app.models import Brief, Prompt, ResearchJob, ResearchSpec
 
 router = APIRouter(tags=["briefs"])
@@ -80,10 +81,30 @@ def put_brief(
         brief = Brief(tenant_id=ctx.tenant.id, data=body.data)
         db.add(brief)
     else:
-        brief.data = body.data
+        # L6 — union-merge doNotContact so this save can't silently erase DNC entries the M3 unsub
+        # write-back appended while the operator had the Brief form open. The webhook is the
+        # compliance source of truth (SG-PDPA honor); a stale form must never drop a suppression.
+        new_data = dict(body.data)
+        merged = _merged_dnc(brief.data or {}, body.data)
+        if merged:
+            new_data["doNotContact"] = merged
+        brief.data = new_data
     db.commit()
     db.refresh(brief)
     return _out(brief)
+
+
+def _merged_dnc(stored: dict, incoming: dict):
+    """Union the incoming `doNotContact` with entries already stored (L6). Output keeps the incoming
+    shape — a list stays a list; a string (or absent) becomes a newline-joined string."""
+    inc = dnc_entries(incoming.get("doNotContact"))
+    seen = {e.lower() for e in inc}
+    merged = list(inc)
+    for e in dnc_entries(stored.get("doNotContact")):
+        if e.lower() not in seen:
+            seen.add(e.lower())
+            merged.append(e)
+    return merged if isinstance(incoming.get("doNotContact"), list) else "\n".join(merged)
 
 
 def _spec_out(row: ResearchSpec) -> ResearchSpecOut:

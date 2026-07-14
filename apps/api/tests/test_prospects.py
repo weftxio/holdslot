@@ -63,6 +63,20 @@ def test_extract_exclusions_from_brief_text_and_spec():
     assert all("." in d for d in ex.domains)
 
 
+def test_dnc_entries_tokenizes_string_and_list():
+    """L6/L7 foundation — split doNotContact into whole trimmed entries on newlines/commas/tabs,
+    for both string and list values (the same tokenization the ExclusionSet build uses)."""
+    from app.domains.prospects.suppression import dnc_entries
+
+    assert dnc_entries("jason@x.com\nson@x.com, a@y.com\tb@z.com") == [
+        "jason@x.com", "son@x.com", "a@y.com", "b@z.com",
+    ]
+    assert dnc_entries(["  a@x.com ", "b@x.com"]) == ["a@x.com", "b@x.com"]
+    assert dnc_entries("") == [] and dnc_entries(None) == []
+    # substring is NOT a member — the L7 case: `son@x.com` is not among ["jason@x.com"].
+    assert "son@x.com" not in dnc_entries("jason@x.com")
+
+
 # --------------------------------------------------------------- stage-0 business-model classifier
 
 
