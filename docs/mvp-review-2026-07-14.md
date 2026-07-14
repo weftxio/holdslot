@@ -30,28 +30,41 @@ and the **founder-acceptance track** (Phase 3, live dev, no code dependency). Ph
 once Phase 3 ticks S6 **and** the pre-Stripe L-items (L2/L3/L10) have shipped. Finding-level detail for
 every L-item is in **Part B §3**; for every FR/NF item in `initial-build-plan.md §G`.
 
-### Phase 0 · Land the shipped work (unblocks everything)
+### Phase 0 · Land the shipped work (unblocks everything) — ✅ SHIPPED 2026-07-14
 
-| # | Task | Gate / note |
+| # | Task | Result |
 |---|---|---|
-| 0.1 | Commit Waves 4+5 (dead-code + SAFE + CAREFUL simplify — 63 modified + 2 deletes + 3 new) | one commit; full gate suite green |
-| 0.2 | Land **L15** one-liner (`campaignId == null` fallback) before push (D1 insurance) | tsc + Playwright |
-| 0.3 | **Backend deploy** → applies `0032`, ships `campaign_id` + Wave-4/5 BE trims | live smoke after |
-| 0.4 | Push `dev` → Amplify FE build (must FOLLOW 0.3 per D1) | — |
+| 0.1 | Commit Waves 4+5 (67 files: 62 mod + 2 deletes + 3 new) + docs consolidation | ✅ `98c90f2` (code) · `aa0e209` (docs); full gate green |
+| 0.2 | Land **L15** one-liner (`campaignId == null` fallback) before push | ✅ `215ef4d` — tsc + Playwright green |
+| 0.3 | **Backend deploy** → applied `0032` to dev Aurora, shipped Lambda **v89→v90** | ✅ `/health` ok · `MeetingOut.campaign_id` live in OpenAPI |
+| 0.4 | Push `dev` → Amplify FE build (followed 0.3 per D1) | ✅ `origin/dev`=`215ef4d` · Amplify build #60 SUCCEED |
 
-### Phase 1 · L-wave code fixes (order = Part B §5.2; each fix gets a test)
+### Phase 1 · L-wave code fixes — ✅ COMMITTED 2026-07-14 (local; awaiting BE-deploy+push authorization)
 
-| Group | Items | Side | Gist (detail → Part B §3) | Test |
-|---|---|---|---|---|
-| 1a · Revenue P2 + twin | **L1** · **L15** | FE | booking 409 message wiped by `reload()` (P2) · recap-filter fallback | Playwright + classifier unit |
-| 1b · Pre-Stripe / FR-7 | **L2** · **L3** · **L10** | BE | reserve-commit gap (cap leak + row lock) · $0/meeting seeding gap · unbounded `billable_this_cycle` (D7) | Aurora + unit |
-| 1b (cont.) | **L4** · **L5** | BE | Smartlead pause/resume raw 500 · POST blind-retry double-send | unit |
-| 1c · Compliance (finishes M3) | **L6** · **L7** | BE | PUT /brief erases webhook DNC appends · DNC substring false-skip | unit |
-| 1d · Cheap BE | **L8** · **L9** · **L11** · **L12** | BE | shared ICP validator · variant-key dedupe 500 · `inform_client` SES-fail → 502 · `scoring_job_status` 400→404 | unit |
-| 1d (cont.) | **TZ-1** | BE | `DEFAULT_TZ` → `Asia/Hong_Kong` (`meetings/service.py:44` + `launch.py:254` fallback + grep any other hardcode) — also satisfies FR-4's TZ default (D6) | unit |
-| 1d (cont.) | **batches `_iso`** | BE | naive-Z → `iso_z` (the flagged latent M6-class tz bug, §10.3) | unit |
-| 1e · FE sweep | **L13** · **L14** · **L16** · **L17** · **L18** · **L19** · **L21** · **L22** · **L20** (a11y) | FE | see Part B §3 (createBatch guard · reset-pw M25 class · client-switch bounce · false toast · cross-tenant loader bleed · Forms-sent count · approve ungated CTA · spec re-append · a11y batch) | Playwright |
-| 1f · Dead residue | **L-D** | both | `isTransientStatus` · `groupByCompany().meta` + consumer · apollo docstring | — |
+All committed to local `dev` (unpushed); gate green at each step. Deploy sequence when authorized:
+**backend deploy (L2–L12/TZ-1/`_iso`) → push (per D1)** — same as Phase 0.
+
+| Group | Items | Commit | Test |
+|---|---|---|---|
+| 1a · Revenue P2 | **L1** (+L15 in Phase 0) | ✅ `cba6e27` | Playwright (409 keeps picker + message) |
+| 1b · Pre-Stripe / FR-7 | **L2** · **L3** · **L4** · **L5** · **L10** | ✅ `358a174` | L3/L4/L5 unit · L10 Aurora (live-verified) · L2 via existing reserve test |
+| 1c · Compliance | **L6** · **L7** | ✅ `4ecd0d3` | unit (dnc_entries · _unsub_writeback · _merged_dnc) |
+| 1d · Cheap BE + TZ + iso | **L8** · **L9** · **L11** · **L12** · **TZ-1** · **batches `_iso`** | ✅ `40f88a2` | unit (validator · dedupe · 502 · HK tz ×2 · iso→Z) |
+| 1e · FE sweep | **L13** · **L14** · **L16** · **L17** · **L18** · **L19** · **L21** · **L22** · **L20** (a11y) | ✅ `b58adfd` | tsc/eslint/build + Playwright 27✓ (harness = route-mock; per-fix e2e not added, see note) |
+| 1f · Dead residue | **L-D** (`isTransientStatus` · `groupByCompany().meta` + consumer + type · apollo docstring) | ✅ `b58adfd` | — |
+
+> **Discovered during 1b (NEW, not fixed — out of L-wave scope):** the Aurora-gated enrich e2e tests
+> (`test_find_select_find_enrich_end_to_end` + siblings) are **red on live dev** — their base
+> `owner_member` fixture ships a **pre-v4 spec** (`company_search_params`, no `icp_targeting`), but
+> `find-company` now requires a v4 `icp_targeting` block (`targeting_for_icp`), and the `/companies`
+> read returns `{items,next_cursor}` where the helper expects a bare list. Independent of the L-wave
+> (my L10 Aurora test passes live; the L2 probe was dropped for this reason). **→ add task: refresh the
+> enrich e2e fixtures to v4** before relying on that suite at the founder's gate.
+>
+> **1e test-coverage note:** the FE harness is route-mocked Playwright only (no component-test rig).
+> The 9 sweep fixes are surgical (toast copy, loader reset/guard, cold-start branching, a11y
+> attributes) — conditions the route-mock harness can't easily simulate — so they're covered by
+> tsc + eslint + `next build` + the green Playwright suite rather than a new e2e per fix.
 
 ### Phase 2 · Modularization — hard prerequisites only (D4; deploy-neutral refactors)
 
@@ -170,6 +183,11 @@ and the nonexistent M27 fallback (L15).
 | E9 | §10.2 (S1) | `.ph-tag` also exists in `globals.css:58` (unused). Left correctly per the §4 do-not-touch rule (design bundle verbatim) — recorded so the "absent" spot-check reads right. Also: `apps/api/build/pkg/` still holds the pre-S24 apollo client (stale packaged artifact — rebuilt by `build-and-deploy.sh`, note only) + the `search_companies_meta` docstring still says "As `search_companies`, but…" (cosmetic) |
 
 ## 3 · L-register — NEW findings (task 2), priority-sorted
+
+> **✅ ALL RESOLVED 2026-07-14 (Phase 1).** L1·L15 · L2–L12 · L13·L14·L16–L22 · L20 · L-D all shipped
+> to local `dev` (commits in Part A §A1); gate green. The finding detail below is retained as the
+> rationale of record. One new item surfaced during the fix (stale enrich e2e fixtures) — see the
+> Part A §A1 Phase-1 note.
 
 Fresh-eyes pass over everything the M-register didn't cover, plus regressions introduced BY the wave
 fixes. Every P2 was independently re-verified against the code path before landing here.
