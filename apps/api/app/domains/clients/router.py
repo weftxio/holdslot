@@ -17,6 +17,8 @@ from app.domains.clients.schemas import (
     LlmUsageOut,
     LlmUsageRow,
     MeOut,
+    UiPrefs,
+    UiPrefsIn,
     slugify,
 )
 from app.models import AppUser, LlmCall, Membership, MembershipRole, Tenant
@@ -47,14 +49,36 @@ def _clients_for(db: Session, user: AppUser) -> list[ClientOut]:
     return [ClientOut(slug=t.slug, name=t.name, role=role.value) for t, role in rows]
 
 
-@router.get("/me", response_model=MeOut)
-def me(user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)) -> MeOut:
+def _me_out(db: Session, user: AppUser) -> MeOut:
     return MeOut(
         id=str(user.id),
         email=user.email,
         full_name=user.full_name,
         clients=_clients_for(db, user),
+        # Unknown keys in the stored bag are ignored; a missing bag falls back to the defaults.
+        ui_prefs=UiPrefs(**(user.ui_prefs or {})),
     )
+
+
+@router.get("/me", response_model=MeOut)
+def me(user: AppUser = Depends(get_current_user), db: Session = Depends(get_db)) -> MeOut:
+    return _me_out(db, user)
+
+
+@router.put("/me/prefs", response_model=MeOut)
+def update_me_prefs(
+    body: UiPrefsIn,
+    user: AppUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MeOut:
+    """Persist the caller's console UI preferences (account-scoped, so they follow across devices).
+    A partial merge: only the fields the caller sends overwrite the stored bag. Reassign a new dict
+    (not in-place mutation) so SQLAlchemy flags the JSONB column dirty."""
+    updates = body.model_dump(exclude_none=True)
+    if updates:
+        user.ui_prefs = {**(user.ui_prefs or {}), **updates}
+        db.commit()
+    return _me_out(db, user)
 
 
 @router.post("/clients", response_model=ClientOut, status_code=status.HTTP_201_CREATED)

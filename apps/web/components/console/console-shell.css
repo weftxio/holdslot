@@ -40,3 +40,177 @@
     display: none;
   }
 }
+
+/* ============ Collapsible sidebar (desktop icon-rail) ============
+   The collapse toggle sits in the sidebar top (`.side-brand` row alongside the logo). Clicking it
+   flips `.app.side-collapsed`, narrowing the rail to icons only — persisted to localStorage by
+   ConsoleShell. All the rail overrides are desktop-only: below 880px the sidebar is an off-canvas
+   drawer (the `.side-toggle` hamburger), so collapse doesn't apply and its button is hidden. */
+/* Nav glyphs are inline Lucide SVGs — centre them in the .ico box and let them fill it (base .ico
+   is a 16px box; the collapsed rail resizes them below). Colour follows the link via currentColor. */
+.side-nav a .ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.side-nav a .ico svg {
+  width: 16px;
+  height: 16px;
+  display: block;
+}
+
+.side-brand {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.side-collapse {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: 0.15s ease;
+}
+.side-collapse:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+@media (max-width: 880px) {
+  /* On mobile the drawer is full-width when open; the collapse rail is meaningless here. */
+  .side-collapse {
+    display: none;
+  }
+}
+
+@media (min-width: 881px) {
+  .app.side-collapsed {
+    grid-template-columns: 72px 1fr;
+  }
+  /* The rail's client-switcher dropdown pops out OVER the main content. `.side` and `.main` are
+     grid siblings with `.main` later in the DOM, so without a stacking bump the content paints on
+     top of the pop-out. Lift the whole rail above the topbar (z 20) and content so the menu wins. */
+  .app.side-collapsed .side {
+    z-index: 40;
+  }
+  /* Brand row stacks: toggle on top, logo mark below (column-reverse — toggle is 2nd in the DOM).
+     No side padding: every child is centred by flex, so items line up on the rail's centre axis. */
+  .app.side-collapsed .side-top {
+    padding: 20px 0 14px;
+  }
+  .app.side-collapsed .side-brand {
+    flex-direction: column-reverse;
+    gap: 14px;
+  }
+  .app.side-collapsed .logo {
+    justify-content: center;
+  }
+  .app.side-collapsed .logo .txt {
+    display: none;
+  }
+
+  /* Client switcher → a single centred avatar chip; no button chrome (base .client-btn draws a
+     translucent box that looks clunky nested around the avatar). Its dropdown pops out beside the
+     rail at a readable width. */
+  .app.side-collapsed .client-switch {
+    margin-top: 14px;
+    display: flex;
+    justify-content: center;
+  }
+  .app.side-collapsed .client-btn {
+    width: auto;
+    padding: 0;
+    background: none;
+    border: none;
+    border-radius: 12px;
+  }
+  .app.side-collapsed .client-btn:hover {
+    background: none;
+  }
+  .app.side-collapsed .client-btn .c-av {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    font-size: 17px;
+    transition: box-shadow 0.15s ease;
+  }
+  .app.side-collapsed .client-btn:hover .c-av {
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.24);
+  }
+  .app.side-collapsed .client-btn .c-info,
+  .app.side-collapsed .client-btn .c-caret {
+    display: none;
+  }
+  .app.side-collapsed .client-menu {
+    left: 0;
+    right: auto;
+    width: 240px;
+  }
+
+  /* Nav → uniform 42px square icon buttons with centred glyphs. The base .ico is a fixed 16px box
+     that left-aligns its glyph, which read as misaligned against the active pill — reset it to
+     auto-size so the flex button centres it exactly. */
+  .app.side-collapsed .side-nav {
+    padding: 16px 0;
+    align-items: center;
+    gap: 6px;
+  }
+  .app.side-collapsed .side-nav .grp {
+    display: none;
+  }
+  /* the second group heading (the only .grp preceded by a link) becomes a hairline divider so the
+     two icon groups stay visually separated once their labels are gone. */
+  .app.side-collapsed .side-nav a ~ .grp {
+    display: block;
+    width: 30px;
+    height: 1px;
+    padding: 0;
+    margin: 8px 0;
+    font-size: 0;
+    overflow: hidden;
+    background: rgba(255, 255, 255, 0.13);
+  }
+  .app.side-collapsed .side-nav a {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    gap: 0;
+    justify-content: center;
+    border-radius: 12px;
+  }
+  .app.side-collapsed .side-nav a .txt {
+    display: none;
+  }
+  .app.side-collapsed .side-nav a .ico {
+    width: auto;
+    height: auto;
+    opacity: 0.9;
+  }
+  .app.side-collapsed .side-nav a .ico svg {
+    width: 20px;
+    height: 20px;
+  }
+  .app.side-collapsed .side-nav a.active .ico {
+    opacity: 1;
+  }
+
+  /* Foot → avatar only. */
+  .app.side-collapsed .side-foot {
+    justify-content: center;
+    padding: 16px 0;
+  }
+  .app.side-collapsed .side-foot .who,
+  .app.side-collapsed .side-foot a.out {
+    display: none;
+  }
+}

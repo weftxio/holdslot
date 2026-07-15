@@ -112,6 +112,11 @@ class AppUser(Base):
     email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Per-user console UI preferences (e.g. sidebar_collapsed) — an opaque JSONB bag so new toggles
+    # never need a migration. Account-scoped so a preference follows the user across devices.
+    ui_prefs: Mapped[dict] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
     status: Mapped[UserStatus] = mapped_column(
         Enum(UserStatus, name="user_status"),
         nullable=False,

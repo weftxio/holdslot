@@ -29,11 +29,26 @@ class LlmUsageOut(BaseModel):
     total_calls: int = 0
 
 
+class UiPrefs(BaseModel):
+    """The typed view of a user's console UI preferences (stored as an opaque JSONB bag; unknown
+    keys are ignored on the way out). Extend with new toggles as the console grows."""
+
+    sidebar_collapsed: bool = False
+
+
+class UiPrefsIn(BaseModel):
+    """Partial update for UI prefs — only the fields present are merged into the stored bag, so a
+    caller can set one toggle without clobbering the others."""
+
+    sidebar_collapsed: bool | None = None
+
+
 class MeOut(BaseModel):
     id: str
     email: str
     full_name: str | None = None
     clients: list[ClientOut]
+    ui_prefs: UiPrefs = UiPrefs()
 
 
 class ClientCreateIn(BaseModel):

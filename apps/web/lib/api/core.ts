@@ -15,7 +15,17 @@ const ACCESS_KEY = "holdslot_access";
 const REFRESH_KEY = "holdslot_refresh";
 
 export type ApiClient = { slug: string; name: string; role: string };
-export type Me = { id: string; email: string; full_name: string | null; clients: ApiClient[] };
+// Account-scoped console UI preferences (so a choice follows the user across devices). Optional on
+// `Me` so the client still typechecks — and degrades to localStorage — against a backend that
+// predates the /me/prefs field.
+export type UiPrefs = { sidebar_collapsed: boolean };
+export type Me = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  clients: ApiClient[];
+  ui_prefs?: UiPrefs;
+};
 export type LoginResult = {
   access_token: string;
   refresh_token: string;
@@ -238,6 +248,19 @@ export async function getMe(): Promise<Me> {
   const r = await authFetch(`/me`);
   if (!r.ok) return fail(r); // ApiError carries the status — MeProvider clears tokens only on 401
   return r.json();
+}
+
+// Persist a partial UI preference to the caller's account (cross-device). Best-effort by design:
+// callers apply an optimistic local copy first, so a rejection here (a backend without the endpoint,
+// offline, cold start) is non-fatal — it throws for the caller to swallow, and the setting still
+// holds this session via the localStorage cache and re-syncs on the next successful call.
+export async function updateUiPrefs(prefs: Partial<UiPrefs>): Promise<void> {
+  const r = await authFetch(`/me/prefs`, {
+    method: "PUT",
+    json: true,
+    body: JSON.stringify(prefs),
+  });
+  if (!r.ok) return fail(r);
 }
 
 // N45 — create a real tenant (POST /clients also enrolls the caller as owner) and return it, incl.
