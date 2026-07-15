@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import { toggleInSet } from "@/lib/sets";
@@ -39,7 +39,7 @@ import {
   selectCompanies,
   updateCompanyFieldsAsync,
 } from "@/lib/api";
-import type { ScoreLabel, ScoringJobApi, Subscores } from "@/lib/api";
+import type { ScoreLabel, ScoringJobApi } from "@/lib/api";
 import type {
   PeopleScopeForm,
   PeopleScopeOverride,
@@ -48,16 +48,7 @@ import type {
   ScoringSetter,
 } from "@/lib/workspace/types";
 import {
-  BUCKET_HEAD,
-  BUCKET_ORDER,
-  COLLAPSED_LABELS,
-  COMPANY_AXES,
   ENRICHED_STATUS,
-  PROSPECT_AXES,
-  SOURCE_CLS,
-  SOURCE_LABEL,
-  STATUS_LABEL,
-  businessModelChip,
   clearScoring,
   compareByLabel,
   effectivePeopleScope,
@@ -71,27 +62,18 @@ import {
   scopeToForm,
 } from "@/lib/workspace/constants";
 import {
-  CompanyStudy,
-  LabelChip,
-  LinkedInLink,
-  SubscoreList,
-  WebLink,
-} from "@/components/workspace";
-import {
   AddCompanyModal,
   AddPersonModal,
   PeopleScopeModal,
   RubricModal,
   ScopeSettingsModal,
+  Step1Companies,
+  Step2People,
   useListData,
   type ManualCompanyForm,
   type ManualPersonForm,
 } from "@/components/workspace/list";
 
-// The two collapsed footnote buckets as a plain string set — COLLAPSED_LABELS is typed to
-// ScoreLabel, but the bucket keys include the "unscored" (null-label) group, so membership is
-// tested against strings.
-const COLLAPSED_KEYS = new Set<string>(COLLAPSED_LABELS);
 // Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection;
 // A selection verdict for a toggle: "ok" apply now · "blocked" locked out (an excluded row in Step 1)
 // · "confirm" a low_fit ADD, challenged via the design-system Modal (M31 — was a `window.confirm`).
@@ -120,138 +102,9 @@ function dropIds(set: Set<string>, remove: Set<string>): Set<string> {
   }
   return changed ? next : set;
 }
-// The row carries a non-empty subscore vector (a scored row) → render the 4-segment bar.
-const hasSubs = (s: Record<string, number> | undefined) => !!s && Object.keys(s).length > 0;
-// The Step-1 company / Step-2 person score cell — one of three states: fit-scoring in progress, a
-// resolved label (chip + subscores, plus an optional grey reason line the company table shows for
-// non-contact buckets), or Pending. Extracted (S18) so both tables emit byte-identical markup.
-function FitCell({
-  scoring,
-  label,
-  score,
-  subscores,
-  axes,
-  reason,
-}: {
-  scoring: boolean;
-  label: ScoreLabel | null;
-  score: number | null;
-  subscores: Subscores;
-  axes: readonly string[];
-  reason?: string | null;
-}) {
-  if (scoring)
-    return (
-      <span className="fit-scoring" title="AI fit-scoring in progress">
-        <span className="hs-spinner" aria-hidden="true" />
-        Scoring…
-      </span>
-    );
-  if (!label) return <span className="muted">Pending</span>;
-  return (
-    <div className="ai-score-cell">
-      <span className="label-line">
-        <LabelChip label={label} score={score} />
-      </span>
-      {hasSubs(subscores) ? <SubscoreList subscores={subscores} axes={axes} /> : null}
-      {reason ? (
-        <span className="score-reason" title={reason}>
-          {reason}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-// The "Fetching…" spinner overlaid on a list body while a fetch is in flight (Step-1 + Step-2,
-// S18) — renders nothing when idle so the caller can drop it in unconditionally.
-function ListOverlay({ busy }: { busy: boolean }) {
-  if (!busy) return null;
-  return (
-    <div className="list-overlay" role="status" aria-live="polite">
-      <span className="hs-spinner" aria-hidden="true" />
-      <span>Fetching…</span>
-    </div>
-  );
-}
-// The by-ICP list filter above Step-1 and Step-2 (S19) — identical bar the title and the Step-1
-// "pick an ICP" warn-highlight. Renders nothing when there's ≤1 ICP (nothing to filter by).
-function IcpFilterSelect({
-  options,
-  value,
-  onChange,
-  title,
-  highlight,
-}: {
-  options: { id: string; label: string }[];
-  value: string;
-  onChange: (v: string) => void;
-  title: string;
-  highlight?: boolean;
-}) {
-  if (options.length <= 1) return null;
-  return (
-    <select
-      className="select"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      title={title}
-      style={
-        highlight
-          ? {
-              borderColor: "var(--warn)",
-              boxShadow: "0 0 0 3px var(--warn-wash)",
-              transition: "box-shadow 0.2s",
-            }
-          : undefined
-      }
-    >
-      <option value="">All ICPs</option>
-      {options.map((o) => (
-        <option key={o.id} value={o.id}>
-          {o.label}
-        </option>
-      ))}
-    </select>
-  );
-}
-// L20 (a11y) — Enter/Space activates a clickable non-button element (role="button"), matching a
-// native button, so the expand/collapse rows are reachable without a mouse.
-const activateOnKey = (fn: () => void) => (e: { key: string; preventDefault: () => void }) => {
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    fn();
-  }
-};
 // Find People searches one Apollo call per org; the server caps a single request at MAX_ORGS_PER_FIND
 // (8) orgs, so the FE chunks a larger selection into 8-org calls threaded by one group_id.
 const FIND_ORGS_CHUNK = 8;
-
-// A footnote bucket (low_fit / excluded_by_rules) is sub-grouped by WHY each row landed there, so
-// the operator can scan the rejection reasons at a glance (spec §9). A gate-killed row carries a
-// canonical reason string ("wrong vertical", "too large", "rule: B2B only", …); a low_fit row that
-// was actually SCORED low (a real score_total, free-text reason) has no canonical tag, so all such
-// rows fold into one "Low score" group instead of fragmenting into one-off reasons.
-function prettyReason(reason: string): string {
-  const s = (reason || "")
-    .trim()
-    .replace(/^rule:\s*/i, "")
-    .replace(/_/g, " ");
-  return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
-}
-type SubGroup = { key: string; label: string; rows: CompanyApi[] };
-function subGroupsOf(rows: CompanyApi[]): SubGroup[] {
-  const groups = new Map<string, SubGroup>();
-  for (const c of rows) {
-    const scoredLow = c.label === "low_fit" && c.score_total != null;
-    const key = scoredLow ? "__scored_low" : (c.reason || "").trim().toLowerCase() || "__other";
-    const label = scoredLow ? "Low score" : prettyReason(c.reason) || "Other";
-    const g = groups.get(key);
-    if (g) g.rows.push(c);
-    else groups.set(key, { key, label, rows: [c] });
-  }
-  // Biggest group first — the most common rejection reason is what the operator most wants to see.
-  return [...groups.values()].sort((a, b) => b.rows.length - a.rows.length);
-}
 
 // Step-1 row order: Accepted companies (already staged to Step 2 → status "people_found") sort to
 // the top, then by total 4-axis score (score_total, out of 20) desc, then newest. Label bucketing
@@ -743,113 +596,6 @@ export default function ListPage() {
   function toggleSub(key: string) {
     setExpandedSubs((s) => toggleInSet(s, key));
   }
-
-  // One Step-1 company row (the v2 call-sheet cell: label chip + score, the four subscores as a text
-  // list, and — for non-contact rows — a one-line reason). An `excluded_by_rules` row can't be ticked
-  // (decision ④); its rule shows as the reason.
-  const renderCompanyRow = (c: CompanyApi) => {
-    const excluded = c.label === "excluded_by_rules";
-    const contact = c.label === "contact_now" || c.label === "contact_soon";
-    const icpLabel = c.icp_id ? icpNameById.get(c.icp_id) : undefined;
-    return (
-      <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
-        <td>
-          <input
-            type="checkbox"
-            className="tbl-check"
-            checked={companyChecked.has(c.id)}
-            // R6 — a checked row re-scored to excluded must stay untickable-off (only a NEW excluded
-            // selection is blocked); pruneExcluded also drops it from the selection on the next reload.
-            disabled={excluded && !companyChecked.has(c.id)}
-            title={excluded ? "Excluded by rules — can't be selected" : undefined}
-            onChange={() => toggleCo(c)}
-          />
-        </td>
-        <td>
-          <div className="who-cell">
-            <div>
-              {c.status === "people_found" ? <span className="sel-tag">Accepted</span> : null}
-              <div className="nm">{c.name || c.domain}</div>
-              {icpLabel || c.country ? (
-                <div className="sub who-meta">
-                  {icpLabel ? (
-                    <span className="badge badge-neutral icp-badge">{icpLabel}</span>
-                  ) : null}
-                  {c.country ? <span>{c.country}</span> : null}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </td>
-        <td>
-          {/* reason line: hidden for the two contact buckets (kept for low_fit / excluded). */}
-          <FitCell
-            scoring={scoringCoIds.has(c.id)}
-            label={c.label}
-            score={c.score_total}
-            subscores={c.subscores}
-            axes={COMPANY_AXES}
-            reason={contact ? null : c.reason}
-          />
-        </td>
-        <td>
-          <WebLink website={c.website} domain={c.domain} />
-        </td>
-        <td className="muted">
-          <div>{c.industry || "—"}</div>
-          {c.business_model ? (
-            <div className="ind-model">
-              <span className={clsx("badge", businessModelChip(c.business_model).cls)}>
-                {businessModelChip(c.business_model).label}
-              </span>
-            </div>
-          ) : null}
-        </td>
-        <td className="muted">{c.size || "—"}</td>
-        <td>
-          <span className={clsx("badge", SOURCE_CLS[c.source] ?? "badge-neutral")}>
-            <span className="bdot" />
-            {SOURCE_LABEL[c.source] ?? c.source}
-          </span>
-        </td>
-        <td>
-          <CompanyStudy e={c.enrichment} />
-        </td>
-      </tr>
-    );
-  };
-
-  // The expanded body of a footnote bucket (low_fit / excluded_by_rules): one count row per rejection
-  // reason (indented under the bucket head), each expanding to the companies under that reason. Only
-  // called for the two collapsible buckets — the action buckets render flat via renderCompanyRow.
-  const renderSubGroups = (bucketKey: string, rows: CompanyApi[]) =>
-    subGroupsOf(rows).map((g) => {
-      const subKey = `${bucketKey}::${g.key}`;
-      const open = expandedSubs.has(subKey);
-      return (
-        <Fragment key={subKey}>
-          <tr
-            className="bucket-sub bucket-head--btn"
-            role="button"
-            tabIndex={0}
-            onClick={() => toggleSub(subKey)}
-            onKeyDown={activateOnKey(() => toggleSub(subKey))}
-          >
-            <td colSpan={8}>
-              <span className="bucket-head-in bucket-sub-in">
-                <span className={clsx("bucket-caret", open && "open")} aria-hidden="true">
-                  ▸
-                </span>
-                <span className="bucket-sub-name">{g.label}</span>
-                <span className="bucket-ct">{g.rows.length}</span>
-                <span className="bucket-hint">{open ? "hide" : "review"}</span>
-              </span>
-            </td>
-          </tr>
-          {open ? g.rows.map(renderCompanyRow) : null}
-        </Fragment>
-      );
-    });
 
   async function submitAddCompany() {
     if (!coForm.domain.trim()) return toast("A company domain is required", "warn");
@@ -1692,651 +1438,96 @@ export default function ListPage() {
         </div>
 
         {listStage === "companies" ? (
-          <>
-            <div className="list-band">
-              <h3>Find companies likely to buy</h3>
-              <div className="band-actions">
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setFindHistoryOpen(true)}
-                  title="Every find run · the exact scope it searched, match count, and spend"
-                >
-                  History
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={openScopeSettings}
-                  title={
-                    scopeOverride
-                      ? "Custom scope active — Find uses your edited filters, not the AI spec"
-                      : "Edit the Apollo company-search filters Find uses (saved per ICP)"
-                  }
-                >
-                  Scope{scopeOverride ? " · Custom" : ""}
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={runFindCompanies}
-                  disabled={coMutating}
-                  title="Search Apollo for the target ICP's scope · free · enriches only new companies"
-                >
-                  {findingCo
-                    ? "Finding…"
-                    : coTargetIcpName
-                      ? `Find · ${coTargetIcpName}`
-                      : "Find company"}
-                </button>
-              </div>
-            </div>
-            {/* Selection bar (v2 toolbar): actions that act on the ticked rows appear only when a
-                selection exists — Get AI score / lookalikes / refresh — so the primary band stays a
-                clean "find" zone. `coSelCount` is visible∩checked, and every action below runs on
-                that same set, so the count on the button always matches what runs (no "Score 3 runs
-                9" drift). */}
-            {coSelCount > 0 && (
-              <div className="list-band sel-band">
-                <style>{SEL_CSS}</style>
-                <span className="sel-count">
-                  <b>{coSelCount}</b> selected
-                </span>
-                <div className="band-actions">
-                  <button
-                    className="btn btn-primary btn-sm"
-                    onClick={runRescore}
-                    disabled={scoringActive || findingPpl}
-                    title="Run the paid AI fit score for the selected companies (≤15 per run)"
-                  >
-                    {scoringActive ? "Scoring…" : `Get AI score ${coSelCount}`}
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={runLookalike}
-                    disabled={coMutating}
-                    title="Find the next batch of companies similar to the selected rows"
-                  >
-                    {findingLookalike ? "Finding…" : `Find lookalikes ${coSelCount}`}
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={runUpdateFields}
-                    disabled={coMutating}
-                    title="Re-enrich Apollo firmographics for the selected companies · spends credits"
-                  >
-                    {updatingFields ? "Updating…" : `Refresh company data ${coSelCount}`}
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => setCompanyChecked(new Set())}
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-            )}
-            {scopeExhausted ? (
-              <div className="se-notice" role="status">
-                <style>{SE_CSS}</style>
-                <div className="se-body">
-                  <strong>You&apos;ve reviewed every company Apollo has for this scope.</strong>{" "}
-                  Find resumes at the next page each run, and this one reached the end — there are
-                  no new companies left under these exact filters. To open up more:
-                </div>
-                <div className="se-actions">
-                  <button
-                    className="btn btn-accent btn-sm"
-                    onClick={runLookalikeOfStrong}
-                    disabled={coMutating}
-                    title="Find the next batch of companies similar to your Strong/Good rows"
-                  >
-                    {findingLookalike ? "Finding…" : "Find lookalikes of your best rows"}
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-sm"
-                    onClick={openScopeSettings}
-                    title="Widen the Apollo filters, or regenerate the scope from the Business brief"
-                  >
-                    Adjust scope
-                  </button>
-                  <button
-                    className="btn btn-ghost btn-xs se-dismiss"
-                    onClick={() => setScopeExhausted(false)}
-                  >
-                    Dismiss
-                  </button>
-                </div>
-              </div>
-            ) : null}
-            <div className="filter-row list-toolbar">
-              <div className="search">
-                <span className="si">⌕</span>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="Search company or domain"
-                  value={coSearch}
-                  onChange={(e) => setCoSearch(e.target.value)}
-                />
-              </div>
-              <IcpFilterSelect
-                options={icpOptions}
-                value={fIcp}
-                onChange={setFIcp}
-                title="Filter the list by ICP · Find Company searches the picked ICP's scope"
-                highlight={icpNeedsPick}
-              />
-              <select
-                className="select"
-                value={coStatus}
-                onChange={(e) => setCoStatus(e.target.value)}
-              >
-                <option value="">All status</option>
-                <option value="accepted">Accepted</option>
-                <option value="pending">Pending</option>
-              </select>
-              <button className="btn btn-ghost btn-sm" onClick={() => setAddCoOpen(true)}>
-                Manual Upload
-              </button>
-            </div>
-            <div className="countrow">
-              <b>{coVisible.length}</b>&nbsp;shown&nbsp;·&nbsp;<b>{coSelCount}</b>&nbsp;selected
-            </div>
-            <div className="list-body">
-              <ListOverlay busy={coBusy} />
-              <div className="list-scroll">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th style={{ width: 34 }} />
-                      <th>Company</th>
-                      <th>Fit</th>
-                      <th>Domain</th>
-                      <th>Industry</th>
-                      <th>Size</th>
-                      <th>Source</th>
-                      <th>Enrichment</th>
-                    </tr>
-                  </thead>
-                  {coVisible.length > 0 && (
-                    <tbody>
-                      {/* Call sheet (spec §11): one group per label bucket. EVERY bucket header is a
-                        collapse toggle, and ALL buckets default CLOSED to a one-line count — the
-                        operator expands the bucket they want to work. `expandedBuckets` holds the
-                        expanded keys. Footnotes (low_fit / excluded) expand to a per-reason
-                        breakdown; the rest expand to a flat row list. */}
-                      {BUCKET_ORDER.map((key) => {
-                        const rows = coBuckets.get(key) ?? [];
-                        if (!rows.length) return null;
-                        const footnote = COLLAPSED_KEYS.has(key); // low_fit / excluded_by_rules
-                        const open = expandedBuckets.has(key);
-                        return (
-                          <Fragment key={key}>
-                            <tr
-                              className="bucket-head bucket-head--btn"
-                              role="button"
-                              tabIndex={0}
-                              onKeyDown={activateOnKey(() => toggleBucket(key))}
-                              onClick={() => toggleBucket(key)}
-                            >
-                              <td colSpan={8}>
-                                <span className="bucket-head-in">
-                                  <span
-                                    className={clsx("bucket-caret", open && "open")}
-                                    aria-hidden="true"
-                                  >
-                                    ▸
-                                  </span>
-                                  <span
-                                    className={clsx("bucket-dot", `bucket-dot--${key}`)}
-                                    aria-hidden="true"
-                                  />
-                                  <span className="bucket-name">{BUCKET_HEAD[key]}</span>
-                                  <span className="bucket-ct">{rows.length}</span>
-                                  <span className="bucket-hint">
-                                    {open ? "hide" : footnote ? "review" : "show"}
-                                  </span>
-                                  {key === "unscored" && (
-                                    <button
-                                      className="btn btn-accent btn-xs"
-                                      style={{ marginLeft: "auto" }}
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        scoreUnscoredWave();
-                                      }}
-                                      disabled={scoringActive || findingPpl}
-                                      title="Run the paid AI fit score for the next batch of unscored companies (≤15 per run)"
-                                    >
-                                      {scoringActive
-                                        ? "Scoring…"
-                                        : `Score next ${Math.min(rows.length, SCORE_BATCH_MAX)} →`}
-                                    </button>
-                                  )}
-                                </span>
-                              </td>
-                            </tr>
-                            {open
-                              ? footnote
-                                ? renderSubGroups(key, rows)
-                                : rows.map(renderCompanyRow)
-                              : null}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  )}
-                </table>
-                {coVisible.length === 0 && (
-                  <div className="list-empty muted">
-                    No companies match the current scope yet · click Find Companies to search
-                    Apollo.
-                    <br />
-                    {coScopeSummary ? (
-                      <>
-                        Active filters{scopeOverride ? " (custom)" : ""}
-                        {fIcp && icpNameById.get(fIcp) ? ` · ${icpNameById.get(fIcp)}` : ""} ·{" "}
-                        {coScopeSummary}.
-                        <br />
-                        Too few results? Widen them in ⚙ Scope, or + Add company manually.
-                      </>
-                    ) : (
-                      <>Set your filters in ⚙ Scope, or + Add company manually. Finding is free.</>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="list-dock">
-              <span className={clsx("dock-count", !coSelCount && "empty")}>
-                {coSelCount ? (
-                  <>
-                    <b>{coSelCount}</b> companies selected
-                  </>
-                ) : (
-                  "Select companies to move to Step 2"
-                )}
-              </span>
-              {coSelCount ? (
-                <button className="dock-clear" onClick={() => setCompanyChecked(new Set())}>
-                  Clear
-                </button>
-              ) : null}
-              <span className="dock-spacer" />
-              <button
-                className="btn btn-primary"
-                onClick={() => void stageForPeople()}
-                disabled={!coSelCount || staging}
-              >
-                {staging ? "Moving…" : `Find people for ${coSelCount} →`}
-              </button>
-            </div>
-          </>
+          <Step1Companies
+            setFindHistoryOpen={setFindHistoryOpen}
+            openScopeSettings={openScopeSettings}
+            scopeOverride={scopeOverride}
+            runFindCompanies={runFindCompanies}
+            coMutating={coMutating}
+            findingCo={findingCo}
+            coTargetIcpName={coTargetIcpName}
+            coSelCount={coSelCount}
+            runRescore={runRescore}
+            scoringActive={scoringActive}
+            findingPpl={findingPpl}
+            runLookalike={runLookalike}
+            findingLookalike={findingLookalike}
+            runUpdateFields={runUpdateFields}
+            updatingFields={updatingFields}
+            setCompanyChecked={setCompanyChecked}
+            scopeExhausted={scopeExhausted}
+            runLookalikeOfStrong={runLookalikeOfStrong}
+            setScopeExhausted={setScopeExhausted}
+            coSearch={coSearch}
+            setCoSearch={setCoSearch}
+            icpOptions={icpOptions}
+            fIcp={fIcp}
+            setFIcp={setFIcp}
+            icpNeedsPick={icpNeedsPick}
+            coStatus={coStatus}
+            setCoStatus={setCoStatus}
+            setAddCoOpen={setAddCoOpen}
+            coVisible={coVisible}
+            coBusy={coBusy}
+            coBuckets={coBuckets}
+            expandedBuckets={expandedBuckets}
+            toggleBucket={toggleBucket}
+            scoreUnscoredWave={scoreUnscoredWave}
+            coScopeSummary={coScopeSummary}
+            stageForPeople={stageForPeople}
+            staging={staging}
+            icpNameById={icpNameById}
+            companyChecked={companyChecked}
+            toggleCo={toggleCo}
+            scoringCoIds={scoringCoIds}
+            expandedSubs={expandedSubs}
+            toggleSub={toggleSub}
+          />
         ) : (
-          <>
-            <div className="list-band">
-              <h3>Find the right person</h3>
-              <span className="band-sub">Personas auto-matched per company ICP</span>
-              <div className="band-actions">
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => void openPeopleScopeSettings()}
-                  title="Edit the Apollo people-search personas Find People uses (saved per ICP)"
-                >
-                  {peopleScopeOverride ? "Personas · Custom" : "Personas"}
-                  {coTargetIcpName ? ` · ${coTargetIcpName}` : ""}
-                </button>
-                <button
-                  className="btn btn-primary btn-sm"
-                  onClick={runFindPeople}
-                  disabled={findingPpl || !pplCoSel.length}
-                  title="Re-find people at the ticked companies (free; reveal emails spends credits)"
-                >
-                  {findingPpl
-                    ? "Finding…"
-                    : pplCoSel.length
-                      ? `Find People ${pplCoSel.length}`
-                      : "Find People"}
-                </button>
-                <button
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => void removeFromStep2()}
-                  disabled={!pplCoSel.length || removing}
-                  title="Remove the ticked companies from Step 2 (back to the Step-1 list)"
-                >
-                  {removing
-                    ? "Removing…"
-                    : pplCoSel.length
-                      ? `Remove ${pplCoSel.length}`
-                      : "Remove"}
-                </button>
-              </div>
-            </div>
-            <div className="filter-row list-toolbar">
-              <div className="search">
-                <span className="si">⌕</span>
-                <input
-                  className="input"
-                  type="text"
-                  placeholder="Search company or domain"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                />
-              </div>
-              <IcpFilterSelect
-                options={icpOptions}
-                value={fIcp}
-                onChange={setFIcp}
-                title="Filter the Step-2 companies (and their people) by ICP"
-              />
-              <select
-                className="select"
-                value={fStatus}
-                onChange={(e) => setFStatus(e.target.value)}
-              >
-                <option value="">All status</option>
-                <option value="found">Found</option>
-                <option value="scored">Enriched</option>
-              </select>
-              <button className="btn btn-ghost btn-sm" onClick={() => setAddPersonOpen(true)}>
-                Manual Upload
-              </button>
-            </div>
-            <div className="countrow">
-              <b>{pursued.length}</b>&nbsp;companies&nbsp;·&nbsp;<b>{visible.length}</b>
-              &nbsp;people&nbsp;·&nbsp;
-              {/* R13 — the "selected" count reads the WHOLE selection (what Reveal & score acts on),
-                  mirroring Step 1's `coSelCount`, so the countrow and the dock never disagree. */}
-              <b>{selectedProspects.length}</b>&nbsp;selected
-            </div>
-            <div className="list-body">
-              <ListOverlay busy={pplBusy} />
-              <div className="list-scroll">
-                <table className="tbl">
-                  <thead>
-                    <tr>
-                      <th>Company</th>
-                      <th style={{ width: 34 }} />
-                      <th>Prospect</th>
-                      <th>Title</th>
-                      <th>Status</th>
-                      <th>LinkedIn</th>
-                      <th>Fit</th>
-                    </tr>
-                  </thead>
-                  {pursued.length > 0 && (
-                    <tbody>
-                      {pursued.map((c) => {
-                        const rows = rowsForCompany(c.id);
-                        const finding = findingPplIds.has(c.id);
-                        const searched = c.status === "people_found";
-                        // The per-company count/status indicator — sits on top of the company name.
-                        const countBadge = finding ? (
-                          <span className="fit-scoring">
-                            <span className="hs-spinner" aria-hidden="true" />
-                            Finding…
-                          </span>
-                        ) : !searched ? (
-                          <span className="badge badge-warn">
-                            <span className="bdot" />
-                            Pending
-                          </span>
-                        ) : rows.length === 0 ? (
-                          <span className="badge badge-neutral">
-                            <span className="bdot" />0 people
-                          </span>
-                        ) : (
-                          <span className="badge badge-info">
-                            <span className="bdot" />
-                            {rows.length} {rows.length === 1 ? "person" : "people"}
-                          </span>
-                        );
-                        const collapsed = !expandedCos.has(c.id);
-                        const expandable = rows.length > 0;
-                        const enrichedCount = rows.filter(
-                          (p) => p.status === ENRICHED_STATUS
-                        ).length;
-                        // Company cell — count badge atop the name; spans the company's people rows.
-                        // When the company has people, clicking the cell collapses/expands that list
-                        // (the select checkbox stops propagation so ticking doesn't toggle it).
-                        const companyCell = (rowSpan: number) => (
-                          <td
-                            className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
-                            rowSpan={rowSpan}
-                            role={expandable ? "button" : undefined}
-                            tabIndex={expandable ? 0 : undefined}
-                            onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
-                            onKeyDown={
-                              expandable ? activateOnKey(() => toggleCoCollapse(c.id)) : undefined
-                            }
-                            title={
-                              expandable
-                                ? collapsed
-                                  ? "Expand people"
-                                  : "Collapse people"
-                                : undefined
-                            }
-                          >
-                            <div className="grp-co">
-                              <span className="grp-co-top">
-                                <input
-                                  type="checkbox"
-                                  className="tbl-check"
-                                  checked={companyChecked.has(c.id)}
-                                  // R6 — allowExcluded: a staged company later re-scored excluded can
-                                  // still be ticked here to Remove it (the funnel actions skip excluded).
-                                  onChange={() => toggleCo(c, true)}
-                                  onClick={(e) => e.stopPropagation()}
-                                  title="Select this company to find people"
-                                />
-                                {countBadge}
-                              </span>
-                              <span className="nm">{c.name || c.domain}</span>
-                              {c.domain ? <span className="domain">{c.domain}</span> : null}
-                              {c.icp_id && icpNameById.get(c.icp_id) ? (
-                                <span className="badge badge-neutral">
-                                  {icpNameById.get(c.icp_id)}
-                                </span>
-                              ) : null}
-                            </div>
-                          </td>
-                        );
-                        // No people yet (pending · finding · searched-empty) — a single standalone row.
-                        if (rows.length === 0) {
-                          return (
-                            <tr key={c.id} className="co-start">
-                              {companyCell(1)}
-                              <td />
-                              <td className="muted grp-hint" colSpan={5}>
-                                {finding
-                                  ? "Finding people…"
-                                  : !searched
-                                    ? "Tick this company, then Find People"
-                                    : "No people found · loosen Find Settings, then Find People again"}
-                              </td>
-                            </tr>
-                          );
-                        }
-                        // Collapsed — hide the people rows, keep one company row with a count hint.
-                        if (collapsed) {
-                          return (
-                            <tr key={c.id} className="co-start">
-                              {companyCell(1)}
-                              <td />
-                              <td className="muted grp-hint" colSpan={5}>
-                                {enrichedCount} enriched · {rows.length}{" "}
-                                {rows.length === 1 ? "person" : "people"} hidden · click company
-                                cell to expand viewing
-                              </td>
-                            </tr>
-                          );
-                        }
-                        return (
-                          <Fragment key={c.id}>
-                            {rows.map((p, i) => {
-                              const enriched = p.status === ENRICHED_STATUS;
-                              const stClass = enriched
-                                ? "st--enriched"
-                                : p.status === "score_error" || p.status === "enrich_failed"
-                                  ? "st--error"
-                                  : "st--found";
-                              const stMeta = enriched
-                                ? p.email_valid
-                                  ? "email verified"
-                                  : "email · unverified"
-                                : p.status === "confirmed"
-                                  ? "awaiting enrichment"
-                                  : p.status === "score_error"
-                                    ? "scoring failed"
-                                    : p.status === "enrich_failed"
-                                      ? "no Apollo match"
-                                      : "no email yet";
-                              return (
-                                <tr
-                                  key={p.id}
-                                  className={clsx(
-                                    i === 0 && "co-start",
-                                    checked.has(p.id) && "row-sel"
-                                  )}
-                                >
-                                  {i === 0 ? companyCell(rows.length) : null}
-                                  <td>
-                                    <input
-                                      type="checkbox"
-                                      className="tbl-check"
-                                      checked={checked.has(p.id)}
-                                      disabled={p.label === "excluded_by_rules"}
-                                      title={
-                                        p.label === "excluded_by_rules"
-                                          ? "Excluded by rules — can't be selected"
-                                          : undefined
-                                      }
-                                      onChange={() => toggleRow(p)}
-                                    />
-                                  </td>
-                                  <td>
-                                    <div className="who-cell">
-                                      <div>
-                                        <div className="nm">{p.full_name || "—"}</div>
-                                        <div className="sub">{p.email || "no email yet"}</div>
-                                      </div>
-                                    </div>
-                                  </td>
-                                  <td className="muted">{p.title || "—"}</td>
-                                  <td>
-                                    <div className="st2">
-                                      <span className={clsx("st", stClass)}>
-                                        <span className="st-dot" />
-                                        {STATUS_LABEL[p.status] ?? p.status}
-                                      </span>
-                                      <span className="st-meta">{stMeta}</span>
-                                    </div>
-                                  </td>
-                                  <td>
-                                    <LinkedInLink url={p.linkedin_url} />
-                                  </td>
-                                  <td>
-                                    <FitCell
-                                      scoring={scoringPersonIds.has(p.id)}
-                                      label={p.label}
-                                      score={p.score_total}
-                                      subscores={p.subscores}
-                                      axes={PROSPECT_AXES}
-                                    />
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </Fragment>
-                        );
-                      })}
-                    </tbody>
-                  )}
-                </table>
-                {pursued.length === 0 && (
-                  <div className="list-empty muted">
-                    {prospectsLoading || companiesLoading ? (
-                      "Loading…"
-                    ) : (
-                      <>
-                        No companies in Step 2 yet · go to Step 1, tick companies, and click “Find
-                        people for N →”.
-                        {pplScopeSummary ? (
-                          <>
-                            <br />
-                            Person filters{peopleScopeOverride ? " (custom)" : ""} ·{" "}
-                            {pplScopeSummary}. Adjust them in ⚙ Personas.
-                          </>
-                        ) : null}
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-            <div className="list-dock">
-              <span className={clsx("dock-count", !selectedProspects.length && "empty")}>
-                {selectedProspects.length ? (
-                  <>
-                    <b>{selectedProspects.length}</b> selected
-                    {toEnrich.length ? (
-                      <span className="sub"> · {toEnrich.length} need email reveal</span>
-                    ) : null}
-                  </>
-                ) : (
-                  "Select people to score, reveal emails, and batch"
-                )}
-              </span>
-              {selectedProspects.length ? (
-                <button className="dock-clear" onClick={() => setChecked(new Set())}>
-                  Clear
-                </button>
-              ) : null}
-              <span className="dock-spacer" />
-              {/* People-selection funnel (left→right): reveal & score → create batch. One merged
-                  action — reveal verified emails (the ONLY Apollo credit spend, 1cr/email) THEN AI-score
-                  on the revealed data, since scoring a pre-reveal row gates on missing contact. When the
-                  selection is already revealed it's a pure re-score (0 credits), so the label drops the
-                  "Reveal &" / credit count. */}
-              <button
-                className="btn btn-accent btn-sm"
-                onClick={runRevealScore}
-                disabled={!selectedProspects.length || scoringPeopleActive || findingPpl}
-                title={
-                  toEnrich.length
-                    ? "Reveal verified emails for the selected people (1 Apollo credit each), then AI-score them on the revealed data · ≤15 per run"
-                    : "AI-score the selected people (already revealed — no credits) · ≤15 per run"
-                }
-              >
-                {scoringPeopleActive
-                  ? "Working…"
-                  : toEnrich.length
-                    ? `Reveal & score ${selectedProspects.length} · ${toEnrich.length} credits`
-                    : `Score ${selectedProspects.length}`}
-              </button>
-              <div className={clsx("dock-act", canBatch ? "on" : "off")}>
-                <input
-                  className="input dock-name"
-                  type="text"
-                  placeholder="Batch Name"
-                  value={newBatchName}
-                  onChange={(e) => setNewBatchName(e.target.value)}
-                  disabled={!canBatch}
-                />
-                <button
-                  className="btn btn-primary"
-                  onClick={createBatch}
-                  disabled={!canBatch || creatingBatch}
-                  title={
-                    canBatch
-                      ? ""
-                      : toEnrich.length
-                        ? "Reveal & score the Found people first — only revealed people can be batched."
-                        : "Select people with a revealed email to batch them."
-                  }
-                >
-                  {creatingBatch ? "Creating…" : "Create batch →"}
-                </button>
-              </div>
-            </div>
-          </>
+          <Step2People
+            peopleScopeOverride={peopleScopeOverride}
+            openPeopleScopeSettings={openPeopleScopeSettings}
+            coTargetIcpName={coTargetIcpName}
+            runFindPeople={runFindPeople}
+            findingPpl={findingPpl}
+            pplCoSel={pplCoSel}
+            removeFromStep2={removeFromStep2}
+            removing={removing}
+            search={search}
+            setSearch={setSearch}
+            icpOptions={icpOptions}
+            fIcp={fIcp}
+            setFIcp={setFIcp}
+            fStatus={fStatus}
+            setFStatus={setFStatus}
+            setAddPersonOpen={setAddPersonOpen}
+            pursued={pursued}
+            visible={visible}
+            selectedProspects={selectedProspects}
+            pplBusy={pplBusy}
+            rowsForCompany={rowsForCompany}
+            findingPplIds={findingPplIds}
+            expandedCos={expandedCos}
+            companyChecked={companyChecked}
+            toggleCo={toggleCo}
+            toggleCoCollapse={toggleCoCollapse}
+            icpNameById={icpNameById}
+            checked={checked}
+            scoringPersonIds={scoringPersonIds}
+            toggleRow={toggleRow}
+            prospectsLoading={prospectsLoading}
+            companiesLoading={companiesLoading}
+            pplScopeSummary={pplScopeSummary}
+            setChecked={setChecked}
+            toEnrich={toEnrich}
+            runRevealScore={runRevealScore}
+            scoringPeopleActive={scoringPeopleActive}
+            canBatch={canBatch}
+            newBatchName={newBatchName}
+            setNewBatchName={setNewBatchName}
+            createBatch={createBatch}
+            creatingBatch={creatingBatch}
+          />
         )}
       </div>
 
@@ -2437,24 +1628,3 @@ export default function ListPage() {
     </section>
   );
 }
-
-// D+ Stage 3 — scope-exhausted notice. Scoped to `.se-*` so nothing leaks to other routes (the list
-// page has no co-located stylesheet; this mirrors the FindHistoryDrawer pattern). Warn-toned but
-// calm — it's a "you're done here, try these" prompt, not an error.
-// The v2 selection bar — a slim cerulean-wash strip that appears only when rows are ticked, holding
-// the actions that act on the selection (kept out of the primary "find" band above).
-const SEL_CSS = `
-.sel-band { background: var(--cerulean-wash); }
-.sel-band .sel-count { font-size: 13px; font-weight: 650; color: var(--ink); }
-.sel-band .sel-count b { color: var(--cerulean-deep); }
-`;
-
-const SE_CSS = `
-.se-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
-  margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 10px;
-  background: var(--warn-wash); }
-.se-body { flex: 1 1 320px; font-size: 13px; color: var(--ink); line-height: 1.45; }
-.se-body strong { color: var(--ink); }
-.se-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.se-dismiss { margin-left: 2px; }
-`;

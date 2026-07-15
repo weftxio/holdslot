@@ -7,3 +7,5 @@ export { ScopeSettingsModal } from "./ScopeSettingsModal";
 export { PeopleScopeModal } from "./PeopleScopeModal";
 export { AddCompanyModal } from "./AddCompanyModal";
 export { AddPersonModal } from "./AddPersonModal";
+export { Step1Companies } from "./Step1Companies";
+export { Step2People } from "./Step2People";
