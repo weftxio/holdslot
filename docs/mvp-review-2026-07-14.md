@@ -86,12 +86,14 @@ pushed → **Amplify build #61 SUCCEED**. Gate was green at each commit.
 | **2.1** | ✅ DONE | `40c6f41` | `lib/api.ts` (1540) → `lib/api/` pkg (core + 7 phase modules) + 22-line barrel; all 24 importers unchanged · tsc/eslint/next-build clean · Playwright 27/27 |
 | **2.3** | ✅ DONE | `511741f` | `campaigns/stage_moves.py` leaf extracted; 3 callers (webhooks · meetings/router · meetings/public) un-lazied to eager imports (import-identity smoke: all share the one impl) · ruff · pytest 385/30 |
 | **2.2** | ✅ DONE (deploy + push pending) | `f7bf969` | `prospects/router.py` 3051 → 108-line aggregator + 6 modules (scope/serializers/label_engine/company_find/people_find/jobs); `_apollo_run_id`→scope breaks the label⇄cfind cycle; `SCORING_HANDLERS`→jobs shrinks scoring.py's lazy import; router re-exports all moved helpers (external importers unchanged). **Byte-identical bodies · 22 route decorators diff-clean · ruff · pytest 385/30 · find→select→find-people→reveal-and-score e2e 8/8 vs live dev Aurora** (the money-path live smoke) |
-| **2.4** | ⏳ NOT STARTED — **founder-QA-gated** | — | `list/page.tsx` (3020) staged split (modals → `useListData` → step tables). Each stage's own plan (§4.2) requires **one manual find + one reveal-and-score QA** in the live browser — which the route-mocked Playwright harness cannot observe. Handed off for a founder-driven staged session; **no new list-page feature lands before it** |
+| **2.4** | ✅ DONE — **live-QA pending on dev** | `236de45`·`f71efd7`·`ef51a70` | `list/page.tsx` **3020 → 1630 LOC** staged into `components/workspace/list/`: **S1** 5 modals (`236de45`) · **S2** `useListData` hook (`f71efd7`) · **S3** `Step1Companies`/`Step2People` + shared helpers (`ef51a70`). Every stage: content-identical JSX (verified vs pre-edit refs), props threaded `name={name}` (miswire-proof), tsc·eslint·prettier·build·Playwright 27/27 green. **Live find + reveal-&-score QA on dev is the founder's remaining gate before main/prod cutover** |
 
-> **Backend-deploy note (D1):** 2.2 + 2.3 are backend refactors committed but **not deployed**. They
-> are deploy-neutral (no route/schema change), so they ship on the next authorized backend deploy;
-> 2.1 ships on the next authorized push (Amplify FE). 2.2's own live smoke is already green (above),
-> so the post-deploy check is just `/health` + one find/score smoke.
+> **Shipped 2026-07-15 (D1 backend-before-frontend):** backend **Lambda v91→v92** (2.2 + 2.3;
+> deploy-neutral — 69 OpenAPI paths unchanged, all 10 prospects/find/score routes registered,
+> `/health` ok) → then pushed `origin/dev` (2.1 + all of 2.4) → **Amplify job #62 (dev)**. Whole gate
+> re-run pre-deploy: pytest 385✓ · tsc · eslint · next build · Playwright 27/27. **Phase 2 is
+> code-complete + shipped to dev.** Remaining money-path gate = the founder's live find + reveal-&-score
+> pass on the dev URL (the route-mocked suite can't observe it) before any `main`/prod cutover.
 
 ### Phase 3 · Founder acceptance → DoD start (parallel track; live dev, founder-gated)
 
