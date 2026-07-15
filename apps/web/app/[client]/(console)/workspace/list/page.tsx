@@ -1,5 +1,5 @@
 "use client";
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import { toggleInSet } from "@/lib/sets";
@@ -62,7 +62,6 @@ import {
   COMPANY_AXES,
   ENRICHED_STATUS,
   PROSPECT_AXES,
-  SENIORITY_OPTIONS,
   SOURCE_CLS,
   SOURCE_LABEL,
   STATUS_LABEL,
@@ -75,7 +74,6 @@ import {
   formToOverride,
   formToPeopleOverride,
   groupByLabel,
-  humanizeFacet,
   peopleScopeSummary,
   peopleScopeToForm,
   scopeSummary,
@@ -83,14 +81,20 @@ import {
 } from "@/lib/workspace/constants";
 import {
   CompanyStudy,
-  ConfirmFooter,
   LabelChip,
   LinkedInLink,
-  PromptEditorShell,
-  SpecHead,
   SubscoreList,
   WebLink,
 } from "@/components/workspace";
+import {
+  AddCompanyModal,
+  AddPersonModal,
+  PeopleScopeModal,
+  RubricModal,
+  ScopeSettingsModal,
+  type ManualCompanyForm,
+  type ManualPersonForm,
+} from "@/components/workspace/list";
 
 // The two collapsed footnote buckets as a plain string set — COLLAPSED_LABELS is typed to
 // ScoreLabel, but the bucket keys include the "unscored" (null-label) group, so membership is
@@ -177,27 +181,6 @@ function ListOverlay({ busy }: { busy: boolean }) {
     </div>
   );
 }
-// One checkbox row in the Personas facet sidebar (seniority + departments, probed or not, S19) —
-// label + optional live count. `key` stays on the call site, per the .map contract.
-function FacetRow({
-  label,
-  checked,
-  count,
-  onToggle,
-}: {
-  label: string;
-  checked: boolean;
-  count?: number;
-  onToggle: () => void;
-}) {
-  return (
-    <label className="facet-row">
-      <input type="checkbox" className="tbl-check" checked={checked} onChange={onToggle} />
-      <span className="facet-label">{label}</span>
-      {count != null && <span className="facet-count">{count}</span>}
-    </label>
-  );
-}
 // The by-ICP list filter above Step-1 and Step-2 (S19) — identical bar the title and the Step-1
 // "pick an ICP" warn-highlight. Renders nothing when there's ≤1 ICP (nothing to filter by).
 function IcpFilterSelect({
@@ -239,59 +222,14 @@ function IcpFilterSelect({
     </select>
   );
 }
-// A labelled text/number input in the scope / add-company / add-person modals (S4) — the
-// `div.field > label + input.input` block repeated 17× with only label/value/placeholder/type
-// varying. `onChange` receives the raw string value.
 // L20 (a11y) — Enter/Space activates a clickable non-button element (role="button"), matching a
 // native button, so the expand/collapse rows are reachable without a mouse.
-const activateOnKey =
-  (fn: () => void) =>
-  (e: { key: string; preventDefault: () => void }) => {
-    if (e.key === "Enter" || e.key === " ") {
-      e.preventDefault();
-      fn();
-    }
-  };
-
-function Field({
-  label,
-  value,
-  onChange,
-  type = "text",
-  placeholder,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  type?: "text" | "number";
-  placeholder?: string;
-}) {
-  // L20 (a11y) — associate the caption with the input via htmlFor/id so all modal inputs have an
-  // accessible name (the bare <label> gave none). useId keeps it unique across the ~17 reuses.
-  const id = useId();
-  return (
-    <div className="field">
-      <label htmlFor={id}>{label}</label>
-      <input
-        id={id}
-        className="input"
-        type={type}
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </div>
-  );
-}
-// The badge pair atop the add-company / add-person modals (S21 — was duplicated inline in both).
-function ManualBadges() {
-  return (
-    <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 14 }}>
-      <span className="badge badge-neutral">source · manual</span>
-      <span className="badge badge-info">fit-scored on add</span>
-    </div>
-  );
-}
+const activateOnKey = (fn: () => void) => (e: { key: string; preventDefault: () => void }) => {
+  if (e.key === "Enter" || e.key === " ") {
+    e.preventDefault();
+    fn();
+  }
+};
 // Find People searches one Apollo call per org; the server caps a single request at MAX_ORGS_PER_FIND
 // (8) orgs, so the FE chunks a larger selection into 8-org calls threaded by one group_id.
 const FIND_ORGS_CHUNK = 8;
@@ -475,7 +413,7 @@ export default function ListPage() {
     linkedin_url: "",
   };
   const [addCoOpen, setAddCoOpen] = useState(false);
-  const [coForm, setCoForm] = useState({ ...blankCo });
+  const [coForm, setCoForm] = useState<ManualCompanyForm>({ ...blankCo });
   const [savingCo, setSavingCo] = useState(false);
   const [creatingBatch, setCreatingBatch] = useState(false); // L13 — disables Create Batch in-flight
   // Manual override of the AI scope's Apollo company-search filters (Settings modal). Stored per
@@ -513,7 +451,7 @@ export default function ListPage() {
     seniority: "",
   };
   const [addPersonOpen, setAddPersonOpen] = useState(false);
-  const [personForm, setPersonForm] = useState({ ...blankPerson });
+  const [personForm, setPersonForm] = useState<ManualPersonForm>({ ...blankPerson });
   const [savingPerson, setSavingPerson] = useState(false);
 
   async function reloadProspects() {
@@ -2285,7 +2223,9 @@ export default function ListPage() {
                             role={expandable ? "button" : undefined}
                             tabIndex={expandable ? 0 : undefined}
                             onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
-                            onKeyDown={expandable ? activateOnKey(() => toggleCoCollapse(c.id)) : undefined}
+                            onKeyDown={
+                              expandable ? activateOnKey(() => toggleCoCollapse(c.id)) : undefined
+                            }
                             title={
                               expandable
                                 ? collapsed
@@ -2547,445 +2487,65 @@ export default function ListPage() {
         </p>
       </Modal>
 
-      {/* FIT RUBRIC MODAL — the versioned scoring rubric (append-only) */}
-      <Modal
-        open={showSourcing}
-        onClose={() => setShowSourcing(false)}
-        title={`Fit rubric · ${rubricStage === "prospect_fit" ? "Step 2 · People" : "Step 1 · Companies"}`}
-        subtitle={`The exact system + input prompt sent to the model to score each ${
-          rubricStage === "prospect_fit" ? "prospect" : "company"
-        }.`}
-        className="modal-lg"
-        footer={
-          <button className="btn btn-primary btn-sm" onClick={() => setShowSourcing(false)}>
-            Done
-          </button>
-        }
-      >
-        <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-          {fitPrompt && (
-            <span className="badge badge-info">model · {fitPrompt.model.join(" → ")}</span>
-          )}
-          <span className="badge badge-neutral">purpose · {fitPrompt?.purpose ?? rubricStage}</span>
-          <span className="badge badge-neutral">rubric v{docs?.[rubricStage]?.version ?? "—"}</span>
-        </div>
-        <PromptEditorShell
-          systemBadge={
-            <span className="badge badge-neutral">v{docs?.[rubricStage]?.version ?? "—"}</span>
-          }
-          systemActions={
-            <button
-              type="button"
-              className="btn btn-accent btn-xs"
-              onClick={() => saveDoc(rubricStage)}
-              disabled={savingDoc === rubricStage}
-            >
-              {savingDoc === rubricStage ? "Saving…" : "Save as new version"}
-            </button>
-          }
-          systemValue={rubricDraft}
-          onSystemChange={setRubricDraft}
-          inputMeta={
-            <span className="ph-sub">
-              {fitPromptLoading
-                ? "loading…"
-                : fitPrompt?.company
-                  ? `read-only · sample: ${fitPrompt.company}`
-                  : `read-only · no ${rubricStage === "prospect_fit" ? "prospect" : "company"} yet`}
-            </span>
-          }
-          inputContent={
-            fitPromptLoading
-              ? "Loading the input prompt…"
-              : fitPromptErr
-                ? fitPromptErr
-                : fitPrompt?.user ||
-                  `${
-                    rubricStage === "prospect_fit"
-                      ? "Find people first to preview a prospect's"
-                      : "Find a company first to preview its"
-                  } input prompt.`
-          }
-          hint={
-            <>
-              Edits are saved for this client and used on the next re-score. Each{" "}
-              {rubricStage === "prospect_fit" ? "prospect" : "company"} is scored against this
-              rubric with the input prompt shown on the right.
-            </>
-          }
-        />
-      </Modal>
+      <RubricModal
+        showSourcing={showSourcing}
+        setShowSourcing={setShowSourcing}
+        rubricStage={rubricStage}
+        saveDoc={saveDoc}
+        savingDoc={savingDoc}
+        rubricDraft={rubricDraft}
+        setRubricDraft={setRubricDraft}
+        fitPrompt={fitPrompt}
+        docs={docs}
+        fitPromptLoading={fitPromptLoading}
+        fitPromptErr={fitPromptErr}
+      />
 
-      {/* FIND-COMPANY SCOPE SETTINGS — edit the Apollo company-search filters Phase B produced.
-          Empty fields are dropped server-side (they simply widen the search). */}
-      <Modal
-        open={scopeOpen}
-        className="modal-lg"
-        onClose={() => setScopeOpen(false)}
-        title="Find Companies · search filters"
-        subtitle="Apollo company-search filters, pre-filled from the selected ICP's AI scope · blank fields are dropped · saved per ICP for the next Find."
-        footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={resetScopeSettings}
-              title="Discard manual edits and use the AI-generated scope"
-            >
-              Reset to AI scope
-            </button>
-            <span style={{ flex: 1 }} />
-            <button className="btn btn-ghost btn-sm" onClick={() => setScopeOpen(false)}>
-              Cancel
-            </button>
-            <button className="btn btn-primary btn-sm" onClick={saveScopeSettings}>
-              Save filters
-            </button>
-          </>
-        }
-      >
-        {!scopeForm && <p className="muted">Loading the ICP’s saved filters…</p>}
-        {scopeForm && (
-          <>
-            <div
-              className="row"
-              style={{ gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 14 }}
-            >
-              {icpOptions.length > 0 && (
-                <select
-                  className="select"
-                  value={scopeIcp}
-                  onChange={(e) => switchScopeIcp(e.target.value)}
-                  title="Switch which ICP's search filters you are viewing/editing · Save targets the next Find at this ICP"
-                >
-                  {icpOptions.map((o) => (
-                    <option key={o.id} value={o.id}>
-                      ICP · {o.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <span className="badge badge-neutral">search · apollo</span>
-              <span className="badge badge-info">pre-filled from AI scope</span>
-              {icpOptions.length > 1 && (
-                <span className="ph-sub">
-                  switching ICP reloads that profile&rsquo;s filters · Save first to keep edits
-                </span>
-              )}
-            </div>
-            <SpecHead>Company search · firmographics</SpecHead>
-            <div className="sourcing-cols">
-              <Field
-                label="Keywords · industry / market tags (comma-separated)"
-                placeholder="Insurtech, Insurance"
-                value={scopeForm.keywords}
-                onChange={(v) => setScopeForm({ ...scopeForm, keywords: v })}
-              />
-              <Field
-                label="Locations · HQ country / region (comma-separated)"
-                placeholder="hong kong, singapore, thailand"
-                value={scopeForm.locations}
-                onChange={(v) => setScopeForm({ ...scopeForm, locations: v })}
-              />
-            </div>
-            <div className="sourcing-cols" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
-              <Field
-                label="Employee size ranges · min,max (; for more)"
-                placeholder="10,100 ; 101,500"
-                value={scopeForm.sizes}
-                onChange={(v) => setScopeForm({ ...scopeForm, sizes: v })}
-              />
-              <Field
-                label="Revenue min (USD)"
-                type="number"
-                placeholder="(any)"
-                value={scopeForm.revenueMin}
-                onChange={(v) => setScopeForm({ ...scopeForm, revenueMin: v })}
-              />
-              <Field
-                label="Revenue max (USD)"
-                type="number"
-                placeholder="(any)"
-                value={scopeForm.revenueMax}
-                onChange={(v) => setScopeForm({ ...scopeForm, revenueMax: v })}
-              />
-            </div>
-            <SpecHead>Buying signals (intent) · optional, narrows hard</SpecHead>
-            <Field
-              label="Hiring for job titles (comma-separated)"
-              placeholder="sales, growth, commercial"
-              value={scopeForm.hiringTitles}
-              onChange={(v) => setScopeForm({ ...scopeForm, hiringTitles: v })}
-            />
-          </>
-        )}
-      </Modal>
+      <ScopeSettingsModal
+        scopeOpen={scopeOpen}
+        setScopeOpen={setScopeOpen}
+        resetScopeSettings={resetScopeSettings}
+        saveScopeSettings={saveScopeSettings}
+        scopeForm={scopeForm}
+        setScopeForm={setScopeForm}
+        icpOptions={icpOptions}
+        scopeIcp={scopeIcp}
+        switchScopeIcp={switchScopeIcp}
+      />
 
-      {/* FIND-PEOPLE SCOPE SETTINGS — edit the Apollo people-search filters Phase B produced.
-          Empty fields are dropped server-side; the org scope comes from your Step-1 selection. */}
-      <Modal
-        open={peopleScopeOpen}
-        className="modal-lg"
-        onClose={() => setPeopleScopeOpen(false)}
-        title="Find People · who to target"
-        subtitle="Target people by Management Level × Department & Job Function — Apollo's own facets — with live counts for your ticked Step-2 companies · saved per client."
-        footer={
-          <>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={resetPeopleScopeSettings}
-              disabled={savingPplScope}
-              title="Discard manual edits and use the AI-generated person scope"
-            >
-              Reset to AI scope
-            </button>
-            <span style={{ flex: 1 }} />
-            <button className="btn btn-ghost btn-sm" onClick={() => setPeopleScopeOpen(false)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={savePeopleScopeSettings}
-              disabled={savingPplScope}
-            >
-              {savingPplScope ? "Saving…" : "Save filters"}
-            </button>
-          </>
-        }
-      >
-        {peopleScopeForm && (
-          <>
-            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-              <span className="badge badge-neutral">facets · apollo</span>
-              {peopleScopeOverride ? (
-                <span className="badge badge-warn">custom</span>
-              ) : (
-                <span className="badge badge-info">from AI scope</span>
-              )}
-              {pplFacets && (
-                <span className="badge badge-neutral">{pplFacets.total} people in scope</span>
-              )}
-            </div>
-            <p className="ph-sub" style={{ marginTop: 0 }}>
-              Management Level AND Department · OR within each. A strict combo can return few or
-              none, so Find People auto-widens (department-only, then level-only); leave a facet
-              empty to skip it.
-            </p>
-            {pplCoSel.length === 0 && (
-              <p className="ph-sub" style={{ color: "var(--warn)" }}>
-                Tick one or more companies in the Step-2 list to load live counts and the department
-                options.
-              </p>
-            )}
+      <PeopleScopeModal
+        peopleScopeOpen={peopleScopeOpen}
+        setPeopleScopeOpen={setPeopleScopeOpen}
+        resetPeopleScopeSettings={resetPeopleScopeSettings}
+        savingPplScope={savingPplScope}
+        savePeopleScopeSettings={savePeopleScopeSettings}
+        peopleScopeForm={peopleScopeForm}
+        peopleScopeOverride={peopleScopeOverride}
+        pplFacets={pplFacets}
+        pplFacetsLoading={pplFacetsLoading}
+        pplCoSel={pplCoSel}
+        toggleFacet={toggleFacet}
+        masterDepts={masterDepts}
+      />
 
-            <SpecHead>Management Level{pplFacetsLoading ? " · loading…" : ""}</SpecHead>
-            <div className="facet-grid">
-              {SENIORITY_OPTIONS.map((o) => {
-                const count = pplFacets?.seniorities.find((s) => s.value === o.value)?.count;
-                return (
-                  <FacetRow
-                    key={o.value}
-                    label={o.label}
-                    checked={peopleScopeForm.seniorities.includes(o.value)}
-                    count={count}
-                    onToggle={() => toggleFacet("seniorities", o.value)}
-                  />
-                );
-              })}
-            </div>
+      <AddCompanyModal
+        addCoOpen={addCoOpen}
+        setAddCoOpen={setAddCoOpen}
+        submitAddCompany={submitAddCompany}
+        savingCo={savingCo}
+        coForm={coForm}
+        setCoForm={setCoForm}
+      />
 
-            <SpecHead>Departments &amp; Job Function</SpecHead>
-            {pplFacets ? (
-              // Top-level departments only (no subdepartment drill-down) — the master facet plus
-              // its live count is enough to target; any selected non-master value is appended so a
-              // prior sub-selection stays visible and uncheckable.
-              <div className="facet-grid">
-                {[
-                  ...pplFacets.departments.map((d) => ({
-                    value: d.value,
-                    label: d.label,
-                    count: d.count as number | undefined,
-                  })),
-                  ...peopleScopeForm.departments
-                    .filter((v) => !pplFacets.departments.some((d) => d.value === v))
-                    .map((value) => ({ value, label: humanizeFacet(value), count: undefined })),
-                ].map((d) => (
-                  <FacetRow
-                    key={d.value}
-                    label={d.label}
-                    checked={peopleScopeForm.departments.includes(d.value)}
-                    count={d.count}
-                    onToggle={() => toggleFacet("departments", d.value)}
-                  />
-                ))}
-              </div>
-            ) : (
-              <>
-                {/* No live probe yet (no companies ticked): still show the master departments so the
-                    AI-scope selection is visible + editable. Any scope-selected subdepartment not in
-                    the master list is appended so it isn't hidden until the probe loads. */}
-                <div className="facet-grid">
-                  {[
-                    ...masterDepts,
-                    ...peopleScopeForm.departments
-                      .filter((v) => !masterDepts.some((o) => o.value === v))
-                      .map((value) => ({ value, label: humanizeFacet(value) })),
-                  ].map((o) => (
-                    <FacetRow
-                      key={o.value}
-                      label={o.label}
-                      checked={peopleScopeForm.departments.includes(o.value)}
-                      onToggle={() => toggleFacet("departments", o.value)}
-                    />
-                  ))}
-                </div>
-                <p className="ph-sub" style={{ marginTop: 8 }}>
-                  {pplFacetsLoading
-                    ? "Loading live counts…"
-                    : "Tick companies above for live counts and the full subdepartment list."}
-                </p>
-              </>
-            )}
-          </>
-        )}
-      </Modal>
-
-      {/* ADD COMPANY (manual, stage 1) — same schema as an imported row, source=manual */}
-      <Modal
-        open={addCoOpen}
-        onClose={() => setAddCoOpen(false)}
-        title="Add company"
-        subtitle="Add one company by hand · suppression-checked, then fit-scored against your rubric on save."
-        footer={
-          <ConfirmFooter
-            onCancel={() => setAddCoOpen(false)}
-            onConfirm={submitAddCompany}
-            busy={savingCo}
-            confirmDisabled={!coForm.domain.trim()}
-            busyLabel="Scoring…"
-            confirmLabel="Add + score"
-          />
-        }
-      >
-        <ManualBadges />
-        <Field
-          label="Company domain *"
-          placeholder="acme.com"
-          value={coForm.domain}
-          onChange={(v) => setCoForm({ ...coForm, domain: v })}
-        />
-        <Field
-          label="Name"
-          placeholder="Acme Robotics"
-          value={coForm.name}
-          onChange={(v) => setCoForm({ ...coForm, name: v })}
-        />
-        <Field
-          label="Website"
-          placeholder="https://acme.com"
-          value={coForm.website}
-          onChange={(v) => setCoForm({ ...coForm, website: v })}
-        />
-        <div className="sourcing-cols">
-          <Field
-            label="Industry"
-            value={coForm.industry}
-            onChange={(v) => setCoForm({ ...coForm, industry: v })}
-          />
-          <Field
-            label="Size"
-            placeholder="201-500"
-            value={coForm.size}
-            onChange={(v) => setCoForm({ ...coForm, size: v })}
-          />
-        </div>
-        <div className="sourcing-cols">
-          <Field
-            label="Country"
-            value={coForm.country}
-            onChange={(v) => setCoForm({ ...coForm, country: v })}
-          />
-          <Field
-            label="Company LinkedIn"
-            placeholder="linkedin.com/company/…"
-            value={coForm.linkedin_url}
-            onChange={(v) => setCoForm({ ...coForm, linkedin_url: v })}
-          />
-        </div>
-        <div className="ph-sub" style={{ marginTop: 16 }}>
-          Domain required · rest optional · scored on save.
-        </div>
-      </Modal>
-
-      {/* ADD PERSON (manual, stage 2) — same schema as an imported row, source=manual */}
-      <Modal
-        open={addPersonOpen}
-        onClose={() => setAddPersonOpen(false)}
-        title="Add person"
-        subtitle="Add one person by hand · suppression-checked, then fit-scored against your rubric on save."
-        footer={
-          <ConfirmFooter
-            onCancel={() => setAddPersonOpen(false)}
-            onConfirm={submitAddPerson}
-            busy={savingPerson}
-            busyLabel="Scoring…"
-            confirmLabel="Add + score"
-          />
-        }
-      >
-        <ManualBadges />
-        <div className="sourcing-cols">
-          <Field
-            label="Full name"
-            value={personForm.full_name}
-            onChange={(v) => setPersonForm({ ...personForm, full_name: v })}
-          />
-          <Field
-            label="Title"
-            placeholder="VP Engineering"
-            value={personForm.title}
-            onChange={(v) => setPersonForm({ ...personForm, title: v })}
-          />
-        </div>
-        <div className="field">
-          <label>Company</label>
-          <select
-            className="select"
-            value={personForm.domain}
-            onChange={(e) => {
-              const co = step2Companies.find((c) => c.domain === e.target.value);
-              setPersonForm({
-                ...personForm,
-                domain: co?.domain ?? "",
-                company: co?.name ?? "",
-              });
-            }}
-          >
-            <option value="">
-              {step2Companies.length ? "Select a company…" : "No accepted companies yet"}
-            </option>
-            {step2Companies.map((c) => (
-              <option key={c.id} value={c.domain}>
-                {c.name || c.domain}
-                {c.domain ? ` · ${c.domain}` : ""}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Field
-          label="LinkedIn URL"
-          placeholder="linkedin.com/in/…"
-          value={personForm.linkedin_url}
-          onChange={(v) => setPersonForm({ ...personForm, linkedin_url: v })}
-        />
-        <Field
-          label="Email (optional — leave blank to enrich later)"
-          value={personForm.email}
-          onChange={(v) => setPersonForm({ ...personForm, email: v })}
-        />
-        <div className="ph-sub" style={{ marginTop: 16 }}>
-          LinkedIn URL, name + company domain, or email · rest optional · scored on save.
-        </div>
-      </Modal>
+      <AddPersonModal
+        addPersonOpen={addPersonOpen}
+        setAddPersonOpen={setAddPersonOpen}
+        submitAddPerson={submitAddPerson}
+        savingPerson={savingPerson}
+        personForm={personForm}
+        setPersonForm={setPersonForm}
+        step2Companies={step2Companies}
+      />
 
       {findHistoryOpen ? (
         <FindHistoryDrawer
