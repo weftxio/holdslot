@@ -1,4 +1,5 @@
-// Prospect-List modals + shared field atoms (2.4 Stage 1 extraction from list/page.tsx).
+// Prospect-List modals + shared field atoms (2.4 Stage 1) + the data hook (2.4 Stage 2).
+export { useListData } from "./useListData";
 export { Field, ManualBadges, FacetRow } from "./fields";
 export type { ManualCompanyForm, ManualPersonForm } from "./fields";
 export { RubricModal } from "./RubricModal";

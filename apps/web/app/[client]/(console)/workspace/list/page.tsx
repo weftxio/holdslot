@@ -15,8 +15,6 @@ import {
   type FitStage,
   type PeopleFacets,
   type ProspectApi,
-  type ResearchSpecResult,
-  type SourcingDocList,
   addCompany,
   addProspect,
   awaitScoringJob,
@@ -28,14 +26,9 @@ import {
   findLookalikesAsync,
   findPeople,
   getFitPrompt,
-  getPeopleDepartments,
   getPeopleScopeOverride,
-  getResearchSpec,
   getScopeOverride,
   getSourcingDocs,
-  listCompanies,
-  listIcps,
-  listProspects,
   peopleFacets,
   putPeopleScopeOverride,
   putScopeOverride,
@@ -48,7 +41,6 @@ import {
 } from "@/lib/api";
 import type { ScoreLabel, ScoringJobApi, Subscores } from "@/lib/api";
 import type {
-  Icp,
   PeopleScopeForm,
   PeopleScopeOverride,
   ScopeForm,
@@ -65,7 +57,6 @@ import {
   SOURCE_CLS,
   SOURCE_LABEL,
   STATUS_LABEL,
-  apiToIcp,
   businessModelChip,
   clearScoring,
   compareByLabel,
@@ -92,6 +83,7 @@ import {
   PeopleScopeModal,
   RubricModal,
   ScopeSettingsModal,
+  useListData,
   type ManualCompanyForm,
   type ManualPersonForm,
 } from "@/components/workspace/list";
@@ -284,20 +276,28 @@ export default function ListPage() {
   // Batch creation from the enriched selection calls the live API, then refreshes the shared
   // cross-tab batches state so the Sendout Batch + Campaign surfaces pick it up.
   const { reloadBatches } = useWorkspace();
+  // Tracks the live client so an async reload/handler that resolves *after* a client switch can
+  // bail before writing the previous client's data into the new client's view.
+  const clientRef = useRef(client);
+  // The list feed (companies · prospects · docs · icps · spec · master depts) + its two reloads and
+  // the client-keyed hydrate live in useListData (2.4 Stage 2); it also owns the rubric draft (seeded
+  // from the loaded rubric doc) and sets clientRef. Per-client UI resets stay in the effect below.
+  const {
+    icps,
+    spec,
+    prospects,
+    companies,
+    prospectsLoading,
+    companiesLoading,
+    docs,
+    setDocs,
+    rubricDraft,
+    setRubricDraft,
+    masterDepts,
+    reloadProspects,
+    reloadCompanies,
+  } = useListData(client, clientRef);
 
-  // ICPs + research spec — loaded locally on mount: icpNameById/the fIcp filter/ICP labels need
-  // `icps`, and the scope-override `effectiveScope` needs `spec`. Additive to the list load below.
-  const [icps, setIcps] = useState<Icp[]>(() => {
-    const cached = qc.getQueryData<Awaited<ReturnType<typeof listIcps>>>(["icps", client]);
-    return cached ? cached.map(apiToIcp) : [];
-  });
-  const [spec, setSpec] = useState<ResearchSpecResult | null>(() => {
-    const cached = qc.getQueryData<Awaited<ReturnType<typeof getResearchSpec>>>([
-      "research-spec",
-      client,
-    ]);
-    return cached?.latest ?? null;
-  });
   // The multi-ICP axis: dropdown options + id→name lookup for the ICP filter (both stages), the
   // ICP column chips, and the Find Company target. API-loaded ICPs always carry a real id.
   const icpOptions = useMemo(
@@ -308,21 +308,6 @@ export default function ListPage() {
     [icps]
   );
   const icpNameById = useMemo(() => new Map(icpOptions.map((o) => [o.id, o.label])), [icpOptions]);
-  // Prospect list (Phase C — live). Prospects, sourcing docs, and the round-history scoreboard
-  // are loaded from the API; selection is by prospect id. Batch creation stays client-side until
-  // Phase D builds the backend (the select → batch seam is real; the batch object is the mock).
-  const [prospects, setProspects] = useState<ProspectApi[]>(
-    () => qc.getQueryData<{ items: ProspectApi[] }>(["prospects", client])?.items ?? []
-  );
-  const [prospectsLoading, setProspectsLoading] = useState(
-    () => !qc.getQueryData(["prospects", client])
-  );
-  const [companiesLoading, setCompaniesLoading] = useState(
-    () => !qc.getQueryData(["companies", client])
-  );
-  // Tracks the live client so an async reload/handler that resolves *after* a client switch can
-  // bail before writing the previous client's data into the new client's view.
-  const clientRef = useRef(client);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   const [fStatus, setFStatus] = useState(""); // "" all · "found" · "scored" (Enriched)
@@ -330,8 +315,6 @@ export default function ListPage() {
   const [newBatchName, setNewBatchName] = useState("");
   // Fit-rubric settings (the versioned scoring rubric), edited in a modal.
   const [showSourcing, setShowSourcing] = useState(false);
-  const [docs, setDocs] = useState<SourcingDocList | null>(null);
-  const [rubricDraft, setRubricDraft] = useState("");
   const [savingDoc, setSavingDoc] = useState<FitStage | null>(null);
   // Which rubric the Fit-rubric modal is editing — `company_fit` on the Step-1 tab, `prospect_fit`
   // on Step-2 — set when the modal opens so its body/preview/badges all target the same stage.
@@ -345,9 +328,6 @@ export default function ListPage() {
   // Two-stage prospecting (company-first): step 1 finds companies, step 2 finds people at the
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
-  const [companies, setCompanies] = useState<CompanyApi[]>(
-    () => qc.getQueryData<{ items: CompanyApi[] }>(["companies", client])?.items ?? []
-  );
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
   // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
   // set → collapsed, so the list opens with every company collapsed to its one-line summary.
@@ -436,7 +416,6 @@ export default function ListPage() {
   const [peopleScopeOverride, setPeopleScopeOverride] = useState<PeopleScopeOverride | null>(null);
   const [peopleScopeOpen, setPeopleScopeOpen] = useState(false);
   const [peopleScopeForm, setPeopleScopeForm] = useState<PeopleScopeForm | null>(null);
-  const [masterDepts, setMasterDepts] = useState<FacetOption[]>([]); // 14 masters, from the backend
   // Live facet sidebar for the Find-Settings modal (per Management-Level / Department people counts
   // across the selected Step-2 companies). Null until a probe runs; departments come from here too.
   const [pplFacets, setPplFacets] = useState<PeopleFacets | null>(null);
@@ -454,56 +433,14 @@ export default function ListPage() {
   const [personForm, setPersonForm] = useState<ManualPersonForm>({ ...blankPerson });
   const [savingPerson, setSavingPerson] = useState(false);
 
-  async function reloadProspects() {
-    setProspectsLoading(true);
-    try {
-      // Let errors propagate — a failed reload must surface, never silently blank the list
-      // (which reads as "no prospects" and tempts a re-import / re-spend).
-      const { items: ps } = await listProspects(client);
-      if (clientRef.current !== client) return; // client switched mid-flight — drop stale data
-      setProspects(ps);
-      // N11 — do NOT wipe the people selection on every reload (a Reveal & score reload blew away
-      // the operator's ticks). The prune effect drops only now-excluded ids; ghost ids for removed
-      // rows are harmless (selectedProspects filters against the live list). Mirrors reloadCompanies.
-      qc.setQueryData(["prospects", client], { items: ps }); // keep the nav cache fresh
-    } catch (e) {
-      if (clientRef.current === client) {
-        toast(e instanceof Error ? e.message : "Couldn’t refresh prospects", "warn");
-      }
-    } finally {
-      if (clientRef.current === client) setProspectsLoading(false);
-    }
-  }
-
-  async function reloadCompanies() {
-    setCompaniesLoading(true);
-    try {
-      const { items: cs } = await listCompanies(client);
-      if (clientRef.current !== client) return;
-      setCompanies(cs);
-      qc.setQueryData(["companies", client], { items: cs }); // keep the nav cache fresh
-    } catch (e) {
-      if (clientRef.current === client) {
-        toast(e instanceof Error ? e.message : "Couldn’t refresh companies", "warn");
-      }
-    } finally {
-      if (clientRef.current === client) setCompaniesLoading(false);
-    }
-  }
-
-  // Hydrate companies, the prospect list, and sourcing docs for this client. Selection and
-  // filters are reset here — they reference the *previous* client's prospect/ICP ids and would
-  // otherwise leak across a switch (a stale fIcp silently hides the new client's rows; stale
-  // checked ids feed accept/createBatch). Load errors surface as a toast and never blank the
-  // list silently (that reads as "no prospects" and tempts a re-import / re-spend).
-  // ICPs + the latest research spec are also loaded here (additive): the list owns its own copy
-  // since the brief route no longer renders alongside it. The synchronous setState calls below
-  // intentionally reset per-client UI state on a client switch (the App Router can't remount this
-  // page on the [client] param), then kick the cached load — hence the scoped disable.
+  // Reset per-client UI state on a client switch — selection, filters and in-flight flags reference
+  // the PREVIOUS client's ids/state and would leak across a switch (a stale fIcp silently hides the
+  // new client's rows; stale checked ids feed accept/createBatch; a busy flag wedges a button whose
+  // finally is gated on the old client). The App Router can't remount this page on the [client] param,
+  // so we reset here; the feed itself is hydrated by useListData (which also sets clientRef). (2.4)
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!client) return;
-    clientRef.current = client;
     setChecked(new Set());
     setCompanyChecked(new Set());
     // Clear any in-flight "Scoring…" flags from the previous client (the background loop bails on the
@@ -532,64 +469,7 @@ export default function ListPage() {
     setExpandedSubs(new Set());
     setCoStatus("");
     setPeopleScopeOverride(null); // hydrated from the server by the (client, fIcp) effect below
-    let alive = true;
-    // Show the list spinner only when there's nothing cached for this client; a warm tab-return
-    // renders the cached rows immediately (the fetchQuery calls below resolve from cache, no request).
-    setCompaniesLoading(!qc.getQueryData(["companies", client]));
-    setProspectsLoading(!qc.getQueryData(["prospects", client]));
-    // The saved people-scope override is loaded on its own (client, fIcp) track below (per-ICP), so
-    // it's not fetched here.
-    (async () => {
-      try {
-        // fetchQuery serves the cached payload when fresh (instant, no request) and refetches in the
-        // background when stale; the cache lives above the routes, so this is what frees a tab-switch
-        // from a full reload. The lists' free DB reads are safe to background-revalidate (no credits).
-        const [ps, cs, dl, depts, ics, rs] = await Promise.all([
-          qc.fetchQuery({ queryKey: ["prospects", client], queryFn: () => listProspects(client) }),
-          qc.fetchQuery({ queryKey: ["companies", client], queryFn: () => listCompanies(client) }),
-          qc.fetchQuery({
-            queryKey: ["sourcing-docs", client],
-            queryFn: () => getSourcingDocs(client),
-          }),
-          qc
-            .fetchQuery({
-              queryKey: ["people-departments", client],
-              queryFn: () => getPeopleDepartments(client),
-            })
-            .catch(() => [] as FacetOption[]), // non-fatal: subs-only view
-          qc
-            .fetchQuery({ queryKey: ["icps", client], queryFn: () => listIcps(client) })
-            .catch(() => null),
-          qc
-            .fetchQuery({
-              queryKey: ["research-spec", client],
-              queryFn: () => getResearchSpec(client),
-            })
-            .catch(() => null),
-        ]);
-        if (!alive) return;
-        setProspects(ps.items);
-        setCompanies(cs.items);
-        setDocs(dl);
-        setRubricDraft(dl?.company_fit?.body ?? "");
-        setMasterDepts(depts);
-        if (ics) setIcps(ics.map(apiToIcp));
-        if (rs) setSpec(rs.latest);
-      } catch (e) {
-        if (alive) toast(e instanceof Error ? e.message : "Couldn’t load prospects", "warn");
-      } finally {
-        if (alive) {
-          setCompaniesLoading(false);
-          setProspectsLoading(false);
-        }
-      }
-    })();
-    return () => {
-      alive = false;
-    };
-    // qc (QueryClient) and toast (useCallback) are stable, so the effect still only re-runs on a
-    // client change.
-  }, [client, qc, toast]);
+  }, [client]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // R6 — after ANY companies/prospects reload or scoring wave, drop selected ids whose row is now
