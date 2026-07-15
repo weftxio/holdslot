@@ -18,8 +18,8 @@
 > `prospect_approval` ⭐, `approval_link`, `approval_template` — the revenue precondition: a `prospect_approval`
 > row is the billable agreement S7 charges against, written through a tokenized, expiring, **masked** approval
 > link (see [`initial-build-plan.md`](initial-build-plan.md) → Phase D). *(20 tables · head `0027` as of
-> that verification; now **30 tables · head `0032`** (`0032` is the Wave-2 index-only fix, pending
-> apply — no new tables) — see the Phase E/F/G callouts below.)*
+> that verification; now **30 tables · head `0032` applied** (`0032` is the Wave-2 index-only fix,
+> applied to dev Aurora 2026-07-14 — no new tables) — see the Phase E/F/G callouts below.)*
 >
 > **Multi-ICP scoping (2026-07-06 → D+ Stage 4 2026-07-08)** — `research_spec.spec` is now **v6**:
 > `icp_targeting[]` carries one Apollo targeting block per ICP, the intent DATE windows are removed
@@ -41,9 +41,13 @@
 > `meeting` · `feedback_link`, **`0030`**) are **built + SHIPPED to dev (2026-07-12)** — applied to dev
 > Aurora, backend Lambda **v87** (commit `44b761b`); the F execution plan, FD-1…FD-8 defaults, and the
 > per-step **test-case register** live in [`initial-build-plan.md`](initial-build-plan.md) → Phase F.
-> Built head is now **`0032` · 30 tables** (`0031` Phase-G Stripe billing, dormant; `0032` the
+> Built + applied head is now **`0032` · 30 tables** (`0031` Phase-G Stripe billing, dormant; `0032` the
 > Wave-2 index-only fix — outreach_event ORDER BY-aligned index + a `subscription.stripe_customer_id`
-> index, no new tables, **written · pending apply on the next backend deploy**).
+> index, no new tables, **applied to dev Aurora 2026-07-14** with the Phase-0 backend deploy; backend now Lambda v92).
+> **Repo head now `0033` (uncommitted, pending deploy):** `0033_app_user_ui_prefs` adds a single additive
+> column **`app_user.ui_prefs`** — a `JSONB` bag (default `'{}'`) of per-user console UI preferences (first
+> consumer: the sidebar collapse state), account-scoped so the choice follows the user across devices. No
+> new table, no drift to any business table; applied head stays `0032` until the next backend deploy.
 >
 > **`0019` — scope lineage + probe/cursor telemetry (D+ alignment build) — APPLIED to dev 2026-07-08.**
 > `research_run` gains **`filter_body`** JSONB (the exact executed Apollo body; find-people stores
@@ -941,14 +945,14 @@ Built when the 2nd tenant lands. Lets a prospect wanted by N clients be enriched
 | `20260711_0029_sending_account` 🟢(applied) | E | `sending_account` (per-tenant Smartlead sending-inbox pool — moves inbox ids OUT of the `holdslot/prod/smartlead` secret into the DB; an id is a reference not a credential, and the tenant→inbox map is config that grows per client). `bigint smartlead_account_id`, `status` warming/active/paused, unique(`tenant_id`,`smartlead_account_id`). Launch worker reads `active` rows (`active_sending_account_ids`) instead of `sl.sending_account_ids()`. **Seeds tenant #0 (`holdslot`) with `20084486`,`20084475`** (idempotent, tenant-scoped). **Applied to dev Aurora 2026-07-11**; integration green; backend v83. Reversible. |
 | `20260712_0030_phase_f_meeting` 🟢(applied) | F | `booking_link`, `meeting` (outcome/amount/dispute-window + feedback cols; `billable` derived, never stored), `feedback_link` — **applied to dev Aurora 2026-07-12** (3 tables + 7 `meeting` money columns verified via rds-data); `f_smoke_live` green + `test_meetings_db` 2✓ on dev; backend v87. Reversible (drops the 3 tables in FK order). §Phase F above |
 | `20260713_0031_stripe_subscription` 🟢(**applied** — NF-6/GD-10) | G | `subscription` (per-tenant billing state + usage counters, unique `tenant_id`), `billing_event` (append-only Stripe webhook log + dedupe), `meeting.billed_at` (the charge-emitted stamp) — an EXPAND migration (deploy-first-safe; nothing the live product reads is touched). **Applied to dev Aurora 2026-07-12** (2 tables + `meeting.billed_at` verified via the Data API; 0 subscription rows = dormant); backend Lambda v89; the billing code stays inert until the GS0 probe (FR-7). Reversible (drops the 2 tables + the column). §Phase G above |
-| `20260713_0032_outreach_occurred_index` 🟡(**written · pending apply**) | Wave 2 (M22) | INDEX-only, deploy-first-safe: swap `ix_outreach_event_tenant_type_created` → `ix_outreach_event_tenant_type_occurred` (the reply queue / per-lead timeline / booking-preview / summary reads all ORDER BY `occurred_at`, not the ingest `created_at`, so the sort is now index-backed), and add `ix_subscription_stripe_customer_id` (the Stripe webhook resolves by customer id; dormant). No tables, no columns. Applies on the next founder backend deploy alongside the Wave 1+2 backend. Reversible (restores the created_at index, drops the customer-id index). |
+| `20260713_0032_outreach_occurred_index` 🟢(**applied 2026-07-14**) | Wave 2 (M22) | INDEX-only, deploy-first-safe: swap `ix_outreach_event_tenant_type_created` → `ix_outreach_event_tenant_type_occurred` (the reply queue / per-lead timeline / booking-preview / summary reads all ORDER BY `occurred_at`, not the ingest `created_at`, so the sort is now index-backed), and add `ix_subscription_stripe_customer_id` (the Stripe webhook resolves by customer id; dormant). No tables, no columns. **Applied to dev Aurora 2026-07-14** with the Phase-0 backend deploy (Lambda v90; the L/M/modularization hardening then shipped v91→v92). Reversible (restores the created_at index, drops the customer-id index). |
 | *(later)* `phase_c_person_cache` | C | `person`, `enrichment_request` (SCALE) |
 
-**Live Aurora head: `0031`** (dev — 2026-07-12; `0028`/`0029` Phase-E + `0030` Phase-F + `0031` Phase-G Stripe billing, dormant). **Repo head: `0032`** (the Wave-2 index-only fix — **written, not yet applied**; applies on the next backend deploy).
+**Live Aurora head: `0032`** (dev — **applied 2026-07-14**; `0028`/`0029` Phase-E + `0030` Phase-F + `0031` Phase-G Stripe billing dormant + `0032` the Wave-2 outreach ORDER-BY-aligned index, M22). Repo head and applied head are now in sync at `0032`. (Verified this session: `models.py` ↔ migrations ↔ this doc all agree — 30 built tables, no drift.)
 `0024`/`0025` are the expand-phase scoring-v2 pair (additive columns + prompt seed, no backfill),
 `0026` the contraction (drops the v1 `fit_*` columns/indexes), `0027` the index/race-guard foundation,
 `0028` the Phase-E outreach tables, `0029` the per-tenant sending-inbox pool, `0030` the Phase-F
-booking/meeting/feedback tables, `0031` the Phase-G Stripe billing tables (dormant). All migrations `0001`→`0031` applied to dev Aurora; `0032` (Wave-2 index-only) written · pending the next backend deploy. Earlier: `0017`/
+booking/meeting/feedback tables, `0031` the Phase-G Stripe billing tables (dormant), `0032` the Wave-2 outreach index. All migrations `0001`→`0032` applied to dev Aurora (`0032` applied 2026-07-14 with the Phase-0 backend deploy). Earlier: `0017`/
 `0018` are data-only prompt re-seeds; table count verified 2026-07-01 at head `0016`: 20 application
 tables, all 4 Phase-D tables present). W6/W7/W8 (login cold-start
 retry, LLM token trim, warm-container caching) are **code-only — no migration**; the Phase D 2026-06-30→07-01

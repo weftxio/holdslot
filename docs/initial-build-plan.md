@@ -5,53 +5,49 @@
 > own market, so HoldSlot sells itself. Scoped cut of the full spec in
 > [`backend-development-plan.md`](backend-development-plan.md).
 
-> **Status (2026-07-12): A–F SHIPPED to dev (A–D+ dev AND prod; E–F dev) + G-NF Wave 1+2 SHIPPED (Stripe
-> dormant).** Aurora **head `0031` applied** (repo head `0032` — Wave-2 index-only, pending the next
-> backend deploy) · backend Lambda **v89** on the one shared backend
-> (`api.tryholdslot.com`; find-path Stages 1–4 + Scoring v2 + **V2-4 contraction** + classifier→Flash + E/F
-> domains + dormant billing) · web: **dev Amplify at `a978b36`** (autoBuild; incl. the G-NF FE) · **prod at
-> `b36b61d`** (job 20 — the **first public prod-FE release**, 2026-07-11; `tryholdslot.com` rides the
-> shared dev-tier backend until the prod cutover). The Apollo **find → score → select → enrich → batch → masked
-> client-approval** loop is live end-to-end. **Phase D+** (the pre-E hardening block — §below) folds three
-> workstreams into one: **scope alignment** (sourcing width, Stages 1–4), **Scoring v2** (the 0–100 AI Score
-> replaced by 4 labels `contact_now`/`contact_soon`/`low_fit`/`excluded_by_rules` + a liveness gate — this
-> doc now carries the whole spec, the standalone `holdslot-scoring-spec-v2.md` was folded in + deleted; **V2-4
-> retired the v1 `fit_score`/`fit_tier` path entirely** — 5 sync twin endpoints + the v1 fit module deleted,
-> columns dropped in `0026`), and the **Find-flow UX rebuild** (U1–U4 + the merged **Reveal & score** action).
-> **The A→D+ review cycle is CLOSED** — nothing left in the fix backlog; both hardening waves are **DONE +
-> deployed**. The **§D+.5 code-review fix wave** (executed 2026-07-10 across F1–F7; all 31 resolved bar
-> R21/R27-queries/R30-tests) and the **final pre-production review (2026-07-11)** — 56 findings (3 P1 · 19 P2
-> · 34 P3), phases **G1–G7** — are built, committed, and **deployed across two pushes** (dev Lambda **v78** +
-> migration **`0027`** applied + Amplify dev job 52), followed by the **close-out push** (Lambda **v79** ·
-> Step-2 trigger-line unrendered · wheel-only compile · docs consolidation) that shipped **dev + prod**; see
-> **§D+.6** below (both `final-fix-plan.md` and
-> `prod-cutover-checklist.md` were folded in here + deleted). The **Q7 re-score candidate list is empty**
-> (confirmed 2026-07-11 against dev Aurora — 0 geo-excluded rows; the one divergence-prone tenant has 0
-> companies; no data remediation needed). Only the **prod-cutover register** (deferred infra hardening —
-> §After A–G) remains. **Phase E is BUILT + E0-probe CLOSED + SHIPPED (2026-07-12)** — commit `d8aef2b` ·
-> Lambda **v86** · Amplify dev **job 55**; `0028`+`0029` applied; all 5 Smartlead webhook payloads captured
-> live + all 3 contract verdicts confirmed (5 adapter bugs the probe caught, all fixed) + the per-email
-> unsubscribe link enforced; **only the founder S4/S5 acceptance run remains**.
-> **Phase F (book + meeting + feedback) — 🟢 SHIPPED to dev + LIVE-VERIFIED (2026-07-12)** — commit
-> `44b761b` · `0030` applied · Lambda **v87** at F-ship (`cryptography`; **v89 now**, post-G-NF) · Amplify
-> dev auto-builds. Gates all green (re-verified 2026-07-12 post-G-NF): backend `pytest` **358✓/23 skipped** ·
-> `ruff`/`tsc`/`eslint`/`pnpm build` clean · Playwright **26✓** · `f_smoke_live` green + `test_meetings_db` 2✓ on dev · **click-review
-> API-complete + browser 8/8 clean, zero product bugs** (see the §Phase F SHIPPED callout). **Remaining =
-> founder-only: F0 real held-Meet (`--meeting-code`) + availability doc + FA acceptance → tick S6.**
-> §Phase F below is the build plan + the researched execution sections (Google contract · FD
-> defaults · seams · build table · **per-step test-case register** + FA acceptance)
-> (**EF-Q9** places the last three mock console surfaces — performance-summary v1 rides E7, its meeting half +
-> the client-status Booking/Feedback tabs land in F5/F6). The inbox warm-up (running since 2026-06-17) has
-> **elapsed** — E0 confirmed warm-up health in-dashboard. S3 (batch round) is the only untouched A–D gate
-> (S1/S2 folded into review #5 ✅). **MVP-checker review round (2026-07-12, post-G-NF):** full-repo
-> plan-vs-code audit + code review + simplify check → **code verified AHEAD of the docs (zero missing
-> features); 0 P1 · 10 P2 · ~22 P3** in the new **M-register**
-> ([`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md)); gates re-verified same session (pytest
-> 358✓/23 · Playwright **26✓ run fresh** · ruff/tsc/eslint clean · dev pushed); this doc's status
-> blocks + `data-schema.md` + `CLAUDE.md` reconciled to the shipped state.
+> **Status (2026-07-15): the whole A→F product loop + G-NF billing scaffolding is SHIPPED to dev; all
+> post-MVP hardening is DONE + shipped; the only open code gate is one founder live-QA pass, and everything
+> else remaining is founder-external (acceptance runs, Stripe activation, prod cutover).** Verified against
+> the live code this session (API routers, Alembic migrations, frontend routes — see §"As-shipped, verified
+> against code" below).
+>
+> - **Backend** — Lambda **v92** on the one shared backend (`api.tryholdslot.com`), **13 routers · 82 routes
+>   + `/health`**. A–D+ find→score→select→enrich→batch→masked-approval · E outreach/reply-queue · F
+>   book/meeting/feedback · G-NF billing (dormant). Aurora **head `0032` applied** (2026-07-14).
+> - **Web** — dev **Amplify #62** (autoBuild on `dev`, currently `016fc7d`); **prod at `b36b61d`** (job 20 —
+>   first public prod-FE release, 2026-07-11; `tryholdslot.com` rides the shared dev-tier backend until the
+>   prod cutover). `dev == origin/dev`.
+> - **Hardening — ALL shipped to dev:** the **L-register** (1 P2 + 22 P3, backend v91 + Amplify #61) · the
+>   **M-register** (Waves 1–5: 33 fixes/builds + dead-code + 31 simplify items, committed `98c90f2`) · the
+>   **modularization** hard-prereqs 2.1–2.4 (backend v92 + Amplify #62). The **A→D+ and M/L review cycles are
+>   CLOSED** — no open findings; deferred items are the discretionary tail only (2.5–2.7 churn-gated · S8/S28/S30
+>   simplify) and are listed in §"Post-MVP build register" below.
+> - **The single open code gate:** the founder's **live find + Reveal-&-score QA of the 2.4 list-page split on
+>   dev** — the route-mocked Playwright suite can't observe live Apollo find/score, so this is the money-path
+>   pass required before any `main`/prod cutover. Everything else remaining is **founder-external** (see
+>   §"Open gates & pending register").
+> - **This round (uncommitted · undeployed):** a founder-QA console UI pass — Prospect-List whole-row
+>   selection + a collapsible **icon sidebar** (Lucide icons) + an **account-synced** sidebar preference
+>   (`app_user.ui_prefs` · new `PUT /me/prefs` · migration **`0033`**). Working-tree only; `tsc`/`eslint`/`ruff`
+>   clean. Ships behind one **shared-backend deploy** (Aurora `0033` + Lambda v93) then FE. No pre-deploy
+>   regression (the FE degrades to same-browser persistence). Detail in §"This round" below.
+>
+> **Doc consolidation (2026-07-15):** the two standalone review files — `mvp-review-2026-07-12.md` (M-register)
+> and `mvp-review-2026-07-14.md` (the forward build plan + Wave-1–5 audit + L-register + modularization study) —
+> are **folded into this doc** (§"Post-MVP build register" + §"Open gates & pending register") and into
+> `data-schema.md` (the schema/head reconciliation), then **deleted** (the standing review-doc-hygiene rule —
+> git history is the detailed build log once work is committed). This doc + `data-schema.md` are now the two
+> live records.
+>
+> **Phase digest (each phase's ship record is in its own section below):** **A–D+** live on dev + prod FE,
+> review cycle closed. **E (S4/S5 outreach)** SHIPPED (`d8aef2b`, `0028`/`0029`); E0 live-probe CLOSED (5 real
+> webhooks, 3 verdicts confirmed, unsub link enforced). **F (S6 book/meeting/feedback)** SHIPPED + live-verified
+> (`44b761b`, `0030`); click-review 8/8 surfaces clean, zero product bugs. **G-NF (billing scaffolding)** SHIPPED
+> dormant (`0031`, 0 subscription rows). The Apollo find→…→approval loop is live end-to-end; the whole A→F loop
+> runs for any tenant on dev.
 
 **Source-of-truth split (read these for depth; this doc is the plan, not the spec):**
-- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all DB tables, **head `0031` applied** — Phase E `0028` outreach + `0029` `sending_account` · **Phase F `0030` `booking_link`/`meeting`/`feedback_link`** · **Phase G `0031` Stripe `subscription`/`billing_event`, dormant**). Update it first on any schema change.
+- **Schema** — [`data-schema.md`](data-schema.md) governs every table/column (Apollo contract + all 30 DB tables, **head `0032` applied** to dev Aurora 2026-07-14 — Phase E `0028` outreach + `0029` `sending_account` · **Phase F `0030` `booking_link`/`meeting`/`feedback_link`** · **Phase G `0031` Stripe `subscription`/`billing_event`, dormant** · **`0032` outreach ORDER-BY-aligned index (M22)**). Update it first on any schema change.
 - **Full spec** — [`backend-development-plan.md`](backend-development-plan.md): architecture, domain model, stages S0–S7, cost/growth model.
 - **Live API** — `/docs` (Swagger) on `api.tryholdslot.com` is the authoritative endpoint inventory.
 
@@ -82,8 +78,9 @@
 | **E** | S4/S5 Outreach | 🟢 **built + SHIPPED (2026-07-12)** — commit `d8aef2b` · Lambda **v86** · Amplify dev job 55; `0028`+`0029` applied; E0 probe CLOSED (5 payloads real, 3 verdicts confirmed, unsub link enforced) · only the founder **acceptance run** remains | Approved batch → Smartlead campaign, A/B/C, webhook funnel, cross-campaign Reply Queue, reply-to-thread | D+ ✅ · warm domains (ramp elapsed — E0 confirms health) · Smartlead | Live sending; replies triaged in one queue |
 | **F** | S6 Book+Meeting | 🟢 **built + SHIPPED to dev (2026-07-12)** — commit `44b761b` · Lambda **v87** (`cryptography`) · `0030` applied; `f_smoke_live` green + `test_meetings_db` 2✓ + Playwright 26✓ + click-review browser 8/8 clean (zero product bugs) · only founder **F0 real-Meet + FA acceptance** remain | Booking link → Calendar/Meet event + invites; held+duration; qualify rule; feedback loop | E · Google | Prospect self-books; held/duration recorded; auto-qualify; ledger row lands |
 | **G** | Run & close | ⬜ **human** — but **G-NF Wave 1+2 code SHIPPED (2026-07-12)**: decide UI · won door · llm-usage · TanStack · **Stripe GS1–GS6 dormant** (`0031` applied, 0 subscription rows) · NF-7 Terraform prep on `cutover-prep` (never applied) | Meeting → pitch live product → close → onboard signup (= new tenant, reuse A) | F | **6 signups over H1** |
+| **H** | Post-MVP hardening | ✅ **ALL shipped to dev (2026-07-14/15)** — **L-register** (1 P2 + 22 P3, v91 + Amplify #61) · **M-register** (Waves 1–5: 33 fixes/builds + dead-code + 31 simplify, `98c90f2`) · **modularization** 2.1–2.4 (v92 + Amplify #62; head `0032` applied) | Two full independent code-review cycles resolved to zero open findings + the four hard-prereq splits | E · F · G-NF | Review cycles CLOSED · one founder live-QA gate left (2.4) |
 
-**Critical path:** A → B → C → D → **D+ (sourcing + scoring + UX)** → E → F → G.
+**Critical path:** A → B → C → D → **D+ (sourcing + scoring + UX)** → E → F → G. **Post-MVP hardening (H, off the critical path)** ran in parallel and is fully shipped to dev — see §"Post-MVP build register" below.
 **Parallel since day 0:** domain warm-up (started 2026-06-17, the schedule driver) · keys (done 2026-06-10) · ICP + cold-email copy.
 **Simplification principle:** one env (`dev`) to start (Terraform is workspace-parameterised → prod is a new workspace, not a rewrite); one modular FastAPI service; manual one-command deploy; JWT auth. Never shortcut: `tenant_id` on every row + one central access guard.
 
@@ -93,12 +90,80 @@
 
 | Thing | State |
 |---|---|
-| Backend | Lambda **v89** alias `live` (2026-07-12), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·meetings-public·billing·stripe-webhooks`) |
-| Database | Aurora Serverless v2 + Data API · **head `0031` applied** (30 tables; `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe, dormant) · repo head `0032` (Wave-2 index-only, pending deploy) |
-| Web | Amplify autoBuild on push: **dev at `a978b36`** (Phase E/F tabs + G-NF FE live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Backend | Lambda **v92** alias `live` (2026-07-15), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **82 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·booking(public)·billing·stripe-webhooks`). Verified against `apps/api/app/main.py` this session |
+| Database | Aurora Serverless v2 + Data API · **head `0032` applied** (2026-07-14; 30 tables — `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe dormant · `0032` outreach ORDER-BY-aligned index, M22). `models.py` ↔ migrations ↔ `data-schema.md` verified in agreement (no drift) |
+| Web | Amplify autoBuild on push: **dev #62 at `016fc7d`** (Phase E/F tabs + G-NF FE + the L/M/modularization hardening, all live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
+| **Pending (this round · uncommitted)** | Console UI polish + collapsible sidebar + **account-synced sidebar pref**: DB migration **`0033`** (`app_user.ui_prefs`), API **`PUT /me/prefs`** (→ **83 routes**), FE cache-first prefs. **Undeployed** — needs Aurora `0033` + Lambda **v93** + FE ship. See §"This round" below |
+
+---
+
+## This round (2026-07-15, uncommitted · undeployed) — console UI + account-synced sidebar pref
+
+> A founder-QA console UI pass plus one small backend feature. **Working-tree only** — nothing committed,
+> pushed, or deployed; a `tsc` / `eslint` / `ruff` pass is clean and the FE degrades with no regression on the
+> current (pre-deploy) Lambda. The go/no-go deploy report is separate; this is the change record.
+
+- **Prospect-List interaction polish (FE-only)** — Step-1 / Step-2 rows are now **whole-row click-to-select**
+  (per-row checkboxes removed); Step-1 columns reordered (**Industry before Domain**, business-model chip on
+  top); Step-2 **LinkedIn folded into the Prospect cell** and its column dropped; the **"Add a low-fit row?"
+  confirm modal removed** (low-fit adds freely); the Step-2 **company cell unifies expand ⟺ select**. Data
+  content-identical. Files: `list/page.tsx` · `components/workspace/list/{Step1Companies,Step2People,helpers}.tsx`
+  · `workspace.css`.
+- **Collapsible sidebar (FE-only)** — the console rail collapses to a **72px icon-only rail** and back, toggled
+  from the sidebar top (persisted). Restored the design's per-item nav icons as real **Lucide** SVGs
+  (briefcase · bar-chart · clipboard-check · calendar-check · message-square-text) so the collapsed rail reads
+  at a glance; fixed a dropdown **stacking bug** (the collapsed rail now paints above content). Files:
+  `Sidebar.tsx` · `NavIcons.tsx` (new) · `console-shell.css`.
+- **Account-synced sidebar preference (FE + API + DB)** — the collapse choice persists **per user, across
+  devices**:
+  - **DB** — `app_user.ui_prefs` **JSONB** bag (migration **`0033_app_user_ui_prefs`**; additive, reversible,
+    deploy-first-safe with a `'{}'` server default). *Repo head is now `0033`* — the two deferred register
+    items that had reserved "0033" (the column-drop cleanup and the enrich-once cache) **renumber to `0034`+**.
+  - **API** — `/me` now returns `ui_prefs`; new **`PUT /me/prefs`** partial-merges it (route count **82 → 83**).
+    Schemas `UiPrefs`/`UiPrefsIn`; verified present in the app's OpenAPI schema.
+  - **FE** — **cache-first** resolution: localStorage applies instantly on load (no flash, offline-safe), the
+    `/me` account value reconciles as source of truth; toggling writes the cache + a **best-effort** `PUT`.
+    `ConsoleShell` split into an inner `ConsoleBody` so it can read `me`. Degrades on the current Lambda
+    (no `ui_prefs` → falls back to same-browser persistence — **no regression**). Files: `ConsoleShell.tsx` ·
+    `lib/api/core.ts`.
+- **Two smaller working-tree changes (FE-only)** — Approval-Batches dropped the leading `⊘`/`B#` row icons
+  (`batches/page.tsx`); Client-Brief `briefFromDoc` now coerces stored-doc scalar fields back to strings so a
+  numeric persisted value can't break the form (`brief/page.tsx`, defensive).
+
+**To go live** (backend-before-frontend, one shared backend): confirm the applied head (`alembic current`),
+apply migrations to the shared Aurora (**`0032` if still pending + `0033`**), deploy the Lambda (→ **v93**),
+then ship FE (dev push → Amplify; **prod = merge `dev`→`main`** → Amplify `main`). The FE prod site rides the
+same shared backend, so there is **no separate prod API/DB deploy** — that is the still-deferred prod cutover.
+
+---
+
+## As-shipped, verified against code (2026-07-15)
+
+> Each phase's shipped capability, cross-checked this session against the **live code** on three surfaces —
+> **API** (`apps/api/app/main.py` routers + route decorators), **DB** (`infra/alembic/versions/` +
+> `models.py`), and **FE** (`apps/web/app` routes + `components`). This is the "what exactly shipped" record;
+> the deep per-phase build detail is in each phase's section below. **No drift found** between the docs and
+> the code beyond the figures corrected here.
+
+| Ph | Shipped capability (business terms) | API (verified) | DB (verified) | FE (verified) |
+|---|---|---|---|---|
+| **A** | Founders log in; the console runs on live data; the schema already admits a 2nd tenant/role | `auth` (login/refresh/forgot/reset) · `clients` (`/me`, `POST /clients`, `/{client}/context`) | `tenant·app_user·membership·refresh_token·password_reset` (`0001`/`0002`) | `/login` · `/privacy` · `/terms` · console shell (`(console)/layout.tsx`) |
+| **B** | Brief → AI ResearchSpec (per-ICP, async); ICP profiles | `briefs` (7 routes incl. async `POST /brief/structure` + status/preview) · `icps` (CRUD) | `brief·icp·llm_call·research_spec·research_job` (`0003`–`0010`) | `workspace/brief` (1453 LOC) |
+| **C/D+** | Apollo find → **4-label score** → select → **Reveal&score enrich** (the only credit spend) → batch; per-ICP scope overrides | `prospects` (**22 routes** — `find-company-async`, `people/find-people`, **`enrich-score-async`** = Reveal&score, 6 job kinds + poll, `scope-override` people\|company, `research-runs`) | `company·prospect·research_run·prompt·scope_override·scoring_job` (`0007`–`0027`; v2 labels in `0024`, v1 dropped `0026`) | `workspace/list` (**1630 LOC**, split into `components/workspace/list/` — Step1Companies/Step2People/useListData/5 modals) |
+| **D** | Batch → masked tokenized approval link → record decision (the billable evidence chain) | `batches` (8 routes incl. `/{id}/decide` owner, `/{id}/send`, `DELETE` cascade) · `approvals` (public token: masked `GET`, `POST …/decide`) | `batch·prospect_approval·approval_link·approval_template` (`0016`) | `workspace/batches` (640) · `(external)/approve/[token]` (223) · `client-status/approval` (330) |
+| **E** | Approved batch → live Smartlead campaign (A/B/C) → webhook funnel → cross-campaign reply queue; performance-summary v1 | `campaigns` (14 routes incl. launch/variants/winner/pause/resume/sync, `/replies` + triage/respond, `/performance-summary`) · `smartlead-webhooks` (`POST /webhooks/smartlead/{token}`) | `campaign·message_variant·campaign_lead·outreach_event` (`0028`) · `sending_account` (`0029`) · index (`0032`) | `workspace/campaign` · `workspace/replies` (233) · `performance-summary` (286) |
+| **F** | Prospect self-books → Calendar/Meet event + invites → held/duration ingest → auto-qualify $500 → ledger + recaps + feedback loop | `meetings` (8 routes: refresh, `/{id}/outcome`, `/{id}/won`, `/meetings`, `/bookings`, feedback list/send, inform-client) · `booking` public (`GET/POST /book/{token}`, `GET/POST /feedback/{token}`) | `booking_link·meeting·feedback_link` (`0030`; `meeting.billed_at` in `0031`) | `(external)/book/[token]` (244) · `(external)/feedback/[token]` (190) · `workspace/summaries` (280) · `workspace/billing` (256) · `client-status/booking` (188) · `client-status/feedback` (204) |
+| **G-NF** | Stripe billing scaffolding, **dormant** (activation + subscription + $500 metered + overage); decide UI · won door · llm-usage rollup | `billing` (status/subscription/activation-invoice, +Owner) · `stripe-webhooks` (`POST /webhooks/stripe/{token}`, 404s w/o secret) · `clients` `/{client}/llm-usage` (+Owner) | `subscription·billing_event` (`0031`, **0 rows = dormant**) · `meeting.billed_at` | `workspace/billing` dormant-safe Stripe status line (null → renders nothing) |
+
+**Figures corrected against code this session** (doc had drifted): backend = **82 routes + `/health`** (not 83)
+· `prospects/router.py` is a **1034-LOC aggregator** with the 6 business modules extracted alongside
+(`scope`/`serializers`/`label_engine`/`company_find`/`people_find`/`jobs`) — the earlier "108-line aggregator"
+figure was aspirational, not as-built · Aurora head **`0032` applied** (2026-07-14), not "`0031` applied · `0032`
+pending" · the two dead FE fixture files (`lib/workspace/fixtures.ts` · `lib/fixtures/client-status.ts`) are
+now **fully deleted** (Wave-4 M-D), so `CLAUDE.md`'s "delete on next cleanup pass" note is stale.
 
 ---
 
@@ -510,9 +575,9 @@ isolated prod backend remains the deferred cutover (§After A–G register).
 final pre-production review (N1–N56) are all resolved, deployed, and verified, with exactly three standing
 carve-outs (R21 · R27-dups · R30's two Aurora-gated tests — above). No open findings remain against A–D+
 code. Anything discovered from here belongs to a **new** register opened by the phase that finds it.
-*That register now exists:* the **M-register** ([`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md),
-post-G-NF full-repo review) — 0 P1 · 10 P2 · ~22 P3 + dead-code/simplify registers, almost all in
-E/F/G-NF-era code; the A–D+ closure stands.
+*That register existed:* the **M-register** (post-G-NF full-repo review — 0 P1 · 10 P2 · ~22 P3 +
+dead-code/simplify registers, almost all in E/F/G-NF-era code; the A–D+ closure stands). It was built +
+shipped in Waves 1–5 and is now consolidated in **§"Post-MVP build register"** below.
 
 ---
 
@@ -1509,19 +1574,92 @@ until the FR-7 probe**.
 
 ---
 
-## Open gates & pending register
+## Post-MVP build register — L · M · modularization hardening (consolidated 2026-07-15)
 
-| Item | Ticks | Status |
+> Folds in the two now-deleted review files: **`mvp-review-2026-07-12.md`** (the M-register) and
+> **`mvp-review-2026-07-14.md`** (the forward build plan + the Wave-1–5 verification audit + the L-register +
+> the modularization study). All three hardening streams below are **BUILT + GATED + SHIPPED to dev**; both
+> review cycles are **CLOSED** (zero open findings). Git history is the detailed per-commit log; this is the
+> outcome register.
+
+**Three streams, all shipped:**
+
+| Stream | Scope | Result | Ship |
+|---|---|---|---|
+| **L-register** | 1 P2 + 22 P3 fresh-eyes findings from the Wave-1–5 audit (regressions + issues outside the M-register): the booking-page revenue regression (L1), the pre-Stripe billing durability + metered-price + `billable_this_cycle` fixes (L2/L3/L10), DNC compliance (L6/L7), a 9-item FE sweep + a11y, and dead residue (L-D) | ALL resolved | backend **v91** + Amplify **#61** |
+| **M-register (Waves 1–5)** | 33 fixes/builds (0 P1 · 10 P2 · 23 P3 incl. the M33 dispute-correction UI + M8 A/B scoreboard) + M-D dead-code + 31 simplify items (~500 LOC), concentrated in the newest E/F/G-NF code (campaigns/meetings/billing + FE) | ALL built + gated; 13 of 16 CAREFUL-simplify shipped (S8/S28/S30 deferred) | committed `98c90f2` (Phase 0) |
+| **Modularization (hard-prereqs)** | 2.1 `lib/api.ts` → `lib/api/` package (core + 7 modules) + barrel · 2.2 `prospects/router.py` (3051→**1034 aggregator**) + 6 business modules · 2.3 `campaigns/stage_moves.py` extracted (un-lazies 3 imports) · 2.4 `list/page.tsx` **3020→1630** into `components/workspace/list/` | ALL done, deploy-neutral | backend **v92** + Amplify **#62** |
+
+**Locked decisions carried forward (D1–D10 from the forward-plan session):** backend-before-frontend deploy ·
+targeted L-fixes before modularization · founder-acceptance and code work run in parallel · modularization
+scope = hard-prereqs 2.1–2.4 only (2.5–2.7 churn-gated) · Stripe stays dormant, L2/L3/L10 fixed so activation
+is a probe-and-deploy day · **timezone default = `Asia/Hong_Kong` for ALL config (TZ-1)** · consolidate the
+review docs into this one (done here) · **D10 — the S4/S5 + F0 real-sitting sign-off is CONDITIONAL**
+(founder-accepted on existing live evidence — E0 probe closed + click-review zero-bugs — so **S6 is
+"conditionally met" and Phase 4 is OPEN**; convert to full anytime via one 30-min sitting: 1 campaign to own
+inboxes + 1 ≥10-min Meet + `f_smoke_live.py --meeting-code`).
+
+**The discretionary tail — deferred, none gate-blocking:**
+
+| Item | Why deferred | Trigger to pick up |
 |---|---|---|
-| Founder Brief→Scope round (dev) | S1 | ✅ folded into D+ review #5 (signed off 2026-07-10) |
-| Founder live Apollo round (find→enrich→batch; reads real `cost_usd`) | S2 | ✅ folded into D+ review #5 (signed off 2026-07-10; Apollo credit-dashboard glance rides the next enrich round) |
-| Founder live batch round (create→send masked link→approve) | S3 | ⏳ operational — infra live; E7 has shipped, so this now gates the **E acceptance campaign** (EF-Q2 — that campaign consumes this approved batch; = G0-2) |
-| **D+ (sourcing + scoring + UX)** — §D+ above; shipped end-to-end (review #5 ✅ · V2-4 ✅); **§D+.5 fix wave (F1–F7) ✅** + **final fix wave G1–G7 (56 findings) ✅** (two pushes → Lambda v78 + migration `0027`), then the **close-out push shipped dev + PROD** (Lambda **v79** · Amplify dev 53 / prod 20; §D+.6); Q7 re-score list confirmed empty; **review cycle CLOSED** | pre-E | ✅ shipped (dev + prod) · ✅ review closed |
-| Warmed inboxes ready | E0 | ramp **elapsed** (started 06-17, ~3 weeks) — E0 confirms reputation/health in the Smartlead dashboard, not the calendar |
-| **A follow-ups (non-blocking):** custom MAIL FROM ✅ (D0) · prod isolation deferred (Amplify `main`→dev until cutover) · manual deploy (CI/CD later) · Aurora scale-to-zero vs 30s timeout (prod sets min ACU ≥0.5) · S3 state bucket public-access-block (prod) · refresh-token rotation now re-checks `UserStatus` + is single-use guarded (N9/N33 ✅) | — | tracked |
-| **Deferred ICP inputs (search-side; already used for *scoring*):** `technologies`→Apollo tech-UIDs (**resolver BUILT in D+ Stage 4** — `tech_vocab` → `currently_using_any_of_technology_uids`) · `revenue_range` (no ICP form field) · funding-stage key **confirmed absent from the documented API** (2026-07-08) | — | post-MVP / D+ |
-| **Backlog:** ~~step-3 console decide UI~~ ✅ **built (NF-1)** · ~~move `reloadBatches` onto the TanStack-Query cache~~ ✅ **built (NF-2)** · `person` enrich-once cache (lands with tenant #2, NF-10/GX1) | — | NF-1/NF-2 done · cache deferred |
-| **M-register (MVP-checker review, 2026-07-12)** — the new post-G-NF findings register per the §D+.6 closure rule: **0 P1 · 10 P2 (M1–M10, all re-verified) · ~22 P3 · dead-code inventory · ~500-LOC simplify register (S1–S31)**, concentrated in E/F/G-NF-era code; none gate-blocking. Full register + suggested execution order → [`mvp-review-2026-07-12.md`](mvp-review-2026-07-12.md). Same session: doc reconciliation applied (this doc's status blocks + API-surface table · `data-schema.md` head line · `CLAUDE.md` rewritten) + gates re-verified (pytest 358✓/23 · Playwright **26✓ run fresh** · ruff/tsc/eslint clean · dev pushed) | — | ⏳ open — the only build backlog |
+| **Modularization 2.5** (`CampaignTab` file-motion split) | churn-gated; mandatory only before the carryover S8 | when `CampaignTab` next changes |
+| **Modularization 2.6/2.7** (`spec.tsx`/`brief/page.tsx`/`constants.ts` · `meetings/sweep.py`) | churn-gated code-motion, deploy-neutral | when those files next change |
+| **Simplify S8** (`CampaignTab` detail → `useQuery`) · **S28** (share query keys) | behavior-altering (refetch/loading semantics); route-mocked Playwright can't validate; M9 already fixed S28's correctness | a focused follow-up PR with manual QA of the affected flow |
+| **Simplify S30** (`list/page.tsx` formal split) | **superseded** — the 2.4 staged split already delivered the reviewability win (3020→1630) | retired |
+| **Column-drop migration `0034`** (`Meeting.summary` · `Subscription.icp_limit`/`plan_icp_limit`) | each needs a migration + touches a dormant seam; would break deploy-neutrality | cut only when the dormant LLM-recap / billing seams are themselves cut · *(renumbered from `0033` — now taken by `app_user.ui_prefs`)* |
+
+---
+
+## Open gates & pending register — the forward plan (2026-07-15)
+
+> **The single pending-tasks register** for everything remaining across A→G, each with the **owner**, the
+> **business action**, and its **phase / gate linkage**. The **code track is essentially complete** (one live-QA
+> gate left); the bulk of what's open is **founder-external** (acceptance runs, Stripe activation, prod cutover,
+> scale). Founder-level "how to resolve" detail is in **§G-FR (FR-1…FR-12)**; the triggered-build detail is in
+> **§G-NF (NF-8…NF-13)** + **§GS/GP/GX** above.
+
+### Track 1 — code (claude_code, founder-authorized): **1 open gate**
+
+| # | Task | Business meaning | Linkage | Status |
+|---|---|---|---|---|
+| **C-1** | Founder live **find + Reveal-&-score QA** of the 2.4 list-page split on dev | The list page was refactored 3020→1630 LOC; the route-mocked test suite can't exercise a real Apollo find or the paid Reveal-&-score, so a human must confirm the money path still works before it reaches prod | Modularization 2.4 → **gates the `main`/prod cutover** | ⏳ **the only open code gate** |
+
+### Track 2 — founder acceptance → Definition-of-Done (Phase 3, live dev, no code dependency)
+
+| # | FR | Business action | Ticks | Status |
+|---|---|---|---|---|
+| **P3-1** | FR-1 | One live **batch round**: select approved-fit prospects → create batch → Send masked link (to own inbox) → approve | S3 · G0-2 · feeds the FR-2 campaign | ⏳ **ready to run** (8 approved-fit prospects free on dev) |
+| **P3-2** | FR-2 | **S4/S5 acceptance**: campaign off the FR-1 batch → A/B/C → launch → triage ≥1 reply | S4/S5 · G0-1 | ✅ **conditional sign-off (D10)** on the E0 evidence (5 real webhooks, 3 verdicts). Convert→full via 1 real campaign |
+| **P3-3** | FR-3 | **F0 real held-Meet** ≥10 min / 2p → `f_smoke_live.py --meeting-code` | F0 · G0-3 | ✅ **conditional sign-off (D10)** on click-review (real Meet→$500→Billed, zero bugs). Convert→full via 1 ≥10-min Meet |
+| **P3-4** | FR-4 | **Availability doc** (FD-1 JSON windows) + FD-1…8 confirm | G0-4 | ✅ **DONE 2026-07-15** (HK windows applied; `available_slots` proved 104 slots / 5 days) |
+| **P3-5** | FR-5 | **FA whole-phase acceptance** (FA-1…12 scripted sitting) | **ticks S6 → G formally starts** | ◐ **partial sitting runnable now**; S6 "conditionally met" per D10 |
+
+### Track 3 — go-live (Phase 4, founder-external; the revenue engine). Code is **built + dormant on dev**
+
+| # | FR / NF | Business action | Linkage | Status |
+|---|---|---|---|---|
+| **P4-1** | FR-6 | Annotate **GD-1…GD-10** decisions (~5 min/row, defaults pre-written) | locks GS/GP/GX shape | ⏳ founder |
+| **P4-2** | FR-7 → NF-8 | Create the **Stripe account** (HK · USD) + config → run the GS0 probe → activation | billing goes live; **L2/L3/L10 already fixed** → a probe-and-deploy day, not a build week | ⏳ founder (code pre-built dormant) |
+| **P4-3** | FR-8 | **GSA first real billing round** (activation invoice → $500 line lands on the month's invoice) | GS DoD — billing real | ⛔ blocked on FR-7 |
+| **P4-4** | FR-9 | **GOB per-signup ops** (×6 over H1): domain warm-up (~2–3 wk) → `sending_account` INSERT → launch | the DoD engine — every signup's revenue path | ⏳ per close |
+| **P4-5** | FR-10 | **GOPS ongoing cadence** (reply queue daily · disputes inside 48h · mark `won` · weekly/monthly KPI) | DoD visibility | ⏳ ongoing |
+| **P4-6** | FR-11 → NF-9 | **Prod cutover** go: file the SES prod-access case · mint fresh prod JWT keys · `terraform apply` the `cutover-prep` branch → GP3–GP9 runbook | prod isolation | ⏳ at DoD (NF-7 prepped on `cutover-prep`, never applied) |
+
+### Track 4 — scale (Phase 5, trigger = 2nd paying tenant + volume). **Not yet built** (least-code-wins)
+
+| # | Item | Business action | Trigger |
+|---|---|---|---|
+| **P5-1** | GX1/GX2 → NF-10 | **Enrich-once cache** (`person` + `enrichment_request`, migration `0034`+) so a returning contact enriches at **$0** | 2nd tenant |
+| **P5-2** | GX3 | Per-tenant **enrichment caps** + prove per-tenant masking with a 2-tenant read test | GS live + GX1 |
+| **P5-3** | GX4 / FR-12 | **Capacity**: 2nd sending domain · Smartlead tier · pooled host-seat count · Aurora min-ACU | volume climbs |
+| **P5-4** | Growth instrumentation | Hand-instrument the §11 metrics GOPS can't read yet (dispute rate · show-up · time-to-value · AI cost/meeting) | ongoing from 1st signup |
+
+### Standing non-blocking (tracked, not gating)
+
+- **A follow-ups** — prod isolation · CI/CD · Aurora min-ACU ≥0.5 · S3 PAB — all fold into the **GP cutover** (§After A–G).
+- **Deferred search-side ICP inputs** — `revenue_range` has no ICP form field; the funding-stage key is **confirmed absent from Apollo's documented API** (2026-07-08). (`technologies` resolver already built — D+ Stage 4.)
+- **The discretionary hardening tail** — modularization 2.5–2.7 · simplify S8/S28 · migration `0034`+ (§"Post-MVP build register" above).
 
 ---
 
