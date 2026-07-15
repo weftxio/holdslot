@@ -22,6 +22,7 @@
 | D7 | `billable_this_cycle` (L10) | **Fix the `billed_at IS NULL` filter now**, bundled with the L2/L3 pre-Stripe block, so the console figure is correct the day billing activates. |
 | D8 | Review-doc hygiene | **OVERRIDE → consolidate both review files into one** (this doc). `mvp-review-2026-07-12.md` deleted; its build-log content preserved verbatim in **Part C**. |
 | D9 | FR-6 GD register | **Prerequisite decision session** before FR-7 — annotate GD-1…GD-10 (defaults pre-written, ~5 min/row). Not a build step. |
+| D10 | S4/S5 + F0 real-sitting sign-off (2026-07-15) | **Conditional sign-off (founder-accepted, Option A).** Skip the fresh **FR-2** (real Smartlead emails) + **FR-3** (real held-Meet) sittings; accept the existing live evidence — **E0 probe CLOSED** (5 real webhooks captured, 3 verdicts CONFIRMED) + **click-review ZERO product bugs** (real Meet → qualify $500 → Billed → feedback; `test_meetings_db` 2✓ on dev Aurora) — as the **G0-1 (S4/S5)** and **G0-3 (F0)** sign-off. **S6 = "conditionally met"; Phase 4 OPEN.** Convert conditional→full anytime via one 30-min sitting (1 campaign to own inboxes + 1 ≥10-min Meet + `f_smoke_live.py --meeting-code`). Residual is acceptance-paperwork risk, not code risk — both paths already fired for real on dev. |
 
 ## A1 · Phase plan (execution order)
 
@@ -97,25 +98,60 @@ pushed → **Amplify build #61 SUCCEED**. Gate was green at each commit.
 
 ### Phase 3 · Founder acceptance → DoD start (parallel track; live dev, founder-gated)
 
-| # | FR | Action | Ticks / feeds |
-|---|---|---|---|
-| 3.1 | **FR-1** | S3 live batch round (create → send masked link → approve) | G0-2 · feeds FR-2 |
-| 3.2 | **FR-2** | S4/S5 acceptance run (campaign off FR-1 batch → A/B/C → launch → triage ≥1 reply) | G0-1 |
-| 3.3 | **FR-3** | F0 real held-Meet ≥10 min / 2p → `f_smoke_live.py --meeting-code` | G0-3 |
-| 3.4 | **FR-4** | Availability doc (FD-1 JSON) + FD-1…8 sign-off | G0-4 · TZ default already HK via TZ-1 (D6) |
-| 3.5 | **FR-5** | FA whole-phase acceptance (FA-1…12 scripted sitting) | **ticks S6 → G formally starts** |
+| # | FR | Action | Ticks / feeds | Status (2026-07-15) |
+|---|---|---|---|---|
+| 3.1 | **FR-1** | S3 live batch round (create → send masked link → approve) | G0-2 · feeds FR-2 | ⏳ **ready — founder runs live (no real emails — masked link to own inbox).** 8 approved-fit prospects free (4 contact_now + 4 contact_soon, none batched). Baseline = 1 pre-existing batch + 1 `prospect_approval` |
+| 3.2 | **FR-2** | S4/S5 acceptance run (campaign off FR-1 batch → A/B/C → launch → triage ≥1 reply) | G0-1 | ✅ **CONDITIONAL sign-off (D10).** Fresh run skipped; **G0-1/S4/S5 accepted on E0 evidence** — 5 real Smartlead webhooks, 3 verdicts CONFIRMED. Convert→full anytime via 1 campaign to own inboxes |
+| 3.3 | **FR-3** | F0 real held-Meet ≥10 min / 2p → `f_smoke_live.py --meeting-code` | G0-3 | ✅ **CONDITIONAL sign-off (D10).** Fresh run skipped; **G0-3/F0 accepted on click-review evidence** — real Meet→$500→Billed, zero bugs, `test_meetings_db` 2✓ dev Aurora (only auto-sweep ②③ unexercised). Convert→full via 1 ≥10-min Meet + `--meeting-code` |
+| 3.4 | **FR-4** | Availability doc (FD-1 JSON) + FD-1…8 sign-off | G0-4 · TZ default already HK via TZ-1 (D6) | ✅ **DONE 2026-07-15.** Widened windows (all 7 days 09:00–21:00 `Asia/Hong_Kong`, 30-min) applied to the live Brief `data.availability`; readback confirmed FD-1 shape; `available_slots` proved **104 slots / 5 days**. FD-2…FD-8 = confirm-as-shipped, awaiting founder nod |
+| 3.5 | **FR-5** | FA whole-phase acceptance (FA-1…12 scripted sitting) | **ticks S6 → G formally starts** | ◐ **partial sitting runnable now** (book via token · owner `/outcome` $500 · Billed + no-show SQL nudges · feedback · single-use proofs). **S6 = "conditionally met" per D10**; full FA-1…12 needs the two real sittings only if converting conditional→full |
 
-### Phase 4 · Go-live register — billing → cutover → scale (triggered, founder-gated)
+> **Phase 3 execution state (2026-07-15, D10 conditional sign-off):** **G0-1 (S4/S5) + G0-3 (F0)
+> conditionally signed off** on existing live evidence (E0 CLOSED · click-review zero-bugs) → **S6
+> "conditionally met," Phase 4 OPEN.** **Still runnable now (no real emails / no real Meet):** **FR-1**
+> (S3/G0-2 — masked link to own inbox → approve) · **2.4 live find+reveal-score QA** (code cutover
+> gate, before main/prod) · **partial FA** (book via public token · `/outcome` $500 · Billed + no-show
+> SQL nudges · feedback · single-use) · **FR-6** (GD-1…10 — shapes Phase 4/Stripe). Founder runs the
+> click-throughs; claude_code drives the SQL nudges + verifies each gate vs dev Aurora. No autonomous
+> external sends.
+
+### Phase 4 · Go-live register — billing → cutover (triggered, founder-gated)
 
 | # | FR / NF | Action | Prereq / unblocks |
 |---|---|---|---|
 | 4.1 | **FR-6** | Annotate GD-1…GD-10 decisions (D9) | locks GS/GP/GX shape |
-| 4.2 | **FR-7 → NF-8** | GS0 Stripe account + config → probe green → apply `0031` → GS deploy | **needs L2/L3/L10 shipped**; billing goes live |
+| 4.2 | **FR-7 → NF-8** | GS0 Stripe account + config → probe green → GS activation (code already dormant on dev) | **L2/L3/L10 shipped ✓**; billing goes live |
 | 4.3 | **FR-8** | GSA first real billing round (activation invoice → $500 line lands) | GS DoD — billing real |
 | 4.4 | **FR-9** | GOB per-signup ops (×6 over H1) | the revenue engine |
 | 4.5 | **FR-10** | GOPS ongoing cadence (reply queue · disputes · won · KPI) | DoD visibility |
 | 4.6 | **FR-11 → NF-9** | GP0/GP2 cutover go → GP3–GP9 runbook (SES prod case · prod JWT keys) | prod cutover |
-| 4.7 | **FR-12 → NF-10** | GX4 capacity spends + GX1–GX3 SCALE build (2nd tenant) | volume path |
+| — | **FR-12 → NF-10** | SCALE seams (GX) → **promoted to Phase 5** | volume path |
+
+> **Phase 4 code status (verified live 2026-07-15):** the go-live **code is already shipped to dev,
+> dormant** — Stripe/billing (NF-6) live in Lambda **v92** (routes `/webhooks/stripe/{token}` ·
+> `/{client}/billing/{status,subscription,activation-invoice}` · `/llm-usage` · `/meetings/{id}/won`;
+> `subscription` + `meeting.billed_at` on dev Aurora at head `0032`, **0 subscription rows = dormant**)
+> · cutover-prep (NF-7) on branch `cutover-prep` (`cd0dca2`, Terraform plan-only, never applied).
+> **No more claude_code code to ship in Phase 4** — everything remaining is founder-external:
+> - **FR-6** — annotate GD-1…GD-10 (5 min/row) → locks GS/GP shape
+> - **FR-7** — create the Stripe account + run the GS0 probe → GS activation is then **deploy-and-flip** (code built)
+> - **FR-8/FR-9** — real signups (activation invoice · lookalike domain · Smartlead warm-up · `sending_account` INSERT)
+> - **FR-11** — prod cutover: SES prod-access case · `terraform apply` (cutover-prep) · fresh prod JWT keys
+
+### Phase 5 · Scale & Growth (post-go-live; trigger = the 2nd paying tenant + volume) — PREP 2026-07-15
+
+Carved out of Phase 4's old 4.7 (FR-12/GX) + the §11 growth model. **Not yet built** — GD-10 defers the
+GX code until the 2nd paying tenant (purely additive, ~1 day at trigger, zero early benefit → least-code
+wins). Full spec already lives in `initial-build-plan.md` §Phase G (GX1–GX4); this is the execution shell.
+
+| # | Item | Action | Trigger / prereq |
+|---|---|---|---|
+| 5.1 | **GX1** — enrich-cache schema | `data-schema.md` → additive migration `0033`: `person` (`identity_key` PK cache) + `enrichment_request` (fan-out provenance); `prospect` gains the FK, keeps embedded enrichment until a later backfill | 2nd tenant (`prospect.identity_key`/`last_enriched_at` anchors already exist) |
+| 5.2 | **GX2** — cache-first enrich **[money]** | before any `people/match`: look up `person` by `identity_key`, fresh within ~90d TTL → copy through at **$0**; miss → enrich → write-through + provenance row (the enrich-once promise) | rides GX1 |
+| 5.3 | **GX3** — per-tenant billing + masking | plan-derived `enrichment_cap` per tenant (rides GS4's guard); per-tenant masking already structural → prove with a 2-tenant read test, no new masking code expected | GS live (FR-7) + GX1 |
+| 5.4 | **GX4** — capacity review | 2nd sending domain ([SCALE] per §sending-infra) · Smartlead tier headroom · pooled host-seat count vs meeting volume · Aurora min-ACU | volume climbs |
+| 5.5 | **Growth-model instrumentation** | hand-instrument the §11 metrics GOPS can't read yet: dispute rate · show-up rate (held ÷ ingested) · time-to-value · **AI cost/meeting** (off `llm_call` via `/llm-usage`) → monthly KPI vs the 6-signup H1 model | ongoing from 1st signup |
+| 5.6 | **Multi-client seams** | `smartlead_client_id` per tenant (Smartlead sub-account partitioning) · per-tenant secret `{prefix}/smartlead/{slug}` only if a client brings their own Smartlead account | 2nd/3rd tenant |
 
 ### Carryover — deferred-M items (fold where noted)
 
