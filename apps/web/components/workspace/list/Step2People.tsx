@@ -7,7 +7,13 @@ import type { CompanyApi, ProspectApi } from "@/lib/api";
 import type { PeopleScopeOverride } from "@/lib/workspace/types";
 import { ENRICHED_STATUS, PROSPECT_AXES, STATUS_LABEL } from "@/lib/workspace/constants";
 import { LinkedInLink } from "@/components/workspace";
-import { FitCell, IcpFilterSelect, ListOverlay, activateOnKey } from "./helpers";
+import {
+  FitCell,
+  IcpFilterSelect,
+  ListOverlay,
+  activateOnKey,
+  activateOnSelfKey,
+} from "./helpers";
 
 export function Step2People({
   peopleScopeOverride,
@@ -32,10 +38,8 @@ export function Step2People({
   pplBusy,
   rowsForCompany,
   findingPplIds,
-  expandedCos,
   companyChecked,
   toggleCo,
-  toggleCoCollapse,
   icpNameById,
   checked,
   scoringPersonIds,
@@ -75,10 +79,8 @@ export function Step2People({
   pplBusy: boolean;
   rowsForCompany: (id: string) => ProspectApi[];
   findingPplIds: Set<string>;
-  expandedCos: Set<string>;
   companyChecked: Set<string>;
   toggleCo: (c: CompanyApi, allowExcluded?: boolean) => void;
-  toggleCoCollapse: (id: string) => void;
   icpNameById: Map<string, string>;
   checked: Set<string>;
   scoringPersonIds: Set<string>;
@@ -107,8 +109,7 @@ export function Step2People({
             onClick={() => void openPeopleScopeSettings()}
             title="Edit the Apollo people-search personas Find People uses (saved per ICP)"
           >
-            {peopleScopeOverride ? "Personas · Custom" : "Personas"}
-            {coTargetIcpName ? ` · ${coTargetIcpName}` : ""}
+            Personas{coTargetIcpName ? ` · ${coTargetIcpName}` : ""}
           </button>
           <button
             className="btn btn-primary btn-sm"
@@ -128,7 +129,7 @@ export function Step2People({
             disabled={!pplCoSel.length || removing}
             title="Remove the ticked companies from Step 2 (back to the Step-1 list)"
           >
-            {removing ? "Removing…" : pplCoSel.length ? `Remove ${pplCoSel.length}` : "Remove"}
+            {removing ? "Removing…" : "Remove Company"}
           </button>
         </div>
       </div>
@@ -172,11 +173,9 @@ export function Step2People({
             <thead>
               <tr>
                 <th>Company</th>
-                <th style={{ width: 34 }} />
                 <th>Prospect</th>
                 <th>Title</th>
                 <th>Status</th>
-                <th>LinkedIn</th>
                 <th>Fit</th>
               </tr>
             </thead>
@@ -207,40 +206,38 @@ export function Step2People({
                       {rows.length} {rows.length === 1 ? "person" : "people"}
                     </span>
                   );
-                  const collapsed = !expandedCos.has(c.id);
+                  const selected = companyChecked.has(c.id);
+                  const collapsed = !selected; // expanded ⟺ selected — one state drives both
                   const expandable = rows.length > 0;
                   const enrichedCount = rows.filter((p) => p.status === ENRICHED_STATUS).length;
-                  // Company cell — count badge atop the name; spans the company's people rows.
-                  // When the company has people, clicking the cell collapses/expands that list
-                  // (the select checkbox stops propagation so ticking doesn't toggle it).
+                  // Company cell — count badge atop the name; spans the company's people rows. The
+                  // whole cell is the click target: one click SELECTS the company and (if it has
+                  // people) expands its list; a second click unselects + collapses. Selection and
+                  // expansion are the same state (companyChecked), so a staged company arrives
+                  // selected + expanded. R6 — allowExcluded lets a staged-then-excluded company
+                  // still be ticked here to Remove it (the funnel actions skip excluded rows).
+                  const selectCo = () => toggleCo(c, true);
                   const companyCell = (rowSpan: number) => (
                     <td
-                      className={clsx("vtop", "grp-co-cell", expandable && "grp-co-click")}
+                      className={clsx("vtop", "grp-co-cell", "grp-co-click", selected && "grp-co-sel")}
                       rowSpan={rowSpan}
-                      role={expandable ? "button" : undefined}
-                      tabIndex={expandable ? 0 : undefined}
-                      onClick={expandable ? () => toggleCoCollapse(c.id) : undefined}
-                      onKeyDown={
-                        expandable ? activateOnKey(() => toggleCoCollapse(c.id)) : undefined
-                      }
+                      role="button"
+                      tabIndex={0}
+                      aria-pressed={selected}
+                      onClick={selectCo}
+                      onKeyDown={activateOnKey(selectCo)}
                       title={
-                        expandable ? (collapsed ? "Expand people" : "Collapse people") : undefined
+                        selected
+                          ? expandable
+                            ? "Unselect · collapse people"
+                            : "Unselect company"
+                          : expandable
+                            ? "Select · expand people"
+                            : "Select company to find people"
                       }
                     >
                       <div className="grp-co">
-                        <span className="grp-co-top">
-                          <input
-                            type="checkbox"
-                            className="tbl-check"
-                            checked={companyChecked.has(c.id)}
-                            // R6 — allowExcluded: a staged company later re-scored excluded can
-                            // still be ticked here to Remove it (the funnel actions skip excluded).
-                            onChange={() => toggleCo(c, true)}
-                            onClick={(e) => e.stopPropagation()}
-                            title="Select this company to find people"
-                          />
-                          {countBadge}
-                        </span>
+                        <span className="grp-co-top">{countBadge}</span>
                         <span className="nm">{c.name || c.domain}</span>
                         {c.domain ? <span className="domain">{c.domain}</span> : null}
                         {c.icp_id && icpNameById.get(c.icp_id) ? (
@@ -254,8 +251,7 @@ export function Step2People({
                     return (
                       <tr key={c.id} className="co-start">
                         {companyCell(1)}
-                        <td />
-                        <td className="muted grp-hint" colSpan={5}>
+                        <td className="muted grp-hint" colSpan={4}>
                           {finding
                             ? "Finding people…"
                             : !searched
@@ -270,8 +266,7 @@ export function Step2People({
                     return (
                       <tr key={c.id} className="co-start">
                         {companyCell(1)}
-                        <td />
-                        <td className="muted grp-hint" colSpan={5}>
+                        <td className="muted grp-hint" colSpan={4}>
                           {enrichedCount} enriched · {rows.length}{" "}
                           {rows.length === 1 ? "person" : "people"} hidden · click company cell to
                           expand viewing
@@ -299,31 +294,49 @@ export function Step2People({
                               : p.status === "enrich_failed"
                                 ? "no Apollo match"
                                 : "no email yet";
+                        const pickBlocked = p.label === "excluded_by_rules";
+                        const pickRow = () => {
+                          if (!pickBlocked) toggleRow(p);
+                        };
                         return (
                           <tr
                             key={p.id}
-                            className={clsx(i === 0 && "co-start", checked.has(p.id) && "row-sel")}
+                            className={clsx(
+                              "co-row--btn",
+                              i === 0 && "co-start",
+                              checked.has(p.id) && "row-sel",
+                              pickBlocked && "co-row--off",
+                            )}
+                            role="button"
+                            tabIndex={pickBlocked ? -1 : 0}
+                            aria-pressed={checked.has(p.id)}
+                            aria-disabled={pickBlocked || undefined}
+                            title={
+                              pickBlocked ? "Excluded by rules — can't be selected" : undefined
+                            }
+                            // Skip the company cell (its own collapse click) + nested links so they keep their behavior.
+                            onClick={(e) => {
+                              if (
+                                (e.target as HTMLElement).closest(
+                                  ".grp-co-cell, a, button, input, select, textarea",
+                                )
+                              )
+                                return;
+                              pickRow();
+                            }}
+                            onKeyDown={activateOnSelfKey(pickRow)}
                           >
                             {i === 0 ? companyCell(rows.length) : null}
-                            <td>
-                              <input
-                                type="checkbox"
-                                className="tbl-check"
-                                checked={checked.has(p.id)}
-                                disabled={p.label === "excluded_by_rules"}
-                                title={
-                                  p.label === "excluded_by_rules"
-                                    ? "Excluded by rules — can't be selected"
-                                    : undefined
-                                }
-                                onChange={() => toggleRow(p)}
-                              />
-                            </td>
                             <td>
                               <div className="who-cell">
                                 <div>
                                   <div className="nm">{p.full_name || "—"}</div>
                                   <div className="sub">{p.email || "no email yet"}</div>
+                                  {p.linkedin_url ? (
+                                    <div className="who-li">
+                                      <LinkedInLink url={p.linkedin_url} />
+                                    </div>
+                                  ) : null}
                                 </div>
                               </div>
                             </td>
@@ -336,9 +349,6 @@ export function Step2People({
                                 </span>
                                 <span className="st-meta">{stMeta}</span>
                               </div>
-                            </td>
-                            <td>
-                              <LinkedInLink url={p.linkedin_url} />
                             </td>
                             <td>
                               <FitCell
@@ -416,8 +426,8 @@ export function Step2People({
           {scoringPeopleActive
             ? "Working…"
             : toEnrich.length
-              ? `Reveal & score ${selectedProspects.length} · ${toEnrich.length} credits`
-              : `Score ${selectedProspects.length}`}
+              ? `Reveal & score · ${toEnrich.length} credits`
+              : "Score"}
         </button>
         <div className={clsx("dock-act", canBatch ? "on" : "off")}>
           <input

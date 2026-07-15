@@ -53,11 +53,12 @@ import {
 // meetingsLand→attendeeEmails read-migration). Shared by the cache lazy-init and the loader so a
 // cached tab-return seeds the exact same form state a fresh load would.
 function briefFromDoc(b: Awaited<ReturnType<typeof getBrief>> | null): Brief {
+  const base = blankBrief();
   const d = (b?.data ?? {}) as Partial<Brief>;
-  return {
-    ...blankBrief(),
+  const merged: Brief = {
+    ...base,
     ...d,
-    valueProps: Array.isArray(d.valueProps) ? d.valueProps : blankBrief().valueProps,
+    valueProps: Array.isArray(d.valueProps) ? d.valueProps : base.valueProps,
     languages: Array.isArray(d.languages) ? d.languages : [],
     attendeeEmails:
       d.attendeeEmails ||
@@ -68,6 +69,16 @@ function briefFromDoc(b: Awaited<ReturnType<typeof getBrief>> | null): Brief {
     noExcludeDeals: !!d.noExcludeDeals,
     noDoNotContact: !!d.noDoNotContact,
   };
+  // The stored document is arbitrary JSON: a scalar the form treats as a string
+  // (e.g. meetingsPerMonth/dealSize saved as a number) would break filled() and the
+  // inputs, which all assume string. Coerce every string-typed field back to contract.
+  const m = merged as Record<string, unknown>;
+  for (const k of Object.keys(base) as (keyof Brief)[]) {
+    if (typeof base[k] === "string" && typeof m[k] !== "string") {
+      m[k] = m[k] == null ? "" : String(m[k]);
+    }
+  }
+  return merged;
 }
 
 // Route a scoping "gap" to the brief section that owns the missing input, so it surfaces where the

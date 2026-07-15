@@ -4,7 +4,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useClient } from "@/lib/nav";
 import { toggleInSet } from "@/lib/sets";
 import clsx from "clsx";
-import { Modal } from "@/components/Modal";
 import { useToast } from "@/components/Toast";
 import { useWorkspace } from "@/components/workspace/WorkspaceProvider";
 import { FindHistoryDrawer } from "@/components/workspace/FindHistoryDrawer";
@@ -74,21 +73,19 @@ import {
   type ManualPersonForm,
 } from "@/components/workspace/list";
 
-// Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection;
-// A selection verdict for a toggle: "ok" apply now · "blocked" locked out (an excluded row in Step 1)
-// · "confirm" a low_fit ADD, challenged via the design-system Modal (M31 — was a `window.confirm`).
-// Deselecting is always "ok"; only *adding* a gated row is challenged/blocked.
+// Override gate (spec §11 / decision ④): an `excluded_by_rules` row is locked out of any selection.
+// A selection verdict for a toggle: "ok" apply now · "blocked" locked out (an excluded row in Step 1).
+// Deselecting is always "ok"; only *adding* an excluded row is blocked. low_fit rows add freely.
 function maySelect(
   label: ScoreLabel | null,
   currentlyChecked: boolean,
   allowExcluded = false
-): "ok" | "blocked" | "confirm" {
+): "ok" | "blocked" {
   if (currentlyChecked) return "ok"; // unticking is ALWAYS allowed (tick-to-remove in Step 2, R6)
   // Step 2 passes allowExcluded so a staged-then-excluded company can be TICKED for removal; the
   // funnel-advancing handlers (stageForPeople / runFindPeople / reveal) each filter excluded rows out
   // themselves, and the prune effect drops them from the selection after any reload/scoring wave.
   if (label === "excluded_by_rules") return allowExcluded ? "ok" : "blocked";
-  if (label === "low_fit") return "confirm";
   return "ok";
 }
 
@@ -182,9 +179,6 @@ export default function ListPage() {
   // selected ones. `listStage` is the sub-view; companies + their selection live here.
   const [listStage, setListStage] = useState<"companies" | "people">("companies");
   const [companyChecked, setCompanyChecked] = useState<Set<string>>(new Set());
-  // Companies whose prospect rows are EXPANDED in the Step-2 list (company id). Default: not in the
-  // set → collapsed, so the list opens with every company collapsed to its one-line summary.
-  const [expandedCos, setExpandedCos] = useState<Set<string>>(new Set());
   const [coSearch, setCoSearch] = useState("");
   // Which collapsed footnote buckets (low_fit / excluded_by_rules) are expanded in the Step-1 table.
   // Default empty → both start collapsed to a one-line count (spec §11); reset on a client switch.
@@ -221,9 +215,6 @@ export default function ListPage() {
   // round-trip otherwise mint two identical batches, both sendable for approval and mintable into
   // campaigns. `disabled` only flips after a re-render, so the ref blocks the second click in-tick.
   const creatingBatchRef = useRef(false);
-  // M31 — a low_fit ADD is confirmed via a design-system Modal (not window.confirm); this holds the
-  // toggle to apply if the operator confirms.
-  const [lowFitPrompt, setLowFitPrompt] = useState<{ apply: () => void } | null>(null);
   // R12 — false once this page unmounts, so a job poll loop stops (no orphan polling + toasts after
   // navigating away). Combined with the client check in the `alive` callbacks below.
   const mountedRef = useRef(true);
@@ -464,20 +455,13 @@ export default function ListPage() {
   );
 
   function toggleRow(p: ProspectApi) {
-    const apply = () =>
-      setChecked((s) => {
-        const n = new Set(s);
-        if (n.has(p.id)) n.delete(p.id);
-        else n.add(p.id);
-        return n;
-      });
-    const verdict = maySelect(p.label, checked.has(p.id));
-    if (verdict === "blocked") return; // excluded locked out
-    if (verdict === "confirm") {
-      setLowFitPrompt({ apply }); // low_fit add → design-system confirm (M31)
-      return;
-    }
-    apply();
+    if (maySelect(p.label, checked.has(p.id)) === "blocked") return; // excluded locked out
+    setChecked((s) => {
+      const n = new Set(s);
+      if (n.has(p.id)) n.delete(p.id);
+      else n.add(p.id);
+      return n;
+    });
   }
 
   // The Step-1 manual scope override is persisted server-side per (tenant, ICP) — re-fetch it
@@ -574,19 +558,10 @@ export default function ListPage() {
       ? icpOptions[0].label
       : null;
   function toggleCo(c: CompanyApi, allowExcluded = false) {
-    // excluded locked out of Step-1 selection; low_fit confirms; unticking always allowed. Step 2
-    // passes allowExcluded so a staged-then-excluded company can be ticked for removal (R6).
-    const apply = () => setCompanyChecked((s) => toggleInSet(s, c.id));
-    const verdict = maySelect(c.label, companyChecked.has(c.id), allowExcluded);
-    if (verdict === "blocked") return;
-    if (verdict === "confirm") {
-      setLowFitPrompt({ apply }); // low_fit add → design-system confirm (M31)
-      return;
-    }
-    apply();
-  }
-  function toggleCoCollapse(id: string) {
-    setExpandedCos((s) => toggleInSet(s, id));
+    // excluded locked out of Step-1 selection; unticking always allowed. Step 2 passes allowExcluded
+    // so a staged-then-excluded company can be ticked for removal (R6). low_fit rows add freely.
+    if (maySelect(c.label, companyChecked.has(c.id), allowExcluded) === "blocked") return;
+    setCompanyChecked((s) => toggleInSet(s, c.id));
   }
   // Expand/collapse a Step-1 footnote bucket (low_fit / excluded_by_rules) — keyed by the label.
   function toggleBucket(key: string) {
@@ -1507,10 +1482,8 @@ export default function ListPage() {
             pplBusy={pplBusy}
             rowsForCompany={rowsForCompany}
             findingPplIds={findingPplIds}
-            expandedCos={expandedCos}
             companyChecked={companyChecked}
             toggleCo={toggleCo}
-            toggleCoCollapse={toggleCoCollapse}
             icpNameById={icpNameById}
             checked={checked}
             scoringPersonIds={scoringPersonIds}
@@ -1530,33 +1503,6 @@ export default function ListPage() {
           />
         )}
       </div>
-
-      {/* M31 — low_fit ADD confirm (design-system Modal, replacing window.confirm) */}
-      <Modal
-        open={lowFitPrompt !== null}
-        onClose={() => setLowFitPrompt(null)}
-        title="Add a Low-fit row?"
-        footer={
-          <>
-            <button className="btn btn-ghost btn-sm" onClick={() => setLowFitPrompt(null)}>
-              Cancel
-            </button>
-            <button
-              className="btn btn-primary btn-sm"
-              onClick={() => {
-                lowFitPrompt?.apply();
-                setLowFitPrompt(null);
-              }}
-            >
-              Add anyway
-            </button>
-          </>
-        }
-      >
-        <p style={{ margin: 0, lineHeight: 1.5 }}>
-          This row scored <b>Low fit</b>. Add it to the selection anyway?
-        </p>
-      </Modal>
 
       <RubricModal
         showSourcing={showSourcing}

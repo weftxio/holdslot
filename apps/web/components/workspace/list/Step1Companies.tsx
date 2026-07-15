@@ -21,6 +21,7 @@ import {
   IcpFilterSelect,
   ListOverlay,
   activateOnKey,
+  activateOnSelfKey,
   subGroupsOf,
 } from "./helpers";
 
@@ -35,14 +36,13 @@ const SEL_CSS = `
 .sel-band .sel-count b { color: var(--cerulean-deep); }
 `;
 
+// Match the selection bar's band format (.list-band): flat full-width band, shared
+// padding/min-height/border. Only the background differs — keep the warn (yellow) wash.
+// flex-wrap stays on so the long body text can wrap while the actions hold the right edge.
 const SE_CSS = `
-.se-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
-  margin: 12px 0 0; padding: 12px 14px; border: 1px solid var(--warn); border-radius: 10px;
-  background: var(--warn-wash); }
-.se-body { flex: 1 1 320px; font-size: 13px; color: var(--ink); line-height: 1.45; }
-.se-body strong { color: var(--ink); }
-.se-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.se-dismiss { margin-left: 2px; }
+.se-band { flex-wrap: wrap; gap: 10px 16px; background: var(--warn-wash); }
+.se-band .se-body { flex: 1 1 320px; font-size: 13px; color: var(--ink); line-height: 1.45; }
+.se-band .se-body strong { color: var(--ink); }
 `;
 
 export function Step1Companies({
@@ -141,20 +141,27 @@ export function Step1Companies({
     const excluded = c.label === "excluded_by_rules";
     const contact = c.label === "contact_now" || c.label === "contact_soon";
     const icpLabel = c.icp_id ? icpNameById.get(c.icp_id) : undefined;
+    // R6 — a checked row re-scored to excluded stays selectable-off; only a NEW excluded pick is
+    // blocked (pruneExcluded drops it from the selection on the next reload).
+    const pickBlocked = excluded && !companyChecked.has(c.id);
+    const pickRow = () => {
+      if (!pickBlocked) toggleCo(c);
+    };
     return (
-      <tr key={c.id} className={clsx(companyChecked.has(c.id) && "row-sel")}>
-        <td>
-          <input
-            type="checkbox"
-            className="tbl-check"
-            checked={companyChecked.has(c.id)}
-            // R6 — a checked row re-scored to excluded must stay untickable-off (only a NEW excluded
-            // selection is blocked); pruneExcluded also drops it from the selection on the next reload.
-            disabled={excluded && !companyChecked.has(c.id)}
-            title={excluded ? "Excluded by rules — can't be selected" : undefined}
-            onChange={() => toggleCo(c)}
-          />
-        </td>
+      <tr
+        key={c.id}
+        className={clsx("co-row--btn", companyChecked.has(c.id) && "row-sel", pickBlocked && "co-row--off")}
+        role="button"
+        tabIndex={pickBlocked ? -1 : 0}
+        aria-pressed={companyChecked.has(c.id)}
+        aria-disabled={pickBlocked || undefined}
+        // Ignore clicks on nested interactives (domain link, enrichment) so they keep their own behavior.
+        onClick={(e) => {
+          if ((e.target as HTMLElement).closest("a, button, input, select, textarea")) return;
+          pickRow();
+        }}
+        onKeyDown={activateOnSelfKey(pickRow)}
+      >
         <td>
           <div className="who-cell">
             <div>
@@ -182,11 +189,7 @@ export function Step1Companies({
             reason={contact ? null : c.reason}
           />
         </td>
-        <td>
-          <WebLink website={c.website} domain={c.domain} />
-        </td>
         <td className="muted">
-          <div>{c.industry || "—"}</div>
           {c.business_model ? (
             <div className="ind-model">
               <span className={clsx("badge", businessModelChip(c.business_model).cls)}>
@@ -194,6 +197,10 @@ export function Step1Companies({
               </span>
             </div>
           ) : null}
+          <div>{c.industry || "—"}</div>
+        </td>
+        <td>
+          <WebLink website={c.website} domain={c.domain} />
         </td>
         <td className="muted">{c.size || "—"}</td>
         <td>
@@ -225,7 +232,7 @@ export function Step1Companies({
             onClick={() => toggleSub(subKey)}
             onKeyDown={activateOnKey(() => toggleSub(subKey))}
           >
-            <td colSpan={8}>
+            <td colSpan={7}>
               <span className="bucket-head-in bucket-sub-in">
                 <span className={clsx("bucket-caret", open && "open")} aria-hidden="true">
                   ▸
@@ -296,7 +303,7 @@ export function Step1Companies({
               disabled={scoringActive || findingPpl}
               title="Run the paid AI fit score for the selected companies (≤15 per run)"
             >
-              {scoringActive ? "Scoring…" : `Get AI score ${coSelCount}`}
+              {scoringActive ? "Scoring…" : "Get AI Score"}
             </button>
             <button
               className="btn btn-ghost btn-sm"
@@ -304,7 +311,7 @@ export function Step1Companies({
               disabled={coMutating}
               title="Find the next batch of companies similar to the selected rows"
             >
-              {findingLookalike ? "Finding…" : `Find lookalikes ${coSelCount}`}
+              {findingLookalike ? "Finding…" : "Find Lookalikes"}
             </button>
             <button
               className="btn btn-ghost btn-sm"
@@ -312,7 +319,7 @@ export function Step1Companies({
               disabled={coMutating}
               title="Re-enrich Apollo firmographics for the selected companies · spends credits"
             >
-              {updatingFields ? "Updating…" : `Refresh company data ${coSelCount}`}
+              {updatingFields ? "Updating…" : "Enrich Profile"}
             </button>
             <button className="btn btn-ghost btn-sm" onClick={() => setCompanyChecked(new Set())}>
               Clear
@@ -321,21 +328,21 @@ export function Step1Companies({
         </div>
       )}
       {scopeExhausted ? (
-        <div className="se-notice" role="status">
+        <div className="list-band se-band" role="status">
           <style>{SE_CSS}</style>
           <div className="se-body">
-            <strong>You&apos;ve reviewed every company Apollo has for this scope.</strong> Find
-            resumes at the next page each run, and this one reached the end — there are no new
-            companies left under these exact filters. To open up more:
+            <strong>You&apos;ve reviewed every company Apollo has for this scope.</strong>
+            <br />
+            No new companies remain under these exact filters. To open up more:
           </div>
-          <div className="se-actions">
+          <div className="band-actions">
             <button
               className="btn btn-accent btn-sm"
               onClick={runLookalikeOfStrong}
               disabled={coMutating}
               title="Find the next batch of companies similar to your Strong/Good rows"
             >
-              {findingLookalike ? "Finding…" : "Find lookalikes of your best rows"}
+              {findingLookalike ? "Finding…" : "Find Lookalikes"}
             </button>
             <button
               className="btn btn-ghost btn-sm"
@@ -344,10 +351,7 @@ export function Step1Companies({
             >
               Adjust scope
             </button>
-            <button
-              className="btn btn-ghost btn-xs se-dismiss"
-              onClick={() => setScopeExhausted(false)}
-            >
+            <button className="btn btn-ghost btn-sm" onClick={() => setScopeExhausted(false)}>
               Dismiss
             </button>
           </div>
@@ -389,11 +393,10 @@ export function Step1Companies({
           <table className="tbl">
             <thead>
               <tr>
-                <th style={{ width: 34 }} />
                 <th>Company</th>
                 <th>Fit</th>
-                <th>Domain</th>
                 <th>Industry</th>
+                <th>Domain</th>
                 <th>Size</th>
                 <th>Source</th>
                 <th>Enrichment</th>
@@ -420,7 +423,7 @@ export function Step1Companies({
                         onKeyDown={activateOnKey(() => toggleBucket(key))}
                         onClick={() => toggleBucket(key)}
                       >
-                        <td colSpan={8}>
+                        <td colSpan={7}>
                           <span className="bucket-head-in">
                             <span
                               className={clsx("bucket-caret", open && "open")}

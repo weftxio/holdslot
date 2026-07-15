@@ -2429,6 +2429,14 @@
 .list-pane .tbl tbody tr.row-sel:hover {
   background: #e7eefc;
 }
+/* Whole-row selection (Step 1 companies + Step 2 people): the entire data row is the click
+   target — no checkbox column. A picked row shows via .row-sel; excluded rows can't be picked. */
+.list-pane .tbl tbody tr.co-row--btn {
+  cursor: pointer;
+}
+.list-pane .tbl tbody tr.co-row--off {
+  cursor: not-allowed;
+}
 .list-pane .domain {
   font-family: var(--m-mono);
   font-size: 12.5px;
@@ -2463,6 +2471,13 @@
 .list-pane .tbl tbody tr:hover td.grp-co-click,
 .grp-co-click:hover {
   background: var(--m-sel);
+}
+/* Selected company (Step 2) — the whole cell click toggles selection ⟺ expand, so a picked
+   company stays tinted with a left accent bar even when not hovered. */
+.list-pane .tbl tbody tr td.grp-co-cell.grp-co-sel,
+.list-pane .tbl tbody tr:hover td.grp-co-cell.grp-co-sel {
+  background: var(--m-sel);
+  box-shadow: inset 3px 0 0 var(--cerulean-deep);
 }
 .grp-co .nm {
   font-weight: 700;
@@ -2627,7 +2642,7 @@
 }
 /* B2B/B2C/Complex business-model badge, stacked under the Industry cell's text. */
 .ind-model {
-  margin-top: 4px;
+  margin-bottom: 4px;
 }
 /* Label-bucket group header (spec §11): a subtle section divider above each bucket. The two
    footnote buckets (low_fit / excluded_by_rules) render it as a clickable expand/collapse toggle. */
@@ -2765,6 +2780,10 @@
 }
 .li-ico:hover {
   opacity: 1;
+}
+/* LinkedIn icon moved into the Prospect cell — sits on its own line under the email. */
+.who-li {
+  margin-top: 5px;
 }
 
 /* Two-line status — colored dot + label, with a faint meta line beneath. */

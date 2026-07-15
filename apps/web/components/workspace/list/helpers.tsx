@@ -114,6 +114,24 @@ export const activateOnKey =
     }
   };
 
+// Whole-row selection: like activateOnKey, but fires ONLY when the row itself is the focused element
+// — a bubbled keydown from a focusable descendant (a link, or the Step-2 company cell that has its own
+// Enter/Space collapse handler) is ignored, so one keypress never triggers two actions.
+export const activateOnSelfKey =
+  (fn: () => void) =>
+  (e: {
+    key: string;
+    preventDefault: () => void;
+    target: EventTarget;
+    currentTarget: EventTarget;
+  }) => {
+    if (e.target !== e.currentTarget) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      fn();
+    }
+  };
+
 // A footnote bucket (low_fit / excluded_by_rules) is sub-grouped by WHY each row landed there, so
 // the operator can scan the rejection reasons at a glance (spec §9). A gate-killed row carries a
 // canonical reason string ("wrong vertical", "too large", "rule: B2B only", …); a low_fit row that

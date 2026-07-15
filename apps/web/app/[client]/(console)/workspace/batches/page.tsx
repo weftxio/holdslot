@@ -231,7 +231,6 @@ export default function BatchesPage() {
               }
             }}
           >
-            <div className="sob-ico">⊘</div>
             <div className="sob-main">
               <div className="sob-name">Do-not-contact list</div>
               <div className="sob-meta">
@@ -324,7 +323,6 @@ export default function BatchesPage() {
                   }
                 }}
               >
-                <div className="sob-ico">B{i + 1}</div>
                 <div className="sob-main">
                   <div className="sob-name">{b.name}</div>
                   <div className="sob-meta">
