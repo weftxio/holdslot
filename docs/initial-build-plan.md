@@ -11,26 +11,27 @@
 > the live code this session (API routers, Alembic migrations, frontend routes — see §"As-shipped, verified
 > against code" below).
 >
-> - **Backend** — Lambda **v92** on the one shared backend (`api.tryholdslot.com`), **13 routers · 82 routes
+> - **Backend** — Lambda **v93** on the one shared backend (`api.tryholdslot.com`), **13 routers · 83 routes
 >   + `/health`**. A–D+ find→score→select→enrich→batch→masked-approval · E outreach/reply-queue · F
->   book/meeting/feedback · G-NF billing (dormant). Aurora **head `0032` applied** (2026-07-14).
-> - **Web** — dev **Amplify #62** (autoBuild on `dev`, currently `016fc7d`); **prod at `b36b61d`** (job 20 —
->   first public prod-FE release, 2026-07-11; `tryholdslot.com` rides the shared dev-tier backend until the
->   prod cutover). `dev == origin/dev`.
+>   book/meeting/feedback · G-NF billing (dormant) · `PUT /me/prefs` (account UI prefs). Aurora **head `0033`
+>   applied** (2026-07-15; `app_user.ui_prefs`).
+> - **Web** — dev **Amplify #65** (autoBuild on `dev`, `29e091c`); **prod Amplify #21 at `29e091c`**
+>   (2026-07-15 — the **first `main` update since 2026-07-11**, cutting over the full Phase E/F/G-NF + L/M
+>   hardening + this-round FE backlog to `tryholdslot.com`; still rides the shared dev-tier backend until the
+>   infra prod cutover). `dev == main == origin`.
 > - **Hardening — ALL shipped to dev:** the **L-register** (1 P2 + 22 P3, backend v91 + Amplify #61) · the
 >   **M-register** (Waves 1–5: 33 fixes/builds + dead-code + 31 simplify items, committed `98c90f2`) · the
 >   **modularization** hard-prereqs 2.1–2.4 (backend v92 + Amplify #62). The **A→D+ and M/L review cycles are
 >   CLOSED** — no open findings; deferred items are the discretionary tail only (2.5–2.7 churn-gated · S8/S28/S30
 >   simplify) and are listed in §"Post-MVP build register" below.
-> - **The single open code gate:** the founder's **live find + Reveal-&-score QA of the 2.4 list-page split on
->   dev** — the route-mocked Playwright suite can't observe live Apollo find/score, so this is the money-path
->   pass required before any `main`/prod cutover. Everything else remaining is **founder-external** (see
->   §"Open gates & pending register").
-> - **This round (uncommitted · undeployed):** a founder-QA console UI pass — Prospect-List whole-row
+> - **Open code gate (now a POST-deploy check):** the founder's **live find + Reveal-&-score money-path QA** —
+>   the route-mocked Playwright suite can't observe live Apollo find/score. The prod FE was cut over **ahead of
+>   this gate by founder decision (2026-07-15)**, so it is now the top **post-deploy** check on dev/prod, not a
+>   pre-cutover blocker. Everything else remaining is **founder-external** (see §"Open gates & pending register").
+> - **This round — SHIPPED to dev + prod (2026-07-15):** a founder-QA console UI pass — Prospect-List whole-row
 >   selection + a collapsible **icon sidebar** (Lucide icons) + an **account-synced** sidebar preference
->   (`app_user.ui_prefs` · new `PUT /me/prefs` · migration **`0033`**). Working-tree only; `tsc`/`eslint`/`ruff`
->   clean. Ships behind one **shared-backend deploy** (Aurora `0033` + Lambda v93) then FE. No pre-deploy
->   regression (the FE degrades to same-browser persistence). Detail in §"This round" below.
+>   (`app_user.ui_prefs` · new `PUT /me/prefs` · migration **`0033`**). `tsc`/`eslint`/`ruff` clean; deployed as
+>   Aurora **`0033`** + Lambda **v93** + Amplify **dev #65 / prod #21**. Detail in §"This round" below.
 >
 > **Doc consolidation (2026-07-15):** the two standalone review files — `mvp-review-2026-07-12.md` (M-register)
 > and `mvp-review-2026-07-14.md` (the forward build plan + Wave-1–5 audit + L-register + modularization study) —
@@ -90,21 +91,22 @@
 
 | Thing | State |
 |---|---|
-| Backend | Lambda **v92** alias `live` (2026-07-15), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until prod cutover; **82 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·booking(public)·billing·stripe-webhooks`). Verified against `apps/api/app/main.py` this session |
-| Database | Aurora Serverless v2 + Data API · **head `0032` applied** (2026-07-14; 30 tables — `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe dormant · `0032` outreach ORDER-BY-aligned index, M22). `models.py` ↔ migrations ↔ `data-schema.md` verified in agreement (no drift) |
-| Web | Amplify autoBuild on push: **dev #62 at `016fc7d`** (Phase E/F tabs + G-NF FE + the L/M/modularization hardening, all live) · **prod at `b36b61d`** (job 20 — the first public prod-FE release, 2026-07-11). `main`/`tryholdslot.com` points at the **dev** API/DB until prod cutover |
+| Backend | Lambda **v93** alias `live` (2026-07-15), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until the infra prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·booking(public)·billing·stripe-webhooks`; v93 added `PUT /me/prefs`). Verified: `/health` ok + `/me/prefs` in the deployed OpenAPI |
+| Database | Aurora Serverless v2 + Data API · **head `0033` applied** (2026-07-15; 30 tables + the `app_user.ui_prefs` column — `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe dormant · `0032` outreach index M22 · **`0033` `app_user.ui_prefs`**). `models.py` ↔ migrations ↔ `data-schema.md` in agreement (no drift) |
+| Web | Amplify autoBuild on push: **dev #65 at `29e091c`** · **prod #21 at `29e091c`** (2026-07-15 — the **first `main` update since 2026-07-11**; the full Phase E/F/G-NF + L/M hardening + this-round FE now live on `tryholdslot.com`). Both `tryholdslot.com` + dev point at the **shared** API/DB until the infra prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
-| **Pending (this round · uncommitted)** | Console UI polish + collapsible sidebar + **account-synced sidebar pref**: DB migration **`0033`** (`app_user.ui_prefs`), API **`PUT /me/prefs`** (→ **83 routes**), FE cache-first prefs. **Undeployed** — needs Aurora `0033` + Lambda **v93** + FE ship. See §"This round" below |
+| **This round — SHIPPED (dev + prod)** | Console UI polish + collapsible sidebar + **account-synced sidebar pref**: DB **`0033`** (`app_user.ui_prefs`) applied · API **`PUT /me/prefs`** (v93) · FE Amplify **dev #65 / prod #21**. All live 2026-07-15. See §"This round" below |
 
 ---
 
-## This round (2026-07-15, uncommitted · undeployed) — console UI + account-synced sidebar pref
+## This round (2026-07-15, SHIPPED dev + prod) — console UI + account-synced sidebar pref
 
-> A founder-QA console UI pass plus one small backend feature. **Working-tree only** — nothing committed,
-> pushed, or deployed; a `tsc` / `eslint` / `ruff` pass is clean and the FE degrades with no regression on the
-> current (pre-deploy) Lambda. The go/no-go deploy report is separate; this is the change record.
+> A founder-QA console UI pass plus one small backend feature. **Shipped to dev + prod 2026-07-15** in three
+> commits (`a3acb09` · `0f5e2ba` · `29e091c`): migration `0033` applied to the shared Aurora, backend Lambda
+> **v93**, Amplify **dev #65 / prod #21**. `tsc` / `eslint` / `ruff` clean; acceptance tests green against the
+> migrated DB. This is the change record; the founder's live money-path QA is the top post-deploy check.
 
 - **Prospect-List interaction polish (FE-only)** — Step-1 / Step-2 rows are now **whole-row click-to-select**
   (per-row checkboxes removed); Step-1 columns reordered (**Industry before Domain**, business-model chip on
@@ -133,10 +135,14 @@
   (`batches/page.tsx`); Client-Brief `briefFromDoc` now coerces stored-doc scalar fields back to strings so a
   numeric persisted value can't break the form (`brief/page.tsx`, defensive).
 
-**To go live** (backend-before-frontend, one shared backend): confirm the applied head (`alembic current`),
-apply migrations to the shared Aurora (**`0032` if still pending + `0033`**), deploy the Lambda (→ **v93**),
-then ship FE (dev push → Amplify; **prod = merge `dev`→`main`** → Amplify `main`). The FE prod site rides the
-same shared backend, so there is **no separate prod API/DB deploy** — that is the still-deferred prod cutover.
+**Deploy record (2026-07-15, backend-before-frontend, one shared backend):** `alembic current` confirmed the
+shared Aurora at `0032` → `alembic upgrade head` applied **`0033`** → `build-and-deploy.sh` shifted `live` to
+Lambda **v93** (smoke: `/health` ok + `/me/prefs` in the deployed OpenAPI) → `git push origin dev` (Amplify
+**#65 SUCCEED**) → `main` fast-forwarded `b36b61d`→`29e091c` + pushed (Amplify **#21 SUCCEED**). The FE prod
+site rides the same shared backend, so there was **no separate prod API/DB deploy** — the infra prod cutover
+(separate AWS resources, NF-7) remains the still-deferred item. **Note:** `main` was 33 commits behind, so this
+`main` push also cut the full Phase E/F/G-NF + L/M-hardening FE backlog over to prod (founder-approved, ahead
+of the money-path QA gate — now a post-deploy check).
 
 ---
 
