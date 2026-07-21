@@ -45,7 +45,7 @@ def _script_dir() -> ScriptDirectory:
 
 def test_single_alembic_head():
     """One linear history — a second head means two migrations share a down_revision."""
-    assert _script_dir().get_heads() == ["0032_outreach_occurred_index"]
+    assert _script_dir().get_heads() == ["0033_app_user_ui_prefs"]
 
 
 def _fk_ondelete(model, target_table: str) -> str | None:

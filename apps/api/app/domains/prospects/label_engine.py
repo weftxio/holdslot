@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -167,6 +167,11 @@ def _score_companies_v2(db: Session, tenant_id, rows: list[Company]) -> dict:
             c.icp_id = uuid.UUID(matched) if isinstance(matched, str) else matched
         cost += float(signals.get("cost_usd") or 0.0)
         web_scored += 1
+        # Lever 2 — commit each verdict the instant it lands (rows are pre-loaded + already
+        # persisted, so this only flushes THIS row's label/score), so the FE list poll shows scores
+        # filling in one-by-one instead of a single end-of-wave dump, and a mid-wave worker kill
+        # keeps every row scored so far. The trailing research_run commit still records total cost.
+        db.commit()
 
     db.add(
         ResearchRun(
@@ -330,6 +335,9 @@ def _score_prospects_v2(db: Session, tenant_id, rows: list[Prospect]) -> dict:
         _apply_prospect_verdict(p, v)
         cost += float(scored.get("cost_usd") or 0.0)
         web_scored += 1
+        # Lever 2 — commit each verdict as it lands (see `_score_companies_v2`): incremental FE
+        # visibility + mid-wave-kill resilience. Only this row's label/score is flushed.
+        db.commit()
 
     db.add(
         ResearchRun(
@@ -358,12 +366,18 @@ def _score_prospects_v2(db: Session, tenant_id, rows: list[Prospect]) -> dict:
 # (`MAX_COMPANIES_PER_FIND`) so THAT path still scores in one reasoning wave. Env-tunable.
 _SCORE_WORKERS = int(os.environ.get("HOLDSLOT_SCORE_WORKERS", str(MAX_COMPANIES_PER_FIND)))
 
-def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
-    """Run independent fit-score jobs concurrently. `jobs` = [(key, fn)] where `fn() -> scored dict`
-    (or raises LlmError). Returns [(key, scored | None)] — None when that call failed (row kept
-    unscored). Each `fn` must close over plain data, never touch the request session off-thread."""
+def _score_concurrently(jobs: list[tuple]):
+    """Run independent fit-score jobs concurrently, YIELDING `(key, scored | None)` as each call
+    lands (completion order, not submission order) — None when that call failed (row kept unscored).
+    `jobs` = [(key, fn)] where `fn() -> scored dict` (or raises LlmError). Each `fn` must close over
+    plain data, never touch the request session off-thread.
+
+    A generator (not a list) so a caller can apply + COMMIT each verdict the moment it arrives
+    (Lever 2): scored rows then surface incrementally on the FE's list poll instead of all at once,
+    and a worker killed mid-wave keeps the rows it already scored rather than losing the batch.
+    """
     if not jobs:
-        return []
+        return
 
     def _run(job: tuple) -> tuple:
         key, fn = job
@@ -373,7 +387,9 @@ def _score_concurrently(jobs: list[tuple]) -> list[tuple]:
             return key, None
 
     with ThreadPoolExecutor(max_workers=min(_SCORE_WORKERS, len(jobs))) as ex:
-        return list(ex.map(_run, jobs))
+        futures = [ex.submit(_run, j) for j in jobs]
+        for fut in as_completed(futures):
+            yield fut.result()
 
 def classify_companies(tenant_id, rows: list[Company], brief: Brief | None) -> float:
     """Stage-0 — stamp `business_model` (+ the description-derived `hq_country` and

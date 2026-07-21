@@ -596,14 +596,25 @@ export default function ListPage() {
   // the old client-driven chunk loops — the worker owns the whole batch, surviving a tab close.
   async function runScoringJob(
     kick: () => Promise<ScoringJobApi>,
-    failLabel: string
+    failLabel: string,
+    onProgress?: () => void | Promise<void>
   ): Promise<ScoringJobApi | null> {
     const started = await kick();
     if (!started.job_id) {
       if (clientRef.current === client) toast(`${failLabel} failed`, "warn");
       return null;
     }
-    const job = await awaitScoringJob(client, started.job_id, pollAlive);
+    // Lever 2 — while a scoring wave runs, the worker commits each row as it lands; refresh the list
+    // every 3rd poll (~6s) so scores fill in live, throttled to keep the free list reads modest and
+    // guarded on the client not having switched away mid-flight. Surfaces (find/lookalike/update)
+    // that don't score row-by-row pass no `onProgress`, so they still only reload on completion.
+    let tick = 0;
+    const onTick = onProgress
+      ? () => {
+          if (++tick % 3 === 0 && clientRef.current === client) void onProgress();
+        }
+      : undefined;
+    const job = await awaitScoringJob(client, started.job_id, pollAlive, onTick);
     if (!pollAlive()) return null;
     if (job.status === "error") {
       toast(typeof job.error === "string" && job.error ? job.error : `${failLabel} failed`, "warn");
@@ -784,7 +795,10 @@ export default function ListPage() {
     const { ids, setScoring, kick, label, reload, onDone } = opts;
     setScoring((prev) => new Set([...prev, ...ids]));
     try {
-      const job = await runScoringJob(kick, label);
+      // Lever 2 — pass `reload` as the live-progress hook so scored rows surface mid-wave, not just
+      // on completion. This runner backs all three scoring surfaces (companies / reveal & score /
+      // score people), so wiring it here lights up incremental scores for every one.
+      const job = await runScoringJob(kick, label, reload);
       if (clientRef.current !== client) return;
       if (job) {
         await reload();

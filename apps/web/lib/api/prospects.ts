@@ -195,7 +195,8 @@ async function getScoringJob(client: string, jobId: string): Promise<ScoringJobA
 export async function awaitScoringJob(
   client: string,
   jobId: string,
-  alive: () => boolean = () => true
+  alive: () => boolean = () => true,
+  onTick?: (job: ScoringJobApi) => void
 ): Promise<ScoringJobApi> {
   let lastJob: ScoringJobApi | null = null;
   let transient = 0;
@@ -205,6 +206,9 @@ export async function awaitScoringJob(
       transient = 0;
       lastJob = job;
       if (job.status === "done" || job.status === "error") return job;
+      // Lever 2 — still running: the worker commits each scored row as it lands, so let the caller
+      // live-refresh its list mid-wave (throttled caller-side) instead of only reloading on terminal.
+      onTick?.(job);
     } catch (e) {
       if (++transient > JOB_POLL_RETRIES) throw e; // sustained failure → let the caller handle it
     }

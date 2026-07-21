@@ -387,13 +387,18 @@ def structured_completion(
     models: list[str] | None = None,
     extra_body: dict | None = None,
     timeout: int = DEFAULT_TIMEOUT,
+    max_retries: int = 1,
     session_factory=None,
 ) -> StructuredResult:
     """Run one strict-`json_schema` completion, persist telemetry, return the parsed object.
 
     `models` overrides the default fallback list for per-purpose routing (Phase C pins
     `prospect_fit`→qwen, `sourcing_round`→deepseek). `extra_body` pins per-purpose request
-    knobs (temperature, `enable_thinking`, `reasoning`, web-search `plugins`).
+    knobs (temperature, `enable_thinking`, `reasoning`, web-search `plugins`). `max_retries`
+    exposes the transient-failure retry budget: the default 1 suits single-call sync paths, but
+    a wide concurrent SCORING wave passes 0 — inside a 15-call wave a retry only doubles the
+    tail latency (the wave joins on its slowest row) for a row that's already non-fatal and
+    re-clickable, so failing fast keeps the whole wave well inside the Lambda timeout (N56b).
 
     Telemetry is written for every outcome (ok / parse_error / timeout / error). On any
     non-ok status an `LlmError` is raised carrying the persisted `llm_call_id`. A telemetry
@@ -405,7 +410,10 @@ def structured_completion(
 
         session_factory = get_session
 
-    outcome = _execute(messages, schema, models=models, extra_body=extra_body, timeout=timeout)
+    outcome = _execute(
+        messages, schema, models=models, extra_body=extra_body, timeout=timeout,
+        max_retries=max_retries,
+    )
     try:
         call_id: str | None = _persist(session_factory, tenant_id, purpose, prompt_version, outcome)
     except Exception:

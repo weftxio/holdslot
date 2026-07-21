@@ -169,7 +169,12 @@ COMPANY_SCORE_V2_EXTRA_BODY = {
 }
 # People scoring: no web, thinking OFF (a bounded axis grid).
 PROSPECT_SCORE_V2_EXTRA_BODY = {"temperature": 0, "reasoning": {"enabled": False}}
-SCORE_V2_TIMEOUT = 120  # Pro + web reasoning budget; async path only (exceeds the 30s gateway)
+# Pro + web reasoning budget; async path only (exceeds the 30s gateway). A median web-grounded score
+# lands ~70s; 90 keeps that headroom while capping the WAVE tail — a concurrent wave joins on its
+# slowest row, so a row allowed to run 120s (+ a 120s retry) once stretched a whole wave to ~145s+
+# and ate the Lambda-timeout margin. 90s + `max_retries=0` (see company_score_v2) caps the wave at
+# ~95s; the rare 90-120s laggard is cut and kept unscored (re-clickable), never fatal (N56b).
+SCORE_V2_TIMEOUT = 90
 
 _AXES_COMPANY = list(labeling.SUBSCORE_AXES)  # deal_fit / outbound_gap / trigger / reachability
 _AXES_PEOPLE = list(labeling.SUBSCORE_AXES_PEOPLE)  # persona_fit / authority / trigger / reach
@@ -398,6 +403,10 @@ def company_score_v2(*, tenant_id, rubric_body: str, company: dict, targeting: d
         models=SCORE_MODELS,
         extra_body=COMPANY_SCORE_V2_EXTRA_BODY,
         timeout=SCORE_V2_TIMEOUT,
+        # N56b — no retry inside the concurrent scoring wave: a transient failure/timeout here would
+        # otherwise double this row's latency and, because the wave joins on its slowest row, drag
+        # the whole batch (up to ~240s). A failed row is kept unscored and is one re-click away.
+        max_retries=0,
     )
     d = result.data
     icp_raw = d.get("icp_match") or {}
