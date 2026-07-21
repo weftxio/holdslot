@@ -67,3 +67,22 @@ aws lambda update-alias --function-name "$FN" --name live --function-version "$V
 echo "==> Smoke test"
 BASE=$("${TERRAFORM:-terraform}" -chdir="$HERE/../../infra/terraform" output -raw api_base_url 2>/dev/null || true)
 [ -n "${BASE:-}" ] && curl -fsS -m 30 "$BASE/health" && echo " OK" || echo "set BASE manually to smoke test"
+
+# N56 — prune stale published versions. SnapStart bills a snapshot-cache fee
+# (Lambda-SnapStart-Cached-GB-S) continuously for EVERY retained published version, not
+# just the one `live` serves. Left unpruned it compounds ~$2/mo per deploy — 93 stale
+# versions were ~$180/mo of pure cache in Jul 2026 (the whole account's cost spike). Keep
+# only what rollback needs: the live target + the 3 newest. Housekeeping only — it runs
+# LAST (alias shift + smoke test already succeeded above) and never aborts the deploy.
+echo "==> Pruning old published versions (keep live target + 3 newest)"
+KEEP_TARGET=$(aws lambda get-alias --function-name "$FN" --name live \
+  --region "$REGION" --query FunctionVersion --output text)
+ALL_VERS=$(aws lambda list-versions-by-function --function-name "$FN" --region "$REGION" \
+  --query 'Versions[?Version!=`$LATEST`].Version' --output text | tr '\t' '\n' | sort -rn)
+KEEP=$(printf '%s\n%s\n' "$KEEP_TARGET" "$(printf '%s\n' "$ALL_VERS" | awk 'NR<=3')" | sort -un)
+for v in $ALL_VERS; do
+  printf '%s\n' "$KEEP" | grep -qx "$v" && continue
+  aws lambda delete-function --function-name "$FN" --qualifier "$v" --region "$REGION" \
+    >/dev/null 2>&1 && echo "    pruned version $v" || echo "    !! prune failed for v$v (skipped)" >&2
+done
+echo "    kept versions: $(printf '%s ' $KEEP)"

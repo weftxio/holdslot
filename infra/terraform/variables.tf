@@ -34,10 +34,15 @@ variable "ses_domain" {
   default     = "tryholdslot.com"
 }
 
+# Steady-state monthly limit after the Jul-2026 SnapStart-cache cleanup (was effectively ~$180/mo
+# of unpruned SnapStart snapshots; post-prune baseline is ~$17-20/mo). NB: the LIVE budget is
+# hand-managed with planned limits (July 2026 = $200 grace, Aug 2026 onward = $40) applied out of
+# band via `aws budgets update-budget` — a `terraform apply` flattens that to this single value, so
+# re-apply the planned split if an apply lands before Aug 2026.
 variable "budget_limit_usd" {
   description = "Monthly AWS cost budget; alerts fire at 80% (forecast) and 100% (actual)."
   type        = number
-  default     = 100
+  default     = 40
 }
 
 variable "budget_alert_emails" {
