@@ -28,10 +28,15 @@
 >   the route-mocked Playwright suite can't observe live Apollo find/score. The prod FE was cut over **ahead of
 >   this gate by founder decision (2026-07-15)**, so it is now the top **post-deploy** check on dev/prod, not a
 >   pre-cutover blocker. Everything else remaining is **founder-external** (see §"Open gates & pending register").
-> - **This round — SHIPPED to dev + prod (2026-07-15):** a founder-QA console UI pass — Prospect-List whole-row
+> - **This round — SHIPPED to dev + prod (2026-07-21):** an **AWS cost cleanup** (the July bill spike was 100%
+>   SnapStart snapshot cache from 93 unpruned Lambda versions — now a self-pruning deploy, ~$181/mo → ~$17-20/mo)
+>   plus a **scoring-wave perf** pass (cap the slow-row tail 120s→90s + no in-wave retry; stream each verdict as it
+>   lands). Backend Lambda **v94**; `ruff`/`tsc` clean, backend 385✓, Playwright 27/27. Two commits `c373f14`
+>   (ops) · `5c34576` (perf). Detail + learnings in §"This round" below.
+> - **Previous round — SHIPPED to dev + prod (2026-07-15):** a founder-QA console UI pass — Prospect-List whole-row
 >   selection + a collapsible **icon sidebar** (Lucide icons) + an **account-synced** sidebar preference
->   (`app_user.ui_prefs` · new `PUT /me/prefs` · migration **`0033`**). `tsc`/`eslint`/`ruff` clean; deployed as
->   Aurora **`0033`** + Lambda **v93** + Amplify **dev #65 / prod #21**. Detail in §"This round" below.
+>   (`app_user.ui_prefs` · new `PUT /me/prefs` · migration **`0033`**). Deployed as Aurora **`0033`** + Lambda
+>   **v93** + Amplify **dev #65 / prod #21**. Detail in §"Previous round" below.
 >
 > **Doc consolidation (2026-07-15):** the two standalone review files — `mvp-review-2026-07-12.md` (M-register)
 > and `mvp-review-2026-07-14.md` (the forward build plan + Wave-1–5 audit + L-register + modularization study) —
@@ -91,17 +96,61 @@
 
 | Thing | State |
 |---|---|
-| Backend | Lambda **v93** alias `live` (2026-07-15), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until the infra prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·booking(public)·billing·stripe-webhooks`; v93 added `PUT /me/prefs`). Verified: `/health` ok + `/me/prefs` in the deployed OpenAPI |
+| Backend | Lambda **v94** alias `live` (2026-07-21), `api.tryholdslot.com` — the **one shared backend serving BOTH sites** until the infra prod cutover; **83 routes + `/health` across 13 mounted routers** (`auth·clients·briefs·icps·prospects·batches·approvals·campaigns·smartlead-webhooks·meetings·booking(public)·billing·stripe-webhooks`). v94 = scoring-wave perf (Lever 1+2, code-only, no route/schema change). Verified: `/health` ok. **Only 3 SnapStart versions retained** (92/93/94) — the deploy self-prunes (N56) |
 | Database | Aurora Serverless v2 + Data API · **head `0033` applied** (2026-07-15; 30 tables + the `app_user.ui_prefs` column — `0028`/`0029` Phase E · `0030` Phase F · `0031` Stripe dormant · `0032` outreach index M22 · **`0033` `app_user.ui_prefs`**). `models.py` ↔ migrations ↔ `data-schema.md` in agreement (no drift) |
-| Web | Amplify autoBuild on push: **dev #65 at `29e091c`** · **prod #21 at `29e091c`** (2026-07-15 — the **first `main` update since 2026-07-11**; the full Phase E/F/G-NF + L/M hardening + this-round FE now live on `tryholdslot.com`). Both `tryholdslot.com` + dev point at the **shared** API/DB until the infra prod cutover |
+| Web | Amplify autoBuild on push: **dev #67 at `5c34576`** · **prod (main) cut over to `5c34576` 2026-07-21** (the Lever-2 live-score FE). Both `tryholdslot.com` + dev point at the **shared** API/DB until the infra prod cutover |
 | LLM | OpenRouter, non-US providers only (HK geo-block) — scoping + `company_score_v2` = `deepseek-v4-pro`; **stage-0 classifier = `deepseek-v4-flash`** (A/B-switched 2026-07-10); all async/background |
 | Deploy | `apps/api/scripts/build-and-deploy.sh` (build → publish version → SnapStart wait → shift `live`); Amplify autoBuild on push to `dev`/`main`; **backend-before-frontend** |
 | Gate left on A–D | S3 (founder batch round) — S1/S2 folded into D+ review #5 ✅ (2026-07-10) |
-| **This round — SHIPPED (dev + prod)** | Console UI polish + collapsible sidebar + **account-synced sidebar pref**: DB **`0033`** (`app_user.ui_prefs`) applied · API **`PUT /me/prefs`** (v93) · FE Amplify **dev #65 / prod #21**. All live 2026-07-15. See §"This round" below |
+| **This round — SHIPPED (dev + prod)** | **AWS cost cleanup + scoring-wave perf**: SnapStart prune (N56, self-pruning deploy) → ~$181/mo → ~$17-20/mo · budget planned-limits (Jul $200 → Aug $40) · scoring Lever 1 (tail cap) + Lever 2 (stream partial). Lambda **v94** · Amplify **dev #67 / prod `5c34576`**. Live 2026-07-21. See §"This round" below |
 
 ---
 
-## This round (2026-07-15, SHIPPED dev + prod) — console UI + account-synced sidebar pref
+## This round (2026-07-21, SHIPPED dev → prod) — AWS cost cleanup + scoring-wave perf
+
+> Two commits — `c373f14` (ops) · `5c34576` (perf) — on dev then fast-forwarded to prod (`main`). Backend Lambda
+> **v94** (the one shared backend, so it already serves prod); Amplify **dev #67**, `main` cut over to `5c34576`.
+> Backend **385 passed / ruff clean**; web **build + Playwright 27/27**. Code-only — no route, schema, or migration
+> change (route count stays 83; head stays `0033`). The founder's live money-path QA remains the top post-deploy check.
+
+**① AWS cost — the July bill spike was 100% SnapStart snapshot cache (the learning).**
+- **Root cause:** `Lambda-SnapStart-Cached-GB-S` bills **continuously for every RETAINED published version**, not
+  just the one `live` serves. Each deploy published a new SnapStart version and nothing pruned → **93 versions ×
+  0.5 GB ≈ $181/mo** of pure cache, compounding ~$2/mo per deploy (June→July usage 20.8M→63.3M GB-s confirmed the
+  no-eviction scenario). Compute itself was ~$0.07/mo and 512 MB is right-sized (max used 246 MB); Aurora already
+  optimal (min 0 ACU). So the entire spike was cache, not code.
+- **Fix (permanent):** one-time prune to `live`+3, plus an **N56 guard** in `build-and-deploy.sh` — after the alias
+  shift + smoke test it keeps the live target + the 3 newest and deletes the rest (housekeeping only; runs last, so
+  it can never abort a deploy). **Proven on the v94 deploy** (auto-pruned v91, kept 92/93/94). Trajectory ~$181/mo
+  → **~$17-20/mo**.
+- **Budget + tags:** `holdslot-dev-monthly` now uses **PlannedBudgetLimits** (July 2026 **$200** grace → Aug 2026
+  onward **$40**) — the native AWS way to schedule a month-specific limit; the two alerts are percentage-based so
+  they auto-rescale and needed no edit. Cost-allocation tag key is already **`Project`** (TF provider `default_tags`)
+  — activating it in the Billing console (root-only, ~24h) splits holdslot vs weftx in Cost Explorer.
+  ⚠️ `budget.tf` is TF-managed → a `terraform apply` flattens the planned split; `var.budget_limit_usd` default was
+  set 100→40 so an apply at least lands on the right steady state.
+
+**② Scoring-wave perf — a concurrent wave is floored by its SLOWEST row (the learning).**
+- A scoring job already scores up to **15 rows concurrently** in one Lambda invocation (`ThreadPoolExecutor`), so
+  wall-clock ≈ the single slowest LLM call, **not** the sum. Chunking rows *within* the invocation can't speed that
+  up. The 145.9s outlier was one row running the full **120s timeout + a 120s retry** (a timeout is retryable),
+  which the wave then joined on.
+- **Lever 1 (cap the tail):** `SCORE_V2_TIMEOUT` 120→90 and **`max_retries=0`** on `company_score_v2`. Inside a
+  wide wave a retry only doubles the tail for *everyone*, and a failed row is non-fatal + one re-click away. Wave
+  now **≤ ~95s** (was up to ~240s); Lambda-timeout risk essentially gone. (`structured_completion` gained a
+  `max_retries` pass-through; the single-call sync paths keep the default 1.)
+- **Lever 2 (stream partial results):** `_score_concurrently` is now an **`as_completed` generator**; the two wave
+  functions **commit each verdict the instant it lands** → scores surface incrementally *and* a worker killed
+  mid-wave keeps every row it already scored (was all-or-nothing). FE: `awaitScoringJob` gained an `onTick`;
+  `runScoringJob` refreshes the list every 3rd poll (~6s) while running — wired once in the shared `runJob`, so all
+  three scoring surfaces (score companies · reveal & score · score people) light up incrementally.
+- **Lever 3** (chunk across *invocations* to scale beyond 15/click, keeping timeout risk flat) — designed and
+  **deliberately deferred**; only needed if a client must score >15 rows in one click.
+- Also: bumped the stale `test_single_alembic_head` pin `0032`→`0033` (single head; 0033 shipped a prior round).
+
+---
+
+## Previous round (2026-07-15, SHIPPED dev + prod) — console UI + account-synced sidebar pref
 
 > A founder-QA console UI pass plus one small backend feature. **Shipped to dev + prod 2026-07-15** in three
 > commits (`a3acb09` · `0f5e2ba` · `29e091c`): migration `0033` applied to the shared Aurora, backend Lambda
@@ -595,7 +644,7 @@ shipped in Waves 1–5 and is now consolidated in **§"Post-MVP build register"*
 | **Apollo credits** | **BOTH searches are FREE — 0 credits** (founder Apollo-dashboard confirm 2026-07-08; the public "charged per page" pricing doc does NOT apply to this Professional + master-key account). **`people/match` (enrich) = the ONLY spend: 1 cr/email** (8/phone — phone reveal **hardcoded off**, no env knob), human-gated at Gate 2. So find-width is **not** credit-bound — since Stage 1b the company-find path is **async** (`find-company-async`, bounded by the worker's 300s Lambda timeout; `FIND_COMPANY_LIMIT` env, default 100). Never `people/match` before Gate 2; suppression/exclusions are DB-side. |
 | **Apollo API levers (verified vs OpenAPI spec 2026-07-08)** | **No exclusion params** except `organization_not_locations` + `currently_not_using_any_of_technology_uids` (no exclude-by-id/keyword/industry/title) → negative signal recycles pipeline-side (D+ Stage 3). `person_titles[]` is fuzzy by default — `include_similar_titles=false` = strict (D+ Stage 2). `person_department_or_subdepartments` is **not in the documented API** — live-verify (D+ Stage 1). Canonical tech vocabulary: `auth/supported_technologies_csv` (D+ Stage 4). Org-search responses carry `pagination.total_entries` + `breadcrumbs` — the probe loop's feedback signal (D+ Stage 1). |
 | **2nd data source** | **Skipped (2026-07-08)** until **AroundDeal offers monthly API pricing** (API today = Enterprise-only ~$10k; 11-provider vetting found no self-serve Apollo-like APAC search API). FullEnrich $69/mo = enrich-only door later. See §Phase B/C refinement (2). |
-| **Ops** | AWS uses `AWS_PROFILE=holdslot` (acct **138743894336**), never the default. `claude_code` IAM is **read-only** on `holdslot/prod/*` (founder writes all secrets). Deploy = `build-and-deploy.sh`. **git push needs the `weftxio` gh account** (`checkafy` lacks write). **Commit/push only when asked.** |
+| **Ops** | AWS uses `AWS_PROFILE=holdslot` (acct **138743894336**), never the default. `claude_code` IAM is **read-only** on `holdslot/prod/*` (founder writes all secrets). Deploy = `build-and-deploy.sh`. **git push needs the `weftxio` gh account** (`checkafy` lacks write). **Commit/push only when asked.** **Cost (2026-07-21):** SnapStart bills `Lambda-SnapStart-Cached-GB-S` per RETAINED published version continuously — the deploy now self-prunes to `live`+3 (N56); never let versions accumulate. Budget `holdslot-dev-monthly` = PlannedBudgetLimits (Jul $200 → Aug $40); tag key `Project` (activate in Billing console to split holdslot/weftx). |
 | **Posture** | Build single / design multi · **zero new AWS resources** added through D (every route rides the `$default` proxy) · token validity is **expiry-on-read, no scheduler** (mirrors `password_reset`) · webhook ingest (E) = **synchronous insert** at dogfood volume. |
 
 ---
